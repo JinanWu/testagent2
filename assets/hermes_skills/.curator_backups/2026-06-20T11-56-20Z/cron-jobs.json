@@ -1,0 +1,44 @@
+{
+  "jobs": [
+    {
+      "id": "215a46cc431e",
+      "name": "\u6c38\u8c50\u6295\u9867\u500b\u80a1\u8108\u52d5\u63d0\u9192",
+      "prompt": "[IMPORTANT: You are running as a scheduled cron job. DELIVERY: Your final response will be automatically delivered to the user \u2014 do NOT use send_message or try to deliver the output yourself. Just produce your report/output as your final response and the system handles the rest. SILENT: If there is genuinely nothing new to report, respond with exactly \"[SILENT]\" (nothing else) to suppress delivery. Never combine [SILENT] with content \u2014 either report your findings normally, or say [SILENT] and nothing more.]\n\nRun the script /Users/wujinan/.hermes/scripts/scm_stock_pulse_watch.py. The script checks the \u6c38\u8c50\u6295\u9867\u300c\u500b\u80a1\u8108\u52d5\u300d feed and creates Apple Reminders entries in the list \u300c\u6295\u8cc7\u7814\u7a76\u300d only when brand-new reports appear. It also keeps the report reminders scheduled in a 3-articles-per-day queue, counting both completed and incomplete report items in the same list order. If the script prints newly created reminders, deliver that output verbatim. If it prints nothing, stay silent.",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "cron",
+        "expr": "0 9-20 * * 1-5",
+        "display": "0 9-20 * * 1-5"
+      },
+      "schedule_display": "0 9-20 * * 1-5",
+      "repeat": {
+        "times": 100000,
+        "completed": 213
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-24T21:38:20.215229+08:00",
+      "next_run_at": "2026-06-22T09:00:00+08:00",
+      "last_run_at": "2026-06-19T18:00:04.414754+08:00",
+      "last_status": "error",
+      "last_error": "RuntimeError: Codex provider quota exhausted (429); retry after 4150s. Credentials are still valid.",
+      "last_delivery_error": "delivery error: Discord send failed: Cannot connect to host discord.com:443 ssl:default [nodename nor servname provided, or not known]",
+      "deliver": "origin",
+      "origin": null,
+      "enabled_toolsets": [
+        "terminal"
+      ],
+      "workdir": null
+    }
+  ],
+  "updated_at": "2026-06-19T20:15:25.813945+08:00"
+}

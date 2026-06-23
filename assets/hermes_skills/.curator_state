@@ -1,0 +1,9 @@
+{
+  "last_report_path": "/Users/wujinan/.hermes/logs/curator/20260620-115620",
+  "last_run_at": "2026-06-20T11:56:20.890791+00:00",
+  "last_run_duration_seconds": 1190.06596,
+  "last_run_summary": "auto: no changes; llm: API call failed after 3 retries: Connection error.",
+  "last_run_summary_shown_at": "2026-06-13T10:30:19.414898+00:00",
+  "paused": false,
+  "run_count": 5
+}

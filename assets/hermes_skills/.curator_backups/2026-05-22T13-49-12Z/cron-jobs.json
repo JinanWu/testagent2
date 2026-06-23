@@ -1,0 +1,118 @@
+{
+  "jobs": [
+    {
+      "id": "d281f1ac884c",
+      "name": "cola-dev-formula-type-check",
+      "prompt": "Every day at 11:00 Asia/Taipei, but produce no output until 2026-05-21 (inclusive). After that date, run on dev-cola-rd only and inspect the latest day's data in dev-cola-rd.economy.cola_air_tickets_price_temporary_table. Check whether \u516c\u5f0f\u985e\u578b = 2 exists and whether it accounts for at least 3% of rows.\n\nAdd another check for rows where \u516c\u5f0f\u985e\u578b = 1: for each such row, evaluate whether the following equality holds:\n(\u57fa\u790e\u7968\u50f9 \u00d7 \u6298\u8b93\u767e\u5206\u6bd4 - \u6298\u6263) \u00d7 \u7968\u50f9\u52a0\u50f9\u6210\u6578 + \u7a05\u91d1 \u00d7 \u7a05\u91d1\u52a0\u50f9\u6210\u6578 + \u56fa\u5b9a\u91d1\u984d = \u7e3d\u552e\u50f9\nReport whether each row passes or fails. If there are failures, include a concise summary with counts and a few example rows/keys. Keep the job silent when there is nothing to report.",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "once",
+        "run_at": "2026-05-22T11:00:00+08:00",
+        "display": "once at 2026-05-22 11:00"
+      },
+      "schedule_display": "once at 2026-05-22 11:00",
+      "repeat": {
+        "times": null,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-15T19:03:18.431003+08:00",
+      "next_run_at": "2026-05-22T17:28:35.479519+08:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "origin",
+      "origin": null,
+      "enabled_toolsets": [
+        "terminal"
+      ],
+      "workdir": null
+    },
+    {
+      "id": "0af2e843f42d",
+      "name": "\u4e00\u5206\u9418\u5f8c\u63d0\u9192\u6211\u6642\u9593\u5230",
+      "prompt": "\u8acb\u5728\u6392\u7a0b\u89f8\u767c\u6642\u76f4\u63a5\u56de\u8986\uff1a\u6642\u9593\u5230\u3002\u9019\u662f\u4e00\u500b\u6e2c\u8a66\u7528\u7684\u4e00\u6b21\u6027\u63d0\u9192\uff0c\u4e0d\u9700\u8981\u984d\u5916\u89e3\u91cb\u3002",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "once",
+        "run_at": "2026-05-21T08:44:47+08:00",
+        "display": "once at 2026-05-21 08:44"
+      },
+      "schedule_display": "once at 2026-05-21 08:44",
+      "repeat": {
+        "times": 1,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-21T08:43:51.277655+08:00",
+      "next_run_at": "2026-05-21T09:00:44.320081+08:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "origin",
+      "origin": null,
+      "enabled_toolsets": null,
+      "workdir": null
+    },
+    {
+      "id": "9f1f0015e903",
+      "name": "cronjob-1min-test",
+      "prompt": "\u5230\u9ede\u6642\u8acb\u76f4\u63a5\u56de\u8986\uff1a\u6642\u9593\u5230",
+      "skills": [],
+      "skill": null,
+      "model": null,
+      "provider": null,
+      "base_url": null,
+      "script": null,
+      "no_agent": false,
+      "context_from": null,
+      "schedule": {
+        "kind": "once",
+        "run_at": "2026-05-21T09:27:22+08:00",
+        "display": "once at 2026-05-21 09:27"
+      },
+      "schedule_display": "once at 2026-05-21 09:27",
+      "repeat": {
+        "times": 1,
+        "completed": 0
+      },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": "2026-05-21T09:26:24.899936+08:00",
+      "next_run_at": "2026-05-21T09:31:39.052117+08:00",
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "deliver": "origin",
+      "origin": null,
+      "enabled_toolsets": null,
+      "workdir": null
+    }
+  ],
+  "updated_at": "2026-05-22T17:28:35.479767+08:00"
+}
