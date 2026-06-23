@@ -27,9 +27,11 @@ from .提示詞常數 import (
     中途導向指引,
     執行紀律指引,
     完成任務指引,
+    工作階段搜尋指引,
     工具使用強制指引,
-    技能指引,
-    終端平台指引,
+    平台提示表,
+    技能管理指引,
+    記憶工具指引,
     預設代理身份,
 )
 
@@ -96,21 +98,31 @@ class 提示詞組裝器:
         """
         穩定區塊: list[str] = [預設代理身份, Hermes說明指引]
         if self.設定.工具名稱清單:
-            穩定區塊.extend([完成任務指引, 中途導向指引, 工具使用強制指引])
+            穩定區塊.extend([完成任務指引])
+            工具指引清單: list[str] = []
+            if "memory" in self.設定.工具名稱清單:
+                工具指引清單.append(記憶工具指引)
+            if "session_search" in self.設定.工具名稱清單:
+                工具指引清單.append(工作階段搜尋指引)
+            if "skill_manage" in self.設定.工具名稱清單:
+                工具指引清單.append(技能管理指引)
+            if 工具指引清單:
+                穩定區塊.append(" ".join(工具指引清單))
+            穩定區塊.extend([中途導向指引, 工具使用強制指引])
             模型小寫 = self.設定.模型名稱.lower()
             if "gemini" in 模型小寫 or "gemma" in 模型小寫:
                 穩定區塊.append(Google模型操作指引)
             if any(片段 in 模型小寫 for 片段 in ["gpt", "codex", "grok"]):
                 穩定區塊.append(執行紀律指引)
         if {"skills_list", "skill_view", "skill_manage"}.intersection(self.設定.工具名稱清單):
-            穩定區塊.append(技能指引)
             if self.設定.技能摘要:
                 穩定區塊.append(self.設定.技能摘要)
         環境提示 = self.建立環境提示()
         if 環境提示:
             穩定區塊.append(環境提示)
-        if self.設定.平台名稱 == "cli":
-            穩定區塊.append(終端平台指引)
+        平台提示 = 平台提示表.get(self.設定.平台名稱)
+        if 平台提示:
+            穩定區塊.append(平台提示)
 
         上下文區塊: list[str] = []
         if 額外系統訊息:

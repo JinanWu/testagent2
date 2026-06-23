@@ -26,9 +26,10 @@ python3 -m 繁中代理.cli --session gemini-smoke "用一句繁體中文回答�
 1. system prompt 分為 stable/context/volatile，並依 Hermes 順序組裝：identity/help guidance/task completion/tool guidance/steer/tool enforcement/model guidance/skills/environment/platform/context files/memory/time-model-provider。
 2. 內部訊息一律使用 OpenAI-compatible dict：`role`、`content`、`tool_calls`、`tool_call_id`。
 3. provider adapter 才把 canonical messages 轉成 Gemini Vertex AI 呼叫格式。
-4. 使用者 turn 進入後立即寫入 SQLite 以提高 crash resilience；assistant tool_call 與 tool result 先加到 working messages，於持久化點 flush。
-5. context compression 在 preflight 與 tool loop 後檢查；超過 context window 約 50% 且高於 minimum floor 時，保留開頭與近期尾端，摘要中間歷史。
-6. tool schema 透過 request/tool registry 傳入 provider，不塞成一般 system prose。
+4. tool schema 透過 request/tool registry 傳入 provider，不塞成一般 system-prompt prose；`assets/hermes_core_tool_schemas.json` 從 Hermes `_HERMES_CORE_TOOLS` 擷取 48 個 core tool schema。
+5. 使用者 turn 進入後立即寫入 SQLite 以提高 crash resilience；assistant tool_call 與 tool result 先加到 working messages，於持久化點 flush。
+6. context compression 在 preflight 與 tool loop 後檢查；超過 context window 約 50% 且高於 minimum floor 時，保留開頭與近期尾端，摘要中間歷史。
+7. `gemini-flash-lite` 會正規化為 Vertex AI 可用的 `gemini-2.5-flash-lite`，以支援低成本 smoke test。
 
 ## 測試
 

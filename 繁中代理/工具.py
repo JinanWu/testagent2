@@ -18,6 +18,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -116,6 +117,77 @@ class 工具登錄器:
             return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
         except Exception as 錯誤:
             return json.dumps({"success": False, "error": str(錯誤)}, ensure_ascii=False)
+
+
+def 寫入檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
+    """完整覆寫文字檔案內容。
+
+    參數：
+        參數: 包含 path 與 content。
+
+    返回值：
+        包含 path 與 bytes_written 的 dict。
+    """
+    路徑 = Path(str(參數.get("path", ""))).expanduser()
+    內容 = str(參數.get("content", ""))
+    路徑.parent.mkdir(parents=True, exist_ok=True)
+    路徑.write_text(內容, encoding="utf-8")
+    return {"path": str(路徑), "bytes_written": len(內容.encode("utf-8"))}
+
+
+def 套用文字修補(參數: dict[str, Any]) -> dict[str, Any]:
+    """執行簡化版文字替換修補。
+
+    參數：
+        參數: 包含 path、old_string、new_string 與 replace_all。
+
+    返回值：
+        包含 path 與 replacements 的 dict。
+    """
+    路徑 = Path(str(參數.get("path", ""))).expanduser()
+    舊文字 = str(參數.get("old_string", ""))
+    新文字 = str(參數.get("new_string", ""))
+    是否全部替換 = bool(參數.get("replace_all", False))
+    原文 = 路徑.read_text(encoding="utf-8", errors="replace")
+    if not 舊文字:
+        raise ValueError("old_string 不可為空")
+    次數 = 原文.count(舊文字)
+    if 次數 == 0:
+        raise ValueError("找不到 old_string")
+    if 次數 > 1 and not 是否全部替換:
+        raise ValueError("old_string 不唯一；請設定 replace_all=true")
+    替換後 = 原文.replace(舊文字, 新文字) if 是否全部替換 else 原文.replace(舊文字, 新文字, 1)
+    路徑.write_text(替換後, encoding="utf-8")
+    return {"path": str(路徑), "replacements": 次數 if 是否全部替換 else 1}
+
+
+def 回報工具未啟用(名稱: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """建立未啟用工具的明確回報 handler。
+
+    參數：
+        名稱: Hermes core tool 名稱。
+
+    返回值：
+        handler 函數；呼叫時回傳 success=false 與原因。
+    """
+
+    def 處理未啟用工具(參數: dict[str, Any]) -> dict[str, Any]:
+        """回報工具 schema 已複製但本機外部整合尚未啟用。
+
+        參數：
+            參數: 模型提供的工具參數。
+
+        返回值：
+            說明未啟用原因的 dict。
+        """
+        return {
+            "success": False,
+            "tool": 名稱,
+            "error": "此 Hermes core tool 的 schema 已在本專案中複製；MVP 尚未啟用對應外部服務或完整 handler。",
+            "received_args": 參數,
+        }
+
+    return 處理未啟用工具
 
 
 def 讀取檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
@@ -231,15 +303,37 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
 
 
 def 建立預設工具登錄器() -> 工具登錄器:
-    """建立含 MVP 預設工具的登錄器。
+    """建立含 Hermes core schema 的工具登錄器。
 
     參數：無。
-    返回值：工具登錄器。
+    返回值：工具登錄器；會載入 `assets/hermes_core_tool_schemas.json` 中從 Hermes
+        擷取的 48 個 core tool schema。MVP 已實作本機檔案、終端與技能讀取工具；
+        其他需外部服務的工具會用明確未啟用 handler 回報。
     """
     登錄器 = 工具登錄器()
-    登錄器.登錄工具(工具定義("read_file", "Read a text file with pagination.", {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, "required": ["path"]}, 讀取檔案內容))
-    登錄器.登錄工具(工具定義("search_files", "Search files by name or content.", {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"}, "target": {"type": "string", "enum": ["files", "content"]}, "limit": {"type": "integer"}}, "required": ["pattern"]}, 搜尋檔案))
-    登錄器.登錄工具(工具定義("terminal", "Run a non-interactive shell command.", {"type": "object", "properties": {"command": {"type": "string"}, "workdir": {"type": "string"}, "timeout": {"type": "integer"}}, "required": ["command"]}, 執行終端指令))
-    登錄器.登錄工具(工具定義("skills_list", "List copied Hermes skills.", {"type": "object", "properties": {"skills_root": {"type": "string"}}}, 列出技能))
-    登錄器.登錄工具(工具定義("skill_view", "Read a copied Hermes skill.", {"type": "object", "properties": {"name": {"type": "string"}, "skills_root": {"type": "string"}}, "required": ["name"]}, 讀取技能))
+    已實作處理器: dict[str, Callable[[dict[str, Any]], Any]] = {
+        "read_file": 讀取檔案內容,
+        "write_file": 寫入檔案內容,
+        "patch": 套用文字修補,
+        "search_files": 搜尋檔案,
+        "terminal": 執行終端指令,
+        "skills_list": 列出技能,
+        "skill_view": 讀取技能,
+    }
+    結構路徑 = Path(__file__).resolve().parents[1] / "assets" / "hermes_core_tool_schemas.json"
+    if 結構路徑.exists():
+        結構清單 = json.loads(結構路徑.read_text(encoding="utf-8"))
+        for 項目 in 結構清單:
+            結構 = 項目["schema"]
+            名稱 = 結構["name"]
+            登錄器.登錄工具(工具定義(
+                名稱=名稱,
+                說明=結構.get("description", ""),
+                參數結構=結構.get("parameters", {"type": "object", "properties": {}}),
+                處理函數=已實作處理器.get(名稱, 回報工具未啟用(名稱)),
+            ))
+        return 登錄器
+
+    for 名稱, 處理器 in 已實作處理器.items():
+        登錄器.登錄工具(工具定義(名稱, 名稱, {"type": "object", "properties": {}}, 處理器))
     return 登錄器

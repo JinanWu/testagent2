@@ -141,6 +141,8 @@ class 代理執行階段:
                     工具呼叫次數 += 1
                     函數 = 工具呼叫.get("function", {})
                     名稱 = str(函數.get("name", ""))
+                    if "." in 名稱:
+                        名稱 = 名稱.rsplit(".", 1)[-1]
                     try:
                         參數 = json.loads(函數.get("arguments") or "{}")
                     except json.JSONDecodeError:
