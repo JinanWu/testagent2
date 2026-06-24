@@ -106,6 +106,8 @@ def 截斷工具呼叫參數json(參數: str, 保留字元數: int = 工具參�
 def 摘要工具結果一行(工具名: str, 參數json: str, 內容: str) -> str:
     """依工具類型把舊 tool result 壓縮為一行可追蹤摘要。
 
+    把舊的大型 tool result 壓成一行可讀摘要，取代原本可能數千字的輸出，在壓縮上下文時大幅省 token，同時保留「曾做過什麼」的線索。
+
     參數：
         工具名: tool call 的 function name，例如 `terminal`、`read_file`、
             `search_files`。
