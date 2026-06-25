@@ -302,6 +302,43 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
     raise FileNotFoundError(f"找不到技能：{名稱}")
 
 
+
+def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
+    """搜尋 SQLite session history，提供 Hermes-like session_search 四種形狀。
+
+    參數：
+        參數: 可包含 query、session_id、around_message_id、limit、window、db_path。
+
+    返回值：
+        dict：依 discovery、scroll、read、browse 形狀回傳 session history。
+    """
+    from .工作階段上下文 import 讀取目前工作階段資料庫路徑
+    from .工作階段庫 import 工作階段庫
+
+    限制 = int(參數.get("limit", 3) or 3)
+    視窗 = int(參數.get("window", 5) or 5)
+    預設DB = 讀取目前工作階段資料庫路徑() or os.getenv("TESTAGENT2_SESSION_DB") or str(Path.home() / ".testagent2" / "sessions.sqlite3")
+    db_path = Path(str(參數.get("db_path") or 預設DB)).expanduser()
+    if not db_path.exists():
+        return {"matches": [], "total_count": 0, "db_path": str(db_path), "error": "session database 不存在"}
+    庫 = 工作階段庫(db_path)
+    session_id = str(參數.get("session_id") or "").strip()
+    around_message_id = 參數.get("around_message_id")
+    查詢 = str(參數.get("query") or 參數.get("q") or "").strip()
+    include_archived = bool(參數.get("include_archived", False))
+    source = 參數.get("source")
+    user_id = 參數.get("user_id")
+    if session_id and around_message_id is not None:
+        return 庫.捲動工作階段訊息(session_id, int(around_message_id), window=視窗) | {"db_path": str(db_path)}
+    if session_id:
+        return 庫.讀取工作階段全文(session_id) | {"db_path": str(db_path)}
+    if 查詢:
+        matches = 庫.搜尋工作階段(查詢, limit=限制, window=視窗, include_archived=include_archived, source=source, user_id=user_id)
+        return {"matches": matches, "total_count": len(matches), "db_path": str(db_path)}
+    browse = 庫.瀏覽近期工作階段(limit=限制, include_archived=include_archived, source=source, user_id=user_id)
+    browse["db_path"] = str(db_path)
+    return browse
+
 def 建立預設工具登錄器() -> 工具登錄器:
     """建立含 Hermes core schema 的工具登錄器。
 
@@ -319,6 +356,7 @@ def 建立預設工具登錄器() -> 工具登錄器:
         "terminal": 執行終端指令,
         "skills_list": 列出技能,
         "skill_view": 讀取技能,
+        "session_search": 搜尋工作階段工具,
     }
     結構路徑 = Path(__file__).resolve().parents[1] / "assets" / "hermes_core_tool_schemas.json"
     if 結構路徑.exists():
