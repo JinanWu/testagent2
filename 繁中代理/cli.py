@@ -17,6 +17,7 @@ from pathlib import Path
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
 from .模型供應商 import 建立模型供應商
+from .輔助壓縮摘要 import 解析摘要失敗是否中止
 
 
 def 建立參數解析器() -> argparse.ArgumentParser:
@@ -33,6 +34,28 @@ def 建立參數解析器() -> argparse.ArgumentParser:
     解析器.add_argument("--model", default=os.getenv("AIAGENT_MODEL", "gemini-2.5-flash-lite"), help="模型名稱")
     解析器.add_argument("--mode", default=os.getenv("AIAGENT_MODEL_MODE", "gemini"), choices=["fake", "gemini"], help="模型模式")
     解析器.add_argument("--max-iters", type=int, default=8, help="最大 tool-loop 迭代次數")
+    解析器.add_argument(
+        "--compression-llm",
+        default=os.getenv("AIAGENT_COMPRESSION_LLM", "on"),
+        choices=["on", "off"],
+        help="是否使用 auxiliary LLM 產生 compression summary（off 時只用 deterministic fallback）",
+    )
+    解析器.add_argument(
+        "--compression-model",
+        default=os.getenv("AIAGENT_COMPRESSION_MODEL"),
+        help="compression 摘要模型；預設 auto 重用 --model",
+    )
+    解析器.add_argument(
+        "--compression-mode",
+        default=None,
+        choices=["fake", "gemini", "off"],
+        help="compression 摘要 provider 模式；預設 auto 重用 --mode",
+    )
+    解析器.add_argument(
+        "--abort-on-summary-failure",
+        action="store_true",
+        help="摘要模型失敗時中止壓縮（對應 Hermes abort_on_summary_failure）",
+    )
     return 解析器
 
 
@@ -55,6 +78,11 @@ def 執行主程式() -> None:
         供應商名稱="fake" if 參數.mode == "fake" else "gemini-adc",
         工作目錄=參數.workdir,
         最大迭代次數=參數.max_iters,
+        模型模式=參數.mode,
+        啟用壓縮摘要=參數.compression_llm == "on",
+        摘要失敗是否中止=參數.abort_on_summary_failure or 解析摘要失敗是否中止(),
+        壓縮模式=參數.compression_mode,
+        壓縮模型=參數.compression_model,
     )
     結果 = 執行階段.執行使用者訊息(參數.message, 工作階段識別碼=參數.session)
     print(結果.最終回答)
