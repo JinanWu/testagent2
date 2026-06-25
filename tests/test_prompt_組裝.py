@@ -1,6 +1,17 @@
 """測試 prompt 組裝順序與結構。"""
 
 from 繁中代理.提示詞組裝器 import 提示詞設定, 提示詞組裝器
+from 繁中代理.技能索引器 import (
+    建立技能分類描述表,
+    建立技能摘要,
+    建立技能摘要Manifest,
+    建立技能索引項目清單,
+    寫入技能摘要快取,
+    截斷摘要文字,
+    清除技能摘要記憶體快取,
+    讀取技能摘要快取,
+    解析Markdown前置資料,
+)
 
 
 def test_prompt_組裝_保持_hermes_三層順序():
@@ -17,6 +28,123 @@ def test_prompt_組裝_保持_hermes_三層順序():
     assert set(區塊) == {"stable", "context", "volatile"}
     assert 區塊["stable"].index("You are Hermes Agent") < 區塊["stable"].index("# Finishing the job")
     assert 區塊["stable"].index("# Tool-use enforcement") < 區塊["stable"].index("# Google model operational directives")
+
+
+def test_prompt_助理身份_優先讀取_soul_md(tmp_path):
+    """確認 SOUL.md 存在時會取代內建預設身份。"""
+    hermes家目錄 = tmp_path / ".hermes"
+    hermes家目錄.mkdir()
+    (hermes家目錄 / "SOUL.md").write_text("你是公司內部 AI 助理。", encoding="utf-8")
+    設定 = 提示詞設定(
+        工具名稱清單=["read_file"],
+        工作階段識別碼="s3",
+        Hermes家目錄=str(hermes家目錄),
+    )
+    區塊 = 提示詞組裝器(設定).組裝提示詞區塊()
+    assert 區塊["stable"].startswith("你是公司內部 AI 助理。")
+    assert "You are Hermes Agent" not in 區塊["stable"]
+
+
+def test_skill_摘要_包含分類與技能描述(tmp_path):
+    """確認技能摘要會讀取分類 DESCRIPTION.md 與技能 frontmatter。"""
+    技能根目錄 = tmp_path / "skills"
+    技能目錄 = 技能根目錄 / "research" / "arxiv"
+    技能目錄.mkdir(parents=True)
+    (技能根目錄 / "research" / "DESCRIPTION.md").write_text(
+        "---\ndescription: 研究與論文檢索技能。\n---\n",
+        encoding="utf-8",
+    )
+    (技能目錄 / "SKILL.md").write_text(
+        "---\nname: arxiv\ndescription: 搜尋 arXiv 論文。\nversion: 1.0.0\n---\n\n# arXiv\n",
+        encoding="utf-8",
+    )
+    分類描述表 = 建立技能分類描述表(技能根目錄)
+    技能項目清單 = 建立技能索引項目清單(技能根目錄)
+    assert 分類描述表 == {"research": "研究與論文檢索技能。"}
+    assert 技能項目清單 == [{
+        "skill_name": "arxiv",
+        "category": "research",
+        "description": "搜尋 arXiv 論文。",
+        "path": str(技能目錄 / "SKILL.md"),
+    }]
+    技能摘要 = 建立技能摘要(技能根目錄, {"skill_view"})
+    assert 技能摘要.startswith("## Skills (mandatory)")
+    assert "<available_skills>" in 技能摘要
+    assert "Only proceed without loading a skill" in 技能摘要
+
+
+def test_markdown_前置資料_支援多行描述():
+    """確認 frontmatter 的多行 description 會整理成單行摘要。"""
+    前置資料 = 解析Markdown前置資料("---\nname: macos\ndescription: |\n  第一行描述，\n  第二行描述。\n---\n")
+    assert 前置資料["name"] == "macos"
+    assert 前置資料["description"] == "第一行描述， 第二行描述。"
+
+
+def test_skill_摘要快取_依_manifest_命中與失效(tmp_path, monkeypatch):
+    """確認技能摘要快取會依 SKILL.md 與 DESCRIPTION.md manifest 判斷有效性。"""
+    快取路徑 = tmp_path / "snapshot.json"
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(快取路徑))
+    清除技能摘要記憶體快取()
+    技能根目錄 = tmp_path / "skills"
+    技能目錄 = 技能根目錄 / "apple" / "apple-notes"
+    技能目錄.mkdir(parents=True)
+    (技能根目錄 / "apple" / "DESCRIPTION.md").write_text("---\ndescription: Apple 技能。\n---\n", encoding="utf-8")
+    技能檔案 = 技能目錄 / "SKILL.md"
+    技能檔案.write_text("---\nname: apple-notes\ndescription: 筆記技能。\n---\n", encoding="utf-8")
+
+    manifest = 建立技能摘要Manifest(技能根目錄)
+    快取條件 = {"platform": "linux", "disabled_skills": [], "tools": [], "toolsets": []}
+    assert 讀取技能摘要快取(技能根目錄, manifest, 快取條件) is None
+    寫入技能摘要快取(技能根目錄, manifest, 快取條件, "技能摘要")
+    清除技能摘要記憶體快取()
+    assert 讀取技能摘要快取(技能根目錄, manifest, 快取條件) == "技能摘要"
+
+    技能檔案.write_text("---\nname: apple-notes\ndescription: 新筆記技能。\n---\n", encoding="utf-8")
+    新manifest = 建立技能摘要Manifest(技能根目錄)
+    清除技能摘要記憶體快取()
+    assert 讀取技能摘要快取(技能根目錄, 新manifest, 快取條件) is None
+
+
+def test_skill_描述_會限制最大字數():
+    """確認技能索引描述過長時會被截斷。"""
+    描述 = 截斷摘要文字("一" * 400, 最大字數=20)
+    assert 描述 == ("一" * 19) + "…"
+
+
+def test_skill_索引_會依平台停用與工具條件過濾(tmp_path):
+    """確認技能索引會套用平台、停用清單與 toolset 條件。"""
+    技能根目錄 = tmp_path / "skills"
+    mac技能目錄 = 技能根目錄 / "apple" / "mac-only"
+    停用技能目錄 = 技能根目錄 / "research" / "disabled-skill"
+    工具技能目錄 = 技能根目錄 / "productivity" / "maps"
+    一般技能目錄 = 技能根目錄 / "general" / "always"
+    for 目錄 in [mac技能目錄, 停用技能目錄, 工具技能目錄, 一般技能目錄]:
+        目錄.mkdir(parents=True)
+    (mac技能目錄 / "SKILL.md").write_text("---\nname: mac-only\nplatforms: [macos]\n---\n", encoding="utf-8")
+    (停用技能目錄 / "SKILL.md").write_text("---\nname: disabled-skill\nplatforms: [linux, macos]\n---\n", encoding="utf-8")
+    (工具技能目錄 / "SKILL.md").write_text(
+        "---\nname: maps\nplatforms: [linux]\nmetadata:\n  hermes:\n    requires_toolsets: [terminal]\n---\n",
+        encoding="utf-8",
+    )
+    (一般技能目錄 / "SKILL.md").write_text("---\nname: always\nplatforms: [any]\n---\n", encoding="utf-8")
+
+    無終端項目 = 建立技能索引項目清單(
+        技能根目錄,
+        平台名稱="linux",
+        停用技能名稱集合={"disabled-skill"},
+        工具名稱集合=set(),
+        工具集名稱集合=set(),
+    )
+    assert [項目["skill_name"] for 項目 in 無終端項目] == ["always"]
+
+    有終端項目 = 建立技能索引項目清單(
+        技能根目錄,
+        平台名稱="linux",
+        停用技能名稱集合={"disabled-skill"},
+        工具名稱集合={"terminal"},
+        工具集名稱集合={"terminal"},
+    )
+    assert [項目["skill_name"] for 項目 in 有終端項目] == ["always", "maps"]
     assert "<available_skills>" in 區塊["stable"]
     assert "額外系統訊息" in 區塊["context"]
     assert "Session ID: s1" in 區塊["volatile"]
