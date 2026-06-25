@@ -31,6 +31,14 @@ python3 -m 繁中代理.cli --session gemini-smoke "用一句繁體中文回答�
 6. context compression 在 preflight 與 tool loop 後檢查；超過 context window 約 50% 且高於 minimum floor 時，保留開頭與近期尾端，摘要中間歷史。
 7. `gemini-flash-lite` 會正規化為 Vertex AI 可用的 `gemini-2.5-flash-lite`，以支援低成本 smoke test。
 
+## Session storage
+
+Session 儲存層已整理成獨立說明：
+
+- `docs/session-storage.md`
+
+內容涵蓋 append-first messages、compression session split、FTS / `session_search`、metadata、usage counters、rewind soft-delete、CLI 用法、測試與目前仍未達 Hermes parity 的差距。
+
 ## 測試
 
 ```bash
