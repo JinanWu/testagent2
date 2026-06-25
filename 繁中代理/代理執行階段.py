@@ -21,6 +21,7 @@ from typing import Any
 from .上下文壓縮器 import 上下文壓縮器, 粗估訊息Token數
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
+from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 模型供應商
 
@@ -194,11 +195,9 @@ class 代理執行階段:
         """建立可放入 system prompt 的技能索引摘要。
 
         參數：無。
-        返回值：技能摘要文字。
+        返回值：技能摘要文字。實際掃描、過濾、快取與組裝邏輯由
+            `技能索引器` 負責；runtime 只提供技能根目錄與目前工具名稱。
         """
         技能根目錄 = Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
-        if not 技能根目錄.exists():
-            return "<available_skills>\n  (skills not copied yet)\n</available_skills>"
-        名稱清單 = sorted({路徑.parent.name for 路徑 in 技能根目錄.rglob("SKILL.md")})
-        顯示清單 = 名稱清單[:300]
-        return "<available_skills>\n" + "\n".join(f"  - {名稱}" for 名稱 in 顯示清單) + "\n</available_skills>"
+        工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
+        return 建立技能索引摘要(技能根目錄, 工具名稱集合)

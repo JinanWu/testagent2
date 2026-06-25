@@ -2,8 +2,9 @@
 
 功能：
     依 Hermes `agent/system_prompt.py` 與 `agent/prompt_builder.py` 的分層概念
-    組裝 system prompt：stable、context、volatile。stable 區塊包含身份、任務
-    完成、工具使用、技能、環境與平台提示；context 區塊包含呼叫端提供的
+    組裝 system prompt：stable、context、volatile。stable 區塊優先從
+    HERMES_HOME 的 SOUL.md 讀取助理身份，缺少時才使用內建預設身份，並包含
+    任務完成、工具使用、技能、環境與平台提示；context 區塊包含呼叫端提供的
     system_message 與工作目錄指引檔；volatile 區塊包含記憶、使用者 profile、
     日期、session id、model 與 provider。
 
@@ -50,6 +51,8 @@ class 提示詞設定:
         記憶文字: 長期記憶文字。
         使用者資料文字: 使用者 profile 文字。
         工作目錄: 尋找 AGENTS.md、HERMES.md、CLAUDE.md、.cursorrules 的起點。
+        Hermes家目錄: 尋找 SOUL.md 的目錄；若未設定則優先讀取環境變數
+            HERMES_HOME，最後退回工作目錄下的 .hermes。
 
     返回值：
         dataclass 實例。
@@ -64,6 +67,7 @@ class 提示詞設定:
     記憶文字: str = ""
     使用者資料文字: str = ""
     工作目錄: str = "."
+    Hermes家目錄: str | None = None
 
 
 class 提示詞組裝器:
@@ -96,7 +100,10 @@ class 提示詞組裝器:
         返回值：
             dict，包含 stable、context、volatile 三個 key。
         """
-        穩定區塊: list[str] = [預設代理身份, Hermes說明指引]
+
+        # ── 穩定層：身份、任務規則、工具規則、技能索引、環境與平台提示 ──
+
+        穩定區塊: list[str] = [self.讀取助理身份(), Hermes說明指引]
         if self.設定.工具名稱清單:
             穩定區塊.extend([完成任務指引])
             工具指引清單: list[str] = []
@@ -124,6 +131,8 @@ class 提示詞組裝器:
         if 平台提示:
             穩定區塊.append(平台提示)
 
+
+        # ── 上下文層：額外系統訊息、工作目錄指引檔 ──
         上下文區塊: list[str] = []
         if 額外系統訊息:
             上下文區塊.append(額外系統訊息)
@@ -131,6 +140,8 @@ class 提示詞組裝器:
         if 指引檔文字:
             上下文區塊.append(指引檔文字)
 
+
+        # ── 易變層：記憶、使用者 profile、日期、session id、model 與 provider ──
         易變區塊: list[str] = []
         if self.設定.記憶文字:
             易變區塊.append(self.設定.記憶文字)
@@ -172,6 +183,35 @@ class 提示詞組裝器:
             f"User home directory: {Path.home()}\n"
             f"Current working directory: {Path(self.設定.工作目錄).resolve()}"
         )
+
+    def 取得Hermes家目錄(self) -> Path:
+        """取得 SOUL.md 所在的 Hermes 家目錄。
+
+        參數：無。
+        返回值：Hermes 家目錄路徑。若設定物件有明確指定，使用該路徑；否則
+            讀取 HERMES_HOME 環境變數；若環境變數不存在，退回工作目錄下的
+            `.hermes`。
+        """
+        if self.設定.Hermes家目錄:
+            return Path(self.設定.Hermes家目錄).expanduser().resolve()
+        環境路徑 = os.getenv("HERMES_HOME")
+        if 環境路徑:
+            return Path(環境路徑).expanduser().resolve()
+        return (Path(self.設定.工作目錄).expanduser().resolve() / ".hermes")
+
+    def 讀取助理身份(self) -> str:
+        """讀取助理身份提示詞。
+
+        參數：無。
+        返回值：若 Hermes 家目錄下存在非空白的 `SOUL.md`，回傳其內容；否則
+            回傳內建的 `預設代理身份`。這讓部署者可用 markdown 檔調整助理
+            身份，但保留程式碼中的預設 fallback。
+        """
+        身份路徑 = self.取得Hermes家目錄() / "SOUL.md"
+        if not 身份路徑.is_file():
+            return 預設代理身份
+        內容 = 身份路徑.read_text(encoding="utf-8", errors="replace").strip()
+        return 內容 or 預設代理身份
 
     def 讀取工作目錄指引檔(self) -> str:
         """讀取工作目錄中的專案指引檔並包成低權重參考資訊。
