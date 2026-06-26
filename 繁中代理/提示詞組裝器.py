@@ -45,7 +45,7 @@ class 提示詞設定:
         模型名稱: 實際要呼叫的模型名稱。
         供應商名稱: provider 名稱。
         工作階段識別碼: session id。
-        平台名稱: gateway/platform 名稱；MVP 預設 cli。
+        平台名稱: gateway/platform 名稱；尚未接 gateway 時預設為 api_server。
         工具名稱清單: 目前可用工具名稱。
         技能摘要: 技能索引文字。
         記憶文字: 長期記憶文字。
@@ -61,7 +61,7 @@ class 提示詞設定:
     模型名稱: str = "gemini-2.5-flash-lite"
     供應商名稱: str = "gemini-adc"
     工作階段識別碼: str = ""
-    平台名稱: str = "cli"
+    平台名稱: str = "api_server"
     工具名稱清單: list[str] = field(default_factory=list)
     技能摘要: str = ""
     記憶文字: str = ""

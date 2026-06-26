@@ -58,6 +58,7 @@ class 代理執行階段:
         模型供應商物件: provider adapter。
         模型名稱: 模型名稱。
         供應商名稱: provider 名稱。
+        平台名稱: gateway/platform 名稱；尚未接 gateway 時預設為 api_server。
         工具登錄器物件: 可選工具登錄器；預設建立 MVP 工具。
         工作目錄: prompt context 與 terminal 工具的預設工作目錄。
         最大迭代次數: tool loop 最大模型呼叫次數。
@@ -72,6 +73,7 @@ class 代理執行階段:
         模型供應商物件: 模型供應商,
         模型名稱: str,
         供應商名稱: str = "gemini-adc",
+        平台名稱: str = "api_server",
         工具登錄器物件: 工具登錄器 | None = None,
         工作目錄: str = ".",
         最大迭代次數: int = 8,
@@ -86,6 +88,7 @@ class 代理執行階段:
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
+        self.平台名稱 = 平台名稱
         self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器()
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
         self.最大迭代次數 = 最大迭代次數
@@ -184,7 +187,7 @@ class 代理執行階段:
             模型名稱=self.模型名稱,
             供應商名稱=self.供應商名稱,
             工作階段識別碼=工作階段識別碼,
-            平台名稱="cli",
+            平台名稱=self.平台名稱,
             工具名稱清單=list(self.工具登錄器物件.工具表.keys()),
             技能摘要=技能摘要,
             工作目錄=self.工作目錄,
