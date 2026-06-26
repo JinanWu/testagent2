@@ -1,5 +1,8 @@
 """測試 prompt 組裝順序與結構。"""
 
+from 繁中代理.代理執行階段 import 代理執行階段
+from 繁中代理.工作階段庫 import 工作階段庫
+from 繁中代理.模型供應商 import 假模型供應商
 from 繁中代理.提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from 繁中代理.技能索引器 import (
     建立技能分類描述表,
@@ -28,6 +31,41 @@ def test_prompt_組裝_保持_hermes_三層順序():
     assert set(區塊) == {"stable", "context", "volatile"}
     assert 區塊["stable"].index("You are Hermes Agent") < 區塊["stable"].index("# Finishing the job")
     assert 區塊["stable"].index("# Tool-use enforcement") < 區塊["stable"].index("# Google model operational directives")
+    assert "<available_skills>" in 區塊["stable"]
+    assert "額外系統訊息" in 區塊["context"]
+    assert "Session ID: s1" in 區塊["volatile"]
+    assert "Model: gemini-2.5-flash-lite" in 區塊["volatile"]
+
+
+def test_prompt_完整字串_依序串接三層():
+    """確認完整 system prompt 是 stable、context、volatile 依序串接。"""
+    設定 = 提示詞設定(工具名稱清單=["read_file"], 工作階段識別碼="s2")
+    完整 = 提示詞組裝器(設定).組裝系統提示詞("context-marker")
+    assert 完整.index("You are Hermes Agent") < 完整.index("context-marker") < 完整.index("Conversation started:")
+    assert "You're responding through an API server" in 完整
+
+
+def test_prompt_有電腦操作工具時_注入電腦操作指引():
+    """確認 computer_use 工具存在時會注入對應操作與安全指引。"""
+    設定 = 提示詞設定(工具名稱清單=["computer_use"], 工作階段識別碼="s-computer")
+    區塊 = 提示詞組裝器(設定).組裝提示詞區塊()
+    assert "# Computer Use (macOS background control)" in 區塊["stable"]
+
+
+def test_runtime_保留可設定平台名稱(tmp_path):
+    """確認 runtime 會把平台名稱傳給提示詞組裝器，而不是寫死 CLI。"""
+    庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
+    runtime = 代理執行階段(
+        庫,
+        假模型供應商(),
+        模型名稱="fake",
+        供應商名稱="fake",
+        平台名稱="webui",
+        工作目錄=str(tmp_path),
+    )
+    系統提示詞 = runtime.建立系統提示詞("platform-session")
+    assert "You are in the Hermes WebUI" in 系統提示詞
+    assert "You are a CLI AI Agent" not in 系統提示詞
 
 
 def test_prompt_助理身份_優先讀取_soul_md(tmp_path):
