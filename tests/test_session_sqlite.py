@@ -544,3 +544,104 @@ def test_runtime_compression_updates_context_and_hooks(tmp_path):
     assert events and events[0][0] == "session:compress"
     assert 庫.讀取訊息(sid)[0]["content"] == "開頭"
     assert 壓縮後 == 庫.讀取訊息(新sid)
+
+def test_cli_sessions_subcommands_and_repl_slash_commands(tmp_path):
+    """確認 CLI 提供 sessions 管理子命令與最小 Hermes-style REPL slash commands。
+
+    參數：
+        tmp_path: pytest 提供的暫存目錄。
+
+    返回值：None。透過 subprocess 驗證 list/browse/rename/export/stats 與 REPL。
+    """
+    db = tmp_path / "cli-sessions.sqlite3"
+    first = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "cli-one", "第一則 CLI 訊息"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stdout
+    assert "session=cli-one" in first.stdout
+
+    list_json = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "list", "--json"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert list_json.returncode == 0, list_json.stdout
+    list_payload = json.loads(list_json.stdout)
+    assert list_payload["total_count"] == 1
+    assert list_payload["sessions"][0]["id"] == "cli-one"
+
+    rename = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "rename", "cli-one", "好用 CLI"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert rename.returncode == 0, rename.stdout
+    assert 工作階段庫(db).讀取工作階段("cli-one")["title"] == "好用 CLI"
+
+    browse = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "browse"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert browse.returncode == 0, browse.stdout
+    assert "好用 CLI" in browse.stdout
+    assert "第一則 CLI 訊息" in browse.stdout
+
+    export_path = tmp_path / "sessions.jsonl"
+    export = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "export", str(export_path)],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert export.returncode == 0, export.stdout
+    export_payload = json.loads(export.stdout)
+    assert export_payload["session_count"] == 1
+    exported_lines = export_path.read_text(encoding="utf-8").splitlines()
+    assert len(exported_lines) == 1
+    assert json.loads(exported_lines[0])["session"]["id"] == "cli-one"
+
+    stats = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "stats", "--json"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert stats.returncode == 0, stats.stdout
+    stats_payload = json.loads(stats.stdout)
+    assert stats_payload["session_count"] == 1
+    assert stats_payload["message_count"] >= 2
+
+    repl = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "repl-one"],
+        cwd="/Users/wujinan/Documents/testagent2",
+        input="/help\n/status\nREPL 訊息\n/history\n/sessions 5\n/undo\n/history\n/exit\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert repl.returncode == 0, repl.stdout
+    assert "可用命令" in repl.stdout
+    assert "session=repl-one" in repl.stdout
+    assert "假模型回覆" in repl.stdout
+    assert "已 undo" in repl.stdout
+    assert [m["role"] for m in 工作階段庫(db).讀取訊息("repl-one")] == []

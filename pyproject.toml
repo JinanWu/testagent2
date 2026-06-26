@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "testagent2"
 version = "0.1.0"
@@ -9,6 +13,9 @@ dependencies = [
 
 [project.scripts]
 testagent2 = "繁中代理.cli:執行主程式"
+
+[tool.setuptools.packages.find]
+include = ["繁中代理*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
