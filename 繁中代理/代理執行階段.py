@@ -16,6 +16,7 @@ from typing import Any
 from .上下文壓縮器 import 上下文壓縮器
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
+from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
@@ -34,7 +35,21 @@ class 執行結果:
 
 
 class 代理執行階段:
-    """Hermes-style CLI AgentRuntime。"""
+    """Hermes-style CLI AgentRuntime。
+
+    參數：
+        工作階段庫物件: SQLite session store。
+        模型供應商物件: provider adapter。
+        模型名稱: 模型名稱。
+        供應商名稱: provider 名稱。
+        平台名稱: gateway/platform 名稱；尚未接 gateway 時預設為 api_server。
+        工具登錄器物件: 可選工具登錄器；預設建立 MVP 工具。
+        工作目錄: prompt context 與 terminal 工具的預設工作目錄。
+        最大迭代次數: tool loop 最大模型呼叫次數。
+
+    返回值：
+        可執行使用者訊息的 runtime。
+    """
 
     def __init__(
         self,
@@ -42,6 +57,7 @@ class 代理執行階段:
         模型供應商物件: 模型供應商,
         模型名稱: str,
         供應商名稱: str = "gemini-adc",
+        平台名稱: str = "api_server",
         工具登錄器物件: 工具登錄器 | None = None,
         工作目錄: str = ".",
         最大迭代次數: int = 8,
@@ -80,6 +96,7 @@ class 代理執行階段:
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
+        self.平台名稱 = 平台名稱
         self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器()
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
         self.最大迭代次數 = 最大迭代次數
@@ -293,7 +310,7 @@ class 代理執行階段:
             模型名稱=self.模型名稱,
             供應商名稱=self.供應商名稱,
             工作階段識別碼=工作階段識別碼,
-            平台名稱="cli",
+            平台名稱=self.平台名稱,
             工具名稱清單=list(self.工具登錄器物件.工具表.keys()),
             技能摘要=技能摘要,
             工作目錄=self.工作目錄,
@@ -311,8 +328,5 @@ class 代理執行階段:
             尚未複製則回傳明確的 placeholder。
         """
         技能根目錄 = Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
-        if not 技能根目錄.exists():
-            return "<available_skills>\n  (skills not copied yet)\n</available_skills>"
-        名稱清單 = sorted({路徑.parent.name for 路徑 in 技能根目錄.rglob("SKILL.md")})
-        顯示清單 = 名稱清單[:300]
-        return "<available_skills>\n" + "\n".join(f"  - {名稱}" for 名稱 in 顯示清單) + "\n</available_skills>"
+        工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
+        return 建立技能索引摘要(技能根目錄, 工具名稱集合)
