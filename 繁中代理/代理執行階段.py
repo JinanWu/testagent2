@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -432,6 +435,7 @@ class 代理執行階段:
         返回值：
             frozen snapshot 區塊；沒有記憶時回傳空字串。
         """
+        hermes家目錄: Path | None = None
         try:
             from .記憶存放 import 記憶存放
 
@@ -441,6 +445,12 @@ class 代理執行階段:
             存放.載入()
             return 存放.格式化給系統提示(目標)
         except Exception:
+            _logger.warning(
+                "載入 %s 記憶 snapshot 失敗（hermes home=%s）",
+                目標,
+                hermes家目錄,
+                exc_info=True,
+            )
             return ""
 
     def 建立技能摘要(self) -> str:

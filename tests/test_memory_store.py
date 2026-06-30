@@ -1,6 +1,7 @@
 """測試 Hermes-like 內建記憶與 SOUL/CLI smoke。"""
 
 from pathlib import Path
+import logging
 import os
 import subprocess
 import sys
@@ -30,6 +31,21 @@ def test_memory_add_寫入_user_md(tmp_path):
     結果 = 存放.新增("user", "使用者偏好短回答")
     assert 結果["success"] is True
     assert (tmp_path / "memories" / "USER.md").read_text(encoding="utf-8") == "使用者偏好短回答"
+
+
+def test_memory_prompt_load_failure_logs_warning(tmp_path, caplog, monkeypatch):
+    """確認記憶載入失敗時會記錄 warning，而非完全靜默降級。"""
+    def 失敗載入(self) -> None:
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(記憶存放, "載入", 失敗載入)
+    monkeypatch.setenv("TESTAGENT2_HERMES_HOME", str(tmp_path))
+
+    with caplog.at_level(logging.WARNING, logger="繁中代理.代理執行階段"):
+        結果 = 建立Runtime(tmp_path).建立記憶提示區塊("user")
+
+    assert 結果 == ""
+    assert any("記憶 snapshot" in record.message for record in caplog.records)
 
 
 def test_memory_snapshot_進入下一個_session_prompt(tmp_path, monkeypatch):
