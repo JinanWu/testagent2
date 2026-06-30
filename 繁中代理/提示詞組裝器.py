@@ -261,15 +261,15 @@ class 提示詞組裝器:
 
         參數：無。
         返回值：Hermes 家目錄路徑。若設定物件有明確指定，使用該路徑；否則
-            讀取 HERMES_HOME 環境變數；若環境變數不存在，退回工作目錄下的
-            `.hermes`。
+            讀取 TESTAGENT2_HERMES_HOME / HERMES_HOME 環境變數；若環境變數不存在，
+            退回使用者家目錄下的 `.hermes`，對齊 Hermes 的 profile home。
         """
         if self.設定.Hermes家目錄:
             return Path(self.設定.Hermes家目錄).expanduser().resolve()
-        環境路徑 = os.getenv("HERMES_HOME")
+        環境路徑 = os.getenv("TESTAGENT2_HERMES_HOME") or os.getenv("HERMES_HOME")
         if 環境路徑:
             return Path(環境路徑).expanduser().resolve()
-        return (Path(self.設定.工作目錄).expanduser().resolve() / ".hermes")
+        return Path.home().expanduser().resolve() / ".hermes"
 
     def 讀取助理身份(self) -> str:
         """讀取助理身份提示詞。
@@ -279,8 +279,11 @@ class 提示詞組裝器:
             回傳內建的 `預設代理身份`。這讓部署者可用 markdown 檔調整助理
             身份，但保留程式碼中的預設 fallback。
         """
-        身份路徑 = self.取得Hermes家目錄() / "SOUL.md"
+        hermes家目錄 = self.取得Hermes家目錄()
+        身份路徑 = hermes家目錄 / "SOUL.md"
         if not 身份路徑.is_file():
+            hermes家目錄.mkdir(parents=True, exist_ok=True)
+            身份路徑.write_text(預設代理身份, encoding="utf-8")
             return 預設代理身份
         內容 = 身份路徑.read_text(encoding="utf-8", errors="replace").strip()
         if not 內容:

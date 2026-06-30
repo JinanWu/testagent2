@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,8 @@ from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -108,6 +111,7 @@ class 代理執行階段:
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
+        self.平台名稱 = 平台名稱
         self.user_id = user_id
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
@@ -416,9 +420,38 @@ class 代理執行階段:
             平台名稱=self.平台名稱,
             工具名稱清單=list(self.工具登錄器物件.工具表.keys()),
             技能摘要=技能摘要,
+            記憶文字=self.建立記憶提示區塊("memory"),
+            使用者資料文字=self.建立記憶提示區塊("user"),
             工作目錄=self.工作目錄,
         )
         return 提示詞組裝器(設定).組裝系統提示詞(額外系統訊息)
+
+    def 建立記憶提示區塊(self, 目標: str) -> str:
+        """載入內建記憶 snapshot 給 system prompt。
+
+        參數：
+            目標: memory 或 user。
+
+        返回值：
+            frozen snapshot 區塊；沒有記憶時回傳空字串。
+        """
+        hermes家目錄: Path | None = None
+        try:
+            from .記憶存放 import 記憶存放
+
+            暫存設定 = 提示詞設定(工作目錄=self.工作目錄)
+            hermes家目錄 = 提示詞組裝器(暫存設定).取得Hermes家目錄()
+            存放 = 記憶存放(hermes家目錄)
+            存放.載入()
+            return 存放.格式化給系統提示(目標)
+        except Exception:
+            _logger.warning(
+                "載入 %s 記憶 snapshot 失敗（hermes home=%s）",
+                目標,
+                hermes家目錄,
+                exc_info=True,
+            )
+            return ""
 
     def 建立技能摘要(self) -> str:
         """掃描本專案內建 Hermes skills 並建立 prompt 用摘要。

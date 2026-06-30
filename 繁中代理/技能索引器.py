@@ -286,7 +286,7 @@ def 建立技能摘要Manifest(技能根目錄: Path) -> dict[str, list[int]]:
         dict；key 是相對路徑，value 是 `[mtime_ns, size]`。用於判斷磁碟
         snapshot 是否仍符合目前的 `SKILL.md` 與 `DESCRIPTION.md`。
     """
-    manifest: dict[str, list[int]] = {}
+    清單指紋: dict[str, list[int]] = {}
     for 檔名 in ("SKILL.md", "DESCRIPTION.md"):
         for 路徑 in 走訪技能索引檔案(技能根目錄, 檔名):
             try:
@@ -294,22 +294,22 @@ def 建立技能摘要Manifest(技能根目錄: Path) -> dict[str, list[int]]:
                 相對路徑 = str(路徑.relative_to(技能根目錄))
             except OSError:
                 continue
-            manifest[相對路徑] = [檔案狀態.st_mtime_ns, 檔案狀態.st_size]
-    return manifest
+            清單指紋[相對路徑] = [檔案狀態.st_mtime_ns, 檔案狀態.st_size]
+    return 清單指紋
 
 
-def 建立技能摘要快取鍵(技能根目錄: Path, manifest: dict[str, list[int]], 快取條件: dict[str, Any]) -> tuple[str, str]:
+def 建立技能摘要快取鍵(技能根目錄: Path, 清單指紋: dict[str, list[int]], 快取條件: dict[str, Any]) -> tuple[str, str]:
     """建立記憶體快取使用的 key。
 
     參數：
         技能根目錄: skills 根目錄。
-        manifest: 技能索引檔案 manifest。
+        清單指紋: 技能索引檔案 manifest。
         快取條件: 影響技能顯示結果的條件，例如平台、停用清單、工具名稱。
 
     返回值：
         `(技能根目錄, 快取內容_json)` tuple。
     """
-    快取內容 = {"manifest": manifest, "conditions": 快取條件}
+    快取內容 = {"manifest": 清單指紋, "conditions": 快取條件}
     快取內容文字 = json.dumps(快取內容, ensure_ascii=False, sort_keys=True)
     return (str(技能根目錄.resolve()), 快取內容文字)
 
@@ -337,18 +337,18 @@ def 清除技能摘要記憶體快取() -> None:
         技能摘要記憶體快取.clear()
 
 
-def 讀取技能摘要快取(技能根目錄: Path, manifest: dict[str, list[int]], 快取條件: dict[str, Any]) -> str | None:
+def 讀取技能摘要快取(技能根目錄: Path, 清單指紋: dict[str, list[int]], 快取條件: dict[str, Any]) -> str | None:
     """讀取技能摘要快取。
 
     參數：
         技能根目錄: skills 根目錄。
-        manifest: 目前技能索引檔案 manifest。
+        清單指紋: 目前技能索引檔案 manifest。
         快取條件: 影響技能顯示結果的條件。
 
     返回值：
         快取命中時回傳技能摘要文字；記憶體與磁碟 snapshot 都失效時回傳 None。
     """
-    快取鍵 = 建立技能摘要快取鍵(技能根目錄, manifest, 快取條件)
+    快取鍵 = 建立技能摘要快取鍵(技能根目錄, 清單指紋, 快取條件)
     with 技能摘要快取鎖:
         記憶體摘要 = 技能摘要記憶體快取.get(快取鍵)
     if 記憶體摘要 is not None:
@@ -367,7 +367,7 @@ def 讀取技能摘要快取(技能根目錄: Path, manifest: dict[str, list[int
         return None
     if 快取資料.get("skills_root") != str(技能根目錄.resolve()):
         return None
-    if 快取資料.get("manifest") != manifest:
+    if 快取資料.get("manifest") != 清單指紋:
         return None
     if 快取資料.get("conditions") != 快取條件:
         return None
@@ -379,19 +379,19 @@ def 讀取技能摘要快取(技能根目錄: Path, manifest: dict[str, list[int
     return 技能摘要
 
 
-def 寫入技能摘要快取(技能根目錄: Path, manifest: dict[str, list[int]], 快取條件: dict[str, Any], 技能摘要: str) -> None:
+def 寫入技能摘要快取(技能根目錄: Path, 清單指紋: dict[str, list[int]], 快取條件: dict[str, Any], 技能摘要: str) -> None:
     """寫入技能摘要快取。
 
     參數：
         技能根目錄: skills 根目錄。
-        manifest: 建立技能摘要時使用的 manifest。
+        清單指紋: 建立技能摘要時使用的 manifest。
         快取條件: 建立技能摘要時使用的顯示條件。
         技能摘要: 已組裝完成的 `<available_skills>` 文字。
 
     返回值：
         None。會同步更新記憶體快取與磁碟 snapshot；磁碟寫入失敗時不影響主流程。
     """
-    快取鍵 = 建立技能摘要快取鍵(技能根目錄, manifest, 快取條件)
+    快取鍵 = 建立技能摘要快取鍵(技能根目錄, 清單指紋, 快取條件)
     with 技能摘要快取鎖:
         技能摘要記憶體快取[快取鍵] = 技能摘要
 
@@ -399,7 +399,7 @@ def 寫入技能摘要快取(技能根目錄: Path, manifest: dict[str, list[int
     快取資料 = {
         "version": 技能摘要快取版本,
         "skills_root": str(技能根目錄.resolve()),
-        "manifest": manifest,
+        "manifest": 清單指紋,
         "conditions": 快取條件,
         "summary": 技能摘要,
     }
@@ -425,7 +425,7 @@ def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str]) -> s
     """
     if not 技能根目錄.exists():
         return 技能強制載入指引 + "\n\n<available_skills>\n  (skills not copied yet)\n</available_skills>\n\n" + 技能無相關項目指引
-    manifest = 建立技能摘要Manifest(技能根目錄)
+    清單指紋 = 建立技能摘要Manifest(技能根目錄)
     工具集名稱集合 = 建立可用工具集名稱集合(工具名稱集合)
     停用技能名稱集合 = 讀取停用技能名稱集合()
     平台名稱 = 取得目前平台名稱()
@@ -435,7 +435,7 @@ def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str]) -> s
         "tools": sorted(工具名稱集合),
         "toolsets": sorted(工具集名稱集合),
     }
-    快取摘要 = 讀取技能摘要快取(技能根目錄, manifest, 快取條件)
+    快取摘要 = 讀取技能摘要快取(技能根目錄, 清單指紋, 快取條件)
     if 快取摘要 is not None:
         return 快取摘要
 
@@ -463,7 +463,7 @@ def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str]) -> s
     行清單.append("</available_skills>")
     行清單.extend(["", 技能無相關項目指引])
     技能摘要 = "\n".join(行清單)
-    寫入技能摘要快取(技能根目錄, manifest, 快取條件, 技能摘要)
+    寫入技能摘要快取(技能根目錄, 清單指紋, 快取條件, 技能摘要)
     return 技能摘要
 
 
