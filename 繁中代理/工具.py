@@ -339,6 +339,32 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     瀏覽結果["db_path"] = str(資料庫路徑文字)
     return 瀏覽結果
 
+def 記憶工具(參數: dict[str, Any]) -> dict[str, Any]:
+    """寫入或修改 Hermes-like 內建記憶。
+
+    參數：
+        參數: 包含 action、target、content、old_text。
+
+    返回值：
+        記憶存放操作結果 dict。
+    """
+    from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
+    from .記憶存放 import 記憶存放
+
+    hermes家目錄 = 提示詞組裝器(提示詞設定(工作目錄=os.getcwd())).取得Hermes家目錄()
+    存放 = 記憶存放(hermes家目錄)
+    存放.載入()
+    動作 = str(參數.get("action") or "")
+    目標 = str(參數.get("target") or "memory")
+    if 動作 == "add":
+        return 存放.新增(目標, str(參數.get("content") or ""))
+    if 動作 == "replace":
+        return 存放.取代(目標, str(參數.get("old_text") or ""), str(參數.get("content") or ""))
+    if 動作 == "remove":
+        return 存放.移除(目標, str(參數.get("old_text") or ""))
+    return {"success": False, "error": f"不支援的 memory action：{動作}"}
+
+
 def 建立預設工具登錄器() -> 工具登錄器:
     """建立含 Hermes core schema 的工具登錄器。
 
@@ -357,6 +383,7 @@ def 建立預設工具登錄器() -> 工具登錄器:
         "skills_list": 列出技能,
         "skill_view": 讀取技能,
         "session_search": 搜尋工作階段工具,
+        "memory": 記憶工具,
     }
     結構路徑 = Path(__file__).resolve().parents[1] / "assets" / "hermes_core_tool_schemas.json"
     if 結構路徑.exists():
