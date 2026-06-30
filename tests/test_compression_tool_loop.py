@@ -1,7 +1,10 @@
 """測試 context compression 與 tool-call loop。"""
 
 import json
+from pathlib import Path
 from typing import Any
+
+專案根目錄 = Path(__file__).resolve().parents[1]
 
 from 繁中代理.上下文壓縮器 import 上下文壓縮器, 粗估訊息Token數, 是否摘要訊息
 from 繁中代理.工作階段庫 import 工作階段庫
@@ -403,6 +406,23 @@ def test_auxiliary_llm_summary_used_when_injected():
     assert "Previous summary retained" not in 摘要文字
 
 
+class 動態README假模型供應商:
+    """以目前 checkout 的 README 路徑觸發 read_file 的測試 provider。"""
+
+    def 產生回應(self, 訊息清單, 工具清單):
+        """第一次要求 read_file；收到 tool result 後回傳最終回答。"""
+        if 訊息清單 and 訊息清單[-1].get("role") == "tool":
+            return 模型回應(文字=f"已完成工具 roundtrip；工具結果摘要：{str(訊息清單[-1].get('content', ''))[:200]}")
+        return 模型回應(
+            工具呼叫清單=[{
+                "id": "call_readme",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"path": str(專案根目錄 / "README.md"), "limit": 20}, ensure_ascii=False)},
+            }],
+            完成原因="tool_calls",
+        )
+
+
 def test_tool_call_loop_roundtrip(tmp_path):
     """確認 fake model 會觸發真實 read_file 工具並回到模型產生最終回答。
 
@@ -415,10 +435,10 @@ def test_tool_call_loop_roundtrip(tmp_path):
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
     runtime = 代理執行階段(
         庫,
-        假模型供應商(),
+        動態README假模型供應商(),
         模型名稱="fake",
         供應商名稱="fake",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         啟用壓縮摘要=False,
     )
     結果 = runtime.執行使用者訊息("請讀取 README 並回答", 工作階段識別碼="tool-loop")
@@ -493,7 +513,7 @@ def test_runtime_wires_auxiliary_compression_summary(tmp_path):
         供應商,
         模型名稱="fake",
         供應商名稱="fake",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         上下文長度=10000,
         模型模式="fake",
         啟用壓縮摘要=True,
@@ -539,7 +559,7 @@ def test_runtime_provider_usage_creates_compression_split(tmp_path):
         使用量假模型供應商(),
         模型名稱="fake",
         供應商名稱="fake",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         上下文長度=10000,
         啟用壓縮摘要=False,
     )

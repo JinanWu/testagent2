@@ -24,6 +24,24 @@ from pathlib import Path
 from typing import Any, Callable
 
 
+def 解析工具路徑(路徑值: Any, 工作目錄: str | Path | None = None, 預設: str = ".") -> Path:
+    """把工具收到的路徑解析成絕對路徑；相對路徑以 runtime 工作目錄為基準。
+
+    參數：
+        路徑值: 工具參數中的 path/workdir。
+        工作目錄: AgentRuntime 注入的工作目錄；None 時退回目前 process cwd。
+        預設: 路徑值空白時使用的預設路徑。
+
+    返回值：Path。絕對路徑會原樣展開；相對路徑會接在工作目錄後。
+    """
+    原始 = str(路徑值 or 預設)
+    路徑 = Path(原始).expanduser()
+    if 路徑.is_absolute():
+        return 路徑
+    基準 = Path(工作目錄 or os.getcwd()).expanduser()
+    return (基準 / 路徑).resolve()
+
+
 @dataclass(frozen=True)
 class 工具定義:
     """描述一個可供 LLM 呼叫的工具。
@@ -72,12 +90,15 @@ class 工具登錄器:
         可登錄與呼叫工具的物件。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, 工作目錄: str | Path | None = None) -> None:
         """初始化空工具表。
 
-        參數：無。
+        參數：
+            工作目錄: Runtime 工作目錄；本機檔案與 terminal 工具的相對路徑會以此為基準。
+
         返回值：None。
         """
+        self.工作目錄 = str(Path(工作目錄 or os.getcwd()).expanduser().resolve())
         self.工具表: dict[str, 工具定義] = {}
 
     def 登錄工具(self, 工具: 工具定義) -> None:
@@ -113,7 +134,9 @@ class 工具登錄器:
         if not 工具:
             return json.dumps({"success": False, "error": f"未知工具：{名稱}"}, ensure_ascii=False)
         try:
-            結果 = 工具.處理函數(參數)
+            工具參數 = dict(參數)
+            工具參數.setdefault("_runtime_workdir", self.工作目錄)
+            結果 = 工具.處理函數(工具參數)
             return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
         except Exception as 錯誤:
             return json.dumps({"success": False, "error": str(錯誤)}, ensure_ascii=False)
@@ -128,7 +151,7 @@ def 寫入檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         包含 path 與 bytes_written 的 dict。
     """
-    路徑 = Path(str(參數.get("path", ""))).expanduser()
+    路徑 = 解析工具路徑(參數.get("path", ""), 參數.get("_runtime_workdir"))
     內容 = str(參數.get("content", ""))
     路徑.parent.mkdir(parents=True, exist_ok=True)
     路徑.write_text(內容, encoding="utf-8")
@@ -144,7 +167,7 @@ def 套用文字修補(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         包含 path 與 replacements 的 dict。
     """
-    路徑 = Path(str(參數.get("path", ""))).expanduser()
+    路徑 = 解析工具路徑(參數.get("path", ""), 參數.get("_runtime_workdir"))
     舊文字 = str(參數.get("old_string", ""))
     新文字 = str(參數.get("new_string", ""))
     是否全部替換 = bool(參數.get("replace_all", False))
@@ -199,7 +222,7 @@ def 讀取檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         包含 path、content、total_lines 的 dict。
     """
-    路徑 = Path(str(參數.get("path", ""))).expanduser()
+    路徑 = 解析工具路徑(參數.get("path", ""), 參數.get("_runtime_workdir"))
     起始行 = int(參數.get("offset", 1) or 1)
     最大行數 = int(參數.get("limit", 200) or 200)
     文字 = 路徑.read_text(encoding="utf-8", errors="replace")
@@ -217,7 +240,7 @@ def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         dict；files 模式回傳檔案路徑，content 模式回傳匹配行。
     """
-    根目錄 = Path(str(參數.get("path", "."))).expanduser()
+    根目錄 = 解析工具路徑(參數.get("path", "."), 參數.get("_runtime_workdir"), 預設=".")
     樣式 = str(參數.get("pattern", "*"))
     目標 = str(參數.get("target", "content"))
     限制 = int(參數.get("limit", 50) or 50)
@@ -254,7 +277,7 @@ def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
         包含 output、exit_code 的 dict。
     """
     指令 = str(參數.get("command", ""))
-    工作目錄 = str(參數.get("workdir") or os.getcwd())
+    工作目錄 = str(解析工具路徑(參數.get("workdir") or ".", 參數.get("_runtime_workdir"), 預設="."))
     逾時秒數 = int(參數.get("timeout", 60) or 60)
     完成程序 = subprocess.run(
         指令,
@@ -339,15 +362,17 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     瀏覽結果["db_path"] = str(資料庫路徑文字)
     return 瀏覽結果
 
-def 建立預設工具登錄器() -> 工具登錄器:
+def 建立預設工具登錄器(工作目錄: str | Path | None = None) -> 工具登錄器:
     """建立含 Hermes core schema 的工具登錄器。
 
-    參數：無。
+    參數：
+        工作目錄: Runtime 工作目錄；工具相對路徑會以此為基準。
+
     返回值：工具登錄器；會載入 `assets/hermes_core_tool_schemas.json` 中從 Hermes
         擷取的 48 個 core tool schema。MVP 已實作本機檔案、終端與技能讀取工具；
         其他需外部服務的工具會用明確未啟用 handler 回報。
     """
-    登錄器 = 工具登錄器()
+    登錄器 = 工具登錄器(工作目錄)
     已實作處理器: dict[str, Callable[[dict[str, Any]], Any]] = {
         "read_file": 讀取檔案內容,
         "write_file": 寫入檔案內容,

@@ -1248,6 +1248,114 @@ class 工作階段庫:
         工作階段清單 = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
         return {"sessions": 工作階段清單, "total_count": len(工作階段清單)}
 
+    def 重新命名工作階段(self, 工作階段識別碼: str, 標題: str) -> None:
+        """更新 session title。
+
+        參數：
+            工作階段識別碼: 要重新命名的 session id。
+            標題: 新 title，會去除前後空白。
+
+        返回值：None。找不到 session 或標題為空時會丟出 ValueError。
+        """
+        新標題 = 標題.strip()
+        if not 新標題:
+            raise ValueError("title 不可為空")
+        def 寫入(conn: sqlite3.Connection) -> None:
+            """在交易中更新 title。
+
+            參數：
+                conn: 目前交易中的 SQLite connection。
+
+            返回值：None。
+            """
+            result = conn.execute("UPDATE sessions SET title=?, updated_at=? WHERE id=?", (新標題, time.time(), 工作階段識別碼))
+            if result.rowcount == 0:
+                raise ValueError(f"session not found: {工作階段識別碼}")
+        self._執行寫入(寫入)
+
+    def 統計工作階段(self, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> dict[str, Any]:
+        """統計 session store 的主要計數與 usage。
+
+        參數：
+            include_archived: 是否包含封存 sessions。
+            source: 可選來源平台篩選。
+            user_id: 可選使用者識別碼篩選。
+
+        返回值：dict[str, Any]。包含 session/message/tool/API/token/cost 統計。
+        """
+        條件 = [] if include_archived else ["archived=0"]
+        參數: list[Any] = []
+        if source:
+            條件.append("source=?")
+            參數.append(source)
+        if user_id:
+            條件.append("user_id=?")
+            參數.append(user_id)
+        where = " WHERE " + " AND ".join(條件) if 條件 else ""
+        with self._鎖:
+            session_stats = self.連線.execute(
+                f"""
+                SELECT COUNT(*) AS session_count,
+                       SUM(CASE WHEN archived=1 THEN 1 ELSE 0 END) AS archived_count,
+                       SUM(message_count) AS message_count,
+                       SUM(tool_call_count) AS tool_call_count,
+                       SUM(api_call_count) AS api_call_count,
+                       SUM(input_tokens) AS input_tokens,
+                       SUM(output_tokens) AS output_tokens,
+                       SUM(reasoning_tokens) AS reasoning_tokens,
+                       SUM(estimated_cost_usd) AS estimated_cost_usd
+                FROM sessions{where}
+                """,
+                tuple(參數),
+            ).fetchone()
+            active_messages = self.連線.execute(
+                "SELECT COUNT(*) AS count FROM messages WHERE active=1"
+            ).fetchone()["count"]
+            inactive_messages = self.連線.execute(
+                "SELECT COUNT(*) AS count FROM messages WHERE active=0"
+            ).fetchone()["count"]
+            db_size = self.資料庫路徑.stat().st_size if self.資料庫路徑.exists() else 0
+        統計 = dict(session_stats) if session_stats else {}
+        return {
+            "session_count": int(統計.get("session_count") or 0),
+            "archived_count": int(統計.get("archived_count") or 0),
+            "message_count": int(統計.get("message_count") or 0),
+            "active_message_rows": int(active_messages or 0),
+            "inactive_message_rows": int(inactive_messages or 0),
+            "tool_call_count": int(統計.get("tool_call_count") or 0),
+            "api_call_count": int(統計.get("api_call_count") or 0),
+            "input_tokens": int(統計.get("input_tokens") or 0),
+            "output_tokens": int(統計.get("output_tokens") or 0),
+            "reasoning_tokens": int(統計.get("reasoning_tokens") or 0),
+            "estimated_cost_usd": float(統計.get("estimated_cost_usd") or 0.0),
+            "db_path": str(self.資料庫路徑),
+            "db_size_bytes": int(db_size),
+        }
+
+    def 匯出工作階段JSONL(self, 輸出路徑: str | Path, limit: int = 1000, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> dict[str, Any]:
+        """把 logical sessions 匯出成 JSONL 檔案。
+
+        參數：
+            輸出路徑: JSONL 輸出檔案。
+            limit: 最多匯出幾個 logical sessions。
+            include_archived: 是否包含封存 sessions。
+            source: 可選來源平台篩選。
+            user_id: 可選使用者識別碼篩選。
+
+        返回值：dict[str, Any]。包含 output、session_count 與 message_count。
+        """
+        sessions = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
+        路徑 = Path(輸出路徑).expanduser()
+        路徑.parent.mkdir(parents=True, exist_ok=True)
+        訊息總數 = 0
+        with 路徑.open("w", encoding="utf-8") as handle:
+            for session in sessions:
+                sid = str(session["id"])
+                messages = self.讀取訊息(sid, include_ancestors=True)
+                訊息總數 += len(messages)
+                handle.write(json.dumps({"session": session, "messages": messages}, ensure_ascii=False) + "\n")
+        return {"output": str(路徑), "session_count": len(sessions), "message_count": 訊息總數}
+
     def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int) -> dict[str, Any]:
         """把指定訊息及之後的訊息標記為 inactive，保留 audit 紀錄。
 
