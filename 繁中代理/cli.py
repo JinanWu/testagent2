@@ -51,6 +51,11 @@ def 建立Sessions參數解析器() -> argparse.ArgumentParser:
     browse解析器.add_argument("--limit", type=int, default=10, help="最多列出幾筆")
     browse解析器.add_argument("--json", action="store_true", help="輸出 JSON")
 
+    search解析器 = sessions子命令.add_parser("search", help="搜尋 session history")
+    search解析器.add_argument("query", help="搜尋關鍵字")
+    search解析器.add_argument("--limit", type=int, default=5, help="最多列出幾筆")
+    search解析器.add_argument("--json", action="store_true", help="輸出 JSON")
+
     rename解析器 = sessions子命令.add_parser("rename", help="重新命名 session title")
     rename解析器.add_argument("session_id", help="session id")
     rename解析器.add_argument("title", help="新的 session title")
@@ -287,6 +292,17 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
             印出JSON({"sessions": sessions, "total_count": len(sessions)})
         else:
             印出工作階段表格(sessions, 工作階段庫物件, 顯示預覽=True)
+        return
+    if 參數.sessions_command == "search":
+        結果 = 工作階段庫物件.搜尋工作階段(參數.query, limit=參數.limit, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
+        if 參數.json:
+            印出JSON({"matches": 結果, "total_count": len(結果)})
+        else:
+            if not 結果:
+                print("沒有符合的 session。")
+            for i, match in enumerate(結果, start=1):
+                print(f"{i:>2}. {match.get('session_id')}  {match.get('title') or ''}")
+                print(f"    {取訊息摘要({'content': match.get('snippet') or ''}, 120)}")
         return
     if 參數.sessions_command == "rename":
         工作階段庫物件.重新命名工作階段(參數.session_id, 參數.title)
