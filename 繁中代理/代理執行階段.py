@@ -248,10 +248,10 @@ class 代理執行階段:
 
         返回值：dict[str, Any]。工作階段庫回傳的 rewind 結果，並包含 active session id。
         """
-        active_id = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
-        設定目前工作階段識別碼(active_id)
-        結果 = self.工作階段庫物件.rewind到訊息(active_id, 目標訊息id)
-        結果["session_id"] = active_id
+        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+        設定目前工作階段識別碼(作用中工作階段識別碼)
+        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id)
+        結果["session_id"] = 作用中工作階段識別碼
         return 結果
 
     def 建立Request訊息(self, 系統提示詞: str, 訊息清單: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -301,10 +301,10 @@ class 代理執行階段:
             鎖Context = nullcontext(True)
         with 鎖Context as 是否取得鎖:
             if not 是否取得鎖:
-                holder = self.工作階段庫物件.讀取壓縮鎖Holder(工作階段識別碼)
+                鎖定持有者 = self.工作階段庫物件.讀取壓縮鎖Holder(工作階段識別碼)
                 if 工作階段識別碼 not in self.壓縮讓路警告集合:
                     self.壓縮讓路警告集合.add(工作階段識別碼)
-                    print(f"⚠ 跳過並發壓縮：session {工作階段識別碼} 正由 {holder or 'unknown'} 壓縮，稍後會再試。")
+                    print(f"⚠ 跳過並發壓縮：session {工作階段識別碼} 正由 {鎖定持有者 or 'unknown'} 壓縮，稍後會再試。")
                 return 工作階段識別碼, 訊息清單, False
             self.工作階段庫物件.寫入訊息清單(工作階段識別碼, 訊息清單)
             if self.記憶管理器 and hasattr(self.記憶管理器, "on_pre_compress"):

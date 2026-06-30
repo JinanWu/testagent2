@@ -318,26 +318,26 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     限制 = int(參數.get("limit", 3) or 3)
     視窗 = int(參數.get("window", 5) or 5)
     預設DB = 讀取目前工作階段資料庫路徑() or os.getenv("TESTAGENT2_SESSION_DB") or str(Path.home() / ".testagent2" / "sessions.sqlite3")
-    db_path = Path(str(參數.get("db_path") or 預設DB)).expanduser()
-    if not db_path.exists():
-        return {"matches": [], "total_count": 0, "db_path": str(db_path), "error": "session database 不存在"}
-    庫 = 工作階段庫(db_path)
-    session_id = str(參數.get("session_id") or "").strip()
-    around_message_id = 參數.get("around_message_id")
+    資料庫路徑文字 = Path(str(參數.get("db_path") or 預設DB)).expanduser()
+    if not 資料庫路徑文字.exists():
+        return {"matches": [], "total_count": 0, "db_path": str(資料庫路徑文字), "error": "session database 不存在"}
+    庫 = 工作階段庫(資料庫路徑文字)
+    工作階段識別碼 = str(參數.get("session_id") or "").strip()
+    錨點訊息識別碼 = 參數.get("around_message_id")
     查詢 = str(參數.get("query") or 參數.get("q") or "").strip()
-    include_archived = bool(參數.get("include_archived", False))
-    source = 參數.get("source")
-    user_id = 參數.get("user_id")
-    if session_id and around_message_id is not None:
-        return 庫.捲動工作階段訊息(session_id, int(around_message_id), window=視窗) | {"db_path": str(db_path)}
-    if session_id:
-        return 庫.讀取工作階段全文(session_id) | {"db_path": str(db_path)}
+    包含封存 = bool(參數.get("include_archived", False))
+    來源 = 參數.get("source")
+    使用者識別碼 = 參數.get("user_id")
+    if 工作階段識別碼 and 錨點訊息識別碼 is not None:
+        return 庫.捲動工作階段訊息(工作階段識別碼, int(錨點訊息識別碼), window=視窗) | {"db_path": str(資料庫路徑文字)}
+    if 工作階段識別碼:
+        return 庫.讀取工作階段全文(工作階段識別碼) | {"db_path": str(資料庫路徑文字)}
     if 查詢:
-        matches = 庫.搜尋工作階段(查詢, limit=限制, window=視窗, include_archived=include_archived, source=source, user_id=user_id)
-        return {"matches": matches, "total_count": len(matches), "db_path": str(db_path)}
-    browse = 庫.瀏覽近期工作階段(limit=限制, include_archived=include_archived, source=source, user_id=user_id)
-    browse["db_path"] = str(db_path)
-    return browse
+        符合清單 = 庫.搜尋工作階段(查詢, limit=限制, window=視窗, include_archived=包含封存, source=來源, user_id=使用者識別碼)
+        return {"matches": 符合清單, "total_count": len(符合清單), "db_path": str(資料庫路徑文字)}
+    瀏覽結果 = 庫.瀏覽近期工作階段(limit=限制, include_archived=包含封存, source=來源, user_id=使用者識別碼)
+    瀏覽結果["db_path"] = str(資料庫路徑文字)
+    return 瀏覽結果
 
 def 建立預設工具登錄器() -> 工具登錄器:
     """建立含 Hermes core schema 的工具登錄器。

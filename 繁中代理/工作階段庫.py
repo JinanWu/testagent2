@@ -120,15 +120,15 @@ class 工作階段庫:
         參數：無。
         返回值：None。此方法可重複執行，會補齊舊欄位並更新 schema_version。
         """
-        def 寫入(conn: sqlite3.Connection) -> None:
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中建立/補齊 session store schema。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            conn.executescript(
+            資料庫連線.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_version (
                     version INTEGER NOT NULL
@@ -214,8 +214,8 @@ class 工作階段庫:
                     ON compression_locks(expires_at);
                 """
             )
-            self.補齊欄位(conn)
-            conn.executescript(
+            self.補齊欄位(資料庫連線)
+            資料庫連線.executescript(
                 """
                 CREATE INDEX IF NOT EXISTS idx_messages_session_active
                     ON messages(session_id, active, id);
@@ -227,19 +227,19 @@ class 工作階段庫:
                     ON sessions(started_at DESC);
                 """
             )
-            self.建立FTS(conn)
-            版本 = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            self.建立FTS(資料庫連線)
+            版本 = 資料庫連線.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
             if 版本 is None:
-                conn.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
+                資料庫連線.execute("INSERT INTO schema_version(version) VALUES (?)", (SCHEMA_VERSION,))
             else:
-                conn.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
+                資料庫連線.execute("UPDATE schema_version SET version=?", (SCHEMA_VERSION,))
         self._執行寫入(寫入)
 
-    def 補齊欄位(self, conn: sqlite3.Connection) -> None:
+    def 補齊欄位(self, 資料庫連線: sqlite3.Connection) -> None:
         """對既有 SQLite 檔補齊新欄位。
 
         參數：
-            conn: 目前交易中的 SQLite connection。
+            資料庫連線: 目前交易中的 SQLite connection。
 
         返回值：None。此方法只會 ADD 缺少欄位，不會刪除既有資料。
         """
@@ -311,36 +311,36 @@ class 工作階段庫:
             },
         }
         for 表名, 定義表 in 欄位定義.items():
-            現有 = {列["name"] for 列 in conn.execute(f"PRAGMA table_info({表名})").fetchall()}
+            現有 = {列["name"] for 列 in 資料庫連線.execute(f"PRAGMA table_info({表名})").fetchall()}
             for 名稱, 定義 in 定義表.items():
                 if 名稱 not in 現有:
                     try:
-                        conn.execute(f"ALTER TABLE {表名} ADD COLUMN {名稱} {定義}")
+                        資料庫連線.execute(f"ALTER TABLE {表名} ADD COLUMN {名稱} {定義}")
                     except sqlite3.OperationalError as 錯誤:
                         if "duplicate column" not in str(錯誤).lower():
                             raise
         現在 = time.time()
-        conn.execute("UPDATE sessions SET started_at=COALESCE(started_at, created_at, ?), created_at=COALESCE(created_at, started_at, ?), updated_at=COALESCE(updated_at, created_at, ?)", (現在, 現在, 現在))
-        conn.execute("UPDATE messages SET timestamp=COALESCE(timestamp, created_at, ?), created_at=COALESCE(created_at, timestamp, ?), content=COALESCE(content, json_extract(content_json, '$.content'))", (現在, 現在))
-        messages_count = conn.execute("SELECT COUNT(*) AS count FROM messages").fetchone()["count"]
-        marker = conn.execute("SELECT value FROM state_meta WHERE key='fts_rebuilt_schema_version'").fetchone()
-        if messages_count and (marker is None or marker["value"] != str(SCHEMA_VERSION)):
-            conn.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_needs_rebuild', 'true')")
+        資料庫連線.execute("UPDATE sessions SET started_at=COALESCE(started_at, created_at, ?), created_at=COALESCE(created_at, started_at, ?), updated_at=COALESCE(updated_at, created_at, ?)", (現在, 現在, 現在))
+        資料庫連線.execute("UPDATE messages SET timestamp=COALESCE(timestamp, created_at, ?), created_at=COALESCE(created_at, timestamp, ?), content=COALESCE(content, json_extract(content_json, '$.content'))", (現在, 現在))
+        訊息數量 = 資料庫連線.execute("SELECT COUNT(*) AS count FROM messages").fetchone()["count"]
+        標記 = 資料庫連線.execute("SELECT value FROM state_meta WHERE key='fts_rebuilt_schema_version'").fetchone()
+        if 訊息數量 and (標記 is None or 標記["value"] != str(SCHEMA_VERSION)):
+            資料庫連線.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_needs_rebuild', 'true')")
         # 舊 schema 使用 owner；新 schema 使用 holder，保留 owner 只為 migration 相容。
-        鎖欄位 = {列["name"] for 列 in conn.execute("PRAGMA table_info(compression_locks)").fetchall()}
+        鎖欄位 = {列["name"] for 列 in 資料庫連線.execute("PRAGMA table_info(compression_locks)").fetchall()}
         if "owner" in 鎖欄位 and "holder" in 鎖欄位:
-            conn.execute("UPDATE compression_locks SET holder=COALESCE(holder, owner, 'unknown')")
+            資料庫連線.execute("UPDATE compression_locks SET holder=COALESCE(holder, owner, 'unknown')")
 
-    def 建立FTS(self, conn: sqlite3.Connection) -> None:
+    def 建立FTS(self, 資料庫連線: sqlite3.Connection) -> None:
         """建立一般 FTS5 與 trigram FTS5 索引及同步 triggers。
 
         參數：
-            conn: 目前交易中的 SQLite connection。
+            資料庫連線: 目前交易中的 SQLite connection。
 
         返回值：None。若 SQLite 不支援 trigram tokenizer，會保留一般 FTS，不中斷
         session store 初始化。
         """
-        conn.executescript(
+        資料庫連線.executescript(
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(content);
             CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
@@ -362,7 +362,7 @@ class 工作階段庫:
             """
         )
         try:
-            conn.executescript(
+            資料庫連線.executescript(
                 """
                 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(content, tokenize='trigram');
                 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
@@ -384,30 +384,30 @@ class 工作階段庫:
                 """
             )
         except sqlite3.OperationalError:
-            conn.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_trigram_available', 'false')")
-        marker = conn.execute("SELECT value FROM state_meta WHERE key='fts_needs_rebuild'").fetchone()
-        if marker and marker["value"] == "true":
-            self.重建FTS(conn)
-        elif not conn.execute("SELECT value FROM state_meta WHERE key='fts_rebuilt_schema_version'").fetchone():
-            conn.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_rebuilt_schema_version', ?)", (str(SCHEMA_VERSION),))
+            資料庫連線.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_trigram_available', 'false')")
+        標記 = 資料庫連線.execute("SELECT value FROM state_meta WHERE key='fts_needs_rebuild'").fetchone()
+        if 標記 and 標記["value"] == "true":
+            self.重建FTS(資料庫連線)
+        elif not 資料庫連線.execute("SELECT value FROM state_meta WHERE key='fts_rebuilt_schema_version'").fetchone():
+            資料庫連線.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_rebuilt_schema_version', ?)", (str(SCHEMA_VERSION),))
 
-    def 重建FTS(self, conn: sqlite3.Connection) -> None:
+    def 重建FTS(self, 資料庫連線: sqlite3.Connection) -> None:
         """從 canonical messages 重建 FTS 索引。
 
         參數：
-            conn: 目前交易中的 SQLite connection。
+            資料庫連線: 目前交易中的 SQLite connection。
 
         返回值：None。此方法只重建衍生搜尋索引，不會修改 messages 原始資料。
         """
-        conn.execute("DELETE FROM messages_fts")
-        conn.execute("INSERT INTO messages_fts(rowid, content) SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '') FROM messages")
+        資料庫連線.execute("DELETE FROM messages_fts")
+        資料庫連線.execute("INSERT INTO messages_fts(rowid, content) SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '') FROM messages")
         try:
-            conn.execute("DELETE FROM messages_fts_trigram")
-            conn.execute("INSERT INTO messages_fts_trigram(rowid, content) SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '') FROM messages")
+            資料庫連線.execute("DELETE FROM messages_fts_trigram")
+            資料庫連線.execute("INSERT INTO messages_fts_trigram(rowid, content) SELECT id, COALESCE(content, '') || ' ' || COALESCE(tool_name, '') || ' ' || COALESCE(tool_calls, '') FROM messages")
         except sqlite3.OperationalError:
             pass
-        conn.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_rebuilt_schema_version', ?)", (str(SCHEMA_VERSION),))
-        conn.execute("DELETE FROM state_meta WHERE key='fts_needs_rebuild'")
+        資料庫連線.execute("INSERT OR REPLACE INTO state_meta(key, value) VALUES ('fts_rebuilt_schema_version', ?)", (str(SCHEMA_VERSION),))
+        資料庫連線.execute("DELETE FROM state_meta WHERE key='fts_needs_rebuild'")
 
     def 建立或讀取工作階段(
         self,
@@ -435,15 +435,15 @@ class 工作階段庫:
         """
         目前時間 = time.time()
         識別碼 = 工作階段識別碼 or f"session-{uuid.uuid4().hex[:12]}"
-        def 寫入(conn: sqlite3.Connection) -> None:
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中建立缺少的 session row。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            conn.execute(
+            資料庫連線.execute(
                 """
                 INSERT OR IGNORE INTO sessions(
                     id, source, user_id, title, parent_session_id, model, model_config, cwd,
@@ -452,7 +452,7 @@ class 工作階段庫:
                 """,
                 (識別碼, source, user_id, 識別碼, parent_session_id, model, json.dumps(model_config, ensure_ascii=False) if model_config else None, cwd, 目前時間, 目前時間, 目前時間),
             )
-            conn.execute(
+            資料庫連線.execute(
                 """
                 UPDATE sessions
                 SET source=COALESCE(?, source), user_id=COALESCE(?, user_id),
@@ -479,19 +479,19 @@ class 工作階段庫:
         舊工作階段 = self.讀取工作階段(舊工作階段識別碼) or {}
         新識別碼 = f"session-{uuid.uuid4().hex[:12]}"
         目前時間 = time.time()
-        def 寫入(conn: sqlite3.Connection) -> None:
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中結束 parent 並建立 compression child。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            conn.execute(
+            資料庫連線.execute(
                 "UPDATE sessions SET end_reason='compression', ended_at=COALESCE(ended_at, ?), updated_at=? WHERE id=?",
                 (目前時間, 目前時間, 舊工作階段識別碼),
             )
-            conn.execute(
+            資料庫連線.execute(
                 """
                 INSERT INTO sessions(
                     id, source, user_id, title, system_prompt, parent_session_id, compressed_from_session_id,
@@ -532,7 +532,7 @@ class 工作階段庫:
                     目前時間,
                 ),
             )
-            self._附加訊息清單(conn, 新識別碼, 壓縮訊息清單, 起始索引=0)
+            self._附加訊息清單(資料庫連線, 新識別碼, 壓縮訊息清單, 起始索引=0)
         self._執行寫入(寫入)
         return 新識別碼
 
@@ -558,7 +558,7 @@ class 工作階段庫:
 
         返回值：None。
         """
-        self._執行寫入(lambda conn: conn.execute("UPDATE sessions SET system_prompt=?, updated_at=? WHERE id=?", (系統提示詞, time.time(), 工作階段識別碼)))
+        self._執行寫入(lambda 資料庫連線: 資料庫連線.execute("UPDATE sessions SET system_prompt=?, updated_at=? WHERE id=?", (系統提示詞, time.time(), 工作階段識別碼)))
 
     def 更新提示Token數(self, 工作階段識別碼: str, token數: int) -> None:
         """保存 provider prompt token usage，方便觀測壓縮判斷。
@@ -569,7 +569,7 @@ class 工作階段庫:
 
         返回值：None。
         """
-        self._執行寫入(lambda conn: conn.execute("UPDATE sessions SET prompt_tokens=?, updated_at=? WHERE id=?", (token數, time.time(), 工作階段識別碼)))
+        self._執行寫入(lambda 資料庫連線: 資料庫連線.execute("UPDATE sessions SET prompt_tokens=?, updated_at=? WHERE id=?", (token數, time.time(), 工作階段識別碼)))
 
     def 更新模型使用量(self, 工作階段識別碼: str, 使用量: dict[str, Any] | None, api呼叫增量: int = 1, billing_provider: str | None = None) -> None:
         """累計 provider usage、API 呼叫次數與本地預估成本。
@@ -583,25 +583,25 @@ class 工作階段庫:
         返回值：None。
         """
         使用量 = 使用量 or {}
-        input_tokens = int(使用量.get("input_tokens") or 使用量.get("prompt_tokens") or 使用量.get("prompt_token_count") or 0)
-        output_tokens = int(使用量.get("output_tokens") or 使用量.get("completion_tokens") or 使用量.get("candidates_token_count") or 0)
-        cache_read_tokens = int(使用量.get("cache_read_tokens") or 使用量.get("cached_content_token_count") or 0)
-        cache_write_tokens = int(使用量.get("cache_write_tokens") or 0)
-        reasoning_tokens = int(使用量.get("reasoning_tokens") or 使用量.get("thoughts_token_count") or 0)
-        def 寫入(conn: sqlite3.Connection) -> None:
+        輸入Token數 = int(使用量.get("input_tokens") or 使用量.get("prompt_tokens") or 使用量.get("prompt_token_count") or 0)
+        輸出Token數 = int(使用量.get("output_tokens") or 使用量.get("completion_tokens") or 使用量.get("candidates_token_count") or 0)
+        快取讀取Token數 = int(使用量.get("cache_read_tokens") or 使用量.get("cached_content_token_count") or 0)
+        快取寫入Token數 = int(使用量.get("cache_write_tokens") or 0)
+        推理Token數 = int(使用量.get("reasoning_tokens") or 使用量.get("thoughts_token_count") or 0)
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中累計 usage counters 與估算成本。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            session = conn.execute("SELECT model, billing_provider, estimated_cost_usd FROM sessions WHERE id=?", (工作階段識別碼,)).fetchone()
-            model = session["model"] if session else None
-            provider = billing_provider or (session["billing_provider"] if session else None) or "unknown"
-            pricing = 每百萬Token價格表.get((provider, model or "")) or 每百萬Token價格表.get(("gemini-adc", model or "")) or 預設每百萬Token價格
-            增量成本 = (input_tokens * float(pricing["input"]) + output_tokens * float(pricing["output"])) / 1_000_000
-            conn.execute(
+            工作階段 = 資料庫連線.execute("SELECT model, billing_provider, estimated_cost_usd FROM sessions WHERE id=?", (工作階段識別碼,)).fetchone()
+            模型名稱文字 = 工作階段["model"] if 工作階段 else None
+            供應商 = billing_provider or (工作階段["billing_provider"] if 工作階段 else None) or "unknown"
+            計價 = 每百萬Token價格表.get((供應商, 模型名稱文字 or "")) or 每百萬Token價格表.get(("gemini-adc", 模型名稱文字 or "")) or 預設每百萬Token價格
+            增量成本 = (輸入Token數 * float(計價["input"]) + 輸出Token數 * float(計價["output"])) / 1_000_000
+            資料庫連線.execute(
                 """
                 UPDATE sessions
                 SET input_tokens=input_tokens+?, output_tokens=output_tokens+?,
@@ -614,7 +614,7 @@ class 工作階段庫:
                     updated_at=?
                 WHERE id=?
                 """,
-                (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, api呼叫增量, input_tokens, input_tokens, provider, 增量成本, str(pricing["version"]), time.time(), 工作階段識別碼),
+                (輸入Token數, 輸出Token數, 快取讀取Token數, 快取寫入Token數, 推理Token數, api呼叫增量, 輸入Token數, 輸入Token數, 供應商, 增量成本, str(計價["version"]), time.time(), 工作階段識別碼),
             )
         self._執行寫入(寫入)
 
@@ -627,18 +627,18 @@ class 工作階段庫:
 
         返回值：int。新增 message row id。
         """
-        def 寫入(conn: sqlite3.Connection) -> int:
+        def 寫入(資料庫連線: sqlite3.Connection) -> int:
             """在交易中 append 單一 message。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：int。新增 row id。
             """
-            row = conn.execute("SELECT COALESCE(MAX(message_index), -1) AS max_idx FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
-            起始索引 = int(row["max_idx"] if row and row["max_idx"] is not None else -1) + 1
-            self._附加訊息清單(conn, 工作階段識別碼, [訊息], 起始索引=起始索引)
-            return int(conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            資料列 = 資料庫連線.execute("SELECT COALESCE(MAX(message_index), -1) AS max_idx FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
+            起始索引 = int(資料列["max_idx"] if 資料列 and 資料列["max_idx"] is not None else -1) + 1
+            self._附加訊息清單(資料庫連線, 工作階段識別碼, [訊息], 起始索引=起始索引)
+            return int(資料庫連線.execute("SELECT last_insert_rowid()").fetchone()[0])
         return int(self._執行寫入(寫入))
 
     def 替換訊息清單(self, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]]) -> None:
@@ -650,17 +650,17 @@ class 工作階段庫:
 
         返回值：None。舊 rows 會保留為 active=0，供 audit/debug。
         """
-        def 寫入(conn: sqlite3.Connection) -> None:
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中停用舊 rows 並重建 active transcript。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            conn.execute("UPDATE messages SET active=0 WHERE session_id=? AND active=1", (工作階段識別碼,))
-            conn.execute("UPDATE sessions SET message_count=0, tool_call_count=0, rewind_count=rewind_count+1 WHERE id=?", (工作階段識別碼,))
-            self._附加訊息清單(conn, 工作階段識別碼, 訊息清單, 起始索引=0)
+            資料庫連線.execute("UPDATE messages SET active=0 WHERE session_id=? AND active=1", (工作階段識別碼,))
+            資料庫連線.execute("UPDATE sessions SET message_count=0, tool_call_count=0, rewind_count=rewind_count+1 WHERE id=?", (工作階段識別碼,))
+            self._附加訊息清單(資料庫連線, 工作階段識別碼, 訊息清單, 起始索引=0)
         self._執行寫入(寫入)
 
     def 讀取訊息(self, 工作階段識別碼: str, 包含停用: bool = False, include_ancestors: bool = False) -> list[dict[str, Any]]:
@@ -674,15 +674,15 @@ class 工作階段庫:
         返回值：
             list[dict[str, Any]]：OpenAI-compatible message dict 清單。
         """
-        session_ids = [工作階段識別碼]
+        工作階段識別碼清單 = [工作階段識別碼]
         if include_ancestors:
-            session_ids = self.取得工作階段譜系(工作階段識別碼)
-        active_clause = "" if 包含停用 else " AND active=1"
-        placeholders = ",".join("?" for _ in session_ids)
+            工作階段識別碼清單 = self.取得工作階段譜系(工作階段識別碼)
+        啟用條件 = "" if 包含停用 else " AND active=1"
+        佔位符清單 = ",".join("?" for _ in 工作階段識別碼清單)
         with self._鎖:
             資料列清單 = self.連線.execute(
-                f"SELECT * FROM messages WHERE session_id IN ({placeholders}){active_clause} ORDER BY timestamp, id",
-                tuple(session_ids),
+                f"SELECT * FROM messages WHERE session_id IN ({佔位符清單}){啟用條件} ORDER BY timestamp, id",
+                tuple(工作階段識別碼清單),
             ).fetchall()
         return [self._資料列轉訊息(資料列) for 資料列 in 資料列清單]
 
@@ -740,30 +740,30 @@ class 工作階段庫:
 
         返回值：None。此方法永遠不會 DELETE 舊 messages；rewrite 應使用專門方法。
         """
-        def 寫入(conn: sqlite3.Connection) -> None:
+        def 寫入(資料庫連線: sqlite3.Connection) -> None:
             """在交易中 append 尚未持久化的尾端訊息。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：None。
             """
-            row = conn.execute("SELECT COALESCE(MAX(message_index), -1) AS max_idx FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
-            起始索引 = int(row["max_idx"] if row and row["max_idx"] is not None else -1) + 1
+            資料列 = 資料庫連線.execute("SELECT COALESCE(MAX(message_index), -1) AS max_idx FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
+            起始索引 = int(資料列["max_idx"] if 資料列 and 資料列["max_idx"] is not None else -1) + 1
             if 起始索引 >= len(訊息清單):
-                conn.execute("UPDATE sessions SET updated_at=? WHERE id=?", (time.time(), 工作階段識別碼))
+                資料庫連線.execute("UPDATE sessions SET updated_at=? WHERE id=?", (time.time(), 工作階段識別碼))
                 return
-            self._附加訊息清單(conn, 工作階段識別碼, 訊息清單[起始索引:], 起始索引=起始索引)
+            self._附加訊息清單(資料庫連線, 工作階段識別碼, 訊息清單[起始索引:], 起始索引=起始索引)
         if 是否使用既有交易:
             寫入(self.連線)
         else:
             self._執行寫入(寫入)
 
-    def _附加訊息清單(self, conn: sqlite3.Connection, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]], 起始索引: int) -> None:
+    def _附加訊息清單(self, 資料庫連線: sqlite3.Connection, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]], 起始索引: int) -> None:
         """在目前交易中 append 訊息清單。
 
         參數：
-            conn: 目前交易中的 SQLite connection。
+            資料庫連線: 目前交易中的 SQLite connection。
             工作階段識別碼: session id。
             訊息清單: 要 append 的 message dict 清單。
             起始索引: 第一則訊息的 message_index。
@@ -781,15 +781,15 @@ class 工作階段庫:
                 內容字串 = json.dumps(內容, ensure_ascii=False)
             else:
                 內容字串 = 內容
-            tool_calls = 訊息.get("tool_calls")
-            tool_calls_json = json.dumps(tool_calls, ensure_ascii=False) if tool_calls else None
+            工具呼叫清單 = 訊息.get("tool_calls")
+            工具呼叫JSON = json.dumps(工具呼叫清單, ensure_ascii=False) if 工具呼叫清單 else None
             工具名 = 訊息.get("name") or 訊息.get("tool_name")
-            if not 工具名 and tool_calls:
+            if not 工具名 and 工具呼叫清單:
                 try:
-                    工具名 = tool_calls[0].get("function", {}).get("name")
+                    工具名 = 工具呼叫清單[0].get("function", {}).get("name")
                 except Exception:
                     工具名 = None
-            conn.execute(
+            資料庫連線.execute(
                 """
                 INSERT INTO messages(
                     session_id, message_index, role, content, content_json, tool_call_id,
@@ -806,7 +806,7 @@ class 工作階段庫:
                     內容字串,
                     json.dumps(訊息, ensure_ascii=False),
                     訊息.get("tool_call_id"),
-                    tool_calls_json,
+                    工具呼叫JSON,
                     工具名,
                     訊息.get("token_count"),
                     訊息.get("finish_reason"),
@@ -824,9 +824,9 @@ class 工作階段庫:
             新增數 += 1
             if 角色 == "tool":
                 新增工具呼叫數 += 1
-            elif tool_calls:
-                新增工具呼叫數 += len(tool_calls) if isinstance(tool_calls, list) else 1
-        conn.execute(
+            elif 工具呼叫清單:
+                新增工具呼叫數 += len(工具呼叫清單) if isinstance(工具呼叫清單, list) else 1
+        資料庫連線.execute(
             "UPDATE sessions SET message_count=message_count+?, tool_call_count=tool_call_count+?, updated_at=? WHERE id=?",
             (新增數, 新增工具呼叫數, time.time(), 工作階段識別碼),
         )
@@ -845,21 +845,21 @@ class 工作階段庫:
         擁有者 = 擁有者 or self.建立壓縮鎖Holder()
         目前時間 = time.time()
         過期時間 = 目前時間 + ttl秒
-        def 寫入(conn: sqlite3.Connection) -> bool:
+        def 寫入(資料庫連線: sqlite3.Connection) -> bool:
             """在交易中嘗試取得 compression lock。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：bool。True 表示目前呼叫者持有鎖。
             """
-            conn.execute("DELETE FROM compression_locks WHERE expires_at < ?", (目前時間,))
-            conn.execute(
+            資料庫連線.execute("DELETE FROM compression_locks WHERE expires_at < ?", (目前時間,))
+            資料庫連線.execute(
                 "INSERT OR IGNORE INTO compression_locks(session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
                 (工作階段識別碼, 擁有者, 目前時間, 過期時間),
             )
-            row = conn.execute("SELECT holder FROM compression_locks WHERE session_id=?", (工作階段識別碼,)).fetchone()
-            return bool(row and row["holder"] == 擁有者)
+            資料列 = 資料庫連線.execute("SELECT holder FROM compression_locks WHERE session_id=?", (工作階段識別碼,)).fetchone()
+            return bool(資料列 and 資料列["holder"] == 擁有者)
         return 擁有者 if self._執行寫入(寫入) else None
 
     def 建立壓縮鎖Holder(self, agent標籤: str | None = None) -> str:
@@ -883,8 +883,8 @@ class 工作階段庫:
             str | None：目前 holder；沒有鎖或已過期時回傳 None。
         """
         with self._鎖:
-            row = self.連線.execute("SELECT holder FROM compression_locks WHERE session_id=? AND expires_at>=?", (工作階段識別碼, time.time())).fetchone()
-        return row["holder"] if row else None
+            資料列 = self.連線.execute("SELECT holder FROM compression_locks WHERE session_id=? AND expires_at>=?", (工作階段識別碼, time.time())).fetchone()
+        return 資料列["holder"] if 資料列 else None
 
     def 釋放壓縮鎖(self, 工作階段識別碼: str, 擁有者: str) -> None:
         """釋放 compression lock。
@@ -895,7 +895,7 @@ class 工作階段庫:
 
         返回值：None。
         """
-        self._執行寫入(lambda conn: conn.execute("DELETE FROM compression_locks WHERE session_id=? AND holder=?", (工作階段識別碼, 擁有者)))
+        self._執行寫入(lambda 資料庫連線: 資料庫連線.execute("DELETE FROM compression_locks WHERE session_id=? AND holder=?", (工作階段識別碼, 擁有者)))
 
     @contextmanager
     def 壓縮鎖(self, 工作階段識別碼: str, ttl秒: int = 300) -> Iterator[bool]:
@@ -930,10 +930,10 @@ class 工作階段庫:
         返回值：
             str：該 logical conversation 的最新 tip session id。
         """
-        current = 工作階段識別碼
+        目前識別碼 = 工作階段識別碼
         for _ in range(100):
             with self._鎖:
-                row = self.連線.execute(
+                資料列 = self.連線.execute(
                     """
                     SELECT child.id FROM sessions child
                     JOIN sessions parent ON parent.id = child.parent_session_id
@@ -942,12 +942,12 @@ class 工作階段庫:
                       AND child.started_at >= COALESCE(parent.ended_at, 0)
                     ORDER BY child.started_at DESC, child.id DESC LIMIT 1
                     """,
-                    (current,),
+                    (目前識別碼,),
                 ).fetchone()
-            if not row:
-                return current
-            current = row["id"]
-        return current
+            if not 資料列:
+                return 目前識別碼
+            目前識別碼 = 資料列["id"]
+        return 目前識別碼
 
     def 解析Resume工作階段(self, 工作階段識別碼: str) -> str:
         """把任意 lineage 內的 session id 導向 compression tip。
@@ -969,20 +969,20 @@ class 工作階段庫:
         返回值：
             list[str]：依時間由 root 到指定 tip 的 session id 清單。
         """
-        chain = []
-        current = 工作階段識別碼
-        seen: set[str] = set()
+        譜系鏈 = []
+        目前識別碼 = 工作階段識別碼
+        已見集合: set[str] = set()
         with self._鎖:
             for _ in range(100):
-                if not current or current in seen:
+                if not 目前識別碼 or 目前識別碼 in 已見集合:
                     break
-                seen.add(current)
-                chain.append(current)
-                row = self.連線.execute("SELECT parent_session_id FROM sessions WHERE id=?", (current,)).fetchone()
-                if not row or not row["parent_session_id"]:
+                已見集合.add(目前識別碼)
+                譜系鏈.append(目前識別碼)
+                資料列 = self.連線.execute("SELECT parent_session_id FROM sessions WHERE id=?", (目前識別碼,)).fetchone()
+                if not 資料列 or not 資料列["parent_session_id"]:
                     break
-                current = row["parent_session_id"]
-        return list(reversed(chain)) or [工作階段識別碼]
+                目前識別碼 = 資料列["parent_session_id"]
+        return list(reversed(譜系鏈)) or [工作階段識別碼]
 
     def 設定封存狀態(self, 工作階段識別碼: str, 是否封存: bool = True) -> None:
         """設定 session archived 狀態。
@@ -993,7 +993,7 @@ class 工作階段庫:
 
         返回值：None。
         """
-        self._執行寫入(lambda conn: conn.execute("UPDATE sessions SET archived=?, updated_at=? WHERE id=?", (1 if 是否封存 else 0, time.time(), 工作階段識別碼)))
+        self._執行寫入(lambda 資料庫連線: 資料庫連線.execute("UPDATE sessions SET archived=?, updated_at=? WHERE id=?", (1 if 是否封存 else 0, time.time(), 工作階段識別碼)))
 
     def 封存工作階段(self, 工作階段識別碼: str) -> None:
         """封存指定 session，讓預設列表與搜尋排除它。
@@ -1036,33 +1036,33 @@ class 工作階段庫:
         if user_id:
             條件.append("user_id=?")
             參數.append(user_id)
-        where = " WHERE " + " AND ".join(條件) if 條件 else ""
+        查詢條件片段 = " WHERE " + " AND ".join(條件) if 條件 else ""
         參數.append(max(limit * 5, limit))
         with self._鎖:
-            rows = [dict(row) for row in self.連線.execute(f"SELECT * FROM sessions{where} ORDER BY started_at DESC LIMIT ?", tuple(參數)).fetchall()]
+            資料列清單 = [dict(資料列) for 資料列 in self.連線.execute(f"SELECT * FROM sessions{查詢條件片段} ORDER BY started_at DESC LIMIT ?", tuple(參數)).fetchall()]
         if include_children:
-            return rows[:limit]
-        projected: list[dict[str, Any]] = []
-        used: set[str] = set()
-        for row in rows:
-            root = self.取得工作階段譜系(row["id"])[0]
-            if root in used:
+            return 資料列清單[:limit]
+        投影結果清單: list[dict[str, Any]] = []
+        已使用根識別碼集合: set[str] = set()
+        for 資料列 in 資料列清單:
+            根工作階段識別碼 = self.取得工作階段譜系(資料列["id"])[0]
+            if 根工作階段識別碼 in 已使用根識別碼集合:
                 continue
-            tip = self.取得壓縮Tip(root)
-            tip_row = self.讀取工作階段(tip) or row
-            tip_row = dict(tip_row)
-            if not include_archived and tip_row.get("archived"):
+            末端工作階段識別碼 = self.取得壓縮Tip(根工作階段識別碼)
+            末端資料列 = self.讀取工作階段(末端工作階段識別碼) or 資料列
+            末端資料列 = dict(末端資料列)
+            if not include_archived and 末端資料列.get("archived"):
                 continue
-            if source and tip_row.get("source") != source:
+            if source and 末端資料列.get("source") != source:
                 continue
-            if user_id and tip_row.get("user_id") != user_id:
+            if user_id and 末端資料列.get("user_id") != user_id:
                 continue
-            tip_row["_lineage_root_id"] = root
-            projected.append(tip_row)
-            used.add(root)
-            if len(projected) >= limit:
+            末端資料列["_lineage_root_id"] = 根工作階段識別碼
+            投影結果清單.append(末端資料列)
+            已使用根識別碼集合.add(根工作階段識別碼)
+            if len(投影結果清單) >= limit:
                 break
-        return projected
+        return 投影結果清單
 
     def 搜尋訊息(self, 查詢: str, limit: int = 20, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
         """使用 FTS 搜尋訊息內容、工具名稱與 tool_calls。
@@ -1082,7 +1082,7 @@ class 工作階段庫:
             return []
         with self._鎖:
             try:
-                rows = self.連線.execute(
+                資料列清單 = self.連線.execute(
                     """
                     SELECT m.*, snippet(messages_fts, 0, '>>>', '<<<', '…', 8) AS snippet
                     FROM messages_fts JOIN messages m ON m.id = messages_fts.rowid
@@ -1092,10 +1092,10 @@ class 工作階段庫:
                     (查詢, limit),
                 ).fetchall()
             except sqlite3.OperationalError:
-                rows = []
-            if not rows:
+                資料列清單 = []
+            if not 資料列清單:
                 try:
-                    rows = self.連線.execute(
+                    資料列清單 = self.連線.execute(
                         """
                         SELECT m.*, snippet(messages_fts_trigram, 0, '>>>', '<<<', '…', 8) AS snippet
                         FROM messages_fts_trigram JOIN messages m ON m.id = messages_fts_trigram.rowid
@@ -1105,24 +1105,24 @@ class 工作階段庫:
                         (查詢, limit),
                     ).fetchall()
                 except sqlite3.OperationalError:
-                    rows = []
-            if not rows:
-                like = f"%{查詢}%"
-                rows = self.連線.execute(
+                    資料列清單 = []
+            if not 資料列清單:
+                模糊查詢字串 = f"%{查詢}%"
+                資料列清單 = self.連線.execute(
                     "SELECT *, content AS snippet FROM messages WHERE active=1 AND (content LIKE ? OR tool_name LIKE ? OR tool_calls LIKE ?) ORDER BY id DESC LIMIT ?",
-                    (like, like, like, limit),
+                    (模糊查詢字串, 模糊查詢字串, 模糊查詢字串, limit),
                 ).fetchall()
-        filtered = []
-        for row in rows:
-            session = self.讀取工作階段(row["session_id"]) or {}
-            if not include_archived and session.get("archived"):
+        篩選結果清單 = []
+        for 資料列 in 資料列清單:
+            工作階段 = self.讀取工作階段(資料列["session_id"]) or {}
+            if not include_archived and 工作階段.get("archived"):
                 continue
-            if source and session.get("source") != source:
+            if source and 工作階段.get("source") != source:
                 continue
-            if user_id and session.get("user_id") != user_id:
+            if user_id and 工作階段.get("user_id") != user_id:
                 continue
-            filtered.append(row)
-        return [{"id": row["id"], "session_id": row["session_id"], "role": row["role"], "content": row["content"], "tool_name": row["tool_name"], "snippet": row["snippet"]} for row in filtered[:limit]]
+            篩選結果清單.append(資料列)
+        return [{"id": 資料列["id"], "session_id": 資料列["session_id"], "role": 資料列["role"], "content": 資料列["content"], "tool_name": 資料列["tool_name"], "snippet": 資料列["snippet"]} for 資料列 in 篩選結果清單[:limit]]
 
     def 取得錨點視圖(self, 工作階段識別碼: str, 訊息id: int, window: int = 5, bookend: int = 3) -> dict[str, Any]:
         """取得搜尋命中訊息周邊視窗與首尾 bookends。
@@ -1136,17 +1136,17 @@ class 工作階段庫:
         返回值：dict[str, Any]。包含 messages、bookend_start、bookend_end 與邊界計數。
         """
         with self._鎖:
-            before = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND id<=? AND active=1 ORDER BY id DESC LIMIT ?", (工作階段識別碼, 訊息id, window + 1)).fetchall()
-            after = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND id>? AND active=1 ORDER BY id ASC LIMIT ?", (工作階段識別碼, 訊息id, window)).fetchall()
-            start = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 AND role IN ('user','assistant') AND length(COALESCE(content,''))>0 ORDER BY id ASC LIMIT ?", (工作階段識別碼, bookend)).fetchall()
-            end = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 AND role IN ('user','assistant') AND length(COALESCE(content,''))>0 ORDER BY id DESC LIMIT ?", (工作階段識別碼, bookend)).fetchall()
-        視窗列 = list(reversed(before)) + list(after)
+            前方資料列清單 = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND id<=? AND active=1 ORDER BY id DESC LIMIT ?", (工作階段識別碼, 訊息id, window + 1)).fetchall()
+            後方資料列清單 = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND id>? AND active=1 ORDER BY id ASC LIMIT ?", (工作階段識別碼, 訊息id, window)).fetchall()
+            開頭資料列清單 = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 AND role IN ('user','assistant') AND length(COALESCE(content,''))>0 ORDER BY id ASC LIMIT ?", (工作階段識別碼, bookend)).fetchall()
+            結尾資料列清單 = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 AND role IN ('user','assistant') AND length(COALESCE(content,''))>0 ORDER BY id DESC LIMIT ?", (工作階段識別碼, bookend)).fetchall()
+        視窗列 = list(reversed(前方資料列清單)) + list(後方資料列清單)
         return {
-            "messages": [self._資料列轉訊息(row) | {"id": row["id"]} for row in 視窗列],
-            "messages_before": max(0, len(before) - 1),
-            "messages_after": len(after),
-            "bookend_start": [self._資料列轉訊息(row) | {"id": row["id"]} for row in start],
-            "bookend_end": [self._資料列轉訊息(row) | {"id": row["id"]} for row in reversed(end)],
+            "messages": [self._資料列轉訊息(資料列) | {"id": 資料列["id"]} for 資料列 in 視窗列],
+            "messages_before": max(0, len(前方資料列清單) - 1),
+            "messages_after": len(後方資料列清單),
+            "bookend_start": [self._資料列轉訊息(資料列) | {"id": 資料列["id"]} for 資料列 in 開頭資料列清單],
+            "bookend_end": [self._資料列轉訊息(資料列) | {"id": 資料列["id"]} for 資料列 in reversed(結尾資料列清單)],
         }
 
     def 搜尋工作階段(self, 查詢: str, limit: int = 3, window: int = 5, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
@@ -1159,29 +1159,29 @@ class 工作階段庫:
 
         返回值：list[dict[str, Any]]。每筆包含 session metadata、snippet、bookends 與命中周邊訊息。
         """
-        hits = self.搜尋訊息(查詢, limit=max(limit * 5, limit), include_archived=include_archived, source=source, user_id=user_id)
+        命中清單 = self.搜尋訊息(查詢, limit=max(limit * 5, limit), include_archived=include_archived, source=source, user_id=user_id)
         結果: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for hit in hits:
-            sid = hit["session_id"]
-            root = self.取得工作階段譜系(sid)[0]
-            if root in seen:
+        已見集合: set[str] = set()
+        for 命中項目 in 命中清單:
+            命中工作階段識別碼 = 命中項目["session_id"]
+            根工作階段識別碼 = self.取得工作階段譜系(命中工作階段識別碼)[0]
+            if 根工作階段識別碼 in 已見集合:
                 continue
-            seen.add(root)
-            session = self.讀取工作階段(sid) or {}
-            anchored = self.取得錨點視圖(sid, int(hit["id"]), window=window)
+            已見集合.add(根工作階段識別碼)
+            工作階段 = self.讀取工作階段(命中工作階段識別碼) or {}
+            錨點視圖 = self.取得錨點視圖(命中工作階段識別碼, int(命中項目["id"]), window=window)
             結果.append({
-                "session_id": sid,
-                "title": session.get("title"),
-                "source": session.get("source"),
-                "snippet": hit.get("snippet"),
-                "match_message_id": hit.get("id"),
-                "bookend_start": anchored["bookend_start"],
-                "messages": anchored["messages"],
-                "bookend_end": anchored["bookend_end"],
-                "messages_before": anchored["messages_before"],
-                "messages_after": anchored["messages_after"],
-                "_lineage_root_id": root,
+                "session_id": 命中工作階段識別碼,
+                "title": 工作階段.get("title"),
+                "source": 工作階段.get("source"),
+                "snippet": 命中項目.get("snippet"),
+                "match_message_id": 命中項目.get("id"),
+                "bookend_start": 錨點視圖["bookend_start"],
+                "messages": 錨點視圖["messages"],
+                "bookend_end": 錨點視圖["bookend_end"],
+                "messages_before": 錨點視圖["messages_before"],
+                "messages_after": 錨點視圖["messages_after"],
+                "_lineage_root_id": 根工作階段識別碼,
             })
             if len(結果) >= limit:
                 break
@@ -1195,24 +1195,24 @@ class 工作階段庫:
 
         返回值：dict[str, Any]。包含 session、messages、total_messages 與 truncated。
         """
-        session = self.讀取工作階段(工作階段識別碼)
-        if not session:
+        工作階段 = self.讀取工作階段(工作階段識別碼)
+        if not 工作階段:
             raise ValueError(f"session not found: {工作階段識別碼}")
         with self._鎖:
-            rows = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 ORDER BY id", (工作階段識別碼,)).fetchall()
-        total = len(rows)
-        if total > 35:
-            kept_rows = rows[:20] + rows[-10:]
-            truncated = True
+            資料列清單 = self.連線.execute("SELECT * FROM messages WHERE session_id=? AND active=1 ORDER BY id", (工作階段識別碼,)).fetchall()
+        總訊息數 = len(資料列清單)
+        if 總訊息數 > 35:
+            保留資料列清單 = 資料列清單[:20] + 資料列清單[-10:]
+            是否截斷 = True
         else:
-            kept_rows = rows
-            truncated = False
+            保留資料列清單 = 資料列清單
+            是否截斷 = False
         return {
             "session_id": 工作階段識別碼,
-            "session": session,
-            "messages": [self._資料列轉訊息(row) | {"id": row["id"]} for row in kept_rows],
-            "total_messages": total,
-            "truncated": truncated,
+            "session": 工作階段,
+            "messages": [self._資料列轉訊息(資料列) | {"id": 資料列["id"]} for 資料列 in 保留資料列清單],
+            "total_messages": 總訊息數,
+            "truncated": 是否截斷,
         }
 
     def 捲動工作階段訊息(self, 工作階段識別碼: str, around_message_id: int, window: int = 5) -> dict[str, Any]:
@@ -1245,8 +1245,8 @@ class 工作階段庫:
 
         返回值：dict[str, Any]。包含 sessions 與 total_count。
         """
-        sessions = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
-        return {"sessions": sessions, "total_count": len(sessions)}
+        工作階段清單 = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
+        return {"sessions": 工作階段清單, "total_count": len(工作階段清單)}
 
     def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int) -> dict[str, Any]:
         """把指定訊息及之後的訊息標記為 inactive，保留 audit 紀錄。
@@ -1259,28 +1259,28 @@ class 工作階段庫:
             dict[str, Any]：包含 rewound_count、target_message 與 new_head_id。
         """
         with self._鎖:
-            target = self.連線.execute("SELECT * FROM messages WHERE id=? AND session_id=?", (目標訊息id, 工作階段識別碼)).fetchone()
-        if not target:
+            目標資料列 = self.連線.execute("SELECT * FROM messages WHERE id=? AND session_id=?", (目標訊息id, 工作階段識別碼)).fetchone()
+        if not 目標資料列:
             raise ValueError(f"message {目標訊息id} not found in session {工作階段識別碼}")
-        def 寫入(conn: sqlite3.Connection) -> list[int]:
+        def 寫入(資料庫連線: sqlite3.Connection) -> list[int]:
             """在交易中把 rewind 範圍標記為 inactive。
 
             參數：
-                conn: 目前交易中的 SQLite connection。
+                資料庫連線: 目前交易中的 SQLite connection。
 
             返回值：list[int]。本次被停用的 message id 清單。
             """
-            rows = conn.execute("SELECT id FROM messages WHERE session_id=? AND id>=? AND active=1", (工作階段識別碼, 目標訊息id)).fetchall()
-            ids = [row["id"] for row in rows]
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                conn.execute(f"UPDATE messages SET active=0 WHERE id IN ({placeholders})", ids)
-            conn.execute("UPDATE sessions SET rewind_count=rewind_count+1, updated_at=? WHERE id=?", (time.time(), 工作階段識別碼))
-            return ids
-        ids = self._執行寫入(寫入)
+            資料列清單 = 資料庫連線.execute("SELECT id FROM messages WHERE session_id=? AND id>=? AND active=1", (工作階段識別碼, 目標訊息id)).fetchall()
+            停用識別碼清單 = [資料列["id"] for 資料列 in 資料列清單]
+            if 停用識別碼清單:
+                佔位符清單 = ",".join("?" for _ in 停用識別碼清單)
+                資料庫連線.execute(f"UPDATE messages SET active=0 WHERE id IN ({佔位符清單})", 停用識別碼清單)
+            資料庫連線.execute("UPDATE sessions SET rewind_count=rewind_count+1, updated_at=? WHERE id=?", (time.time(), 工作階段識別碼))
+            return 停用識別碼清單
+        停用識別碼清單 = self._執行寫入(寫入)
         with self._鎖:
-            head = self.連線.execute("SELECT MAX(id) AS id FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
-        return {"rewound_count": len(ids), "target_message": self._資料列轉訊息(target), "new_head_id": head["id"] if head else None}
+            新前端資料列 = self.連線.execute("SELECT MAX(id) AS id FROM messages WHERE session_id=? AND active=1", (工作階段識別碼,)).fetchone()
+        return {"rewound_count": len(停用識別碼清單), "target_message": self._資料列轉訊息(目標資料列), "new_head_id": 新前端資料列["id"] if 新前端資料列 else None}
 
 
 # Hermes-parity API 相容別名；專案內部仍使用繁中方法名稱。
