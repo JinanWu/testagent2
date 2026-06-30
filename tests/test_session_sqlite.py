@@ -648,3 +648,102 @@ def test_cli_sessions_subcommands_and_repl_slash_commands(tmp_path):
     assert "假模型回覆" in repl.stdout
     assert "已 undo" in repl.stdout
     assert [m["role"] for m in 工作階段庫(db).讀取訊息("repl-one")] == []
+
+
+
+def test_tool_paths_resolve_against_runtime_workdir(tmp_path):
+    """確認 read/search/write/patch/terminal 相對路徑都以 runtime workdir 為 base。"""
+    workdir = tmp_path / "agent-workdir"
+    outside = tmp_path / "outside-cwd"
+    workdir.mkdir()
+    outside.mkdir()
+    (workdir / "note.txt").write_text("alpha\nneedle\n", encoding="utf-8")
+    登錄器 = 建立預設工具登錄器(workdir)
+
+    read_payload = json.loads(登錄器.呼叫工具("read_file", {"path": "note.txt"}))
+    assert read_payload["success"] is True
+    assert read_payload["result"]["path"] == str(workdir / "note.txt")
+    assert "needle" in read_payload["result"]["content"]
+
+    search_payload = json.loads(登錄器.呼叫工具("search_files", {"path": ".", "pattern": "needle", "target": "content"}))
+    assert search_payload["success"] is True
+    assert search_payload["result"]["matches"][0]["path"] == str(workdir / "note.txt")
+
+    write_payload = json.loads(登錄器.呼叫工具("write_file", {"path": "sub/new.txt", "content": "hello"}))
+    assert write_payload["success"] is True
+    assert (workdir / "sub" / "new.txt").read_text(encoding="utf-8") == "hello"
+
+    patch_payload = json.loads(登錄器.呼叫工具("patch", {"path": "sub/new.txt", "old_string": "hello", "new_string": "world"}))
+    assert patch_payload["success"] is True
+    assert (workdir / "sub" / "new.txt").read_text(encoding="utf-8") == "world"
+
+    terminal_payload = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd && test -f note.txt", "workdir": "."}))
+    assert terminal_payload["success"] is True
+    assert terminal_payload["result"]["exit_code"] == 0
+    assert terminal_payload["result"]["output"].splitlines()[0] == str(workdir)
+
+
+def test_cli_resume_continue_query_and_interactive_session_commands(tmp_path):
+    """確認 Hermes-like CLI flags 與互動 session 操作。"""
+    db = tmp_path / "cli-flags.sqlite3"
+    first = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "seed", "-q", "用 query 建立 session"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stdout
+    assert "session=seed" in first.stdout
+    工作階段庫(db).重新命名工作階段("seed", "可恢復標題")
+
+    resume_by_title = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--resume", "可恢復標題", "-q", "resume 後續訊息"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert resume_by_title.returncode == 0, resume_by_title.stdout
+    assert "session=seed" in resume_by_title.stdout
+
+    continue_latest = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--continue", "-q", "continue 最近 session"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert continue_latest.returncode == 0, continue_latest.stdout
+    assert "session=seed" in continue_latest.stdout
+
+    search = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "search", "continue", "--json"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert search.returncode == 0, search.stdout
+    assert json.loads(search.stdout)["total_count"] >= 1
+
+    repl = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db)],
+        cwd=專案根目錄,
+        input="/resume\n1\n/status\n/sessions list 5\n/sessions search continue\n/sessions rename seed 互動標題\n/new explicit-new\n/status\n/exit\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert repl.returncode == 0, repl.stdout
+    assert "請輸入數字選擇" in repl.stdout
+    assert "已 resume：seed" in repl.stdout
+    assert "已重新命名：seed" in repl.stdout
+    assert "已建立並切換到新 session：explicit-new" in repl.stdout
+    assert 工作階段庫(db).讀取工作階段("seed")["title"] == "互動標題"
+    assert 工作階段庫(db).讀取工作階段("explicit-new") is not None
