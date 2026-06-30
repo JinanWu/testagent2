@@ -95,8 +95,8 @@ class 代理執行階段:
         self.user_id = user_id
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
-        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器()
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
+        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄)
         self.最大迭代次數 = 最大迭代次數
         self.事件回呼 = 事件回呼
         self.記憶管理器 = 記憶管理器
