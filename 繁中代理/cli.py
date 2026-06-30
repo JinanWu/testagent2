@@ -17,6 +17,7 @@ import json
 import os
 import shlex
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +72,10 @@ def 建立參數解析器() -> argparse.ArgumentParser:
     """
     解析器 = argparse.ArgumentParser(description="Hermes-style Traditional Chinese CLI Agent")
     解析器.add_argument("message", nargs="?", help="使用者訊息；省略時進入互動 REPL")
+    解析器.add_argument("-q", "--query", default=None, help="一次性使用者訊息；等同 Hermes chat -q")
     解析器.add_argument("--session", default=None, help="工作階段識別碼")
+    解析器.add_argument("-r", "--resume", default=None, help="依 session id 或 title resume 工作階段")
+    解析器.add_argument("-c", "--continue", dest="continue_session", nargs="?", const="__latest__", default=None, help="resume 最近 session，或依名稱/title resume")
     解析器.add_argument("--db", default=預設資料庫路徑, help="SQLite DB 路徑")
     解析器.add_argument("--workdir", default=os.getcwd(), help="工作目錄")
     解析器.add_argument("--model", default=os.getenv("AIAGENT_MODEL", "gemini-2.5-flash-lite"), help="模型名稱")
@@ -197,6 +201,38 @@ def 取訊息摘要(訊息: dict[str, Any], 長度: int = 70) -> str:
     if len(文字) > 長度:
         return 文字[: 長度 - 1] + "…"
     return 文字
+
+
+def 產生新工作階段識別碼() -> str:
+    """產生 Hermes-like 簡短 session id。"""
+    from datetime import datetime
+    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+def 解析工作階段參照(工作階段庫物件: 工作階段庫, 參照: str | None, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> str | None:
+    """把 session id、title 或 latest 指示解析成可 resume 的 session id。
+
+    參數：
+        工作階段庫物件: session store。
+        參照: 使用者輸入的 session id/title；None 或 __latest__ 表示最近 session。
+        include_archived/source/user_id: 與 session list 相同的篩選條件。
+
+    返回值：可 resume 的 session id；找不到時回傳 None。
+    """
+    if not 參照 or 參照 == "__latest__":
+        sessions = 工作階段庫物件.列出工作階段(limit=1, include_archived=include_archived, source=source, user_id=user_id)
+        return str(sessions[0]["id"]) if sessions else None
+    if 工作階段庫物件.讀取工作階段(參照):
+        return 工作階段庫物件.解析Resume工作階段(參照)
+    sessions = 工作階段庫物件.列出工作階段(limit=200, include_archived=include_archived, source=source, user_id=user_id)
+    for session in sessions:
+        if str(session.get("title") or "") == 參照:
+            return 工作階段庫物件.解析Resume工作階段(str(session["id"]))
+    lowered = 參照.lower()
+    for session in sessions:
+        if lowered in str(session.get("title") or "").lower() or lowered in str(session.get("id") or "").lower():
+            return 工作階段庫物件.解析Resume工作階段(str(session["id"]))
+    return None
 
 
 def 印出工作階段表格(工作階段清單: list[dict[str, Any]], 工作階段庫物件: 工作階段庫 | None = None, 顯示預覽: bool = False) -> None:
@@ -588,6 +624,13 @@ def 執行一次性操作(參數: argparse.Namespace, 解析器: argparse.Argume
     返回值：bool。True 表示已處理並可結束程式；False 表示應進入 chat/REPL。
     """
     工作階段庫物件 = 工作階段庫(參數.db)
+    if 參數.resume or 參數.continue_session:
+        參照 = 參數.resume or 參數.continue_session
+        解析後 = 解析工作階段參照(工作階段庫物件, 參照, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
+        if 解析後:
+            參數.session = 解析後
+        elif 參數.resume:
+            解析器.error(f"找不到可 resume 的 session：{參照}")
     if 參數.archive_session:
         工作階段庫物件.封存工作階段(參數.archive_session)
         印出JSON({"session_id": 參數.archive_session, "archived": True})
@@ -621,7 +664,8 @@ def 執行單次訊息(參數: argparse.Namespace, 解析器: argparse.ArgumentP
     """
     工作階段庫物件 = 工作階段庫(參數.db)
     執行階段 = 建立執行階段(參數, 工作階段庫物件, 解析器)
-    結果 = 執行階段.執行使用者訊息(參數.message, 工作階段識別碼=參數.session)
+    訊息 = 參數.query or 參數.message
+    結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼=參數.session)
     print(結果.最終回答)
     print(f"\n[session={結果.工作階段識別碼} model_calls={結果.模型呼叫次數} tool_calls={結果.工具呼叫次數} compressed={結果.是否已壓縮}]")
 
@@ -641,7 +685,7 @@ def 執行主程式() -> None:
     參數 = 解析器.parse_args()
     if 執行一次性操作(參數, 解析器):
         return
-    if 參數.message:
+    if 參數.query or 參數.message:
         執行單次訊息(參數, 解析器)
         return
     互動CLI(參數, 解析器).執行()
