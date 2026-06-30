@@ -364,7 +364,16 @@ class 互動CLI:
         self.工作階段庫物件 = 工作階段庫(參數.db)
         self.執行階段 = 建立執行階段(參數, self.工作階段庫物件, 解析器)
         self.目前工作階段識別碼 = 參數.session
+        if 參數.resume or 參數.continue_session:
+            參照 = 參數.resume or 參數.continue_session
+            解析後 = 解析工作階段參照(self.工作階段庫物件, 參照, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
+            if 解析後:
+                self.目前工作階段識別碼 = 解析後
+            else:
+                print(f"找不到可 resume 的 session：{參照 if 參照 != '__latest__' else 'latest'}；將以新 session 開始。")
+                self.目前工作階段識別碼 = None
         self.上一個使用者訊息: str | None = None
+        self.待選Resume工作階段清單: list[dict[str, Any]] | None = None
 
     def 執行(self) -> None:
         """進入互動輸入迴圈。
@@ -386,6 +395,10 @@ class 互動CLI:
             內容 = 讀取多行輸入(原始輸入).strip()
             if not 內容:
                 continue
+            if self.待選Resume工作階段清單 and 內容.isdigit():
+                self.選擇Resume序號(int(內容))
+                continue
+            self.待選Resume工作階段清單 = None
             if 內容.startswith("/"):
                 if not self.處理Slash命令(內容):
                     break
@@ -439,8 +452,7 @@ class 互動CLI:
         if 名稱 == "/help":
             self.印出Help()
         elif 名稱 == "/new":
-            self.目前工作階段識別碼 = 參數列[0] if 參數列 else None
-            print(f"已切換到新 session：{self.目前工作階段識別碼 or '自動產生'}")
+            self.命令New(參數列)
         elif 名稱 == "/resume":
             self.命令Resume(參數列)
         elif 名稱 == "/sessions":
@@ -472,9 +484,9 @@ class 互動CLI:
         print("可用命令：")
         print("  /help                 顯示說明")
         print("  /exit                 離開 REPL")
-        print("  /new [session_id]     開始新 session")
-        print("  /resume <session_id>  resume 指定 session（會導向 compression tip）")
-        print("  /sessions [N]         列出近期 sessions")
+        print("  /new [session_id]     建立並切換到新 session；省略 id 時自動產生")
+        print("  /resume [id|title]    resume 指定 session；省略時列出近期 sessions 可用數字選擇")
+        print("  /sessions [list|browse|search|rename|export]  管理 session history")
         print("  /history              顯示目前 session 訊息")
         print("  /retry                rewind 並重送上一個 user turn")
         print("  /undo                 soft-delete 最後一個 user turn 起的訊息")
@@ -482,6 +494,39 @@ class 互動CLI:
         print("  /tools                列出工具與 handler 狀態")
         print("  /skills               列出內建 Hermes skills")
         print("  /status               顯示目前 REPL 狀態")
+
+    def 命令New(self, 參數列: list[str]) -> None:
+        """建立並切換到新的 session id。
+
+        參數：
+            參數列: 可選自訂 session id。
+
+        返回值：None。此命令只建立/切換 session，不呼叫模型。
+        """
+        新識別碼 = 參數列[0] if 參數列 else 產生新工作階段識別碼()
+        self.工作階段庫物件.建立或讀取工作階段(
+            新識別碼,
+            source=self.參數.source,
+            user_id=self.參數.user_id,
+            model=self.參數.model,
+            model_config=解析模型設定(self.參數, self.解析器),
+            cwd=self.參數.workdir,
+        )
+        self.目前工作階段識別碼 = 新識別碼
+        self.上一個使用者訊息 = None
+        self.待選Resume工作階段清單 = None
+        print(f"已建立並切換到新 session：{新識別碼}")
+
+    def 選擇Resume序號(self, 序號: int) -> None:
+        """使用 /resume 無參數列出的候選清單進行數字選擇。"""
+        清單 = self.待選Resume工作階段清單 or []
+        if 序號 < 1 or 序號 > len(清單):
+            print(f"選項超出範圍：{序號}")
+            return
+        session = 清單[序號 - 1]
+        self.目前工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(str(session["id"]))
+        self.待選Resume工作階段清單 = None
+        print(f"已 resume：{self.目前工作階段識別碼}  title={session.get('title') or ''}")
 
     def 命令Resume(self, 參數列: list[str]) -> None:
         """處理 /resume 命令。
@@ -492,14 +537,24 @@ class 互動CLI:
         返回值：None。成功時更新目前 session id。
         """
         if not 參數列:
-            print("用法：/resume <session_id>")
+            sessions = self.工作階段庫物件.列出工作階段(limit=10, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+            if not sessions:
+                print("沒有可 resume 的 session。")
+                return
+            self.待選Resume工作階段清單 = sessions
+            print("請輸入數字選擇要 resume 的 session：")
+            for i, session in enumerate(sessions, start=1):
+                print(f"{i:>2}. {session.get('id')}  {session.get('title') or ''}  updated={格式化時間戳(session.get('updated_at'))}")
             return
-        原始 = 參數列[0]
-        if not self.工作階段庫物件.讀取工作階段(原始):
+        原始 = " ".join(參數列)
+        解析後 = 解析工作階段參照(self.工作階段庫物件, 原始, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+        if not 解析後:
             print(f"找不到 session：{原始}")
             return
-        self.目前工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(原始)
-        print(f"已 resume：{self.目前工作階段識別碼}")
+        self.目前工作階段識別碼 = 解析後
+        self.待選Resume工作階段清單 = None
+        session = self.工作階段庫物件.讀取工作階段(解析後) or {}
+        print(f"已 resume：{self.目前工作階段識別碼}  title={session.get('title') or ''}")
 
     def 命令Sessions(self, 參數列: list[str]) -> None:
         """處理 /sessions 命令。
