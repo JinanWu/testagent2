@@ -9,11 +9,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .上下文壓縮器 import 上下文壓縮器
+from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
@@ -67,6 +69,12 @@ class 代理執行階段:
         摘要失敗是否中止: bool | None = None,
         壓縮模式: str | None = None,
         壓縮模型: str | None = None,
+        user_id: str | None = None,
+        source: str = "cli",
+        model_config: dict[str, Any] | None = None,
+        事件回呼: Any | None = None,
+        記憶管理器: Any | None = None,
+        上下文引擎: Any | None = None,
     ) -> None:
         """初始化 Hermes-style CLI runtime 與 context compression 設定。
 
@@ -87,19 +95,30 @@ class 代理執行階段:
             摘要失敗是否中止: summary 失敗時是否中止壓縮；None 時讀取環境設定。
             壓縮模式: 可選 compression provider 模式；None 時 auto 重用主模式或環境值。
             壓縮模型: 可選 compression 模型名稱；None 時 auto 重用主模型或環境值。
+            user_id: 使用者識別碼，CLI/Gateway 可用於 session 篩選與審計。
+            source: 來源平台，例如 cli、api、telegram 或 discord。
+            model_config: 模型設定快照，會寫入 sessions.model_config。
 
         返回值：
             None。初始化後會建立工具登錄器、工作目錄、最大迭代限制與
             `上下文壓縮器物件`，後者可能包含 auxiliary LLM summary 函式。
         """
         self.工作階段庫物件 = 工作階段庫物件
+        設定目前工作階段資料庫路徑(str(工作階段庫物件.資料庫路徑))
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
-        self.平台名稱 = 平台名稱
+        self.user_id = user_id
+        self.source = source
+        self.model_config = model_config or {"mode": 模型模式}
         self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器()
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
         self.最大迭代次數 = 最大迭代次數
+        self.事件回呼 = 事件回呼
+        self.記憶管理器 = 記憶管理器
+        self.上下文引擎 = 上下文引擎
+        self.壓縮讓路警告集合: set[str] = set()
+        self.壓縮鎖錯誤集合: set[str] = set()
         摘要函式 = self.建立壓縮摘要函式(模型模式, 啟用壓縮摘要, 壓縮模式, 壓縮模型)
         self.上下文壓縮器物件 = 上下文壓縮器(
             上下文長度=上下文長度,
@@ -153,7 +172,18 @@ class 代理執行階段:
             執行結果：包含最終回答、目前 active session id、壓縮後或完整訊息清單、
             模型呼叫次數、工具呼叫次數，以及本 turn 是否發生 compression split。
         """
-        工作階段識別碼 = self.工作階段庫物件.建立或讀取工作階段(工作階段識別碼)
+        原始工作階段識別碼 = 工作階段識別碼
+        工作階段識別碼 = self.工作階段庫物件.建立或讀取工作階段(
+            工作階段識別碼,
+            source=self.source,
+            user_id=self.user_id,
+            model=self.模型名稱,
+            model_config=self.model_config,
+            cwd=self.工作目錄,
+        )
+        if 原始工作階段識別碼:
+            工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+        設定目前工作階段識別碼(工作階段識別碼)
         歷史訊息 = self.工作階段庫物件.讀取訊息(工作階段識別碼)
         工作階段資料 = self.工作階段庫物件.讀取工作階段(工作階段識別碼) or {}
         工具結構清單 = self.工具登錄器物件.列出工具結構()
@@ -182,6 +212,7 @@ class 代理執行階段:
                 else:
                     raise
 
+            self.工作階段庫物件.更新模型使用量(工作階段識別碼, 模型回應.使用量, api呼叫增量=1, billing_provider=self.供應商名稱)
             真實提示Token數 = self.上下文壓縮器物件.從回應使用量更新(模型回應.使用量)
             if 真實提示Token數 is not None:
                 self.工作階段庫物件.更新提示Token數(工作階段識別碼, 真實提示Token數)
@@ -195,7 +226,7 @@ class 代理執行階段:
                 是否已壓縮 = 是否已壓縮 or 壓縮發生
 
             if 模型回應.工具呼叫清單:
-                assistant訊息 = {"role": "assistant", "content": 模型回應.文字 or "", "tool_calls": 模型回應.工具呼叫清單}
+                assistant訊息 = {"role": "assistant", "content": 模型回應.文字 or "", "tool_calls": 模型回應.工具呼叫清單, "finish_reason": 模型回應.完成原因}
                 訊息清單.append(assistant訊息)
                 for 工具呼叫 in 模型回應.工具呼叫清單:
                     工具呼叫次數 += 1
@@ -214,15 +245,30 @@ class 代理執行階段:
                 是否已壓縮 = 是否已壓縮 or 壓縮發生
                 continue
             最終回答 = 模型回應.文字 or "（模型沒有回傳文字）"
-            訊息清單.append({"role": "assistant", "content": 最終回答})
+            訊息清單.append({"role": "assistant", "content": 最終回答, "finish_reason": 模型回應.完成原因})
             self.工作階段庫物件.寫入訊息清單(工作階段識別碼, 訊息清單)
             break
         else:
             最終回答 = "已達最大迭代次數，仍未取得最終回答。"
-            訊息清單.append({"role": "assistant", "content": 最終回答})
+            訊息清單.append({"role": "assistant", "content": 最終回答, "finish_reason": "max_iterations"})
             self.工作階段庫物件.寫入訊息清單(工作階段識別碼, 訊息清單)
 
         return 執行結果(最終回答, 工作階段識別碼, 訊息清單, 模型呼叫次數, 工具呼叫次數, 是否已壓縮)
+
+    def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int) -> dict[str, Any]:
+        """從 runtime 入口執行 soft-delete rewind。
+
+        參數：
+            工作階段識別碼: 要 rewind 的 session id；會先導向 compression tip。
+            目標訊息id: 目標 message row id。
+
+        返回值：dict[str, Any]。工作階段庫回傳的 rewind 結果，並包含 active session id。
+        """
+        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+        設定目前工作階段識別碼(作用中工作階段識別碼)
+        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id)
+        結果["session_id"] = 作用中工作階段識別碼
+        return 結果
 
     def 建立Request訊息(self, 系統提示詞: str, 訊息清單: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """在 provider request 邊界組裝 system prompt 與 transcript。
@@ -263,9 +309,25 @@ class 代理執行階段:
             清單、是否真的發生壓縮。若未取得鎖或不需壓縮，會回傳原 session 與
             原訊息清單。
         """
-        with self.工作階段庫物件.壓縮鎖(工作階段識別碼) as 是否取得鎖:
+        try:
+            鎖Context = self.工作階段庫物件.壓縮鎖(工作階段識別碼)
+        except Exception:
+            鎖Context = None
+        if 鎖Context is None:
+            鎖Context = nullcontext(True)
+        with 鎖Context as 是否取得鎖:
             if not 是否取得鎖:
+                鎖定持有者 = self.工作階段庫物件.讀取壓縮鎖Holder(工作階段識別碼)
+                if 工作階段識別碼 not in self.壓縮讓路警告集合:
+                    self.壓縮讓路警告集合.add(工作階段識別碼)
+                    print(f"⚠ 跳過並發壓縮：session {工作階段識別碼} 正由 {鎖定持有者 or 'unknown'} 壓縮，稍後會再試。")
                 return 工作階段識別碼, 訊息清單, False
+            self.工作階段庫物件.寫入訊息清單(工作階段識別碼, 訊息清單)
+            if self.記憶管理器 and hasattr(self.記憶管理器, "on_pre_compress"):
+                try:
+                    self.記憶管理器.on_pre_compress(訊息清單)
+                except Exception:
+                    pass
             壓縮結果 = self.上下文壓縮器物件.壓縮訊息(
                 訊息清單,
                 系統提示詞,
@@ -275,8 +337,49 @@ class 代理執行階段:
             )
             if not 壓縮結果.是否已壓縮:
                 return 工作階段識別碼, 訊息清單, False
-            新工作階段識別碼 = self.工作階段庫物件.建立壓縮後工作階段(工作階段識別碼, 壓縮結果.訊息清單, 系統提示詞)
+            舊工作階段識別碼 = 工作階段識別碼
+            新工作階段識別碼 = self.工作階段庫物件.建立壓縮後工作階段(舊工作階段識別碼, 壓縮結果.訊息清單, 系統提示詞)
+            設定目前工作階段識別碼(新工作階段識別碼)
+            self.通知Session切換(新工作階段識別碼, 舊工作階段識別碼)
             return 新工作階段識別碼, 壓縮結果.訊息清單, True
+
+    def 通知Session切換(self, 新工作階段識別碼: str, 舊工作階段識別碼: str) -> None:
+        """通知事件、記憶與上下文引擎 session id 因壓縮而切換。
+
+        參數：
+            新工作階段識別碼: compression child session id。
+            舊工作階段識別碼: compression parent session id。
+
+        返回值：None。hook 失敗不會中斷主流程，避免壓縮成功後因外掛錯誤回滾。
+        """
+        if self.上下文引擎 and hasattr(self.上下文引擎, "on_session_start"):
+            try:
+                self.上下文引擎.on_session_start(
+                    新工作階段識別碼,
+                    boundary_reason="compression",
+                    old_session_id=舊工作階段識別碼,
+                )
+            except Exception:
+                pass
+        if self.記憶管理器 and hasattr(self.記憶管理器, "on_session_switch"):
+            try:
+                self.記憶管理器.on_session_switch(
+                    新工作階段識別碼,
+                    parent_session_id=舊工作階段識別碼,
+                    reset=False,
+                    reason="compression",
+                )
+            except Exception:
+                pass
+        if self.事件回呼:
+            try:
+                self.事件回呼("session:compress", {
+                    "session_id": 新工作階段識別碼,
+                    "old_session_id": 舊工作階段識別碼,
+                    "compression_count": self.上下文壓縮器物件.壓縮次數 if hasattr(self.上下文壓縮器物件, "壓縮次數") else None,
+                })
+            except Exception:
+                pass
 
     def 是否ContextOverflow錯誤(self, 錯誤: Exception) -> bool:
         """判斷例外是否屬於可用壓縮重試的 context overflow 類錯誤。
