@@ -417,9 +417,31 @@ class 代理執行階段:
             平台名稱=self.平台名稱,
             工具名稱清單=list(self.工具登錄器物件.工具表.keys()),
             技能摘要=技能摘要,
+            記憶文字=self.建立記憶提示區塊("memory"),
+            使用者資料文字=self.建立記憶提示區塊("user"),
             工作目錄=self.工作目錄,
         )
         return 提示詞組裝器(設定).組裝系統提示詞(額外系統訊息)
+
+    def 建立記憶提示區塊(self, 目標: str) -> str:
+        """載入內建記憶 snapshot 給 system prompt。
+
+        參數：
+            目標: memory 或 user。
+
+        返回值：
+            frozen snapshot 區塊；沒有記憶時回傳空字串。
+        """
+        try:
+            from .記憶存放 import 記憶存放
+
+            暫存設定 = 提示詞設定(工作目錄=self.工作目錄)
+            hermes家目錄 = 提示詞組裝器(暫存設定).取得Hermes家目錄()
+            存放 = 記憶存放(hermes家目錄)
+            存放.載入()
+            return 存放.格式化給系統提示(目標)
+        except Exception:
+            return ""
 
     def 建立技能摘要(self) -> str:
         """掃描本專案內建 Hermes skills 並建立 prompt 用摘要。
