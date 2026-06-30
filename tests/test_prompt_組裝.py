@@ -17,7 +17,7 @@ from 繁中代理.技能索引器 import (
 )
 
 
-def test_prompt_組裝_保持_hermes_三層順序():
+def test_prompt_組裝_保持_hermes_三層順序(tmp_path):
     """確認 stable/context/volatile 結構與關鍵順序。"""
     設定 = 提示詞設定(
         模型名稱="gemini-2.5-flash-lite",
@@ -26,6 +26,7 @@ def test_prompt_組裝_保持_hermes_三層順序():
         工具名稱清單=["read_file", "skills_list", "skill_view"],
         技能摘要="<available_skills>\n  - hermes-agent\n</available_skills>",
         工作目錄="/Users/wujinan/Documents/testagent2",
+        Hermes家目錄=str(tmp_path / ".hermes"),
     )
     區塊 = 提示詞組裝器(設定).組裝提示詞區塊("額外系統訊息")
     assert set(區塊) == {"stable", "context", "volatile"}
@@ -37,9 +38,9 @@ def test_prompt_組裝_保持_hermes_三層順序():
     assert "Model: gemini-2.5-flash-lite" in 區塊["volatile"]
 
 
-def test_prompt_完整字串_依序串接三層():
+def test_prompt_完整字串_依序串接三層(tmp_path):
     """確認完整 system prompt 是 stable、context、volatile 依序串接。"""
-    設定 = 提示詞設定(工具名稱清單=["read_file"], 工作階段識別碼="s2")
+    設定 = 提示詞設定(工具名稱清單=["read_file"], 工作階段識別碼="s2", Hermes家目錄=str(tmp_path / ".hermes"))
     完整 = 提示詞組裝器(設定).組裝系統提示詞("context-marker")
     assert 完整.index("You are Hermes Agent") < 完整.index("context-marker") < 完整.index("Conversation started:")
     assert "You're responding through an API server" in 完整
