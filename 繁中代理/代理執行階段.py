@@ -108,6 +108,7 @@ class 代理執行階段:
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
+        self.平台名稱 = 平台名稱
         self.user_id = user_id
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
