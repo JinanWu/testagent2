@@ -1,4 +1,4 @@
-"""檢查專案自有 Python 物件是否具備文檔字串。
+"""檢查專案自有 Python 物件是否具備文檔字串與繁中命名。
 
 功能：
     掃描 `繁中代理` 套件內的 module、class、function，確認都有 docstring。
@@ -18,6 +18,62 @@ import ast
 import sys
 from pathlib import Path
 
+允許英文名稱 = {
+    # Python / dunder / 慣例名稱
+    "__init__",
+    "__repr__",
+    "self",
+    "cls",
+    "args",
+    "kwargs",
+    "e",
+    "ex",
+    "exc",
+    "err",
+    "_",
+    "i",
+    "j",
+    "k",
+    "n",
+    # typing / import alias / 外部套件名稱
+    "Any",
+    "Iterator",
+    "Path",
+    "_datetime",
+    # 外部 API / OpenAI-compatible / Gemini / session_search 契約與 JSON 欄位
+    "role",
+    "content",
+    "tool_calls",
+    "tool_call_id",
+    "tool_name",
+    "finish_reason",
+    "reasoning",
+    "reasoning_content",
+    "reasoning_details",
+    "codex_reasoning_items",
+    "codex_message_items",
+    "platform_message_id",
+    "message_id",
+    "user_id",
+    "source",
+    "model",
+    "model_config",
+    "parent_session_id",
+    "billing_provider",
+    "cwd",
+    "include_ancestors",
+    "include_children",
+    "include_archived",
+    "limit",
+    "window",
+    "bookend",
+    "around_message_id",
+}
+
+允許英文前綴 = (
+    "__",
+)
+
 
 def 是否包含中文(文字: str) -> bool:
     """判斷字串是否含 CJK 字元。
@@ -29,6 +85,39 @@ def 是否包含中文(文字: str) -> bool:
         True 表示含中文。
     """
     return any("\u4e00" <= 字元 <= "\u9fff" for 字元 in 文字)
+
+
+def 是否允許英文名稱(名稱: str) -> bool:
+    """判斷英文名稱是否屬於外部契約、慣例或 allowlist。
+
+    參數：
+        名稱: AST 中讀到的 identifier。
+
+    返回值：
+        True 表示此英文 identifier 可保留。
+    """
+    if 名稱 in 允許英文名稱:
+        return True
+    if 名稱.isupper():
+        return True
+    return any(名稱.startswith(前綴) for 前綴 in 允許英文前綴)
+
+
+def 記錄英文命名問題(問題清單: list[str], 路徑: Path, 行號: int, 名稱: str, 種類: str) -> None:
+    """把不符合繁中命名的 identifier 加入問題清單。
+
+    參數：
+        問題清單: 累積問題的清單。
+        路徑: Python 檔路徑。
+        行號: 問題所在行號。
+        名稱: identifier 名稱。
+        種類: 問題種類，供輸出辨識。
+
+    返回值：None。
+    """
+    if 是否包含中文(名稱) or 是否允許英文名稱(名稱):
+        return
+    問題清單.append(f"{路徑}:{行號} `{名稱}` 應使用繁中專案自有名稱（{種類}）")
 
 
 def 檢查檔案(路徑: Path) -> list[str]:
@@ -45,14 +134,28 @@ def 檢查檔案(路徑: Path) -> list[str]:
     if ast.get_docstring(樹) is None:
         問題清單.append(f"{路徑}: module 缺少 docstring")
     for 節點 in ast.walk(樹):
-        if isinstance(節點, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        if isinstance(節點, (ast.FunctionDef, ast.AsyncFunctionDef)):
             名稱 = 節點.name
-            if 名稱 in {"__init__", "__repr__"}:
-                pass
-            elif not 是否包含中文(名稱):
-                問題清單.append(f"{路徑}:{節點.lineno} `{名稱}` 應使用繁中專案自有名稱")
+            記錄英文命名問題(問題清單, 路徑, 節點.lineno, 名稱, "function")
             if ast.get_docstring(節點) is None:
                 問題清單.append(f"{路徑}:{節點.lineno} `{名稱}` 缺少 docstring")
+            for 參數 in [*節點.args.posonlyargs, *節點.args.args, *節點.args.kwonlyargs]:
+                記錄英文命名問題(問題清單, 路徑, 參數.lineno, 參數.arg, "argument")
+            if 節點.args.vararg:
+                記錄英文命名問題(問題清單, 路徑, 節點.args.vararg.lineno, 節點.args.vararg.arg, "vararg")
+            if 節點.args.kwarg:
+                記錄英文命名問題(問題清單, 路徑, 節點.args.kwarg.lineno, 節點.args.kwarg.arg, "kwarg")
+        elif isinstance(節點, ast.ClassDef):
+            名稱 = 節點.name
+            記錄英文命名問題(問題清單, 路徑, 節點.lineno, 名稱, "class")
+            if ast.get_docstring(節點) is None:
+                問題清單.append(f"{路徑}:{節點.lineno} `{名稱}` 缺少 docstring")
+        elif isinstance(節點, ast.Name) and isinstance(節點.ctx, ast.Store):
+            記錄英文命名問題(問題清單, 路徑, 節點.lineno, 節點.id, "variable")
+        elif isinstance(節點, ast.ExceptHandler) and 節點.name:
+            記錄英文命名問題(問題清單, 路徑, 節點.lineno, 節點.name, "exception alias")
+        elif isinstance(節點, ast.alias) and 節點.asname:
+            記錄英文命名問題(問題清單, 路徑, 節點.lineno, 節點.asname, "import alias")
     return 問題清單
 
 
