@@ -564,12 +564,55 @@ class 互動CLI:
 
         返回值：None。近期 session 表格會輸出到 stdout。
         """
-        try:
-            limit = int(參數列[0]) if 參數列 else 10
-        except ValueError:
-            limit = 10
-        sessions = self.工作階段庫物件.列出工作階段(limit=limit, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
-        印出工作階段表格(sessions, self.工作階段庫物件, 顯示預覽=True)
+        if not 參數列:
+            參數列 = ["browse", "10"]
+        if 參數列[0].isdigit():
+            參數列 = ["browse", 參數列[0]]
+        子命令 = 參數列[0].lower()
+        if 子命令 in {"list", "ls"}:
+            try:
+                limit = int(參數列[1]) if len(參數列) > 1 else 10
+            except ValueError:
+                limit = 10
+            sessions = self.工作階段庫物件.列出工作階段(limit=limit, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+            印出工作階段表格(sessions)
+            return
+        if 子命令 in {"browse", "b"}:
+            try:
+                limit = int(參數列[1]) if len(參數列) > 1 else 10
+            except ValueError:
+                limit = 10
+            sessions = self.工作階段庫物件.列出工作階段(limit=limit, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+            印出工作階段表格(sessions, self.工作階段庫物件, 顯示預覽=True)
+            return
+        if 子命令 == "search":
+            查詢 = " ".join(參數列[1:]).strip()
+            if not 查詢:
+                print("用法：/sessions search <query>")
+                return
+            matches = self.工作階段庫物件.搜尋工作階段(查詢, limit=10, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+            if not matches:
+                print("沒有符合的 session。")
+                return
+            for i, match in enumerate(matches, start=1):
+                print(f"{i:>2}. {match.get('session_id')}  {match.get('title') or ''}")
+                print(f"    {取訊息摘要({'content': match.get('snippet') or ''}, 120)}")
+            return
+        if 子命令 == "rename":
+            if len(參數列) < 3:
+                print("用法：/sessions rename <session_id> <title>")
+                return
+            self.工作階段庫物件.重新命名工作階段(參數列[1], " ".join(參數列[2:]))
+            print(f"已重新命名：{參數列[1]}")
+            return
+        if 子命令 == "export":
+            if len(參數列) < 2:
+                print("用法：/sessions export <output.jsonl>")
+                return
+            結果 = self.工作階段庫物件.匯出工作階段JSONL(參數列[1], include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
+            印出JSON(結果)
+            return
+        print("未知 /sessions 子命令。用法：/sessions [list|browse|search|rename|export]")
 
     def 命令History(self) -> None:
         """處理 /history 命令。
