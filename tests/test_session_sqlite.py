@@ -4,12 +4,15 @@ import json
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 from 繁中代理.工作階段上下文 import 讀取目前工作階段識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.模型供應商 import 假模型供應商, 模型回應
 from 繁中代理.工具 import 建立預設工具登錄器
+
+專案根目錄 = Path(__file__).resolve().parents[1]
 
 
 def test_session_sqlite_roundtrip(tmp_path):
@@ -39,7 +42,7 @@ def test_runtime_早期持久化_並完成最終回答(tmp_path):
     返回值：None。透過 assert 驗證 runtime persistence。
     """
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
-    runtime = 代理執行階段(庫, 假模型供應商(), 模型名稱="fake", 供應商名稱="fake", 工作目錄="/Users/wujinan/Documents/testagent2")
+    runtime = 代理執行階段(庫, 假模型供應商(), 模型名稱="fake", 供應商名稱="fake", 工作目錄=str(專案根目錄))
     結果 = runtime.執行使用者訊息("你好", 工作階段識別碼="s")
     讀回訊息 = 庫.讀取訊息("s")
     assert 結果.最終回答
@@ -353,7 +356,7 @@ def test_runtime_max_iterations_fallback_includes_finish_reason(tmp_path):
         AlwaysToolProvider(),
         模型名稱="fake",
         供應商名稱="fake",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         最大迭代次數=2,
     )
     結果 = runtime.執行使用者訊息("觸發 tool loop", 工作階段識別碼="max-iter")
@@ -387,7 +390,7 @@ def test_runtime_writes_finish_reason_usage_and_cli_rewind_search(tmp_path):
 
     db = tmp_path / "sessions.sqlite3"
     庫 = 工作階段庫(db)
-    runtime = 代理執行階段(庫, UsageProvider(), 模型名稱="fake", 供應商名稱="fake", 工作目錄="/Users/wujinan/Documents/testagent2")
+    runtime = 代理執行階段(庫, UsageProvider(), 模型名稱="fake", 供應商名稱="fake", 工作目錄=str(專案根目錄))
     runtime.執行使用者訊息("請記錄 usage", 工作階段識別碼="usage")
     runtime.執行使用者訊息("再次記錄 usage", 工作階段識別碼="usage")
     no_path_search = json.loads(建立預設工具登錄器().呼叫工具("session_search", {"query": "usage", "limit": 1}))
@@ -401,11 +404,11 @@ def test_runtime_writes_finish_reason_usage_and_cli_rewind_search(tmp_path):
     assert session["reasoning_tokens"] == 4
     assert 庫.讀取訊息("usage")[-1]["finish_reason"] == "stop"
 
-    搜尋 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--session-search", "usage"], cwd="/Users/wujinan/Documents/testagent2", text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    搜尋 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--session-search", "usage"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert 搜尋.returncode == 0, 搜尋.stdout
     assert "usage" in 搜尋.stdout
     target = 庫.連線.execute("SELECT id FROM messages WHERE session_id='usage' AND role='assistant'").fetchone()["id"]
-    rewind = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "usage", "--rewind-to-message-id", str(target)], cwd="/Users/wujinan/Documents/testagent2", text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    rewind = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "usage", "--rewind-to-message-id", str(target)], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert rewind.returncode == 0, rewind.stdout
     assert "rewound_count" in rewind.stdout
     assert [m["role"] for m in 庫.讀取訊息("usage")] == ["user"]
@@ -439,7 +442,7 @@ def test_session_metadata_archive_filters_and_cost_mvp(tmp_path):
         UsageProvider(),
         模型名稱="gemini-2.5-flash-lite",
         供應商名稱="gemini-adc",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         模型模式="gemini",
         user_id="user-a",
         source="cli-test",
@@ -476,17 +479,17 @@ def test_session_metadata_archive_filters_and_cost_mvp(tmp_path):
     visible = json.loads(登錄器.呼叫工具("session_search", {"query": "metadata", "db_path": str(db), "source": "cli-test", "user_id": "user-a", "include_archived": True}))
     assert visible["result"]["total_count"] == 1
 
-    unarchive = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--unarchive-session", "meta-session"], cwd="/Users/wujinan/Documents/testagent2", text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    unarchive = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--unarchive-session", "meta-session"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert unarchive.returncode == 0, unarchive.stdout
     assert 庫.讀取工作階段("meta-session")["archived"] == 0
-    archive = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--archive-session", "meta-session"], cwd="/Users/wujinan/Documents/testagent2", text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    archive = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--archive-session", "meta-session"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert archive.returncode == 0, archive.stdout
     assert 庫.讀取工作階段("meta-session")["archived"] == 1
 
     cli = subprocess.run([
         sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "cli-meta",
         "--user-id", "cli-user", "--source", "api", "--model-config-json", '{"temperature":0.1}', "hello"
-    ], cwd="/Users/wujinan/Documents/testagent2", text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    ], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert cli.returncode == 0, cli.stdout
     cli_session = 庫.讀取工作階段("cli-meta")
     assert cli_session["user_id"] == "cli-user"
@@ -526,7 +529,7 @@ def test_runtime_compression_updates_context_and_hooks(tmp_path):
         假模型供應商(),
         模型名稱="fake",
         供應商名稱="fake",
-        工作目錄="/Users/wujinan/Documents/testagent2",
+        工作目錄=str(專案根目錄),
         上下文長度=8192,
         記憶管理器=記憶物件,
         上下文引擎=引擎物件,
