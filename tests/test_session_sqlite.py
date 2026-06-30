@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+專案根目錄 = Path(__file__).resolve().parents[1]
+
 from 繁中代理.工作階段上下文 import 讀取目前工作階段識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.代理執行階段 import 代理執行階段
@@ -547,3 +549,203 @@ def test_runtime_compression_updates_context_and_hooks(tmp_path):
     assert events and events[0][0] == "session:compress"
     assert 庫.讀取訊息(sid)[0]["content"] == "開頭"
     assert 壓縮後 == 庫.讀取訊息(新sid)
+
+def test_cli_sessions_subcommands_and_repl_slash_commands(tmp_path):
+    """確認 CLI 提供 sessions 管理子命令與最小 Hermes-style REPL slash commands。
+
+    參數：
+        tmp_path: pytest 提供的暫存目錄。
+
+    返回值：None。透過 subprocess 驗證 list/browse/rename/export/stats 與 REPL。
+    """
+    db = tmp_path / "cli-sessions.sqlite3"
+    first = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "cli-one", "第一則 CLI 訊息"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stdout
+    assert "session=cli-one" in first.stdout
+
+    list_json = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "list", "--json"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert list_json.returncode == 0, list_json.stdout
+    list_payload = json.loads(list_json.stdout)
+    assert list_payload["total_count"] == 1
+    assert list_payload["sessions"][0]["id"] == "cli-one"
+
+    rename = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "rename", "cli-one", "好用 CLI"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert rename.returncode == 0, rename.stdout
+    assert 工作階段庫(db).讀取工作階段("cli-one")["title"] == "好用 CLI"
+
+    browse = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "browse"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert browse.returncode == 0, browse.stdout
+    assert "好用 CLI" in browse.stdout
+    assert "第一則 CLI 訊息" in browse.stdout
+
+    export_path = tmp_path / "sessions.jsonl"
+    export = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "export", str(export_path)],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert export.returncode == 0, export.stdout
+    export_payload = json.loads(export.stdout)
+    assert export_payload["session_count"] == 1
+    exported_lines = export_path.read_text(encoding="utf-8").splitlines()
+    assert len(exported_lines) == 1
+    assert json.loads(exported_lines[0])["session"]["id"] == "cli-one"
+
+    stats = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "stats", "--json"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert stats.returncode == 0, stats.stdout
+    stats_payload = json.loads(stats.stdout)
+    assert stats_payload["session_count"] == 1
+    assert stats_payload["message_count"] >= 2
+
+    repl = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "repl-one"],
+        cwd=專案根目錄,
+        input="/help\n/status\nREPL 訊息\n/history\n/sessions 5\n/undo\n/history\n/exit\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert repl.returncode == 0, repl.stdout
+    assert "可用命令" in repl.stdout
+    assert "session=repl-one" in repl.stdout
+    assert "假模型回覆" in repl.stdout
+    assert "已 undo" in repl.stdout
+    assert [m["role"] for m in 工作階段庫(db).讀取訊息("repl-one")] == []
+
+
+
+def test_tool_paths_resolve_against_runtime_workdir(tmp_path):
+    """確認 read/search/write/patch/terminal 相對路徑都以 runtime workdir 為 base。"""
+    workdir = tmp_path / "agent-workdir"
+    outside = tmp_path / "outside-cwd"
+    workdir.mkdir()
+    outside.mkdir()
+    (workdir / "note.txt").write_text("alpha\nneedle\n", encoding="utf-8")
+    登錄器 = 建立預設工具登錄器(workdir)
+
+    read_payload = json.loads(登錄器.呼叫工具("read_file", {"path": "note.txt"}))
+    assert read_payload["success"] is True
+    assert read_payload["result"]["path"] == str(workdir / "note.txt")
+    assert "needle" in read_payload["result"]["content"]
+
+    search_payload = json.loads(登錄器.呼叫工具("search_files", {"path": ".", "pattern": "needle", "target": "content"}))
+    assert search_payload["success"] is True
+    assert search_payload["result"]["matches"][0]["path"] == str(workdir / "note.txt")
+
+    write_payload = json.loads(登錄器.呼叫工具("write_file", {"path": "sub/new.txt", "content": "hello"}))
+    assert write_payload["success"] is True
+    assert (workdir / "sub" / "new.txt").read_text(encoding="utf-8") == "hello"
+
+    patch_payload = json.loads(登錄器.呼叫工具("patch", {"path": "sub/new.txt", "old_string": "hello", "new_string": "world"}))
+    assert patch_payload["success"] is True
+    assert (workdir / "sub" / "new.txt").read_text(encoding="utf-8") == "world"
+
+    terminal_payload = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd && test -f note.txt", "workdir": "."}))
+    assert terminal_payload["success"] is True
+    assert terminal_payload["result"]["exit_code"] == 0
+    assert terminal_payload["result"]["output"].splitlines()[0] == str(workdir)
+
+
+def test_cli_resume_continue_query_and_interactive_session_commands(tmp_path):
+    """確認 Hermes-like CLI flags 與互動 session 操作。"""
+    db = tmp_path / "cli-flags.sqlite3"
+    first = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--session", "seed", "-q", "用 query 建立 session"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert first.returncode == 0, first.stdout
+    assert "session=seed" in first.stdout
+    工作階段庫(db).重新命名工作階段("seed", "可恢復標題")
+
+    resume_by_title = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--resume", "可恢復標題", "-q", "resume 後續訊息"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert resume_by_title.returncode == 0, resume_by_title.stdout
+    assert "session=seed" in resume_by_title.stdout
+
+    continue_latest = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db), "--continue", "-q", "continue 最近 session"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert continue_latest.returncode == 0, continue_latest.stdout
+    assert "session=seed" in continue_latest.stdout
+
+    search = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "sessions", "--db", str(db), "search", "continue", "--json"],
+        cwd=專案根目錄,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert search.returncode == 0, search.stdout
+    assert json.loads(search.stdout)["total_count"] >= 1
+
+    repl = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(db)],
+        cwd=專案根目錄,
+        input="/resume\n1\n/status\n/sessions list 5\n/sessions search continue\n/sessions rename seed 互動標題\n/new explicit-new\n/status\n/exit\n",
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert repl.returncode == 0, repl.stdout
+    assert "請輸入數字選擇" in repl.stdout
+    assert "已 resume：seed" in repl.stdout
+    assert "已重新命名：seed" in repl.stdout
+    assert "已建立並切換到新 session：explicit-new" in repl.stdout
+    assert 工作階段庫(db).讀取工作階段("seed")["title"] == "互動標題"
+    assert 工作階段庫(db).讀取工作階段("explicit-new") is not None

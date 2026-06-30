@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+專案根目錄 = Path(__file__).resolve().parents[1]
+
 from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 模型回應
