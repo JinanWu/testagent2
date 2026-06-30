@@ -18,6 +18,7 @@ import json
 import os
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -98,7 +99,7 @@ class 假模型供應商:
                 工具呼叫清單=[{
                     "id": 呼叫識別碼,
                     "type": "function",
-                    "function": {"name": "read_file", "arguments": json.dumps({"path": "/Users/wujinan/Documents/testagent2/README.md", "limit": 20}, ensure_ascii=False)},
+                    "function": {"name": "read_file", "arguments": json.dumps({"path": str(Path(__file__).resolve().parents[1] / "README.md"), "limit": 20}, ensure_ascii=False)},
                 }],
                 完成原因="tool_calls",
             )
