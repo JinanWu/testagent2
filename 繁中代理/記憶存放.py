@@ -47,6 +47,7 @@ class 記憶存放:
         return self.快照.get(目標, "")
 
     def _更新(self, 目標: str, 舊文字: str, 新內容: str | None) -> dict[str, Any]:
+        """更新記憶項目。參數：目標、舊文字、新內容。返回值：操作結果。"""
         符合 = [i for i, 值 in enumerate(self._項目(目標)) if 舊文字.strip() and 舊文字 in 值]
         if len(符合) != 1:
             return {"success": False, "error": "找不到唯一符合項目", "matches": len(符合)}
@@ -66,34 +67,44 @@ class 記憶存放:
         return self._成功(目標, "Entry removed" if 新內容 is None else "Entry replaced")
 
     def _驗證內容(self, 內容: str) -> dict[str, Any] | None:
+        """驗證記憶內容。參數：內容。返回值：錯誤 dict 或 None。"""
         if not 內容:
             return {"success": False, "error": "content 不可為空"}
         掃描結果 = 掃描提示注入內容(內容, "memory")
         return None if 掃描結果 == 內容 else {"success": False, "error": 掃描結果}
 
     def _路徑(self, 目標: str) -> Path:
+        """取得記憶檔路徑。參數：目標。返回值：Path。"""
         return self.hermes家目錄 / "memories" / ("USER.md" if 目標 == "user" else "MEMORY.md")
     def _項目(self, 目標: str) -> list[str]:
+        """取得 live 項目清單。參數：目標。返回值：list。"""
         return self.使用者項目 if 目標 == "user" else self.記憶項目
     def _限制(self, 目標: str) -> int:
+        """取得字數限制。參數：目標。返回值：int。"""
         return self.使用者字數限制 if 目標 == "user" else self.記憶字數限制
     def _讀檔(self, 目標: str) -> list[str]:
+        """讀取記憶檔。參數：目標。返回值：項目清單。"""
         路徑 = self._路徑(目標)
         if not 路徑.exists():
             return []
         return list(dict.fromkeys(項.strip() for 項 in 路徑.read_text(encoding="utf-8").split(記憶分隔符) if 項.strip()))
     def _寫檔(self, 目標: str) -> None:
+        """寫入記憶檔。參數：目標。返回值：None。"""
         路徑 = self._路徑(目標); 路徑.parent.mkdir(parents=True, exist_ok=True)
         路徑.write_text(記憶分隔符.join(self._項目(目標)), encoding="utf-8")
     def _檢查容量(self, 目標: str, 項目: list[str]) -> dict[str, Any] | None:
+        """檢查容量限制。參數：目標與項目。返回值：錯誤 dict 或 None。"""
         總長 = len(記憶分隔符.join(項目)); 限制 = self._限制(目標)
         return None if 總長 <= 限制 else {"success": False, "error": f"Memory at {總長}/{限制} chars", "current_entries": self._項目(目標)}
     def _清理快照(self, 項目: list[str], 檔名: str) -> list[str]:
+        """清理危險 snapshot。參數：項目與檔名。返回值：安全項目。"""
         return [值 if 掃描提示注入內容(值, 檔名) == 值 else f"[BLOCKED: {檔名} entry contained threat pattern.]" for 值 in 項目]
     def _格式化區塊(self, 目標: str, 項目: list[str]) -> str:
+        """格式化 prompt 區塊。參數：目標與項目。返回值：字串。"""
         if not 項目:
             return ""
         內容 = 記憶分隔符.join(項目); 標題 = "USER PROFILE (who the user is)" if 目標 == "user" else "MEMORY (your personal notes)"
         return f"{'═' * 46}\n{標題} [{len(內容)}/{self._限制(目標)} chars]\n{'═' * 46}\n{內容}"
     def _成功(self, 目標: str, 訊息: str) -> dict[str, Any]:
+        """建立成功回應。參數：目標與訊息。返回值：dict。"""
         return {"success": True, "target": 目標, "entries": self._項目(目標), "message": 訊息}
