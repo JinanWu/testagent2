@@ -19,7 +19,7 @@ from .上下文壓縮器 import 上下文壓縮器
 from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑, 設定目前使用者
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
-from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
+from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技能強制載入指引, 技能無相關項目指引
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
 from .使用者 import 使用者上下文, 使用者庫, 取得預設記憶根目錄, 建立預設使用者上下文
@@ -513,4 +513,34 @@ class 代理執行階段:
             return ""
         工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
         摘要清單 = [建立技能索引摘要(根目錄, 工具名稱集合, self.使用者上下文物件.enabled_skills) for 根目錄 in 根目錄清單]
-        return "\n\n".join(摘要 for 摘要 in 摘要清單 if 摘要)
+        if len(摘要清單) == 1:
+            return 摘要清單[0]
+        技能行清單: list[str] = []
+        已出現技能名稱: set[str] = set()
+        已出現行: set[str] = set()
+        for 摘要 in 摘要清單:
+            區塊內 = False
+            for 行 in 摘要.splitlines():
+                if 行.strip() == "<available_skills>":
+                    區塊內 = True
+                    continue
+                if 行.strip() == "</available_skills>":
+                    區塊內 = False
+                    continue
+                if not 區塊內 or "(no skills found)" in 行:
+                    continue
+                指紋 = 行.strip()
+                技能名稱 = ""
+                if 指紋.startswith("- "):
+                    技能名稱 = 指紋[2:].split(":", 1)[0].strip()
+                if 技能名稱 and 技能名稱 in 已出現技能名稱:
+                    continue
+                if 指紋 in 已出現行:
+                    continue
+                if 技能名稱:
+                    已出現技能名稱.add(技能名稱)
+                已出現行.add(指紋)
+                技能行清單.append(行)
+        if not 技能行清單:
+            return 技能強制載入指引 + "\n\n<available_skills>\n  (no skills found)\n</available_skills>\n\n" + 技能無相關項目指引
+        return "\n".join([技能強制載入指引, "", "<available_skills>", *技能行清單, "</available_skills>", "", 技能無相關項目指引])

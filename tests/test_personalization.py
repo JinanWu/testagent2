@@ -97,6 +97,8 @@ def test_runtime覆寫local使用者時不修改傳入上下文(tmp_path):
     assert runtime.使用者上下文物件 is not local
     assert local.user_id == "local"
     assert local.username == "local"
+
+
 def test_rewind會重設目前使用者上下文(tmp_path):
     """確認 runtime rewind 入口會校正目前使用者 ContextVar。"""
     庫 = 工作階段庫(tmp_path / "rewind.sqlite3")
@@ -112,7 +114,6 @@ def test_rewind會重設目前使用者上下文(tmp_path):
     assert 讀取目前使用者識別碼() == "alice"
 
 
-def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
 def test_empty_skill_roots不fallback到內建技能(tmp_path):
     """確認空 skill_roots 代表不注入內建 bundled skills。"""
     上下文 = 建立上下文("alice", tmp_path, tools={"skills_list"}, skills=set())
@@ -121,6 +122,24 @@ def test_empty_skill_roots不fallback到內建技能(tmp_path):
     assert runtime.建立技能摘要() == ""
 
 
+def test_多個skill_roots只產生單一技能提示區塊並去重(tmp_path):
+    """確認多個 skill roots 不會重複 mandatory 指引或同名技能。"""
+    root1 = tmp_path / "skills1"
+    root2 = tmp_path / "skills2"
+    寫入技能(root1, "cat", "skill_a", "A one")
+    寫入技能(root2, "cat", "skill_a", "A two")
+    寫入技能(root2, "cat", "skill_b", "B")
+    上下文 = 建立上下文("alice", tmp_path, tools={"skills_list"}, skills={"skill_a", "skill_b"})
+    上下文.skill_roots = [root1, root2]
+    runtime = 代理執行階段(工作階段庫(tmp_path / "multi-skills.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=上下文)
+    摘要 = runtime.建立技能摘要()
+    assert 摘要.count("## Skills (mandatory)") == 1
+    assert 摘要.count("<available_skills>") == 1
+    assert 摘要.count("- skill_a") == 1
+    assert 摘要.count("- skill_b") == 1
+
+
+def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
     """確認 session owner 不會被跨使用者覆蓋。"""
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
     alice = 建立上下文("alice", tmp_path)
