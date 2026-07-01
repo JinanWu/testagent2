@@ -225,3 +225,71 @@ def 雜湊Token(token: str) -> str:
         十六進位 SHA256 字串。
     """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+class 使用者庫:
+    """管理 SQLite 中的 users、user_settings 與 auth_sessions。
+
+    參數：
+        資料庫路徑: 與 session store 共用或獨立的 SQLite 檔案。
+
+    返回值：
+        可建立、驗證與解析使用者上下文的資料庫物件。
+    """
+
+    def __init__(self, 資料庫路徑: str | Path) -> None:
+        """初始化使用者資料庫。
+
+        參數：
+            資料庫路徑: SQLite 檔案路徑。
+
+        返回值：None。
+        """
+        self.資料庫路徑 = Path(資料庫路徑)
+        self.資料庫路徑.parent.mkdir(parents=True, exist_ok=True)
+        self.連線 = sqlite3.connect(self.資料庫路徑, timeout=1, isolation_level=None, check_same_thread=False)
+        self.連線.row_factory = sqlite3.Row
+        self.建立資料表()
+
+    def 建立資料表(self) -> None:
+        """建立使用者與登入狀態資料表。
+
+        參數：無。
+        返回值：None。
+        """
+        self.連線.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                username TEXT UNIQUE NOT NULL,
+                display_name TEXT,
+                password_hash TEXT,
+                auth_provider TEXT NOT NULL DEFAULT 'local',
+                external_subject TEXT,
+                roles_json TEXT NOT NULL DEFAULT '["user"]',
+                disabled INTEGER NOT NULL DEFAULT 0,
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id TEXT PRIMARY KEY,
+                enabled_tools_json TEXT,
+                enabled_skills_json TEXT,
+                skill_roots_json TEXT,
+                allowed_workdirs_json TEXT,
+                memory_home TEXT,
+                settings_json TEXT,
+                updated_at REAL NOT NULL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            CREATE TABLE IF NOT EXISTS auth_sessions (
+                token_hash TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                expires_at REAL,
+                last_used_at REAL,
+                revoked_at REAL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+            """
+        )
