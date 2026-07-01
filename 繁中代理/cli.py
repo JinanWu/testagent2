@@ -106,6 +106,7 @@ def 建立Auth參數解析器() -> argparse.ArgumentParser:
     子命令.add_parser("whoami", help="顯示目前登入使用者")
     return 解析器
 
+
 def 建立Users參數解析器() -> argparse.ArgumentParser:
     """建立 users 管理子命令 parser。
 
@@ -161,6 +162,7 @@ def 解析逗號清單(文字: str | None) -> list[str]:
     """
     return [項目.strip() for 項目 in str(文字 or "").split(",") if 項目.strip()]
 
+
 def 執行Auth子命令(參數: argparse.Namespace) -> None:
     """執行 auth 子命令。
 
@@ -192,6 +194,7 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         印出JSON({"logged_in": True, "user": 上下文.序列化()})
         return
+
 
 def 執行Users子命令(參數: argparse.Namespace) -> None:
     """執行 users 子命令。
@@ -232,13 +235,34 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
         印出JSON({"username": 參數.username, "field": 參數.設定欄位, "updated": True})
         return
 
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
     參數：無。
     返回值：ArgumentParser。解析一次性 prompt 與互動 REPL 參數。
     """
-    解析器 = argparse.ArgumentParser(description="Hermes-style Traditional Chinese CLI Agent")
+    說明 = """Hermes-style Traditional Chinese CLI Agent
+
+常用流程：
+  python3 -m 繁中代理.cli --help
+  python3 -m 繁中代理.cli users --help
+  python3 -m 繁中代理.cli auth --help
+  python3 -m 繁中代理.cli users create alice --password <密碼> --workdirs /path/to/repo
+  python3 -m 繁中代理.cli auth login alice
+  python3 -m 繁中代理.cli --session demo "請讀取 README"
+
+使用者與隔離：
+  --user-id 是 dev/test fallback；正式使用建議先 users create，再 auth login。
+  已登入時，agent 會用目前登入者的 UserContext 限制 session、tools、skills、memory 與 workdir。
+  TESTAGENT2_REQUIRE_LOGIN=1 可要求必須登入後才能執行 agent。
+
+子命令：
+  users     管理本機使用者、可用 tools/skills/workdirs
+  auth      login / whoami / logout，管理本機 token
+  sessions  列出、搜尋、重新命名、匯出 session
+"""
+    解析器 = argparse.ArgumentParser(description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
     解析器.add_argument("message", nargs="?", help="使用者訊息；省略時進入互動 REPL")
     解析器.add_argument("-q", "--query", default=None, help="一次性使用者訊息；等同 Hermes chat -q")
     解析器.add_argument("--session", default=None, help="工作階段識別碼")
@@ -298,6 +322,36 @@ def 解析模型設定(參數: argparse.Namespace, 解析器: argparse.ArgumentP
     return {"mode": 參數.mode}
 
 
+def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上下文:
+    """依 CLI 參數、本機 token 或 fallback 建立使用者上下文。
+
+    參數：
+        參數: argparse namespace，至少包含 db、workdir、user_id。
+
+    返回值：
+        使用者上下文。若要求登入但無 token，會中止程式。
+    """
+    使用者庫物件 = 使用者庫(參數.db)
+    if 參數.user_id:
+        try:
+            return 使用者庫物件.建立使用者上下文(user_id=參數.user_id, 工作目錄=參數.workdir)
+        except ValueError:
+            上下文 = 建立預設使用者上下文(參數.workdir)
+            上下文.user_id = 參數.user_id
+            上下文.username = 參數.user_id
+            return 上下文
+    auth資料 = 讀取Auth檔案()
+    if auth資料 and auth資料.get("token"):
+        try:
+            return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+        except ValueError:
+            if os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
+                raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>")
+    if os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
+        raise SystemExit("尚未登入。請先執行：testagent2 auth login <username>")
+    return 建立預設使用者上下文(參數.workdir)
+
+
 def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作階段庫, 解析器: argparse.ArgumentParser) -> 代理執行階段:
     """依 CLI 參數建立 AgentRuntime。
 
@@ -310,6 +364,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     """
     模型設定 = 解析模型設定(參數, 解析器)
     模型供應商物件 = 建立模型供應商(參數.mode, 參數.model)
+    使用者上下文物件 = 解析目前使用者上下文(參數)
     return 代理執行階段(
         工作階段庫物件=工作階段庫物件,
         模型供應商物件=模型供應商物件,
@@ -318,7 +373,8 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
         工作目錄=參數.workdir,
         最大迭代次數=參數.max_iters,
         模型模式=參數.mode,
-        user_id=參數.user_id,
+        user_id=使用者上下文物件.user_id,
+        使用者上下文物件=使用者上下文物件,
         source=參數.source,
         model_config=模型設定,
         啟用壓縮摘要=參數.compression_llm == "on",
@@ -391,7 +447,10 @@ def 解析工作階段參照(工作階段庫物件: 工作階段庫, 參照: str
         sessions = 工作階段庫物件.列出工作階段(limit=1, include_archived=include_archived, source=source, user_id=user_id)
         return str(sessions[0]["id"]) if sessions else None
     if 工作階段庫物件.讀取工作階段(參照):
-        return 工作階段庫物件.解析Resume工作階段(參照)
+        try:
+            return 工作階段庫物件.解析Resume工作階段(參照, user_id=user_id, source=source)
+        except PermissionError:
+            return None
     sessions = 工作階段庫物件.列出工作階段(limit=200, include_archived=include_archived, source=source, user_id=user_id)
     for session in sessions:
         if str(session.get("title") or "") == 參照:
