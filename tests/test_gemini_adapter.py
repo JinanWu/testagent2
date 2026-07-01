@@ -32,6 +32,24 @@ def test_gemini_adapter_轉換工具_schema():
     assert tools[0].function_declarations[0].name == "read_file"
 
 
+def test_gemini_adapter_轉換工具_schema_保留_json_schema_約束():
+    """確認 camelCase JSON Schema 約束不會在 parameters_json_schema 路徑被誤刪。"""
+    provider = GeminiADC供應商("gemini-2.5-flash-lite", "lab-cola-rd", "global")
+    參數 = {
+        "type": "object",
+        "properties": {
+            "tags": {"type": "array", "items": {"type": "string"}, "maxItems": 5, "minItems": 1},
+            "meta": {"type": "object", "additionalProperties": True},
+        },
+        "required": ["tags"],
+    }
+    tools = provider.轉成Gemini工具([{"type": "function", "function": {"name": "tag_tool", "description": "tag", "parameters": 參數}}])
+    schema = tools[0].function_declarations[0].parameters_json_schema
+    assert schema["properties"]["tags"]["maxItems"] == 5
+    assert schema["properties"]["tags"]["minItems"] == 1
+    assert schema["properties"]["meta"]["additionalProperties"] is True
+
+
 def test_cli_建立runtime前正規化模型名稱(tmp_path):
     """確認 CLI 模型別名會在 session/runtime 層先正規化。"""
     解析器 = 建立參數解析器()

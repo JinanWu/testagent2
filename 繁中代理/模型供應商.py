@@ -221,29 +221,54 @@ class GeminiADC供應商:
             return []
         from google.genai import types
 
+        可用欄位 = set(types.Schema.model_fields.keys())
+        JSON_SCHEMA鍵對照 = {
+            "additionalProperties": "additional_properties",
+            "anyOf": "any_of",
+            "maxItems": "max_items",
+            "minItems": "min_items",
+            "maxLength": "max_length",
+            "minLength": "min_length",
+            "maxProperties": "max_properties",
+            "minProperties": "min_properties",
+            "propertyOrdering": "property_ordering",
+            "$ref": "ref",
+            "$defs": "defs",
+        }
+
+        def 正規化Schema鍵(鍵: str) -> str | None:
+            if 鍵 in 可用欄位:
+                return 鍵
+            對照鍵 = JSON_SCHEMA鍵對照.get(鍵)
+            if 對照鍵 in 可用欄位:
+                return 對照鍵
+            return None
+
         def 清理Gemini結構(結構: Any) -> Any:
             """把 OpenAI JSON Schema 收斂成 google-genai Schema 支援的欄位。"""
             if isinstance(結構, list):
                 return [清理Gemini結構(項目) for 項目 in 結構]
             if not isinstance(結構, dict):
                 return 結構
-            可用欄位 = set(types.Schema.model_fields.keys())
             清理後: dict[str, Any] = {}
             for 鍵, 值 in 結構.items():
-                if 鍵 not in 可用欄位:
+                正規鍵 = 正規化Schema鍵(鍵)
+                if 正規鍵 is None:
                     continue
-                if 鍵 == "properties" and isinstance(值, dict):
-                    清理後[鍵] = {str(子鍵): 清理Gemini結構(子值) for 子鍵, 子值 in 值.items()}
-                elif 鍵 in {"items", "any_of"}:
-                    清理後[鍵] = 清理Gemini結構(值)
+                if 正規鍵 == "properties" and isinstance(值, dict):
+                    清理後[正規鍵] = {str(子鍵): 清理Gemini結構(子值) for 子鍵, 子值 in 值.items()}
+                elif 正規鍵 == "additional_properties" and isinstance(值, dict):
+                    清理後[正規鍵] = 清理Gemini結構(值)
+                elif 正規鍵 in {"items", "any_of"}:
+                    清理後[正規鍵] = 清理Gemini結構(值)
                 else:
-                    清理後[鍵] = 值
+                    清理後[正規鍵] = 值
             return 清理後
 
         函數宣告清單 = []
         for 工具 in 工具清單:
             函數 = 工具.get("function", {})
-            參數結構 = 清理Gemini結構(函數.get("parameters") or {"type": "object", "properties": {}})
+            參數結構 = 函數.get("parameters") or {"type": "object", "properties": {}}
             if "parameters_json_schema" in types.FunctionDeclaration.model_fields:
                 函數宣告清單.append(types.FunctionDeclaration(
                     name=函數.get("name"),
@@ -254,7 +279,7 @@ class GeminiADC供應商:
                 函數宣告清單.append(types.FunctionDeclaration(
                     name=函數.get("name"),
                     description=函數.get("description"),
-                    parameters=types.Schema.model_validate(參數結構),
+                    parameters=types.Schema.model_validate(清理Gemini結構(參數結構)),
                 ))
         return [types.Tool(function_declarations=函數宣告清單)]
 
