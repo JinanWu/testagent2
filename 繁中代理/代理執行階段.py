@@ -309,6 +309,7 @@ class 代理執行階段:
 
         返回值：dict[str, Any]。工作階段庫回傳的 rewind 結果，並包含 active session id。
         """
+        設定目前使用者(self.user_id, self.使用者上下文物件)
         作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼, user_id=self.user_id, source=self.source)
         設定目前工作階段識別碼(作用中工作階段識別碼)
         結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id, user_id=self.user_id)

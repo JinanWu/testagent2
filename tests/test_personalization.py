@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from 繁中代理.代理執行階段 import 代理執行階段
-from 繁中代理.工作階段上下文 import 設定目前使用者
+from 繁中代理.工作階段上下文 import 設定目前使用者, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
 from 繁中代理.工具 import 建立預設工具登錄器
@@ -97,6 +97,21 @@ def test_runtime覆寫local使用者時不修改傳入上下文(tmp_path):
     assert runtime.使用者上下文物件 is not local
     assert local.user_id == "local"
     assert local.username == "local"
+def test_rewind會重設目前使用者上下文(tmp_path):
+    """確認 runtime rewind 入口會校正目前使用者 ContextVar。"""
+    庫 = 工作階段庫(tmp_path / "rewind.sqlite3")
+    alice = 建立上下文("alice", tmp_path)
+    bob = 建立上下文("bob", tmp_path)
+    alice_runtime = 代理執行階段(庫, 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=alice)
+    bob_runtime = 代理執行階段(庫, 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=bob)
+    alice_runtime.執行使用者訊息("hello", 工作階段識別碼="alice-rewind")
+    bob_runtime.執行使用者訊息("hi", 工作階段識別碼="bob-rewind")
+    target = 庫.連線.execute("SELECT id FROM messages WHERE session_id=? ORDER BY id LIMIT 1", ("alice-rewind",)).fetchone()["id"]
+    assert 讀取目前使用者識別碼() == "bob"
+    alice_runtime.rewind到訊息("alice-rewind", target)
+    assert 讀取目前使用者識別碼() == "alice"
+
+
 def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
     """確認 session owner 不會被跨使用者覆蓋。"""
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
