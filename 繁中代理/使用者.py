@@ -468,3 +468,43 @@ class 使用者庫:
         返回值：None。
         """
         self.連線.execute("UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?", (time.time(), 雜湊Token(token)))
+
+    def 建立使用者上下文(self, user_id: str | None = None, username: str | None = None, 工作目錄: str | Path | None = None) -> 使用者上下文:
+        """從 users 與 user_settings 建立 runtime UserContext。
+
+        參數：
+            user_id: 使用者識別碼。
+            username: 登入帳號。
+            工作目錄: fallback allowed workdir。
+
+        返回值：
+            使用者上下文。
+        """
+        使用者 = self.讀取使用者(user_id=user_id, username=username)
+        if not 使用者:
+            raise ValueError("找不到使用者")
+        設定 = self.連線.execute("SELECT * FROM user_settings WHERE user_id=?", (使用者["id"],)).fetchone()
+        設定資料 = dict(設定) if 設定 else {}
+        角色 = 解析字串清單(使用者.get("roles_json") or "[\"user\"]")
+        技能根 = [Path(路徑).expanduser().resolve() for 路徑 in 解析字串清單(設定資料.get("skill_roots_json"))]
+        允許目錄清單 = 解析字串清單(設定資料.get("allowed_workdirs_json"))
+        if 允許目錄清單 and "*" not in 允許目錄清單:
+            允許目錄 = [Path(路徑).expanduser().resolve() for 路徑 in 允許目錄清單]
+        elif "*" in 允許目錄清單:
+            允許目錄 = None
+        else:
+            允許目錄 = [Path(工作目錄 or os.getcwd()).expanduser().resolve()]
+        記憶根 = Path(str(設定資料.get("memory_home") or 取得預設記憶根目錄(str(使用者["id"]))))
+        return 使用者上下文(
+            user_id=str(使用者["id"]),
+            username=str(使用者["username"]),
+            display_name=str(使用者.get("display_name") or 使用者["username"]),
+            roles=角色,
+            enabled_tools=正規化可選集合(解析字串清單(設定資料.get("enabled_tools_json"))),
+            enabled_skills=正規化可選集合(解析字串清單(設定資料.get("enabled_skills_json"))),
+            skill_roots=技能根,
+            allowed_workdirs=允許目錄,
+            memory_home=記憶根.expanduser().resolve(),
+            is_admin="admin" in 角色,
+            disabled=bool(使用者.get("disabled")),
+        )
