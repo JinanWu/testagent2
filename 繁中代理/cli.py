@@ -177,13 +177,14 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
         使用者 = 使用者庫物件.驗證使用者密碼(參數.username, 密碼)
         token = 使用者庫物件.建立登入Token(str(使用者["id"]))
-        路徑 = 寫入Auth檔案(str(使用者["username"]), str(使用者["id"]), token)
+        路徑 = 寫入Auth檔案(str(使用者["username"]), str(使用者["id"]), token, db_path=參數.db)
         印出JSON({"logged_in": True, "username": 使用者["username"], "user_id": 使用者["id"], "auth_file": str(路徑)})
         return
     if 參數.auth_command == "logout":
         auth資料 = 讀取Auth檔案()
+        token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
         if auth資料 and auth資料.get("token"):
-            使用者庫物件.撤銷登入Token(str(auth資料["token"]))
+            使用者庫(token資料庫路徑 or 參數.db).撤銷登入Token(str(auth資料["token"]))
         刪除Auth檔案()
         印出JSON({"logged_out": True})
         return
@@ -193,7 +194,8 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
             印出JSON({"logged_in": False})
             return
         try:
-            上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+            token資料庫路徑 = auth資料.get("db_path") or 參數.db
+            上下文 = 使用者庫(token資料庫路徑).驗證登入Token(str(auth資料["token"]))
         except ValueError:
             印出JSON({"logged_in": False})
             return

@@ -527,7 +527,7 @@ def 取得Auth檔案路徑() -> Path:
     return Path.home().expanduser().resolve() / ".testagent2" / "auth.json"
 
 
-def 寫入Auth檔案(username: str, user_id: str, token: str, auth_file: Path | None = None) -> Path:
+def 寫入Auth檔案(username: str, user_id: str, token: str, auth_file: Path | None = None, db_path: str | Path | None = None) -> Path:
     """寫入本機登入狀態檔。
 
     參數：
@@ -535,13 +535,17 @@ def 寫入Auth檔案(username: str, user_id: str, token: str, auth_file: Path | 
         user_id: 使用者識別碼。
         token: 本機登入 token。
         auth_file: 可選 auth 檔路徑。
+        db_path: token 所屬 session DB 路徑。
 
     返回值：
         寫入的 auth 檔案路徑。
     """
     路徑 = auth_file or 取得Auth檔案路徑()
     路徑.parent.mkdir(parents=True, exist_ok=True)
-    路徑.write_text(json.dumps({"username": username, "user_id": user_id, "token": token, "login_at": time.time()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    資料 = {"username": username, "user_id": user_id, "token": token, "login_at": time.time()}
+    if db_path is not None:
+        資料["db_path"] = str(Path(db_path).expanduser().resolve())
+    路徑.write_text(json.dumps(資料, ensure_ascii=False, indent=2), encoding="utf-8")
     try:
         路徑.chmod(0o600)
     except OSError:

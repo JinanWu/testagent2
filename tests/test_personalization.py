@@ -307,6 +307,26 @@ def test_cli_auth_whoami無效token回傳未登入(tmp_path):
     assert json.loads(whoami.stdout)["logged_in"] is False
 
 
+def test_cli_auth_file記錄db並供whoami與logout使用(tmp_path):
+    """確認非預設 DB login 後 whoami/logout 會使用 auth.json 內的 DB。"""
+    db = tmp_path / "custom.sqlite3"
+    auth_file = tmp_path / "auth.json"
+    env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file)}
+    建立 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--db", str(db), "create", "alice", "--password", "pw"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 建立.returncode == 0, 建立.stdout
+    登入 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "alice", "--password", "pw"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 登入.returncode == 0, 登入.stdout
+    auth資料 = json.loads(auth_file.read_text(encoding="utf-8"))
+    assert auth資料["db_path"] == str(db.resolve())
+    whoami = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "whoami"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert whoami.returncode == 0, whoami.stdout
+    assert json.loads(whoami.stdout)["logged_in"] is True
+    logout = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "logout"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert logout.returncode == 0, logout.stdout
+    with pytest.raises(ValueError):
+        使用者庫(db).驗證登入Token(auth資料["token"])
+
+
 def test_cli解析使用者不fallback成admin且require_login不可被user_id繞過(tmp_path, monkeypatch):
     """確認 CLI 使用者解析失敗時不會退回 admin，require login 也不可用 user_id 繞過。"""
     monkeypatch.setenv("TESTAGENT2_AUTH_FILE", str(tmp_path / "missing-auth.json"))
