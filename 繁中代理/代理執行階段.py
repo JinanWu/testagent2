@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from .上下文壓縮器 import 上下文壓縮器
-from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑
+from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑, 設定目前使用者
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
+from .使用者 import 使用者上下文, 建立預設使用者上下文
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
 
 _logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ class 代理執行階段:
         壓縮模式: str | None = None,
         壓縮模型: str | None = None,
         user_id: str | None = None,
+        使用者上下文物件: 使用者上下文 | None = None,
         source: str = "cli",
         model_config: dict[str, Any] | None = None,
         事件回呼: Any | None = None,
@@ -112,11 +114,16 @@ class 代理執行階段:
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
         self.平台名稱 = 平台名稱
-        self.user_id = user_id
+        self.使用者上下文物件 = 使用者上下文物件 or 建立預設使用者上下文(工作目錄)
+        if user_id and self.使用者上下文物件.user_id == "local":
+            self.使用者上下文物件.user_id = user_id
+            self.使用者上下文物件.username = user_id
+        self.user_id = self.使用者上下文物件.user_id
+        設定目前使用者(self.user_id, self.使用者上下文物件)
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
-        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄)
+        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄, self.使用者上下文物件)
         self.最大迭代次數 = 最大迭代次數
         self.事件回呼 = 事件回呼
         self.記憶管理器 = 記憶管理器
@@ -177,6 +184,7 @@ class 代理執行階段:
             模型呼叫次數、工具呼叫次數，以及本 turn 是否發生 compression split。
         """
         原始工作階段識別碼 = 工作階段識別碼
+        設定目前使用者(self.user_id, self.使用者上下文物件)
         工作階段識別碼 = self.工作階段庫物件.建立或讀取工作階段(
             工作階段識別碼,
             source=self.source,
@@ -186,7 +194,7 @@ class 代理執行階段:
             cwd=self.工作目錄,
         )
         if 原始工作階段識別碼:
-            工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+            工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼, user_id=self.user_id, source=self.source)
         設定目前工作階段識別碼(工作階段識別碼)
         歷史訊息 = self.工作階段庫物件.讀取訊息(工作階段識別碼)
         工作階段資料 = self.工作階段庫物件.讀取工作階段(工作階段識別碼) or {}
@@ -268,9 +276,9 @@ class 代理執行階段:
 
         返回值：dict[str, Any]。工作階段庫回傳的 rewind 結果，並包含 active session id。
         """
-        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼, user_id=self.user_id, source=self.source)
         設定目前工作階段識別碼(作用中工作階段識別碼)
-        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id)
+        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id, user_id=self.user_id)
         結果["session_id"] = 作用中工作階段識別碼
         return 結果
 
@@ -439,7 +447,7 @@ class 代理執行階段:
         try:
             from .記憶存放 import 記憶存放
 
-            暫存設定 = 提示詞設定(工作目錄=self.工作目錄)
+            暫存設定 = 提示詞設定(工作目錄=self.工作目錄, Hermes家目錄=str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None)
             hermes家目錄 = 提示詞組裝器(暫存設定).取得Hermes家目錄()
             存放 = 記憶存放(hermes家目錄)
             存放.載入()
@@ -463,6 +471,7 @@ class 代理執行階段:
             str：`<available_skills>` 區塊文字，包含最多 300 個技能名稱；若 skills
             尚未複製則回傳明確的 placeholder。
         """
-        技能根目錄 = Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
+        根目錄清單 = self.使用者上下文物件.skill_roots or [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
         工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
-        return 建立技能索引摘要(技能根目錄, 工具名稱集合)
+        摘要清單 = [建立技能索引摘要(根目錄, 工具名稱集合, self.使用者上下文物件.enabled_skills) for 根目錄 in 根目錄清單]
+        return "\n\n".join(摘要 for 摘要 in 摘要清單 if 摘要)
