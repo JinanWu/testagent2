@@ -15,7 +15,7 @@ from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段上下文 import 設定目前使用者, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
-from 繁中代理.工具 import 建立預設工具登錄器
+from 繁中代理.工具 import 建立預設工具登錄器, 搜尋工作階段工具
 from 繁中代理.使用者 import 使用者上下文, 使用者庫, 預設登入Token有效秒數, 雜湊Token
 
 專案根目錄 = Path(__file__).resolve().parents[1]
@@ -181,6 +181,8 @@ def test_session_search_tool_忽略模型傳入_user_id並使用目前上下文(
     結果 = json.loads(登錄器.呼叫工具("session_search", {"session_id": sid, "user_id": "alice", "db_path": str(tmp_path / "sessions.sqlite3")}))
     assert 結果["success"] is False
     assert "無權" in 結果["error"]
+    with pytest.raises(PermissionError, match="無權"):
+        搜尋工作階段工具({"session_id": sid, "user_id": "alice", "db_path": str(tmp_path / "sessions.sqlite3")})
 
 
 def test_tool_schema與硬呼叫都依使用者權限(tmp_path):
