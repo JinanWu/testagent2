@@ -193,6 +193,45 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         印出JSON({"logged_in": True, "user": 上下文.序列化()})
         return
 
+def 執行Users子命令(參數: argparse.Namespace) -> None:
+    """執行 users 子命令。
+
+    參數：
+        參數: argparse namespace。
+
+    返回值：None。結果輸出到 stdout。
+    """
+    使用者庫物件 = 使用者庫(參數.db)
+    if 參數.users_command == "create":
+        密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
+        使用者 = 使用者庫物件.建立使用者(
+            參數.username,
+            password=密碼,
+            display_name=參數.display_name,
+            roles=解析逗號清單(參數.roles),
+            enabled_tools=解析逗號清單(參數.tools),
+            enabled_skills=解析逗號清單(參數.skills),
+            skill_roots=解析逗號清單(參數.skill_roots),
+            allowed_workdirs=解析逗號清單(參數.workdirs),
+        )
+        印出JSON({"created": True, "user": 使用者})
+        return
+    if 參數.users_command == "list":
+        印出JSON({"users": 使用者庫物件.列出使用者()})
+        return
+    if 參數.users_command == "disable":
+        使用者庫物件.設定使用者停用(參數.username, True)
+        印出JSON({"username": 參數.username, "disabled": True})
+        return
+    if 參數.users_command == "enable":
+        使用者庫物件.設定使用者停用(參數.username, False)
+        印出JSON({"username": 參數.username, "disabled": False})
+        return
+    if 參數.users_command.startswith("set-"):
+        使用者庫物件.設定權限欄位(參數.username, 參數.設定欄位, 解析逗號清單(參數.items))
+        印出JSON({"username": 參數.username, "field": 參數.設定欄位, "updated": True})
+        return
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
