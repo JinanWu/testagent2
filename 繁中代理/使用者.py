@@ -542,3 +542,52 @@ def 寫入Auth檔案(username: str, user_id: str, token: str, auth_file: Path | 
     except OSError:
         pass
     return 路徑
+
+
+def 讀取Auth檔案(auth_file: Path | None = None) -> dict[str, Any] | None:
+    """讀取本機登入狀態檔。
+
+    參數：
+        auth_file: 可選 auth 檔路徑。
+
+    返回值：
+        auth dict；不存在或格式錯誤時回傳 None。
+    """
+    路徑 = auth_file or 取得Auth檔案路徑()
+    if not 路徑.exists():
+        return None
+    try:
+        資料 = json.loads(路徑.read_text(encoding="utf-8"))
+        return 資料 if isinstance(資料, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def 刪除Auth檔案(auth_file: Path | None = None) -> None:
+    """刪除本機登入狀態檔。
+
+    參數：
+        auth_file: 可選 auth 檔路徑。
+
+    返回值：None。
+    """
+    路徑 = auth_file or 取得Auth檔案路徑()
+    try:
+        路徑.unlink()
+    except FileNotFoundError:
+        return
+
+
+def 讀取密碼輸入(prompt: str = "Password: ") -> str:
+    """讀取密碼，測試環境可用 TESTAGENT2_PASSWORD 注入。
+
+    參數：
+        prompt: 終端提示文字。
+
+    返回值：
+        使用者輸入的密碼。
+    """
+    環境密碼 = os.getenv("TESTAGENT2_PASSWORD")
+    if 環境密碼 is not None:
+        return 環境密碼
+    return getpass.getpass(prompt)
