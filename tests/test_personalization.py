@@ -68,3 +68,68 @@ def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
     alice = 建立上下文("alice", tmp_path)
     bob = 建立上下文("bob", tmp_path)
+    代理執行階段(庫, 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=alice).執行使用者訊息("你好", 工作階段識別碼="shared")
+    with pytest.raises(PermissionError):
+        代理執行階段(庫, 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=bob).執行使用者訊息("偷看", 工作階段識別碼="shared")
+    assert 庫.讀取工作階段("shared")["user_id"] == "alice"
+
+
+def test_session_read_rename_archive_rewind都檢查_owner(tmp_path):
+    """確認 direct read、rename、archive、rewind 都拒絕跨使用者。"""
+    庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
+    sid = 庫.建立或讀取工作階段("owned", user_id="alice")
+    庫.寫入訊息清單(sid, [{"role": "user", "content": "秘密"}, {"role": "assistant", "content": "回答"}])
+    target = 庫.連線.execute("SELECT id FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 1", (sid,)).fetchone()["id"]
+    with pytest.raises(PermissionError):
+        庫.讀取工作階段全文(sid, user_id="bob")
+    with pytest.raises(PermissionError):
+        庫.捲動工作階段訊息(sid, target, user_id="bob")
+    with pytest.raises(PermissionError):
+        庫.重新命名工作階段(sid, "bad", user_id="bob")
+    with pytest.raises(PermissionError):
+        庫.封存工作階段(sid, user_id="bob")
+    with pytest.raises(PermissionError):
+        庫.rewind到訊息(sid, target, user_id="bob")
+
+
+def test_session_search_tool_忽略模型傳入_user_id並使用目前上下文(tmp_path):
+    """確認 session_search tool 不能靠參數冒充其他 user。"""
+    庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
+    sid = 庫.建立或讀取工作階段("alice-session", user_id="alice")
+    庫.寫入訊息清單(sid, [{"role": "user", "content": "alice secret"}])
+    設定目前使用者("bob", 建立上下文("bob", tmp_path))
+    登錄器 = 建立預設工具登錄器(tmp_path, 建立上下文("bob", tmp_path, tools={"session_search"}))
+    結果 = json.loads(登錄器.呼叫工具("session_search", {"session_id": sid, "user_id": "alice", "db_path": str(tmp_path / "sessions.sqlite3")}))
+    assert 結果["success"] is False
+    assert "無權" in 結果["error"]
+
+
+def test_tool_schema與硬呼叫都依使用者權限(tmp_path):
+    """確認不允許的 tool 不暴露，硬呼叫也被拒。"""
+    上下文 = 建立上下文("alice", tmp_path, tools={"read_file"})
+    登錄器 = 建立預設工具登錄器(tmp_path, 上下文)
+    工具名稱 = {結構["function"]["name"] for 結構 in 登錄器.列出工具結構()}
+    assert "read_file" in 工具名稱
+    assert "terminal" not in 工具名稱
+    結果 = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd"}))
+    assert 結果["permission_denied"] is True
+
+
+def test_file與terminal工具限制_workdir(tmp_path):
+    """確認檔案與 terminal 工具不能越出 allowed_workdirs。"""
+    允許 = tmp_path / "allowed"
+    禁止 = tmp_path / "denied"
+    允許.mkdir()
+    禁止.mkdir()
+    (禁止 / "secret.txt").write_text("secret", encoding="utf-8")
+    上下文 = 建立上下文("alice", tmp_path, tools={"read_file", "terminal"}, workdir=允許)
+    登錄器 = 建立預設工具登錄器(允許, 上下文)
+    讀取結果 = json.loads(登錄器.呼叫工具("read_file", {"path": str(禁止 / "secret.txt")}))
+    assert 讀取結果["success"] is False and "超出" in 讀取結果["error"]
+    終端結果 = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd", "workdir": str(禁止)}))
+    assert 終端結果["success"] is False and "超出" in 終端結果["error"]
+
+
+def test_skill_prompt與skill_view依使用者隔離(tmp_path):
+    """確認 prompt skill 摘要與 skill_view 都依使用者技能權限隔離。"""
+    寫入技能(tmp_path / "skills", "cat", "skill_a", "A only")
