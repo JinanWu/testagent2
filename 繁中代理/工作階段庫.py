@@ -1395,16 +1395,18 @@ class 工作階段庫:
                 handle.write(json.dumps({"session": session, "messages": messages}, ensure_ascii=False) + "\n")
         return {"output": str(路徑), "session_count": len(sessions), "message_count": 訊息總數}
 
-    def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int) -> dict[str, Any]:
+    def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int, user_id: str | None = None) -> dict[str, Any]:
         """把指定訊息及之後的訊息標記為 inactive，保留 audit 紀錄。
 
         參數：
             工作階段識別碼: session id。
             目標訊息id: 要 rewind 到的 message row id；該 row 也會被停用。
+            user_id: 可選使用者 scope。
 
         返回值：
             dict[str, Any]：包含 rewound_count、target_message 與 new_head_id。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         with self._鎖:
             目標資料列 = self.連線.execute("SELECT * FROM messages WHERE id=? AND session_id=?", (目標訊息id, 工作階段識別碼)).fetchone()
         if not 目標資料列:
