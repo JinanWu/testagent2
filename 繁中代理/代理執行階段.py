@@ -496,14 +496,15 @@ class 代理執行階段:
             return ""
 
     def 建立技能摘要(self) -> str:
-        """掃描本專案內建 Hermes skills 並建立 prompt 用摘要。
+        """依使用者可用技能根目錄建立 prompt 用摘要。
 
         參數：
-            無。函數會從專案 `assets/hermes_skills` 目錄讀取可用 SKILL.md。
+            無。函數會依目前 UserContext 的 skill_roots 掃描；None 代表使用
+            專案內建 `assets/hermes_skills`，空清單代表不注入任何技能摘要。
 
         返回值：
-            str：`<available_skills>` 區塊文字，包含最多 300 個技能名稱；若 skills
-            尚未複製則回傳明確的 placeholder。
+            str：依 enabled_skills 與可用工具過濾後的 `<available_skills>` 區塊。
+            多個根目錄會合併成單一區塊，避免重複技能載入指引。
         """
         if self.使用者上下文物件.skill_roots is None:
             根目錄清單 = [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
