@@ -403,3 +403,68 @@ class 使用者庫:
         if 欄位 not in {"enabled_tools_json", "enabled_skills_json", "skill_roots_json", "allowed_workdirs_json"}:
             raise ValueError(f"不支援的權限欄位：{欄位}")
         self.連線.execute(f"UPDATE user_settings SET {欄位}=?, updated_at=? WHERE user_id=?", (json.dumps(項目清單, ensure_ascii=False), time.time(), 使用者["id"]))
+
+    def 驗證使用者密碼(self, username: str, password: str) -> dict[str, Any]:
+        """驗證帳密並回傳使用者資料。
+
+        參數：
+            username: 登入帳號。
+            password: 明文密碼。
+
+        返回值：
+            使用者資料；失敗時丟出 ValueError。
+        """
+        使用者 = self.讀取使用者(username=username)
+        if not 使用者 or 使用者.get("disabled"):
+            raise ValueError("使用者不存在或已停用")
+        if not 使用者.get("password_hash") or not 驗證密碼雜湊(password, str(使用者["password_hash"])):
+            raise ValueError("帳號或密碼錯誤")
+        return 使用者
+
+    def 建立登入Token(self, user_id: str, expires_at: float | None = None) -> str:
+        """建立本機登入 token 並保存雜湊。
+
+        參數：
+            user_id: 使用者識別碼。
+            expires_at: 可選過期時間。
+
+        返回值：
+            明文 token；只會回傳一次並寫入本機 auth 檔。
+        """
+        token = secrets.token_urlsafe(32)
+        目前時間 = time.time()
+        self.連線.execute(
+            "INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)",
+            (雜湊Token(token), user_id, 目前時間, expires_at, 目前時間),
+        )
+        return token
+
+    def 驗證登入Token(self, token: str) -> 使用者上下文:
+        """驗證本機 token 並回傳使用者上下文。
+
+        參數：
+            token: auth.json 內保存的 token。
+
+        返回值：
+            對應使用者上下文。
+        """
+        資料列 = self.連線.execute(
+            "SELECT * FROM auth_sessions WHERE token_hash=? AND revoked_at IS NULL",
+            (雜湊Token(token),),
+        ).fetchone()
+        if not 資料列:
+            raise ValueError("登入 token 無效")
+        if 資料列["expires_at"] and float(資料列["expires_at"]) < time.time():
+            raise ValueError("登入 token 已過期")
+        self.連線.execute("UPDATE auth_sessions SET last_used_at=? WHERE token_hash=?", (time.time(), 資料列["token_hash"]))
+        return self.建立使用者上下文(user_id=str(資料列["user_id"]))
+
+    def 撤銷登入Token(self, token: str) -> None:
+        """撤銷本機登入 token。
+
+        參數：
+            token: auth.json 內保存的 token。
+
+        返回值：None。
+        """
+        self.連線.execute("UPDATE auth_sessions SET revoked_at=? WHERE token_hash=?", (time.time(), 雜湊Token(token)))
