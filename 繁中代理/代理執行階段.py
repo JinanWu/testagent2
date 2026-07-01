@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import nullcontext
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -149,26 +149,38 @@ class 代理執行階段:
             if user_id and user_id != 使用者上下文物件.user_id:
                 if 使用者上下文物件.user_id != "local":
                     raise ValueError(f"user_id 與使用者上下文不一致：{user_id} != {使用者上下文物件.user_id}")
-                return replace(使用者上下文物件, user_id=user_id, username=user_id)
+                return self.依user_id建立使用者上下文(user_id, 工作目錄)
             return 使用者上下文物件
         if user_id:
-            try:
-                return 使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
-            except ValueError:
-                允許目錄 = [Path(工作目錄).expanduser().resolve()]
-                return 使用者上下文(
-                    user_id=user_id,
-                    username=user_id,
-                    display_name=user_id,
-                    roles=["user"],
-                    enabled_tools=set(),
-                    enabled_skills=set(),
-                    skill_roots=[],
-                    allowed_workdirs=允許目錄,
-                    memory_home=取得預設記憶根目錄(user_id),
-                    is_admin=False,
-                )
+            return self.依user_id建立使用者上下文(user_id, 工作目錄)
         return 建立預設使用者上下文(工作目錄)
+
+    def 依user_id建立使用者上下文(self, user_id: str, 工作目錄: str) -> 使用者上下文:
+        """依 user_id 從 DB 載入完整權限，未知使用者則建立受限 fallback。
+
+        參數：
+            user_id: 使用者識別碼。
+            工作目錄: fallback allowed_workdirs 使用的工作目錄。
+
+        返回值：
+            完整使用者上下文；不會沿用 local/admin 預設權限。
+        """
+        try:
+            return 使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
+        except ValueError:
+            允許目錄 = [Path(工作目錄).expanduser().resolve()]
+            return 使用者上下文(
+                user_id=user_id,
+                username=user_id,
+                display_name=user_id,
+                roles=["user"],
+                enabled_tools=set(),
+                enabled_skills=set(),
+                skill_roots=[],
+                allowed_workdirs=允許目錄,
+                memory_home=取得預設記憶根目錄(user_id),
+                is_admin=False,
+            )
 
     def 建立壓縮摘要函式(
         self,

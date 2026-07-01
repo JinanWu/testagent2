@@ -13,13 +13,13 @@ AIAGENT_MODEL_MODE=fake python3 -m 繁中代理.cli --session demo "請讀取 RE
 
 ## 使用者、登入與隔離
 
-本專案已支援本機使用者與 UserContext。正式使用建議先建立使用者並登入；`--user-id` / `TESTAGENT2_USER_ID` 保留給 dev/test fallback。
+本專案已支援本機使用者與 UserContext。正式使用建議先建立使用者並登入；未登入時會使用本機 `local` admin fallback 方便開發，`--user-id` / `TESTAGENT2_USER_ID` 則保留給 dev/test fallback。
 
 ```bash
 # 建立使用者；--workdirs 會限制檔案與 terminal 工具可操作的目錄
 python3 -m 繁中代理.cli users create alice \
   --password '<密碼>' \
-  --workdirs /Users/wujinan/Documents/個人化功能/testagent2
+  --workdirs /path/to/repo
 
 # 查看使用者
 python3 -m 繁中代理.cli users list
@@ -27,6 +27,8 @@ python3 -m 繁中代理.cli users list
 # 設定可用工具 / 技能；逗號分隔，* 表示全部允許
 python3 -m 繁中代理.cli users set-tools alice read_file,search_files,terminal,skills_list,skill_view,session_search,memory
 python3 -m 繁中代理.cli users set-skills alice hermes-agent,verification-and-debugging
+python3 -m 繁中代理.cli users set-workdirs alice /path/to/repo
+python3 -m 繁中代理.cli users set-skill-roots alice '*'
 
 # 登入、確認目前登入者、登出
 python3 -m 繁中代理.cli auth login alice
@@ -45,13 +47,22 @@ python3 -m 繁中代理.cli --session demo "請列出目前可用技能"
 - skills：prompt、`skills_list`、`skill_view` 只看得到 `enabled_skills` 與 `skill_roots` 允許的技能。
 - memory：system prompt 與 memory tool 使用該使用者自己的 `memory_home`。
 
+`skill_roots` 有三種語意：
+
+- `*`：使用專案內建 `assets/hermes_skills`。
+- 空清單：不注入任何 skill 摘要，`skills_list` 也不回傳內建技能。
+- 路徑清單：只掃描指定技能根目錄；搭配 `enabled_skills` 再做技能名稱過濾。
+
 常用環境變數：
 
 ```bash
 export TESTAGENT2_AUTH_FILE=/tmp/testagent2-auth.json  # 指定本機 token 檔案，測試時常用
 export TESTAGENT2_REQUIRE_LOGIN=1                     # 沒登入就拒絕執行 agent
 export TESTAGENT2_USER_ID=alice                       # dev/test fallback，不建議正式使用
+export TESTAGENT2_PASSWORD='<密碼>'                    # 非互動測試時供 users create / auth login 讀取
 ```
+
+本機 auth token 預設 24 小時後過期，並記錄登入時使用的 SQLite DB 路徑；切換 `--db` 時，CLI 只會採用對應 DB 的 token，避免不同資料庫的登入狀態互相污染。
 
 Gemini smoke test 需要已完成 `gcloud auth application-default login`，並設定：
 

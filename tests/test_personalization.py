@@ -92,13 +92,18 @@ def test_runtime拒絕不一致的user_id與使用者上下文(tmp_path):
 
 
 def test_runtime覆寫local使用者時不修改傳入上下文(tmp_path):
-    """確認 local fallback context 不會被 runtime 就地修改。"""
+    """確認 local fallback context 不會被 runtime 就地修改，且不繼承 admin 權限。"""
     local = 使用者上下文(allowed_workdirs=[tmp_path])
     runtime = 代理執行階段(工作階段庫(tmp_path / "local.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), user_id="alice", 使用者上下文物件=local)
     assert runtime.user_id == "alice"
     assert runtime.使用者上下文物件 is not local
     assert local.user_id == "local"
     assert local.username == "local"
+    assert runtime.使用者上下文物件.is_admin is False
+    assert runtime.使用者上下文物件.enabled_tools == set()
+    assert runtime.使用者上下文物件.enabled_skills == set()
+    工具名稱 = {結構["function"]["name"] for 結構 in runtime.工具登錄器物件.列出工具結構()}
+    assert 工具名稱 == set()
 
 
 def test_rewind會重設目前使用者上下文(tmp_path):
@@ -262,7 +267,7 @@ def test_file與terminal工具限制_workdir(tmp_path):
 
 
 def test_search_files內容搜尋會檢查symlink命中路徑(tmp_path):
-    """確認 content 搜尋不會讀取允許目錄內指向外部的 symlink。"""
+    """確認 content 搜尋遇到越界 symlink 會回報 permission_denied，而非靜默略過。"""
     允許 = tmp_path / "allowed"
     禁止 = tmp_path / "denied"
     允許.mkdir()
@@ -272,8 +277,9 @@ def test_search_files內容搜尋會檢查symlink命中路徑(tmp_path):
     上下文 = 建立上下文("alice", tmp_path, tools={"search_files"}, workdir=允許)
     登錄器 = 建立預設工具登錄器(允許, 上下文)
     結果 = json.loads(登錄器.呼叫工具("search_files", {"path": str(允許), "pattern": "secret-token", "target": "content"}))
-    assert 結果["success"] is True
-    assert 結果["result"]["matches"] == []
+    assert 結果["success"] is False
+    assert 結果["permission_denied"] is True
+    assert "超出" in 結果["error"]
 
 
 def test_skill_prompt與skill_view依使用者隔離(tmp_path):
@@ -303,25 +309,45 @@ def test_memory依使用者隔離並注入各自_prompt(tmp_path):
     assert "Alice 偏好" not in bob_runtime.建立系統提示詞("bob")
 
 
-def test_cli_help揭露使用者與登入流程():
+def test_cli_help揭露使用者與登入流程(tmp_path):
     """確認 help 會揭露 users/auth 子命令與常用登入流程。"""
     主說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert 主說明.returncode == 0, 主說明.stdout
     assert "users --help" in 主說明.stdout
     assert "auth --help" in 主說明.stdout
     assert "TESTAGENT2_REQUIRE_LOGIN" in 主說明.stdout
+    assert "local/admin fallback" in 主說明.stdout
+    assert "dev/test fallback" in 主說明.stdout
 
     使用者說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert 使用者說明.returncode == 0, 使用者說明.stdout
     assert "users create alice" in 使用者說明.stdout
     assert "set-tools" in 使用者說明.stdout
     assert "set-skills" in 使用者說明.stdout
+    assert "set-workdirs" in 使用者說明.stdout
+    assert "set-skill-roots" in 使用者說明.stdout
 
     登入說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
     assert 登入說明.returncode == 0, 登入說明.stdout
     assert "auth login alice" in 登入說明.stdout
     assert "whoami" in 登入說明.stdout
     assert "logout" in 登入說明.stdout
+    assert "TESTAGENT2_PASSWORD" in 登入說明.stdout
+    assert "SQLite DB" in 登入說明.stdout
+
+    互動說明 = subprocess.run(
+        [sys.executable, "-m", "繁中代理.cli", "--mode", "fake", "--db", str(tmp_path / "help.sqlite3")],
+        cwd=專案根目錄,
+        text=True,
+        input="/help\n/exit\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=30,
+    )
+    assert 互動說明.returncode == 0, 互動說明.stdout
+    assert "UserContext" in 互動說明.stdout
+    assert "user_id=" in 互動說明.stdout
+    assert "目前使用者" in 互動說明.stdout
 
 
 def test_cli_auth_login_whoami與執行使用登入者(tmp_path):

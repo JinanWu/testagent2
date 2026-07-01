@@ -96,6 +96,9 @@ def 建立Auth參數解析器() -> argparse.ArgumentParser:
 環境變數：
   TESTAGENT2_AUTH_FILE      指定本機 token 檔案位置
   TESTAGENT2_REQUIRE_LOGIN  設為 1 時，沒有登入就拒絕執行 agent
+  TESTAGENT2_PASSWORD       非互動測試時提供密碼
+
+登入 token 會記錄所屬 SQLite DB 路徑；切換 --db 時只會採用對應 DB 的 token。
 """
     解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli auth", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
     解析器.add_argument("--db", default=預設資料庫路徑, help="SQLite DB 路徑")
@@ -121,11 +124,15 @@ def 建立Users參數解析器() -> argparse.ArgumentParser:
   python3 -m 繁中代理.cli users list
   python3 -m 繁中代理.cli users set-tools alice read_file,search_files,terminal
   python3 -m 繁中代理.cli users set-skills alice hermes-agent,verification-and-debugging
+  python3 -m 繁中代理.cli users set-workdirs alice /path/to/repo
+  python3 -m 繁中代理.cli users set-skill-roots alice '*'
   python3 -m 繁中代理.cli users disable alice
+  python3 -m 繁中代理.cli users enable alice
 
 權限格式：
   --tools / --skills / set-* items 使用逗號分隔；* 表示全部允許。
   --workdirs / set-workdirs 限制 read_file、write_file、patch、search_files、terminal 的可用目錄。
+  --skill-roots / set-skill-roots 使用 * 表示內建 bundled skills，空清單表示不載入技能。
 """
     解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli users", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
     解析器.add_argument("--db", default=預設資料庫路徑, help="SQLite DB 路徑")
@@ -267,7 +274,7 @@ def 建立參數解析器() -> argparse.ArgumentParser:
 使用者與隔離：
   --user-id 是 dev/test fallback；正式使用建議先 users create，再 auth login。
   已登入時，agent 會用目前登入者的 UserContext 限制 session、tools、skills、memory 與 workdir。
-  TESTAGENT2_REQUIRE_LOGIN=1 可要求必須登入後才能執行 agent。
+  未登入時預設使用 local/admin fallback；TESTAGENT2_REQUIRE_LOGIN=1 可要求必須登入。
 
 子命令：
   users     管理本機使用者、可用 tools/skills/workdirs
@@ -285,7 +292,7 @@ def 建立參數解析器() -> argparse.ArgumentParser:
     解析器.add_argument("--model", default=os.getenv("AIAGENT_MODEL", "gemini-2.5-flash-lite"), help="模型名稱")
     解析器.add_argument("--mode", default=os.getenv("AIAGENT_MODEL_MODE", "gemini"), choices=["fake", "gemini"], help="模型模式")
     解析器.add_argument("--max-iters", type=int, default=8, help="最大 tool-loop 迭代次數")
-    解析器.add_argument("--user-id", default=os.getenv("TESTAGENT2_USER_ID"), help="使用者識別碼，會寫入 sessions.user_id")
+    解析器.add_argument("--user-id", default=os.getenv("TESTAGENT2_USER_ID"), help="dev/test fallback 使用者識別碼；正式使用建議改用 auth login")
     解析器.add_argument("--source", default=os.getenv("TESTAGENT2_SOURCE", "cli"), help="session 來源平台，預設 cli")
     解析器.add_argument("--model-config-json", default=None, help="JSON 格式模型設定，會寫入 sessions.model_config")
     解析器.add_argument("--include-archived", action="store_true", help="session list/search 是否包含 archived sessions")
@@ -348,11 +355,11 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
     要求登入 = os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1"
     if 要求登入:
         if not auth資料 or not auth資料.get("token"):
-            raise SystemExit("尚未登入。請先執行：testagent2 auth login <username>")
+            raise SystemExit("尚未登入。請先執行：python3 -m 繁中代理.cli auth login <username>")
         try:
             上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:
-            raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>") from None
+            raise SystemExit("登入 token 無效。請重新執行：python3 -m 繁中代理.cli auth login <username>") from None
         if 參數.user_id and 參數.user_id != 上下文.user_id:
             raise SystemExit("--user-id 與目前登入者不一致，請改用目前登入者或重新登入。")
         return 上下文
@@ -383,7 +390,7 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
         try:
             return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:
-            raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>") from None
+            raise SystemExit("登入 token 無效。請重新執行：python3 -m 繁中代理.cli auth login <username>") from None
     return 建立預設使用者上下文(參數.workdir)
 
 
@@ -674,6 +681,7 @@ class 互動CLI:
         print("testagent2 Hermes-style REPL")
         print(f"model={self.參數.model} mode={self.參數.mode} db={self.參數.db}")
         print(f"workdir={self.參數.workdir}")
+        print(f"user_id={self.參數.user_id or 'local'} source={self.參數.source}")
         print("輸入 /help 查看命令；多行可用行尾 \\ 或三引號。")
 
     def 送出使用者訊息(self, 訊息: str) -> None:
@@ -745,15 +753,17 @@ class 互動CLI:
         print("  /help                 顯示說明")
         print("  /exit                 離開 REPL")
         print("  /new [session_id]     建立並切換到新 session；省略 id 時自動產生")
-        print("  /resume [id|title]    resume 指定 session；省略時列出近期 sessions 可用數字選擇")
-        print("  /sessions [list|browse|search|rename|export]  管理 session history")
+        print("  /resume [id|title]    resume 目前使用者可讀的 session；省略時列出近期 sessions")
+        print("  /sessions [list|browse|search|rename|export]  管理目前使用者的 session history")
         print("  /history              顯示目前 session 訊息")
         print("  /retry                rewind 並重送上一個 user turn")
         print("  /undo                 soft-delete 最後一個 user turn 起的訊息")
         print("  /model [name]         顯示或切換目前模型")
-        print("  /tools                列出工具與 handler 狀態")
-        print("  /skills               列出內建 Hermes skills")
-        print("  /status               顯示目前 REPL 狀態")
+        print("  /tools                列出目前 UserContext 可用或被拒的工具狀態")
+        print("  /skills               列出目前 UserContext 可見的 skills")
+        print("  /status               顯示目前 REPL、session 與使用者狀態")
+        print("")
+        print("使用者範圍：已登入時依 auth 使用者隔離 session、tools、skills、memory 與 workdir；未登入時使用 local/admin fallback。")
 
     def 命令New(self, 參數列: list[str]) -> None:
         """建立並切換到新的 session id。

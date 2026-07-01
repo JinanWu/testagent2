@@ -83,6 +83,7 @@ from pathlib import Path
     "salt",
     "token",
     "auth_file",
+    "db_path",
     "expires_at",
     "prompt",
     # SQLite / CLI 輸出與小範圍迴圈慣用暫名

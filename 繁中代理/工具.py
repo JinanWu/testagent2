@@ -322,7 +322,9 @@ def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
                     結果清單.append({"path": str(路徑), "line": 行號, "content": 行[:500]})
                     if len(結果清單) >= 限制:
                         return {"matches": 結果清單, "total_count": len(結果清單)}
-        except Exception:
+        except PermissionError:
+            raise
+        except OSError:
             continue
     return {"matches": 結果清單, "total_count": len(結果清單)}
 
