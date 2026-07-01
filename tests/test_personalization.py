@@ -120,6 +120,9 @@ def test_empty_skill_roots不fallback到內建技能(tmp_path):
     上下文.skill_roots = []
     runtime = 代理執行階段(工作階段庫(tmp_path / "empty-skills.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=上下文)
     assert runtime.建立技能摘要() == ""
+    結果 = json.loads(runtime.工具登錄器物件.呼叫工具("skills_list", {}))
+    assert 結果["success"] is True
+    assert 結果["result"]["skills"] == []
 
 
 def test_多個skill_roots只產生單一技能提示區塊並去重(tmp_path):

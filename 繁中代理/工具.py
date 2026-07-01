@@ -357,10 +357,10 @@ def 取得技能根目錄清單(參數: dict[str, Any]) -> list[Path]:
     返回值：
         技能根目錄清單；未設定時使用專案內建 skills。
     """
+    if "_skill_roots" in 參數 and 參數.get("_skill_roots") is None:
+        return [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
     根目錄清單 = [Path(str(路徑)).expanduser().resolve() for 路徑 in (參數.get("_skill_roots") or [])]
-    if 根目錄清單:
-        return 根目錄清單
-    return [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+    return 根目錄清單
 
 
 def 取得允許技能集合(參數: dict[str, Any]) -> set[str] | None:
