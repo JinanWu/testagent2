@@ -231,6 +231,21 @@ def test_file與terminal工具限制_workdir(tmp_path):
     assert 終端結果["success"] is False and "超出" in 終端結果["error"]
 
 
+def test_search_files內容搜尋會檢查symlink命中路徑(tmp_path):
+    """確認 content 搜尋不會讀取允許目錄內指向外部的 symlink。"""
+    允許 = tmp_path / "allowed"
+    禁止 = tmp_path / "denied"
+    允許.mkdir()
+    禁止.mkdir()
+    (禁止 / "secret.txt").write_text("secret-token", encoding="utf-8")
+    (允許 / "link.txt").symlink_to(禁止 / "secret.txt")
+    上下文 = 建立上下文("alice", tmp_path, tools={"search_files"}, workdir=允許)
+    登錄器 = 建立預設工具登錄器(允許, 上下文)
+    結果 = json.loads(登錄器.呼叫工具("search_files", {"path": str(允許), "pattern": "secret-token", "target": "content"}))
+    assert 結果["success"] is True
+    assert 結果["result"]["matches"] == []
+
+
 def test_skill_prompt與skill_view依使用者隔離(tmp_path):
     """確認 prompt skill 摘要與 skill_view 都依使用者技能權限隔離。"""
     寫入技能(tmp_path / "skills", "cat", "skill_a", "A only")

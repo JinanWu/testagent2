@@ -304,6 +304,7 @@ def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
     if 目標 == "files":
         for 路徑 in 根目錄.rglob(樣式):
             if 路徑.is_file():
+                確認路徑允許(路徑, 參數)
                 結果清單.append(str(路徑))
                 if len(結果清單) >= 限制:
                     break
@@ -313,6 +314,7 @@ def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
         if not 路徑.is_file() or 路徑.name.startswith("."):
             continue
         try:
+            確認路徑允許(路徑, 參數)
             for 行號, 行 in enumerate(路徑.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
                 if 正規式.search(行):
                     結果清單.append({"path": str(路徑), "line": 行號, "content": 行[:500]})
