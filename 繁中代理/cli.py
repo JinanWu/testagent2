@@ -374,6 +374,12 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
                 is_admin=False,
             )
     if auth資料 and auth資料.get("token"):
+        token資料庫路徑 = auth資料.get("db_path")
+        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+        if token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() != 目前資料庫路徑:
+            return 建立預設使用者上下文(參數.workdir)
+        if not token資料庫路徑 and 目前資料庫路徑 != Path(預設資料庫路徑).expanduser().resolve():
+            return 建立預設使用者上下文(參數.workdir)
         try:
             return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:

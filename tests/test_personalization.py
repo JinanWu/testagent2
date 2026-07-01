@@ -400,7 +400,7 @@ def test_cli解析使用者不fallback成admin且require_login不可被user_id�
     with pytest.raises(SystemExit, match="尚未登入"):
         解析目前使用者上下文(參數)
     auth_file = tmp_path / "bad-auth.json"
-    auth_file.write_text(json.dumps({"token": "bad-token"}), encoding="utf-8")
+    auth_file.write_text(json.dumps({"token": "bad-token", "db_path": str(tmp_path / "auth.sqlite3")}), encoding="utf-8")
     monkeypatch.setenv("TESTAGENT2_AUTH_FILE", str(auth_file))
     monkeypatch.delenv("TESTAGENT2_REQUIRE_LOGIN", raising=False)
     with pytest.raises(SystemExit, match="登入 token 無效"):
