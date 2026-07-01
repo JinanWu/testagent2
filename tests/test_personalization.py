@@ -64,6 +64,39 @@ def 寫入技能(root: Path, category: str, name: str, description: str) -> None
     (路徑 / "SKILL.md").write_text(f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n", encoding="utf-8")
 
 
+def test_runtime只傳user_id會載入完整使用者上下文(tmp_path):
+    """確認 user_id-only runtime 不會沿用 local/admin 權限。"""
+    db = tmp_path / "users.sqlite3"
+    使用者資料庫 = 使用者庫(db)
+    使用者資料庫.建立使用者("alice", password="pw", enabled_tools=["read_file"], enabled_skills=["skill_a"], skill_roots=[], allowed_workdirs=[str(tmp_path / "allowed")])
+    alice = 使用者資料庫.讀取使用者(username="alice")
+    assert alice is not None
+    runtime = 代理執行階段(工作階段庫(db), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), user_id=str(alice["id"]))
+    assert runtime.使用者上下文物件.username == "alice"
+    assert runtime.使用者上下文物件.enabled_tools == {"read_file"}
+    assert runtime.使用者上下文物件.enabled_skills == {"skill_a"}
+    assert runtime.使用者上下文物件.is_admin is False
+    assert runtime.使用者上下文物件.memory_home == (tmp_path.home() / ".testagent2" / "users" / str(alice["id"])).expanduser().resolve()
+    工具名稱 = {結構["function"]["name"] for 結構 in runtime.工具登錄器物件.列出工具結構()}
+    assert "read_file" in 工具名稱
+    assert "terminal" not in 工具名稱
+
+
+def test_runtime拒絕不一致的user_id與使用者上下文(tmp_path):
+    """確認 user_id 與非 local 使用者上下文不一致時 fail closed。"""
+    alice = 建立上下文("alice", tmp_path)
+    with pytest.raises(ValueError, match="不一致"):
+        代理執行階段(工作階段庫(tmp_path / "bad.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), user_id="bob", 使用者上下文物件=alice)
+
+
+def test_runtime覆寫local使用者時不修改傳入上下文(tmp_path):
+    """確認 local fallback context 不會被 runtime 就地修改。"""
+    local = 使用者上下文(allowed_workdirs=[tmp_path])
+    runtime = 代理執行階段(工作階段庫(tmp_path / "local.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), user_id="alice", 使用者上下文物件=local)
+    assert runtime.user_id == "alice"
+    assert runtime.使用者上下文物件 is not local
+    assert local.user_id == "local"
+    assert local.username == "local"
 def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
     """確認 session owner 不會被跨使用者覆蓋。"""
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")

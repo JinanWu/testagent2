@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +22,7 @@ from .工具 import 工具登錄器, 建立預設工具登錄器
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
-from .使用者 import 使用者上下文, 建立預設使用者上下文
+from .使用者 import 使用者上下文, 使用者庫, 取得預設記憶根目錄, 建立預設使用者上下文
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
 
 _logger = logging.getLogger(__name__)
@@ -114,10 +114,7 @@ class 代理執行階段:
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
         self.平台名稱 = 平台名稱
-        self.使用者上下文物件 = 使用者上下文物件 or 建立預設使用者上下文(工作目錄)
-        if user_id and self.使用者上下文物件.user_id == "local":
-            self.使用者上下文物件.user_id = user_id
-            self.使用者上下文物件.username = user_id
+        self.使用者上下文物件 = self.解析使用者上下文(user_id, 使用者上下文物件, 工作目錄)
         self.user_id = self.使用者上下文物件.user_id
         設定目前使用者(self.user_id, self.使用者上下文物件)
         self.source = source
@@ -136,6 +133,42 @@ class 代理執行階段:
             摘要函式=摘要函式,
             摘要失敗是否中止=解析摘要失敗是否中止() if 摘要失敗是否中止 is None else 摘要失敗是否中止,
         )
+
+    def 解析使用者上下文(self, user_id: str | None, 使用者上下文物件: 使用者上下文 | None, 工作目錄: str) -> 使用者上下文:
+        """解析 runtime 使用者上下文，避免 session owner 與 runtime 權限脫鉤。
+
+        參數：
+            user_id: 呼叫端指定的使用者識別碼；僅作為完整 context 載入或 local fallback。
+            使用者上下文物件: 呼叫端已解析的完整使用者上下文。
+            工作目錄: fallback allowed_workdirs 使用的工作目錄。
+
+        返回值：
+            完整且不會就地修改呼叫端物件的使用者上下文。
+        """
+        if 使用者上下文物件 is not None:
+            if user_id and user_id != 使用者上下文物件.user_id:
+                if 使用者上下文物件.user_id != "local":
+                    raise ValueError(f"user_id 與使用者上下文不一致：{user_id} != {使用者上下文物件.user_id}")
+                return replace(使用者上下文物件, user_id=user_id, username=user_id)
+            return 使用者上下文物件
+        if user_id:
+            try:
+                return 使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
+            except ValueError:
+                允許目錄 = [Path(工作目錄).expanduser().resolve()]
+                return 使用者上下文(
+                    user_id=user_id,
+                    username=user_id,
+                    display_name=user_id,
+                    roles=["user"],
+                    enabled_tools=set(),
+                    enabled_skills=set(),
+                    skill_roots=[],
+                    allowed_workdirs=允許目錄,
+                    memory_home=取得預設記憶根目錄(user_id),
+                    is_admin=False,
+                )
+        return 建立預設使用者上下文(工作目錄)
 
     def 建立壓縮摘要函式(
         self,
