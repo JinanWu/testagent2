@@ -327,6 +327,22 @@ def test_cli_auth_file記錄db並供whoami與logout使用(tmp_path):
         使用者庫(db).驗證登入Token(auth資料["token"])
 
 
+def test_cli_auth_login會撤銷舊token(tmp_path):
+    """確認重複登入時舊 token 不再有效。"""
+    db = tmp_path / "auth.sqlite3"
+    auth_file = tmp_path / "auth.json"
+    env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file)}
+    subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--db", str(db), "create", "alice", "--password", "pw"], cwd=專案根目錄, env=env, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "alice", "--password", "pw"], cwd=專案根目錄, env=env, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    舊token = json.loads(auth_file.read_text(encoding="utf-8"))["token"]
+    subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "alice", "--password", "pw"], cwd=專案根目錄, env=env, check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    新token = json.loads(auth_file.read_text(encoding="utf-8"))["token"]
+    assert 新token != 舊token
+    with pytest.raises(ValueError):
+        使用者庫(db).驗證登入Token(舊token)
+    使用者庫(db).驗證登入Token(新token)
+
+
 def test_cli解析使用者不fallback成admin且require_login不可被user_id繞過(tmp_path, monkeypatch):
     """確認 CLI 使用者解析失敗時不會退回 admin，require login 也不可用 user_id 繞過。"""
     monkeypatch.setenv("TESTAGENT2_AUTH_FILE", str(tmp_path / "missing-auth.json"))
