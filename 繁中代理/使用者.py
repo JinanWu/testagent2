@@ -508,3 +508,37 @@ class 使用者庫:
             is_admin="admin" in 角色,
             disabled=bool(使用者.get("disabled")),
         )
+
+
+def 取得Auth檔案路徑() -> Path:
+    """取得 CLI 本機 auth.json 路徑。
+
+    參數：無。
+    返回值：auth.json 絕對路徑。
+    """
+    環境路徑 = os.getenv("TESTAGENT2_AUTH_FILE")
+    if 環境路徑:
+        return Path(環境路徑).expanduser().resolve()
+    return Path.home().expanduser().resolve() / ".testagent2" / "auth.json"
+
+
+def 寫入Auth檔案(username: str, user_id: str, token: str, auth_file: Path | None = None) -> Path:
+    """寫入本機登入狀態檔。
+
+    參數：
+        username: 登入帳號。
+        user_id: 使用者識別碼。
+        token: 本機登入 token。
+        auth_file: 可選 auth 檔路徑。
+
+    返回值：
+        寫入的 auth 檔案路徑。
+    """
+    路徑 = auth_file or 取得Auth檔案路徑()
+    路徑.parent.mkdir(parents=True, exist_ok=True)
+    路徑.write_text(json.dumps({"username": username, "user_id": user_id, "token": token, "login_at": time.time()}, ensure_ascii=False, indent=2), encoding="utf-8")
+    try:
+        路徑.chmod(0o600)
+    except OSError:
+        pass
+    return 路徑
