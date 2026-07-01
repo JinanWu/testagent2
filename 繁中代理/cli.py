@@ -25,6 +25,15 @@ from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
 from .模型供應商 import 建立模型供應商
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
+from .使用者 import (
+    使用者上下文,
+    使用者庫,
+    建立預設使用者上下文,
+    讀取Auth檔案,
+    寫入Auth檔案,
+    刪除Auth檔案,
+    讀取密碼輸入,
+)
 
 
 預設資料庫路徑 = str(Path.home() / ".testagent2" / "sessions.sqlite3")
@@ -68,6 +77,34 @@ def 建立Sessions參數解析器() -> argparse.ArgumentParser:
     stats解析器.add_argument("--json", action="store_true", help="輸出 JSON")
     return 解析器
 
+
+def 建立Auth參數解析器() -> argparse.ArgumentParser:
+    """建立 auth 子命令 parser。
+
+    參數：無。
+    返回值：ArgumentParser。支援 login、logout 與 whoami。
+    """
+    說明 = """管理 CLI 本機登入狀態
+
+常用流程：
+  python3 -m 繁中代理.cli users create alice --password <密碼>
+  python3 -m 繁中代理.cli auth login alice
+  python3 -m 繁中代理.cli auth whoami
+  python3 -m 繁中代理.cli auth logout
+
+環境變數：
+  TESTAGENT2_AUTH_FILE      指定本機 token 檔案位置
+  TESTAGENT2_REQUIRE_LOGIN  設為 1 時，沒有登入就拒絕執行 agent
+"""
+    解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli auth", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
+    解析器.add_argument("--db", default=預設資料庫路徑, help="SQLite DB 路徑")
+    子命令 = 解析器.add_subparsers(dest="auth_command", required=True)
+    login解析器 = 子命令.add_parser("login", help="以帳密登入")
+    login解析器.add_argument("username", help="登入帳號")
+    login解析器.add_argument("--password", default=None, help="密碼；未提供時互動輸入或讀 TESTAGENT2_PASSWORD")
+    子命令.add_parser("logout", help="登出並撤銷目前 token")
+    子命令.add_parser("whoami", help="顯示目前登入使用者")
+    return 解析器
 
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
