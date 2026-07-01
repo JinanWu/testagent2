@@ -454,11 +454,11 @@ def 解析工作階段參照(工作階段庫物件: 工作階段庫, 參照: str
     sessions = 工作階段庫物件.列出工作階段(limit=200, include_archived=include_archived, source=source, user_id=user_id)
     for session in sessions:
         if str(session.get("title") or "") == 參照:
-            return 工作階段庫物件.解析Resume工作階段(str(session["id"]))
+            return 工作階段庫物件.解析Resume工作階段(str(session["id"]), user_id=user_id, source=source)
     lowered = 參照.lower()
     for session in sessions:
         if lowered in str(session.get("title") or "").lower() or lowered in str(session.get("id") or "").lower():
-            return 工作階段庫物件.解析Resume工作階段(str(session["id"]))
+            return 工作階段庫物件.解析Resume工作階段(str(session["id"]), user_id=user_id, source=source)
     return None
 
 
@@ -501,6 +501,8 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
     返回值：None。結果會輸出到 stdout 或寫入指定檔案。
     """
     工作階段庫物件 = 工作階段庫(參數.db)
+    if not getattr(參數, "user_id", None):
+        參數.user_id = 解析目前使用者上下文(argparse.Namespace(db=參數.db, workdir=os.getcwd(), user_id=None)).user_id
     if 參數.sessions_command == "list":
         sessions = 工作階段庫物件.列出工作階段(limit=參數.limit, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
         if 參數.json:
@@ -527,7 +529,7 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
                 print(f"    {取訊息摘要({'content': match.get('snippet') or ''}, 120)}")
         return
     if 參數.sessions_command == "rename":
-        工作階段庫物件.重新命名工作階段(參數.session_id, 參數.title)
+        工作階段庫物件.重新命名工作階段(參數.session_id, 參數.title, user_id=參數.user_id)
         印出JSON({"session_id": 參數.session_id, "title": 參數.title, "renamed": True})
         return
     if 參數.sessions_command == "export":
@@ -746,7 +748,7 @@ class 互動CLI:
             print(f"選項超出範圍：{序號}")
             return
         session = 清單[序號 - 1]
-        self.目前工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(str(session["id"]))
+        self.目前工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(str(session["id"]), user_id=self.參數.user_id, source=self.參數.source)
         self.待選Resume工作階段清單 = None
         print(f"已 resume：{self.目前工作階段識別碼}  title={session.get('title') or ''}")
 
@@ -824,7 +826,7 @@ class 互動CLI:
             if len(參數列) < 3:
                 print("用法：/sessions rename <session_id> <title>")
                 return
-            self.工作階段庫物件.重新命名工作階段(參數列[1], " ".join(參數列[2:]))
+            self.工作階段庫物件.重新命名工作階段(參數列[1], " ".join(參數列[2:]), user_id=self.參數.user_id)
             print(f"已重新命名：{參數列[1]}")
             return
         if 子命令 == "export":
@@ -845,7 +847,7 @@ class 互動CLI:
         if not self.目前工作階段識別碼:
             print("尚未有目前 session。")
             return
-        訊息清單 = self.工作階段庫物件.讀取訊息(self.目前工作階段識別碼)
+        訊息清單 = self.工作階段庫物件.讀取訊息(self.目前工作階段識別碼, user_id=self.參數.user_id)
         if not 訊息清單:
             print("目前 session 沒有訊息。")
             return
@@ -860,6 +862,7 @@ class 互動CLI:
         """
         if not self.目前工作階段識別碼:
             return None
+        self.工作階段庫物件.檢查工作階段存取(self.目前工作階段識別碼, user_id=self.參數.user_id)
         with self.工作階段庫物件._鎖:
             row = self.工作階段庫物件.連線.execute(
                 "SELECT id, content FROM messages WHERE session_id=? AND active=1 AND role='user' ORDER BY id DESC LIMIT 1",
@@ -878,7 +881,7 @@ class 互動CLI:
         if not row or not 訊息:
             print("沒有可 retry 的 user turn。")
             return
-        self.工作階段庫物件.rewind到訊息(self.目前工作階段識別碼, int(row["id"]))
+        self.工作階段庫物件.rewind到訊息(self.目前工作階段識別碼, int(row["id"]), user_id=self.參數.user_id)
         self.送出使用者訊息(str(訊息))
 
     def 命令Undo(self) -> None:
@@ -891,7 +894,7 @@ class 互動CLI:
         if not row:
             print("沒有可 undo 的 user turn。")
             return
-        結果 = self.工作階段庫物件.rewind到訊息(self.目前工作階段識別碼, int(row["id"]))
+        結果 = self.工作階段庫物件.rewind到訊息(self.目前工作階段識別碼, int(row["id"]), user_id=self.參數.user_id)
         print(f"已 undo：rewound_count={結果['rewound_count']} new_head_id={結果['new_head_id']}")
 
     def 命令Model(self, 參數列: list[str]) -> None:
@@ -968,11 +971,11 @@ def 執行一次性操作(參數: argparse.Namespace, 解析器: argparse.Argume
         elif 參數.resume:
             解析器.error(f"找不到可 resume 的 session：{參照}")
     if 參數.archive_session:
-        工作階段庫物件.封存工作階段(參數.archive_session)
+        工作階段庫物件.封存工作階段(參數.archive_session, user_id=參數.user_id)
         印出JSON({"session_id": 參數.archive_session, "archived": True})
         return True
     if 參數.unarchive_session:
-        工作階段庫物件.取消封存工作階段(參數.unarchive_session)
+        工作階段庫物件.取消封存工作階段(參數.unarchive_session, user_id=參數.user_id)
         印出JSON({"session_id": 參數.unarchive_session, "archived": False})
         return True
     if 參數.session_search:
@@ -1017,8 +1020,20 @@ def 執行主程式() -> None:
         參數 = sessions解析器.parse_args(sys.argv[2:])
         執行Sessions子命令(參數)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "auth":
+        auth解析器 = 建立Auth參數解析器()
+        參數 = auth解析器.parse_args(sys.argv[2:])
+        執行Auth子命令(參數)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "users":
+        users解析器 = 建立Users參數解析器()
+        參數 = users解析器.parse_args(sys.argv[2:])
+        執行Users子命令(參數)
+        return
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
+    if not 參數.user_id and (參數.query or 參數.message or not (參數.archive_session or 參數.unarchive_session or 參數.session_search)):
+        參數.user_id = 解析目前使用者上下文(參數).user_id
     if 執行一次性操作(參數, 解析器):
         return
     if 參數.query or 參數.message:
