@@ -28,6 +28,7 @@ from .輔助壓縮摘要 import 解析摘要失敗是否中止
 from .使用者 import (
     使用者上下文,
     使用者庫,
+    取得預設記憶根目錄,
     建立預設使用者上下文,
     讀取Auth檔案,
     寫入Auth檔案,
@@ -327,32 +328,49 @@ def 解析模型設定(參數: argparse.Namespace, 解析器: argparse.ArgumentP
 
 
 def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上下文:
-    """依 CLI 參數、本機 token 或 fallback 建立使用者上下文。
+    """依 CLI 參數與本機 auth token 解析目前使用者。
 
     參數：
-        參數: argparse namespace，至少包含 db、workdir、user_id。
+        參數: argparse namespace，需含 db、workdir、user_id。
 
     返回值：
         使用者上下文。若要求登入但無 token，會中止程式。
     """
     使用者庫物件 = 使用者庫(參數.db)
+    auth資料 = 讀取Auth檔案()
+    要求登入 = os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1"
+    if 要求登入:
+        if not auth資料 or not auth資料.get("token"):
+            raise SystemExit("尚未登入。請先執行：testagent2 auth login <username>")
+        try:
+            上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+        except ValueError:
+            raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>") from None
+        if 參數.user_id and 參數.user_id != 上下文.user_id:
+            raise SystemExit("--user-id 與目前登入者不一致，請改用目前登入者或重新登入。")
+        return 上下文
     if 參數.user_id:
         try:
             return 使用者庫物件.建立使用者上下文(user_id=參數.user_id, 工作目錄=參數.workdir)
         except ValueError:
-            上下文 = 建立預設使用者上下文(參數.workdir)
-            上下文.user_id = 參數.user_id
-            上下文.username = 參數.user_id
-            return 上下文
-    auth資料 = 讀取Auth檔案()
+            工作目錄 = Path(參數.workdir).expanduser().resolve()
+            return 使用者上下文(
+                user_id=參數.user_id,
+                username=參數.user_id,
+                display_name=參數.user_id,
+                roles=["user"],
+                enabled_tools=set(),
+                enabled_skills=set(),
+                skill_roots=[],
+                allowed_workdirs=[工作目錄],
+                memory_home=取得預設記憶根目錄(參數.user_id),
+                is_admin=False,
+            )
     if auth資料 and auth資料.get("token"):
         try:
             return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:
-            if os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
-                raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>")
-    if os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
-        raise SystemExit("尚未登入。請先執行：testagent2 auth login <username>")
+            raise SystemExit("登入 token 無效。請重新執行：testagent2 auth login <username>") from None
     return 建立預設使用者上下文(參數.workdir)
 
 

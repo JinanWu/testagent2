@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -11,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from 繁中代理.cli import 解析目前使用者上下文
 from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段上下文 import 設定目前使用者, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
@@ -303,6 +305,25 @@ def test_cli_auth_whoami無效token回傳未登入(tmp_path):
     whoami = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "whoami"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     assert whoami.returncode == 0, whoami.stdout
     assert json.loads(whoami.stdout)["logged_in"] is False
+
+
+def test_cli解析使用者不fallback成admin且require_login不可被user_id繞過(tmp_path, monkeypatch):
+    """確認 CLI 使用者解析失敗時不會退回 admin，require login 也不可用 user_id 繞過。"""
+    monkeypatch.setenv("TESTAGENT2_AUTH_FILE", str(tmp_path / "missing-auth.json"))
+    參數 = argparse.Namespace(db=str(tmp_path / "auth.sqlite3"), workdir=str(tmp_path), user_id="ghost")
+    上下文 = 解析目前使用者上下文(參數)
+    assert 上下文.user_id == "ghost"
+    assert 上下文.is_admin is False
+    assert 上下文.enabled_tools == set()
+    monkeypatch.setenv("TESTAGENT2_REQUIRE_LOGIN", "1")
+    with pytest.raises(SystemExit, match="尚未登入"):
+        解析目前使用者上下文(參數)
+    auth_file = tmp_path / "bad-auth.json"
+    auth_file.write_text(json.dumps({"token": "bad-token"}), encoding="utf-8")
+    monkeypatch.setenv("TESTAGENT2_AUTH_FILE", str(auth_file))
+    monkeypatch.delenv("TESTAGENT2_REQUIRE_LOGIN", raising=False)
+    with pytest.raises(SystemExit, match="登入 token 無效"):
+        解析目前使用者上下文(argparse.Namespace(db=str(tmp_path / "auth.sqlite3"), workdir=str(tmp_path), user_id=None))
 
 
 def test_登入Token預設一天後過期(tmp_path):
