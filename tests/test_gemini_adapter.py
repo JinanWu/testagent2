@@ -4,8 +4,8 @@
 只驗證 OpenAI-compatible message 到 adapter 的基本轉換可被匯入。
 """
 
-import os
-
+from 繁中代理.cli import 建立參數解析器, 建立執行階段
+from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import GeminiADC供應商, 正規化Gemini模型名稱
 
 
@@ -30,3 +30,13 @@ def test_gemini_adapter_轉換工具_schema():
     tools = provider.轉成Gemini工具([{"type": "function", "function": {"name": "read_file", "description": "read", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}])
     assert len(tools) == 1
     assert tools[0].function_declarations[0].name == "read_file"
+
+
+def test_cli_建立runtime前正規化模型名稱(tmp_path):
+    """確認 CLI 模型別名會在 session/runtime 層先正規化。"""
+    解析器 = 建立參數解析器()
+    參數 = 解析器.parse_args(["--mode", "gemini", "--model", "gemini-flash-lite", "hello"])
+    runtime = 建立執行階段(參數, 工作階段庫(tmp_path / "sessions.sqlite3"), 解析器)
+    assert runtime.模型名稱 == "gemini-2.5-flash-lite"
+    assert runtime.model_config["requested_model"] == "gemini-flash-lite"
+    assert runtime.model_config["resolved_model"] == "gemini-2.5-flash-lite"

@@ -4,13 +4,18 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from 繁中代理.工具 import 建立預設工具登錄器
 from 繁中代理.提示詞常數 import 完成任務指引, 工具使用強制指引, 壓縮摘要前綴
 
 
 def test_prompt_常數_使用_hermes_原文():
     """確認關鍵提示詞常數與 Hermes 原始碼匯出的文字一致。"""
-    sys.path.insert(0, "/Users/wujinan/Documents/hermes-agent")
+    Hermes原始碼路徑 = Path("/Users/wujinan/Documents/hermes-agent")
+    if not Hermes原始碼路徑.exists():
+        pytest.skip("本機沒有 Hermes 原始碼 checkout，略過原文 parity 測試")
+    sys.path.insert(0, str(Hermes原始碼路徑))
     from agent import context_compressor as hermes壓縮器
     from agent import prompt_builder as hermes提示詞
 
