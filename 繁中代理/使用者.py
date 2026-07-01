@@ -491,7 +491,8 @@ class 使用者庫:
         設定 = self.連線.execute("SELECT * FROM user_settings WHERE user_id=?", (使用者["id"],)).fetchone()
         設定資料 = dict(設定) if 設定 else {}
         角色 = 解析字串清單(使用者.get("roles_json") or "[\"user\"]")
-        技能根 = [Path(路徑).expanduser().resolve() for 路徑 in 解析字串清單(設定資料.get("skill_roots_json"))]
+        技能根清單 = 解析字串清單(設定資料.get("skill_roots_json"))
+        技能根 = None if "*" in 技能根清單 else [Path(路徑).expanduser().resolve() for 路徑 in 技能根清單]
         允許目錄清單 = 解析字串清單(設定資料.get("allowed_workdirs_json"))
         if 允許目錄清單 and "*" not in 允許目錄清單:
             允許目錄 = [Path(路徑).expanduser().resolve() for 路徑 in 允許目錄清單]

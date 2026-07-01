@@ -147,7 +147,8 @@ def 建立Users參數解析器() -> argparse.ArgumentParser:
     for 名稱, 欄位 in [("set-tools", "enabled_tools_json"), ("set-skills", "enabled_skills_json"), ("set-skill-roots", "skill_roots_json"), ("set-workdirs", "allowed_workdirs_json")]:
         子解析器 = 子命令.add_parser(名稱, help=f"更新 {欄位}")
         子解析器.add_argument("username")
-        子解析器.add_argument("items", help="逗號分隔項目；* 表示全部")
+        說明 = "逗號分隔技能根目錄；* 表示使用內建 bundled skills" if 名稱 == "set-skill-roots" else "逗號分隔項目；* 表示全部"
+        子解析器.add_argument("items", help=說明)
         子解析器.set_defaults(設定欄位=欄位)
     return 解析器
 

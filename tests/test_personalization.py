@@ -362,6 +362,18 @@ def test_cli解析使用者不fallback成admin且require_login不可被user_id�
         解析目前使用者上下文(argparse.Namespace(db=str(tmp_path / "auth.sqlite3"), workdir=str(tmp_path), user_id=None))
 
 
+def test_set_skill_roots星號使用內建技能語意(tmp_path):
+    """確認 set-skill-roots '*' 不會被當成檔案路徑。"""
+    db = tmp_path / "users.sqlite3"
+    使用者資料庫 = 使用者庫(db)
+    使用者資料庫.建立使用者("alice", password="pw", skill_roots=[])
+    使用者資料庫.設定權限欄位("alice", "skill_roots_json", ["*"])
+    上下文 = 使用者資料庫.建立使用者上下文(username="alice")
+    assert 上下文.skill_roots is None
+    說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "set-skill-roots", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    assert "bundled skills" in 說明.stdout
+
+
 def test_登入Token預設一天後過期(tmp_path):
     """確認登入 token 預設在 24 小時後過期。"""
     db = tmp_path / "auth.sqlite3"
