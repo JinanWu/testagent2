@@ -181,13 +181,13 @@ class 工具登錄器:
             return json.dumps({"success": False, "error": f"使用者無權使用工具：{名稱}", "permission_denied": True}, ensure_ascii=False)
         try:
             工具參數 = dict(參數)
-            工具參數.setdefault("_runtime_workdir", self.工作目錄)
+            工具參數["_runtime_workdir"] = self.工作目錄
             if self.使用者上下文物件:
-                工具參數.setdefault("_current_user_id", self.使用者上下文物件.user_id)
-                工具參數.setdefault("_enabled_skills", sorted(self.使用者上下文物件.enabled_skills) if self.使用者上下文物件.enabled_skills is not None else None)
-                工具參數.setdefault("_skill_roots", [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots] if self.使用者上下文物件.skill_roots is not None else None)
-                工具參數.setdefault("_allowed_workdirs", [str(路徑) for 路徑 in self.使用者上下文物件.allowed_workdirs] if self.使用者上下文物件.allowed_workdirs is not None else None)
-                工具參數.setdefault("_memory_home", str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None)
+                工具參數["_current_user_id"] = self.使用者上下文物件.user_id
+                工具參數["_enabled_skills"] = sorted(self.使用者上下文物件.enabled_skills) if self.使用者上下文物件.enabled_skills is not None else None
+                工具參數["_skill_roots"] = [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots] if self.使用者上下文物件.skill_roots is not None else None
+                工具參數["_allowed_workdirs"] = [str(路徑) for 路徑 in self.使用者上下文物件.allowed_workdirs] if self.使用者上下文物件.allowed_workdirs is not None else None
+                工具參數["_memory_home"] = str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None
             結果 = 工具.處理函數(工具參數)
             return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
         except Exception as 錯誤:

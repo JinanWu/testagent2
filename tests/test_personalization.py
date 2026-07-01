@@ -194,6 +194,24 @@ def test_tool_schema與硬呼叫都依使用者權限(tmp_path):
     assert 結果["permission_denied"] is True
 
 
+def test_tool內部安全欄位不可由參數覆寫(tmp_path):
+    """確認模型傳入的底線安全欄位會被 runtime 覆寫。"""
+    允許 = tmp_path / "allowed"
+    禁止 = tmp_path / "denied"
+    允許.mkdir()
+    禁止.mkdir()
+    上下文 = 建立上下文("alice", tmp_path, tools={"terminal", "skill_view"}, skills={"skill_a"}, workdir=允許)
+    寫入技能(tmp_path / "skills", "cat", "skill_a", "A only")
+    寫入技能(tmp_path / "skills", "cat", "skill_b", "B denied")
+    登錄器 = 建立預設工具登錄器(允許, 上下文)
+    終端結果 = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd", "workdir": str(禁止), "_allowed_workdirs": None}))
+    assert 終端結果["success"] is False
+    assert "超出" in 終端結果["error"]
+    技能結果 = json.loads(登錄器.呼叫工具("skill_view", {"name": "skill_b", "_enabled_skills": None}))
+    assert 技能結果["success"] is False
+    assert "無權" in 技能結果["error"]
+
+
 def test_file與terminal工具限制_workdir(tmp_path):
     """確認檔案與 terminal 工具不能越出 allowed_workdirs。"""
     允許 = tmp_path / "allowed"
