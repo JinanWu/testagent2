@@ -453,7 +453,7 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     if 工作階段識別碼 and 錨點訊息識別碼 is not None:
         return 庫.捲動工作階段訊息(工作階段識別碼, int(錨點訊息識別碼), window=視窗, user_id=使用者識別碼) | {"db_path": str(資料庫路徑文字)}
     if 工作階段識別碼:
-        return 庫.讀取工作階段全文(工作階段識別碼) | {"db_path": str(資料庫路徑文字)}
+        return 庫.讀取工作階段全文(工作階段識別碼, user_id=使用者識別碼) | {"db_path": str(資料庫路徑文字)}
     if 查詢:
         符合清單 = 庫.搜尋工作階段(查詢, limit=限制, window=視窗, include_archived=包含封存, source=來源, user_id=使用者識別碼)
         return {"matches": 符合清單, "total_count": len(符合清單), "db_path": str(資料庫路徑文字)}
@@ -473,7 +473,7 @@ def 記憶工具(參數: dict[str, Any]) -> dict[str, Any]:
     from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
     from .記憶存放 import 記憶存放
 
-    hermes家目錄 = 提示詞組裝器(提示詞設定(工作目錄=os.getcwd())).取得Hermes家目錄()
+    hermes家目錄 = Path(str(參數.get("_memory_home") or 提示詞組裝器(提示詞設定(工作目錄=os.getcwd())).取得Hermes家目錄()))
     存放 = 記憶存放(hermes家目錄)
     存放.載入()
     動作 = str(參數.get("action") or "")
@@ -486,17 +486,17 @@ def 記憶工具(參數: dict[str, Any]) -> dict[str, Any]:
         return 存放.移除(目標, str(參數.get("old_text") or ""))
     return {"success": False, "error": f"不支援的 memory action：{動作}"}
 
-def 建立預設工具登錄器(工作目錄: str | Path | None = None) -> 工具登錄器:
+def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用者上下文物件: 使用者上下文 | None = None) -> 工具登錄器:
     """建立含 Hermes core schema 的工具登錄器。
 
     參數：
         工作目錄: Runtime 工作目錄；工具相對路徑會以此為基準。
+        使用者上下文物件: 目前使用者權限；會限制模型可見工具與執行權限。
 
     返回值：工具登錄器；會載入 `assets/hermes_core_tool_schemas.json` 中從 Hermes
         擷取的 48 個 core tool schema。MVP 已實作本機檔案、終端與技能讀取工具；
         其他需外部服務的工具會用明確未啟用 handler 回報。
     """
-    登錄器 = 工具登錄器(工作目錄)
     已實作處理器: dict[str, Callable[[dict[str, Any]], Any]] = {
         "read_file": 讀取檔案內容,
         "write_file": 寫入檔案內容,
@@ -509,11 +509,16 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None) -> 工�
         "memory": 記憶工具,
     }
     結構路徑 = Path(__file__).resolve().parents[1] / "assets" / "hermes_core_tool_schemas.json"
+    已知工具名稱集合: set[str] = set()
     if 結構路徑.exists():
         結構清單 = json.loads(結構路徑.read_text(encoding="utf-8"))
+        已知工具名稱集合 = {項目["schema"]["name"] for 項目 in 結構清單}
+        登錄器 = 工具登錄器(工作目錄, 使用者上下文物件, 已知工具名稱集合)
         for 項目 in 結構清單:
             結構 = 項目["schema"]
             名稱 = 結構["name"]
+            if 使用者上下文物件 and not 使用者上下文物件.工具是否允許(名稱):
+                continue
             登錄器.登錄工具(工具定義(
                 名稱=名稱,
                 說明=結構.get("description", ""),
@@ -522,6 +527,9 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None) -> 工�
             ))
         return 登錄器
 
+    登錄器 = 工具登錄器(工作目錄, 使用者上下文物件, set(已實作處理器))
     for 名稱, 處理器 in 已實作處理器.items():
+        if 使用者上下文物件 and not 使用者上下文物件.工具是否允許(名稱):
+            continue
         登錄器.登錄工具(工具定義(名稱, 名稱, {"type": "object", "properties": {}}, 處理器))
     return 登錄器
