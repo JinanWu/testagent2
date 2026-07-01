@@ -23,7 +23,7 @@ from typing import Any
 
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
-from .模型供應商 import 建立模型供應商
+from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
 
 
@@ -135,6 +135,13 @@ def 解析模型設定(參數: argparse.Namespace, 解析器: argparse.ArgumentP
     return {"mode": 參數.mode}
 
 
+def 解析執行模型名稱(模式: str, 模型名稱: str) -> str:
+    """把使用者輸入的模型別名解析成 runtime/session 使用的正式名稱。"""
+    if 模式 == "gemini":
+        return 正規化Gemini模型名稱(模型名稱)
+    return 模型名稱
+
+
 def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作階段庫, 解析器: argparse.ArgumentParser) -> 代理執行階段:
     """依 CLI 參數建立 AgentRuntime。
 
@@ -146,11 +153,14 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     返回值：代理執行階段。呼叫者可重複用於同一個 REPL process。
     """
     模型設定 = 解析模型設定(參數, 解析器)
-    模型供應商物件 = 建立模型供應商(參數.mode, 參數.model)
+    執行模型名稱 = 解析執行模型名稱(參數.mode, 參數.model)
+    模型設定.setdefault("requested_model", 參數.model)
+    模型設定.setdefault("resolved_model", 執行模型名稱)
+    模型供應商物件 = 建立模型供應商(參數.mode, 執行模型名稱)
     return 代理執行階段(
         工作階段庫物件=工作階段庫物件,
         模型供應商物件=模型供應商物件,
-        模型名稱=參數.model,
+        模型名稱=執行模型名稱,
         供應商名稱="fake" if 參數.mode == "fake" else "gemini-adc",
         工作目錄=參數.workdir,
         最大迭代次數=參數.max_iters,
