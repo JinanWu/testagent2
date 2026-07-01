@@ -106,6 +106,61 @@ def 建立Auth參數解析器() -> argparse.ArgumentParser:
     子命令.add_parser("whoami", help="顯示目前登入使用者")
     return 解析器
 
+def 建立Users參數解析器() -> argparse.ArgumentParser:
+    """建立 users 管理子命令 parser。
+
+    參數：無。
+    返回值：ArgumentParser。支援建立、列出、停用與設定權限。
+    """
+    說明 = """管理本機使用者與權限
+
+常用流程：
+  python3 -m 繁中代理.cli users create alice --password <密碼> --workdirs /path/to/repo
+  python3 -m 繁中代理.cli users list
+  python3 -m 繁中代理.cli users set-tools alice read_file,search_files,terminal
+  python3 -m 繁中代理.cli users set-skills alice hermes-agent,verification-and-debugging
+  python3 -m 繁中代理.cli users disable alice
+
+權限格式：
+  --tools / --skills / set-* items 使用逗號分隔；* 表示全部允許。
+  --workdirs / set-workdirs 限制 read_file、write_file、patch、search_files、terminal 的可用目錄。
+"""
+    解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli users", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
+    解析器.add_argument("--db", default=預設資料庫路徑, help="SQLite DB 路徑")
+    子命令 = 解析器.add_subparsers(dest="users_command", required=True)
+    create解析器 = 子命令.add_parser("create", help="建立使用者")
+    create解析器.add_argument("username", help="登入帳號")
+    create解析器.add_argument("--password", default=None, help="密碼；未提供時互動輸入或讀 TESTAGENT2_PASSWORD")
+    create解析器.add_argument("--display-name", default=None, help="顯示名稱")
+    create解析器.add_argument("--roles", default="user", help="逗號分隔角色，例如 user,admin")
+    create解析器.add_argument("--tools", default="*", help="逗號分隔工具；* 表示全部")
+    create解析器.add_argument("--skills", default="*", help="逗號分隔技能；* 表示全部")
+    create解析器.add_argument("--skill-roots", default="", help="逗號分隔技能根目錄")
+    create解析器.add_argument("--workdirs", default="", help="逗號分隔允許工作目錄；* 表示全部")
+    子命令.add_parser("list", help="列出使用者")
+    disable解析器 = 子命令.add_parser("disable", help="停用使用者")
+    disable解析器.add_argument("username")
+    enable解析器 = 子命令.add_parser("enable", help="啟用使用者")
+    enable解析器.add_argument("username")
+    for 名稱, 欄位 in [("set-tools", "enabled_tools_json"), ("set-skills", "enabled_skills_json"), ("set-skill-roots", "skill_roots_json"), ("set-workdirs", "allowed_workdirs_json")]:
+        子解析器 = 子命令.add_parser(名稱, help=f"更新 {欄位}")
+        子解析器.add_argument("username")
+        子解析器.add_argument("items", help="逗號分隔項目；* 表示全部")
+        子解析器.set_defaults(設定欄位=欄位)
+    return 解析器
+
+
+def 解析逗號清單(文字: str | None) -> list[str]:
+    """解析 CLI 逗號分隔清單。
+
+    參數：
+        文字: 使用者輸入的逗號分隔字串。
+
+    返回值：
+        去空白字串清單。
+    """
+    return [項目.strip() for 項目 in str(文字 or "").split(",") if 項目.strip()]
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
