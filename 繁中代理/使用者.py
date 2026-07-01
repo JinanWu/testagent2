@@ -293,3 +293,57 @@ class 使用者庫:
             );
             """
         )
+
+    def 建立使用者(
+        self,
+        username: str,
+        password: str | None = None,
+        display_name: str | None = None,
+        roles: list[str] | None = None,
+        enabled_tools: list[str] | None = None,
+        enabled_skills: list[str] | None = None,
+        skill_roots: list[str] | None = None,
+        allowed_workdirs: list[str] | None = None,
+        memory_home: str | None = None,
+    ) -> dict[str, Any]:
+        """建立本機使用者與初始權限設定。
+
+        參數：
+            username: 登入帳號。
+            password: 可選密碼；未提供時建立無密碼帳號供測試或外部 provider 使用。
+            display_name: 顯示名稱。
+            roles: 角色清單。
+            enabled_tools: 可用工具清單；`*` 或空值表示全部。
+            enabled_skills: 可用技能清單；`*` 或空值表示全部。
+            skill_roots: 技能根目錄清單。
+            allowed_workdirs: 允許工作目錄清單。
+            memory_home: 使用者記憶根目錄。
+
+        返回值：
+            新使用者資料。
+        """
+        帳號 = username.strip()
+        if not 帳號:
+            raise ValueError("username 不可為空")
+        目前時間 = time.time()
+        user_id = f"user-{secrets.token_hex(8)}"
+        密碼雜湊 = 產生密碼雜湊(password) if password else None
+        角色 = roles or ["user"]
+        self.連線.execute(
+            "INSERT INTO users(id, username, display_name, password_hash, roles_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, 帳號, display_name or 帳號, 密碼雜湊, json.dumps(角色, ensure_ascii=False), 目前時間, 目前時間),
+        )
+        self.連線.execute(
+            "INSERT INTO user_settings(user_id, enabled_tools_json, enabled_skills_json, skill_roots_json, allowed_workdirs_json, memory_home, settings_json, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                user_id,
+                json.dumps(enabled_tools or ["*"], ensure_ascii=False),
+                json.dumps(enabled_skills or ["*"], ensure_ascii=False),
+                json.dumps(skill_roots or [], ensure_ascii=False),
+                json.dumps(allowed_workdirs or [], ensure_ascii=False),
+                memory_home or str(取得預設記憶根目錄(user_id)),
+                json.dumps({}, ensure_ascii=False),
+                目前時間,
+            ),
+        )
+        return self.讀取使用者(username=帳號) or {"id": user_id, "username": 帳號}
