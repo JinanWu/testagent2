@@ -54,7 +54,7 @@ class 使用者上下文:
     roles: list[str] = field(default_factory=lambda: ["admin"])
     enabled_tools: set[str] | None = None
     enabled_skills: set[str] | None = None
-    skill_roots: list[Path] = field(default_factory=list)
+    skill_roots: list[Path] | None = None
     allowed_workdirs: list[Path] | None = None
     memory_home: Path | None = None
     is_admin: bool = True
@@ -95,7 +95,7 @@ class 使用者上下文:
             "roles": self.roles,
             "enabled_tools": sorted(self.enabled_tools) if self.enabled_tools is not None else None,
             "enabled_skills": sorted(self.enabled_skills) if self.enabled_skills is not None else None,
-            "skill_roots": [str(路徑) for 路徑 in self.skill_roots],
+            "skill_roots": [str(路徑) for 路徑 in self.skill_roots] if self.skill_roots is not None else None,
             "allowed_workdirs": [str(路徑) for 路徑 in self.allowed_workdirs] if self.allowed_workdirs is not None else None,
             "memory_home": str(self.memory_home) if self.memory_home else None,
             "is_admin": self.is_admin,
@@ -166,7 +166,7 @@ def 建立預設使用者上下文(工作目錄: str | Path | None = None) -> �
         roles=["admin"],
         enabled_tools=None,
         enabled_skills=None,
-        skill_roots=[],
+        skill_roots=None,
         allowed_workdirs=允許目錄,
         memory_home=None,
         is_admin=True,

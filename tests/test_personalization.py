@@ -113,6 +113,14 @@ def test_rewind會重設目前使用者上下文(tmp_path):
 
 
 def test_session_owner_不可被其他使用者_resume或覆蓋(tmp_path):
+def test_empty_skill_roots不fallback到內建技能(tmp_path):
+    """確認空 skill_roots 代表不注入內建 bundled skills。"""
+    上下文 = 建立上下文("alice", tmp_path, tools={"skills_list"}, skills=set())
+    上下文.skill_roots = []
+    runtime = 代理執行階段(工作階段庫(tmp_path / "empty-skills.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=上下文)
+    assert runtime.建立技能摘要() == ""
+
+
     """確認 session owner 不會被跨使用者覆蓋。"""
     庫 = 工作階段庫(tmp_path / "sessions.sqlite3")
     alice = 建立上下文("alice", tmp_path)

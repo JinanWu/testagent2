@@ -505,7 +505,12 @@ class 代理執行階段:
             str：`<available_skills>` 區塊文字，包含最多 300 個技能名稱；若 skills
             尚未複製則回傳明確的 placeholder。
         """
-        根目錄清單 = self.使用者上下文物件.skill_roots or [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+        if self.使用者上下文物件.skill_roots is None:
+            根目錄清單 = [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+        else:
+            根目錄清單 = self.使用者上下文物件.skill_roots
+        if not 根目錄清單:
+            return ""
         工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
         摘要清單 = [建立技能索引摘要(根目錄, 工具名稱集合, self.使用者上下文物件.enabled_skills) for 根目錄 in 根目錄清單]
         return "\n\n".join(摘要 for 摘要 in 摘要清單 if 摘要)

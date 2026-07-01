@@ -185,7 +185,7 @@ class 工具登錄器:
             if self.使用者上下文物件:
                 工具參數.setdefault("_current_user_id", self.使用者上下文物件.user_id)
                 工具參數.setdefault("_enabled_skills", sorted(self.使用者上下文物件.enabled_skills) if self.使用者上下文物件.enabled_skills is not None else None)
-                工具參數.setdefault("_skill_roots", [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots])
+                工具參數.setdefault("_skill_roots", [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots] if self.使用者上下文物件.skill_roots is not None else None)
                 工具參數.setdefault("_allowed_workdirs", [str(路徑) for 路徑 in self.使用者上下文物件.allowed_workdirs] if self.使用者上下文物件.allowed_workdirs is not None else None)
                 工具參數.setdefault("_memory_home", str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None)
             結果 = 工具.處理函數(工具參數)
