@@ -399,7 +399,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     """
     模型設定 = 解析模型設定(參數, 解析器)
     模型供應商物件 = 建立模型供應商(參數.mode, 參數.model)
-    使用者上下文物件 = 解析目前使用者上下文(參數)
+    使用者上下文物件 = getattr(參數, "_resolved_user_context", None) or 解析目前使用者上下文(參數)
     return 代理執行階段(
         工作階段庫物件=工作階段庫物件,
         模型供應商物件=模型供應商物件,
@@ -1069,7 +1069,15 @@ def 執行主程式() -> None:
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
     if not 參數.user_id:
-        參數.user_id = 解析目前使用者上下文(參數).user_id
+        一次性Session操作 = bool(參數.archive_session or 參數.unarchive_session or 參數.session_search)
+        auth資料 = 讀取Auth檔案()
+        token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
+        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+        auth符合目前DB = bool(auth資料 and auth資料.get("token") and ((token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() == 目前資料庫路徑) or (not token資料庫路徑 and 目前資料庫路徑 == Path(預設資料庫路徑).expanduser().resolve())))
+        if not 一次性Session操作 or auth符合目前DB or os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
+            使用者上下文物件 = 解析目前使用者上下文(參數)
+            參數.user_id = 使用者上下文物件.user_id
+            參數._resolved_user_context = 使用者上下文物件
     if 執行一次性操作(參數, 解析器):
         return
     if 參數.query or 參數.message:
