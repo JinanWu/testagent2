@@ -491,13 +491,14 @@ def 解析工作階段參照(工作階段庫物件: 工作階段庫, 參照: str
     return None
 
 
-def 印出工作階段表格(工作階段清單: list[dict[str, Any]], 工作階段庫物件: 工作階段庫 | None = None, 顯示預覽: bool = False) -> None:
+def 印出工作階段表格(工作階段清單: list[dict[str, Any]], 工作階段庫物件: 工作階段庫 | None = None, 顯示預覽: bool = False, user_id: str | None = None) -> None:
     """以文字表格列出 sessions。
 
     參數：
         工作階段清單: session metadata 清單。
         工作階段庫物件: 可選 session store；顯示預覽時用來讀取訊息。
         顯示預覽: 是否額外印出最近訊息摘要。
+        user_id: 顯示預覽時用於 owner 檢查的目前使用者。
 
     返回值：None。表格會輸出到 stdout。
     """
@@ -514,7 +515,7 @@ def 印出工作階段表格(工作階段清單: list[dict[str, Any]], 工作階
         print(f"{格式化時間戳(session.get('updated_at')):<16} {int(session.get('message_count') or 0):>8} {int(session.get('tool_call_count') or 0):>5} {成本文字:<10} {session.get('id')}  {標題}{archived}")
         if 顯示預覽 and 工作階段庫物件:
             try:
-                訊息清單 = 工作階段庫物件.讀取訊息(str(session.get("id")))
+                訊息清單 = 工作階段庫物件.讀取訊息(str(session.get("id")), user_id=user_id)
             except Exception:
                 訊息清單 = []
             for 訊息 in 訊息清單[-2:]:
@@ -544,7 +545,7 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
         if 參數.json:
             印出JSON({"sessions": sessions, "total_count": len(sessions)})
         else:
-            印出工作階段表格(sessions, 工作階段庫物件, 顯示預覽=True)
+            印出工作階段表格(sessions, 工作階段庫物件, 顯示預覽=True, user_id=參數.user_id)
         return
     if 參數.sessions_command == "search":
         結果 = 工作階段庫物件.搜尋工作階段(參數.query, limit=參數.limit, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
@@ -1061,7 +1062,7 @@ def 執行主程式() -> None:
         return
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
-    if not 參數.user_id and (參數.query or 參數.message or not (參數.archive_session or 參數.unarchive_session or 參數.session_search)):
+    if not 參數.user_id:
         參數.user_id = 解析目前使用者上下文(參數).user_id
     if 執行一次性操作(參數, 解析器):
         return

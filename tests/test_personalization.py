@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from 繁中代理.cli import 解析目前使用者上下文
+from 繁中代理.cli import 印出工作階段表格, 解析目前使用者上下文
 from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段上下文 import 設定目前使用者, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
@@ -171,6 +171,33 @@ def test_session_read_rename_archive_rewind都檢查_owner(tmp_path):
         庫.封存工作階段(sid, user_id="bob")
     with pytest.raises(PermissionError):
         庫.rewind到訊息(sid, target, user_id="bob")
+
+
+def test_cli一次性session操作與browse預覽使用登入者範圍(tmp_path, capsys):
+    """確認一次性 CLI session 操作與 browse preview 都帶入登入者 owner 檢查。"""
+    db = tmp_path / "sessions.sqlite3"
+    auth_file = tmp_path / "auth.json"
+    使用者資料庫 = 使用者庫(db)
+    使用者資料庫.建立使用者("alice", password="pw")
+    使用者資料庫.建立使用者("bob", password="pw")
+    alice = 使用者資料庫.讀取使用者(username="alice")
+    bob = 使用者資料庫.讀取使用者(username="bob")
+    assert alice and bob
+    庫 = 工作階段庫(db)
+    sid = 庫.建立或讀取工作階段("alice-secret", user_id=str(alice["id"]))
+    庫.寫入訊息清單(sid, [{"role": "user", "content": "alice secret"}])
+    env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file)}
+    登入 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "bob", "--password", "pw"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 登入.returncode == 0, 登入.stdout
+    封存 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--archive-session", sid], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 封存.returncode != 0
+    搜尋 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--session-search", "alice"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 搜尋.returncode == 0, 搜尋.stdout
+    assert "alice secret" not in 搜尋.stdout
+    工作階段 = 庫.讀取工作階段(sid)
+    assert 工作階段 is not None
+    印出工作階段表格([工作階段], 庫, 顯示預覽=True, user_id=str(bob["id"]))
+    assert "alice secret" not in capsys.readouterr().out
 
 
 def test_session_search_tool_忽略模型傳入_user_id並使用目前上下文(tmp_path):
