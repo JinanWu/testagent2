@@ -12,7 +12,7 @@ from 繁中代理.工作階段上下文 import 讀取目前工作階段識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.模型供應商 import 假模型供應商, 模型回應
-from 繁中代理.工具 import 建立預設工具登錄器
+from 繁中代理.工具註冊 import 建立預設工具登錄器
 
 
 def test_session_sqlite_roundtrip(tmp_path):
