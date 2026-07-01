@@ -118,3 +118,56 @@ def 解析字串清單(原始值: str | None) -> list[str]:
         if isinstance(資料, list):
             return [str(項目).strip() for 項目 in 資料 if str(項目).strip()]
     except json.JSONDecodeError:
+        pass
+    return [項目.strip() for 項目 in 原始值.split(",") if 項目.strip()]
+
+
+def 正規化可選集合(項目清單: list[str]) -> set[str] | None:
+    """把 `*` 或空白清單轉成不限制集合。
+
+    參數：
+        項目清單: 權限項目清單。
+
+    返回值：
+        None 表示不限制；否則回傳項目集合。
+    """
+    if not 項目清單 or "*" in 項目清單:
+        return None
+    return set(項目清單)
+
+
+def 取得預設記憶根目錄(user_id: str) -> Path:
+    """取得使用者預設記憶根目錄。
+
+    參數：
+        user_id: 使用者識別碼。
+
+    返回值：
+        `.testagent2/users/<user_id>` 絕對路徑。
+    """
+    return Path.home().expanduser().resolve() / ".testagent2" / "users" / user_id
+
+
+def 建立預設使用者上下文(工作目錄: str | Path | None = None) -> 使用者上下文:
+    """建立未登入時的本機管理者上下文。
+
+    參數：
+        工作目錄: 目前工作目錄；會加入 allowed_workdirs 以利單機開發。
+
+    返回值：
+        local/admin 使用者上下文。
+    """
+    允許目錄 = [Path(工作目錄 or os.getcwd()).expanduser().resolve()]
+    return 使用者上下文(
+        user_id=預設使用者識別碼,
+        username=預設使用者名稱,
+        display_name="Local User",
+        roles=["admin"],
+        enabled_tools=None,
+        enabled_skills=None,
+        skill_roots=[],
+        allowed_workdirs=允許目錄,
+        memory_home=None,
+        is_admin=True,
+        disabled=False,
+    )
