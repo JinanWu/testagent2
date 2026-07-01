@@ -221,14 +221,41 @@ class GeminiADC供應商:
             return []
         from google.genai import types
 
+        def 清理Gemini結構(結構: Any) -> Any:
+            """把 OpenAI JSON Schema 收斂成 google-genai Schema 支援的欄位。"""
+            if isinstance(結構, list):
+                return [清理Gemini結構(項目) for 項目 in 結構]
+            if not isinstance(結構, dict):
+                return 結構
+            可用欄位 = set(types.Schema.model_fields.keys())
+            清理後: dict[str, Any] = {}
+            for 鍵, 值 in 結構.items():
+                if 鍵 not in 可用欄位:
+                    continue
+                if 鍵 == "properties" and isinstance(值, dict):
+                    清理後[鍵] = {str(子鍵): 清理Gemini結構(子值) for 子鍵, 子值 in 值.items()}
+                elif 鍵 in {"items", "any_of"}:
+                    清理後[鍵] = 清理Gemini結構(值)
+                else:
+                    清理後[鍵] = 值
+            return 清理後
+
         函數宣告清單 = []
         for 工具 in 工具清單:
             函數 = 工具.get("function", {})
-            函數宣告清單.append(types.FunctionDeclaration(
-                name=函數.get("name"),
-                description=函數.get("description"),
-                parameters_json_schema=函數.get("parameters") or {"type": "object", "properties": {}},
-            ))
+            參數結構 = 清理Gemini結構(函數.get("parameters") or {"type": "object", "properties": {}})
+            if "parameters_json_schema" in types.FunctionDeclaration.model_fields:
+                函數宣告清單.append(types.FunctionDeclaration(
+                    name=函數.get("name"),
+                    description=函數.get("description"),
+                    parameters_json_schema=參數結構,
+                ))
+            else:
+                函數宣告清單.append(types.FunctionDeclaration(
+                    name=函數.get("name"),
+                    description=函數.get("description"),
+                    parameters=types.Schema.model_validate(參數結構),
+                ))
         return [types.Tool(function_declarations=函數宣告清單)]
 
     def 轉成模型回應(self, 回應: Any) -> 模型回應:
