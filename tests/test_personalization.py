@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from 繁中代理.工作階段上下文 import 設定目前使用者
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
 from 繁中代理.工具 import 建立預設工具登錄器
-from 繁中代理.使用者 import 使用者上下文, 使用者庫
+from 繁中代理.使用者 import 使用者上下文, 使用者庫, 預設登入Token有效秒數, 雜湊Token
 
 專案根目錄 = Path(__file__).resolve().parents[1]
 
@@ -193,3 +194,28 @@ def test_cli_auth_login_whoami與執行使用登入者(tmp_path):
     assert 執行.returncode == 0, 執行.stdout
     工作階段 = 工作階段庫(db).讀取工作階段("cli-user")
     assert 工作階段 and 工作階段["user_id"] != "local"
+
+
+def test_登入Token預設一天後過期(tmp_path):
+    """確認登入 token 預設在 24 小時後過期。"""
+    db = tmp_path / "auth.sqlite3"
+    庫 = 使用者庫(db)
+    庫.建立使用者("alice", password="pw")
+    使用者 = 庫.讀取使用者(username="alice")
+    開始 = time.time()
+    token = 庫.建立登入Token(str(使用者["id"]))
+    結束 = time.time()
+    資料列 = 庫.連線.execute(
+        "SELECT expires_at FROM auth_sessions WHERE token_hash=?",
+        (雜湊Token(token),),
+    ).fetchone()
+    assert 資料列 and 資料列["expires_at"] is not None
+    過期時間 = float(資料列["expires_at"])
+    assert 開始 + 預設登入Token有效秒數 <= 過期時間 <= 結束 + 預設登入Token有效秒數
+    庫.驗證登入Token(token)
+    庫.連線.execute(
+        "UPDATE auth_sessions SET expires_at=? WHERE token_hash=?",
+        (time.time() - 1, 雜湊Token(token)),
+    )
+    with pytest.raises(ValueError, match="已過期"):
+        庫.驗證登入Token(token)

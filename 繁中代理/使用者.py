@@ -24,6 +24,7 @@ from typing import Any
 預設使用者識別碼 = "local"
 預設使用者名稱 = "local"
 預設密碼迭代次數 = 200_000
+預設登入Token有效秒數 = 24 * 60 * 60
 
 
 @dataclass
@@ -426,13 +427,17 @@ class 使用者庫:
 
         參數：
             user_id: 使用者識別碼。
-            expires_at: 可選過期時間。
+            expires_at: 可選過期時間（Unix timestamp）；未提供時預設為建立後 24 小時；傳 0 表示永不過期。
 
         返回值：
             明文 token；只會回傳一次並寫入本機 auth 檔。
         """
         token = secrets.token_urlsafe(32)
         目前時間 = time.time()
+        if expires_at is None:
+            expires_at = 目前時間 + 預設登入Token有效秒數
+        elif expires_at == 0:
+            expires_at = None
         self.連線.execute(
             "INSERT INTO auth_sessions(token_hash, user_id, created_at, expires_at, last_used_at) VALUES (?, ?, ?, ?, ?)",
             (雜湊Token(token), user_id, 目前時間, expires_at, 目前時間),
