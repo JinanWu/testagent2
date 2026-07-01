@@ -228,7 +228,8 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
             skill_roots=解析逗號清單(參數.skill_roots),
             allowed_workdirs=解析逗號清單(參數.workdirs),
         )
-        印出JSON({"created": True, "user": 使用者})
+        安全使用者 = {鍵: 值 for 鍵, 值 in 使用者.items() if 鍵 != "password_hash"}
+        印出JSON({"created": True, "user": 安全使用者})
         return
     if 參數.users_command == "list":
         印出JSON({"users": 使用者庫物件.列出使用者()})

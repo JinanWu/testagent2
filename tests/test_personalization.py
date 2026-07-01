@@ -303,6 +303,7 @@ def test_cli_auth_login_whoami與執行使用登入者(tmp_path):
     env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file), "AIAGENT_MODEL_MODE": "fake"}
     建立 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--db", str(db), "create", "alice", "--password", "pw", "--workdirs", str(tmp_path)], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     assert 建立.returncode == 0, 建立.stdout
+    assert "password_hash" not in 建立.stdout
     登入 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "alice", "--password", "pw"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
     assert 登入.returncode == 0, 登入.stdout
     whoami = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "whoami"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
