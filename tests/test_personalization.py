@@ -294,6 +294,17 @@ def test_cli_auth_login_whoami與執行使用登入者(tmp_path):
     assert 工作階段 and 工作階段["user_id"] != "local"
 
 
+def test_cli_auth_whoami無效token回傳未登入(tmp_path):
+    """確認 auth whoami 遇到無效 token 不會 traceback。"""
+    db = tmp_path / "auth.sqlite3"
+    auth_file = tmp_path / "auth.json"
+    auth_file.write_text(json.dumps({"username": "alice", "user_id": "missing", "token": "bad-token"}), encoding="utf-8")
+    env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file)}
+    whoami = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "whoami"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert whoami.returncode == 0, whoami.stdout
+    assert json.loads(whoami.stdout)["logged_in"] is False
+
+
 def test_登入Token預設一天後過期(tmp_path):
     """確認登入 token 預設在 24 小時後過期。"""
     db = tmp_path / "auth.sqlite3"

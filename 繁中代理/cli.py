@@ -191,7 +191,11 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         if not auth資料 or not auth資料.get("token"):
             印出JSON({"logged_in": False})
             return
-        上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+        try:
+            上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+        except ValueError:
+            印出JSON({"logged_in": False})
+            return
         印出JSON({"logged_in": True, "user": 上下文.序列化()})
         return
 
