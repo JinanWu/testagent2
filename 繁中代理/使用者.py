@@ -347,3 +347,59 @@ class 使用者庫:
             ),
         )
         return self.讀取使用者(username=帳號) or {"id": user_id, "username": 帳號}
+
+    def 讀取使用者(self, user_id: str | None = None, username: str | None = None) -> dict[str, Any] | None:
+        """依 id 或 username 讀取使用者 row。
+
+        參數：
+            user_id: 使用者識別碼。
+            username: 登入帳號。
+
+        返回值：
+            使用者 row dict；找不到時回傳 None。
+        """
+        if user_id:
+            資料列 = self.連線.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+        elif username:
+            資料列 = self.連線.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        else:
+            return None
+        return dict(資料列) if 資料列 else None
+
+    def 列出使用者(self) -> list[dict[str, Any]]:
+        """列出所有使用者。
+
+        參數：無。
+        返回值：使用者資料清單。
+        """
+        return [dict(資料列) for 資料列 in self.連線.execute("SELECT id, username, display_name, roles_json, disabled, created_at, updated_at FROM users ORDER BY username").fetchall()]
+
+    def 設定使用者停用(self, username: str, disabled: bool) -> None:
+        """啟用或停用使用者。
+
+        參數：
+            username: 登入帳號。
+            disabled: True 表示停用。
+
+        返回值：None。
+        """
+        結果 = self.連線.execute("UPDATE users SET disabled=?, updated_at=? WHERE username=?", (1 if disabled else 0, time.time(), username))
+        if 結果.rowcount == 0:
+            raise ValueError(f"找不到使用者：{username}")
+
+    def 設定權限欄位(self, username: str, 欄位: str, 項目清單: list[str]) -> None:
+        """更新 user_settings 中的 JSON 權限欄位。
+
+        參數：
+            username: 登入帳號。
+            欄位: 欲更新的資料庫欄位。
+            項目清單: 新權限清單。
+
+        返回值：None。
+        """
+        使用者 = self.讀取使用者(username=username)
+        if not 使用者:
+            raise ValueError(f"找不到使用者：{username}")
+        if 欄位 not in {"enabled_tools_json", "enabled_skills_json", "skill_roots_json", "allowed_workdirs_json"}:
+            raise ValueError(f"不支援的權限欄位：{欄位}")
+        self.連線.execute(f"UPDATE user_settings SET {欄位}=?, updated_at=? WHERE user_id=?", (json.dumps(項目清單, ensure_ascii=False), time.time(), 使用者["id"]))
