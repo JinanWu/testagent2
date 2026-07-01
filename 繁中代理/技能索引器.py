@@ -412,12 +412,13 @@ def 寫入技能摘要快取(技能根目錄: Path, 清單指紋: dict[str, list
         return
 
 
-def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str]) -> str:
+def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str], 允許技能名稱集合: set[str] | None = None) -> str:
     """建立可放入 system prompt 的技能索引摘要。
 
     參數：
         技能根目錄: skills 根目錄。
         工具名稱集合: 目前可用工具名稱集合，用於 tool/toolset 條件過濾。
+        允許技能名稱集合: 目前使用者可見技能；None 表示全部可見。
 
     返回值：
         技能摘要文字。摘要會依分類列出技能，分類描述來自 `DESCRIPTION.md`，
@@ -434,13 +435,14 @@ def 建立技能摘要(技能根目錄: Path, 工具名稱集合: set[str]) -> s
         "disabled_skills": sorted(停用技能名稱集合),
         "tools": sorted(工具名稱集合),
         "toolsets": sorted(工具集名稱集合),
+        "allowed_skills": sorted(允許技能名稱集合) if 允許技能名稱集合 is not None else None,
     }
     快取摘要 = 讀取技能摘要快取(技能根目錄, 清單指紋, 快取條件)
     if 快取摘要 is not None:
         return 快取摘要
 
     分類描述表 = 建立技能分類描述表(技能根目錄)
-    技能項目清單 = 建立技能索引項目清單(技能根目錄, 平台名稱, 停用技能名稱集合, 工具名稱集合, 工具集名稱集合)
+    技能項目清單 = 建立技能索引項目清單(技能根目錄, 平台名稱, 停用技能名稱集合, 工具名稱集合, 工具集名稱集合, 允許技能名稱集合)
     if not 技能項目清單:
         return 技能強制載入指引 + "\n\n<available_skills>\n  (no skills found)\n</available_skills>\n\n" + 技能無相關項目指引
 
@@ -495,6 +497,7 @@ def 建立技能索引項目清單(
     停用技能名稱集合: set[str] | None = None,
     工具名稱集合: set[str] | None = None,
     工具集名稱集合: set[str] | None = None,
+    允許技能名稱集合: set[str] | None = None,
 ) -> list[dict[str, str]]:
     """從 `SKILL.md` 路徑建立結構化技能索引項目。
 
@@ -504,6 +507,7 @@ def 建立技能索引項目清單(
         停用技能名稱集合: 停用技能名稱；未提供時讀取環境設定。
         工具名稱集合: 可用工具名稱；未提供時使用空集合。
         工具集名稱集合: 可用 toolset 名稱；未提供時依工具名稱推導。
+        允許技能名稱集合: 目前使用者可見技能；None 表示全部可見。
 
     返回值：
         技能項目清單。每個項目包含 `skill_name`、`category`、`description`
@@ -515,6 +519,8 @@ def 建立技能索引項目清單(
     工具集名稱集合 = 工具集名稱集合 if 工具集名稱集合 is not None else 建立可用工具集名稱集合(工具名稱集合)
     技能項目清單: list[dict[str, str]] = []
     for 技能路徑 in 走訪技能索引檔案(技能根目錄, "SKILL.md"):
+        if 允許技能名稱集合 is not None and 技能路徑.parent.name not in 允許技能名稱集合:
+            continue
         技能項目 = 建立技能索引項目(技能路徑, 技能根目錄, 平台名稱, 停用技能名稱集合, 工具名稱集合, 工具集名稱集合)
         if 技能項目:
             技能項目清單.append(技能項目)
