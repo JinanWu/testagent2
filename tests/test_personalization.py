@@ -227,8 +227,10 @@ def test_file與terminal工具限制_workdir(tmp_path):
     登錄器 = 建立預設工具登錄器(允許, 上下文)
     讀取結果 = json.loads(登錄器.呼叫工具("read_file", {"path": str(禁止 / "secret.txt")}))
     assert 讀取結果["success"] is False and "超出" in 讀取結果["error"]
+    assert 讀取結果["permission_denied"] is True
     終端結果 = json.loads(登錄器.呼叫工具("terminal", {"command": "pwd", "workdir": str(禁止)}))
     assert 終端結果["success"] is False and "超出" in 終端結果["error"]
+    assert 終端結果["permission_denied"] is True
 
 
 def test_search_files內容搜尋會檢查symlink命中路徑(tmp_path):

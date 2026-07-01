@@ -190,6 +190,8 @@ class 工具登錄器:
                 工具參數["_memory_home"] = str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None
             結果 = 工具.處理函數(工具參數)
             return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
+        except PermissionError as 錯誤:
+            return json.dumps({"success": False, "error": str(錯誤), "permission_denied": True}, ensure_ascii=False)
         except Exception as 錯誤:
             return json.dumps({"success": False, "error": str(錯誤)}, ensure_ascii=False)
 
