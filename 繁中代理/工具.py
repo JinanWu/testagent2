@@ -348,6 +348,36 @@ def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
     return {"output": 完成程序.stdout[-12000:], "exit_code": 完成程序.returncode}
 
 
+def 取得技能根目錄清單(參數: dict[str, Any]) -> list[Path]:
+    """取得目前使用者允許的技能根目錄。
+
+    參數：
+        參數: 工具呼叫參數，可能含 `_skill_roots`。
+
+    返回值：
+        技能根目錄清單；未設定時使用專案內建 skills。
+    """
+    根目錄清單 = [Path(str(路徑)).expanduser().resolve() for 路徑 in (參數.get("_skill_roots") or [])]
+    if 根目錄清單:
+        return 根目錄清單
+    return [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+
+
+def 取得允許技能集合(參數: dict[str, Any]) -> set[str] | None:
+    """取得目前使用者允許技能集合。
+
+    參數：
+        參數: 工具呼叫參數，可能含 `_enabled_skills`。
+
+    返回值：
+        None 表示允許全部；否則回傳技能名稱集合。
+    """
+    原始值 = 參數.get("_enabled_skills")
+    if 原始值 is None:
+        return None
+    return {str(項目) for 項目 in 原始值}
+
+
 def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
     """列出專案內複製的 Hermes skills。
 
@@ -357,11 +387,15 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         技能名稱與路徑清單。
     """
-    根目錄 = Path(str(參數.get("skills_root") or Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"))
+    允許技能集合 = 取得允許技能集合(參數)
     技能清單 = []
-    if 根目錄.exists():
-        for 路徑 in 根目錄.rglob("SKILL.md"):
-            技能清單.append({"name": 路徑.parent.name, "path": str(路徑)})
+    for 根目錄 in 取得技能根目錄清單(參數):
+        if 根目錄.exists():
+            for 路徑 in 根目錄.rglob("SKILL.md"):
+                技能名稱 = 路徑.parent.name
+                if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
+                    continue
+                技能清單.append({"name": 技能名稱, "path": str(路徑)})
     return {"skills": 技能清單[:200], "total_count": len(技能清單)}
 
 
@@ -375,10 +409,16 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
         包含 name、path、content 的 dict。
     """
     名稱 = str(參數.get("name", ""))
-    根目錄 = Path(str(參數.get("skills_root") or Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"))
-    for 路徑 in 根目錄.rglob("SKILL.md"):
-        if 路徑.parent.name == 名稱 or 名稱 in str(路徑.parent):
-            return {"name": 名稱, "path": str(路徑), "content": 路徑.read_text(encoding="utf-8", errors="replace")[:50000]}
+    允許技能集合 = 取得允許技能集合(參數)
+    if 允許技能集合 is not None and 名稱 not in 允許技能集合:
+        raise PermissionError(f"使用者無權讀取技能：{名稱}")
+    for 根目錄 in 取得技能根目錄清單(參數):
+        for 路徑 in 根目錄.rglob("SKILL.md"):
+            if 路徑.parent.name == 名稱 or 名稱 in str(路徑.parent):
+                實際名稱 = 路徑.parent.name
+                if 允許技能集合 is not None and 實際名稱 not in 允許技能集合:
+                    raise PermissionError(f"使用者無權讀取技能：{實際名稱}")
+                return {"name": 名稱, "path": str(路徑), "content": 路徑.read_text(encoding="utf-8", errors="replace")[:50000]}
     raise FileNotFoundError(f"找不到技能：{名稱}")
 
 
@@ -392,7 +432,7 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     返回值：
         dict：依 discovery、scroll、read、browse 形狀回傳 session history。
     """
-    from .工作階段上下文 import 讀取目前工作階段資料庫路徑
+    from .工作階段上下文 import 讀取目前工作階段資料庫路徑, 讀取目前使用者識別碼
     from .工作階段庫 import 工作階段庫
 
     限制 = int(參數.get("limit", 3) or 3)
@@ -407,9 +447,11 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     查詢 = str(參數.get("query") or 參數.get("q") or "").strip()
     包含封存 = bool(參數.get("include_archived", False))
     來源 = 參數.get("source")
-    使用者識別碼 = 參數.get("user_id")
+    使用者識別碼 = 參數.get("_current_user_id")
+    if 使用者識別碼 is None:
+        使用者識別碼 = 參數.get("user_id")
     if 工作階段識別碼 and 錨點訊息識別碼 is not None:
-        return 庫.捲動工作階段訊息(工作階段識別碼, int(錨點訊息識別碼), window=視窗) | {"db_path": str(資料庫路徑文字)}
+        return 庫.捲動工作階段訊息(工作階段識別碼, int(錨點訊息識別碼), window=視窗, user_id=使用者識別碼) | {"db_path": str(資料庫路徑文字)}
     if 工作階段識別碼:
         return 庫.讀取工作階段全文(工作階段識別碼) | {"db_path": str(資料庫路徑文字)}
     if 查詢:
