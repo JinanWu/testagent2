@@ -452,7 +452,7 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     包含封存 = bool(參數.get("include_archived", False))
     來源 = 參數.get("source")
     使用者識別碼 = 參數.get("_current_user_id")
-    if 使用者識別碼 is None:
+    if 使用者識別碼 is None and Path(預設DB).expanduser().resolve() == 資料庫路徑文字.expanduser().resolve():
         使用者識別碼 = 讀取目前使用者識別碼()
     if 工作階段識別碼 and 錨點訊息識別碼 is not None:
         return 庫.捲動工作階段訊息(工作階段識別碼, int(錨點訊息識別碼), window=視窗, user_id=使用者識別碼) | {"db_path": str(資料庫路徑文字)}
