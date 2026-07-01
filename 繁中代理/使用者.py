@@ -171,3 +171,57 @@ def 建立預設使用者上下文(工作目錄: str | Path | None = None) -> �
         is_admin=True,
         disabled=False,
     )
+
+
+def 產生密碼雜湊(密碼: str, salt: bytes | None = None) -> str:
+    """產生 PBKDF2 密碼雜湊字串。
+
+    參數：
+        密碼: 使用者輸入的明文密碼。
+        salt: 可選 salt；未提供時自動產生。
+
+    返回值：
+        `pbkdf2_sha256$iterations$salt$hash` 格式字串。
+    """
+    salt = salt or secrets.token_bytes(16)
+    雜湊 = hashlib.pbkdf2_hmac("sha256", 密碼.encode("utf-8"), salt, 預設密碼迭代次數)
+    return "$".join([
+        "pbkdf2_sha256",
+        str(預設密碼迭代次數),
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(雜湊).decode("ascii"),
+    ])
+
+
+def 驗證密碼雜湊(密碼: str, 儲存值: str) -> bool:
+    """驗證明文密碼是否符合儲存雜湊。
+
+    參數：
+        密碼: 使用者輸入的明文密碼。
+        儲存值: 資料庫中的 PBKDF2 雜湊字串。
+
+    返回值：
+        True 表示密碼正確。
+    """
+    try:
+        演算法, 迭代文字, salt文字, 雜湊文字 = 儲存值.split("$", 3)
+        if 演算法 != "pbkdf2_sha256":
+            return False
+        salt = base64.urlsafe_b64decode(salt文字.encode("ascii"))
+        期望 = base64.urlsafe_b64decode(雜湊文字.encode("ascii"))
+        實際 = hashlib.pbkdf2_hmac("sha256", 密碼.encode("utf-8"), salt, int(迭代文字))
+        return hmac.compare_digest(實際, 期望)
+    except Exception:
+        return False
+
+
+def 雜湊Token(token: str) -> str:
+    """把 auth token 轉成資料庫可保存的 SHA256 值。
+
+    參數：
+        token: 本機登入 token。
+
+    返回值：
+        十六進位 SHA256 字串。
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
