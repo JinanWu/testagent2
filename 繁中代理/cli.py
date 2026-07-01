@@ -843,7 +843,7 @@ class 互動CLI:
             except ValueError:
                 limit = 10
             sessions = self.工作階段庫物件.列出工作階段(limit=limit, include_archived=self.參數.include_archived, source=self.參數.source, user_id=self.參數.user_id)
-            印出工作階段表格(sessions, self.工作階段庫物件, 顯示預覽=True)
+            印出工作階段表格(sessions, self.工作階段庫物件, 顯示預覽=True, user_id=self.參數.user_id)
             return
         if 子命令 == "search":
             查詢 = " ".join(參數列[1:]).strip()
