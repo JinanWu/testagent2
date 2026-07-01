@@ -161,6 +161,38 @@ def 解析逗號清單(文字: str | None) -> list[str]:
     """
     return [項目.strip() for 項目 in str(文字 or "").split(",") if 項目.strip()]
 
+def 執行Auth子命令(參數: argparse.Namespace) -> None:
+    """執行 auth 子命令。
+
+    參數：
+        參數: argparse namespace。
+
+    返回值：None。結果輸出到 stdout。
+    """
+    使用者庫物件 = 使用者庫(參數.db)
+    if 參數.auth_command == "login":
+        密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
+        使用者 = 使用者庫物件.驗證使用者密碼(參數.username, 密碼)
+        token = 使用者庫物件.建立登入Token(str(使用者["id"]))
+        路徑 = 寫入Auth檔案(str(使用者["username"]), str(使用者["id"]), token)
+        印出JSON({"logged_in": True, "username": 使用者["username"], "user_id": 使用者["id"], "auth_file": str(路徑)})
+        return
+    if 參數.auth_command == "logout":
+        auth資料 = 讀取Auth檔案()
+        if auth資料 and auth資料.get("token"):
+            使用者庫物件.撤銷登入Token(str(auth資料["token"]))
+        刪除Auth檔案()
+        印出JSON({"logged_out": True})
+        return
+    if 參數.auth_command == "whoami":
+        auth資料 = 讀取Auth檔案()
+        if not auth資料 or not auth資料.get("token"):
+            印出JSON({"logged_in": False})
+            return
+        上下文 = 使用者庫物件.驗證登入Token(str(auth資料["token"]))
+        印出JSON({"logged_in": True, "user": 上下文.序列化()})
+        return
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
