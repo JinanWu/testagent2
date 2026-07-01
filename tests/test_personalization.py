@@ -133,3 +133,63 @@ def test_file與terminal工具限制_workdir(tmp_path):
 def test_skill_prompt與skill_view依使用者隔離(tmp_path):
     """確認 prompt skill 摘要與 skill_view 都依使用者技能權限隔離。"""
     寫入技能(tmp_path / "skills", "cat", "skill_a", "A only")
+    寫入技能(tmp_path / "skills", "cat", "skill_b", "B only")
+    上下文 = 建立上下文("alice", tmp_path, tools={"skills_list", "skill_view"}, skills={"skill_a"})
+    runtime = 代理執行階段(工作階段庫(tmp_path / "s.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=上下文)
+    prompt = runtime.建立系統提示詞("skill-session")
+    assert "skill_a" in prompt
+    assert "skill_b" not in prompt
+    可讀 = json.loads(runtime.工具登錄器物件.呼叫工具("skill_view", {"name": "skill_a"}))
+    不可讀 = json.loads(runtime.工具登錄器物件.呼叫工具("skill_view", {"name": "skill_b"}))
+    assert 可讀["success"] is True
+    assert 不可讀["success"] is False and "無權" in 不可讀["error"]
+
+
+def test_memory依使用者隔離並注入各自_prompt(tmp_path):
+    """確認 memory tool 寫入與 prompt 注入都使用 user-scoped memory_home。"""
+    alice = 建立上下文("alice", tmp_path, tools={"memory"})
+    bob = 建立上下文("bob", tmp_path, tools={"memory"})
+    alice_runtime = 代理執行階段(工作階段庫(tmp_path / "a.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=alice)
+    bob_runtime = 代理執行階段(工作階段庫(tmp_path / "b.sqlite3"), 假模型供應商(), "fake", 供應商名稱="fake", 工作目錄=str(tmp_path), 使用者上下文物件=bob)
+    寫入結果 = json.loads(alice_runtime.工具登錄器物件.呼叫工具("memory", {"action": "add", "target": "user", "content": "Alice 偏好"}))
+    assert 寫入結果["success"] is True
+    assert "Alice 偏好" in alice_runtime.建立系統提示詞("alice")
+    assert "Alice 偏好" not in bob_runtime.建立系統提示詞("bob")
+
+
+def test_cli_help揭露使用者與登入流程():
+    """確認 help 會揭露 users/auth 子命令與常用登入流程。"""
+    主說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    assert 主說明.returncode == 0, 主說明.stdout
+    assert "users --help" in 主說明.stdout
+    assert "auth --help" in 主說明.stdout
+    assert "TESTAGENT2_REQUIRE_LOGIN" in 主說明.stdout
+
+    使用者說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    assert 使用者說明.returncode == 0, 使用者說明.stdout
+    assert "users create alice" in 使用者說明.stdout
+    assert "set-tools" in 使用者說明.stdout
+    assert "set-skills" in 使用者說明.stdout
+
+    登入說明 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--help"], cwd=專案根目錄, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+    assert 登入說明.returncode == 0, 登入說明.stdout
+    assert "auth login alice" in 登入說明.stdout
+    assert "whoami" in 登入說明.stdout
+    assert "logout" in 登入說明.stdout
+
+
+def test_cli_auth_login_whoami與執行使用登入者(tmp_path):
+    """確認 CLI 可建立使用者、登入、whoami，且 agent 執行使用登入者。"""
+    db = tmp_path / "auth.sqlite3"
+    auth_file = tmp_path / "auth.json"
+    env = os.environ | {"TESTAGENT2_AUTH_FILE": str(auth_file), "AIAGENT_MODEL_MODE": "fake"}
+    建立 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "users", "--db", str(db), "create", "alice", "--password", "pw", "--workdirs", str(tmp_path)], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 建立.returncode == 0, 建立.stdout
+    登入 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "login", "alice", "--password", "pw"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 登入.returncode == 0, 登入.stdout
+    whoami = subprocess.run([sys.executable, "-m", "繁中代理.cli", "auth", "--db", str(db), "whoami"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert "alice" in whoami.stdout
+    執行 = subprocess.run([sys.executable, "-m", "繁中代理.cli", "--db", str(db), "--mode", "fake", "--session", "cli-user", "hello"], cwd=專案根目錄, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+    assert 執行.returncode == 0, 執行.stdout
+    工作階段 = 工作階段庫(db).讀取工作階段("cli-user")
+    assert 工作階段 and 工作階段["user_id"] != "local"
