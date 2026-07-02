@@ -1,9 +1,9 @@
-"""工具登錄與本機工具實作。
+"""工具登錄基礎設施。
 
 功能：
-    提供一個小型 Hermes-style tool registry。工具會以 OpenAI tool schema
-    傳給 provider；模型回傳 tool_calls 後，runtime 依工具名稱呼叫 handler，
-    再把 tool result 以 canonical `role=tool` 訊息放回 working messages。
+    提供小型 Hermes-style tool registry。工具會以 OpenAI tool schema 傳給 provider；
+    模型回傳 tool_calls 後，runtime 依工具名稱呼叫 handler，再把 tool result 以
+    canonical `role=tool` 訊息放回 working messages。
 
 工具範圍：
     此檔只保留工具系統的基礎設施。內建工具實作放在 `基本工具.py`，
@@ -17,6 +17,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+
+from .使用者 import 使用者上下文
 
 
 def 解析工具路徑(路徑值: Any, 工作目錄: str | Path | None = None, 預設: str = ".") -> Path:
@@ -35,6 +37,42 @@ def 解析工具路徑(路徑值: Any, 工作目錄: str | Path | None = None, �
         return 路徑
     基準 = Path(工作目錄 or os.getcwd()).expanduser()
     return (基準 / 路徑).resolve()
+
+
+def 路徑是否在允許範圍(路徑: Path, 允許目錄清單: list[Path] | None) -> bool:
+    """判斷路徑是否落在允許的工作目錄內。
+
+    參數：
+        路徑: 已解析的目標路徑。
+        允許目錄清單: 允許根目錄；None 表示不限制。
+
+    返回值：
+        True 表示允許存取。
+    """
+    if 允許目錄清單 is None:
+        return True
+    解析路徑 = 路徑.expanduser().resolve()
+    for 允許目錄 in 允許目錄清單:
+        根目錄 = 允許目錄.expanduser().resolve()
+        if 解析路徑 == 根目錄 or 根目錄 in 解析路徑.parents:
+            return True
+    return False
+
+
+def 確認路徑允許(路徑: Path, 參數: dict[str, Any]) -> None:
+    """檢查工具路徑是否符合目前使用者 allowed_workdirs。
+
+    參數：
+        路徑: 目標路徑。
+        參數: 工具呼叫參數，應含 `_allowed_workdirs`。
+
+    返回值：None。若不允許會丟出 PermissionError。
+    """
+    允許目錄清單 = 參數.get("_allowed_workdirs")
+    if 允許目錄清單 is None:
+        return
+    if not 路徑是否在允許範圍(路徑, [Path(str(項目)) for 項目 in 允許目錄清單]):
+        raise PermissionError(f"路徑超出使用者允許範圍：{路徑}")
 
 
 @dataclass(frozen=True)
@@ -57,14 +95,7 @@ class 工具定義:
     處理函數: Callable[[dict[str, Any]], Any]
 
     def 轉成OpenAI工具(self) -> dict[str, Any]:
-        """轉成 OpenAI-compatible tool schema。
-
-        參數：
-            無。
-
-        返回值：
-            `{"type":"function","function":...}` dict。
-        """
+        """轉成 OpenAI-compatible tool schema。"""
         return {
             "type": "function",
             "function": {
@@ -76,128 +107,60 @@ class 工具定義:
 
 
 class 工具登錄器:
-    """保存工具 schema 與 handler 的登錄器。
+    """保存工具 schema 與 handler 的登錄器。"""
 
-    參數：
-        無。
-
-    返回值：
-        可登錄與呼叫工具的物件。
-    """
-
-    def __init__(self, 工作目錄: str | Path | None = None) -> None:
+    def __init__(self, 工作目錄: str | Path | None = None, 使用者上下文物件: 使用者上下文 | None = None, 已知工具名稱集合: set[str] | None = None) -> None:
         """初始化空工具表。
 
         參數：
             工作目錄: Runtime 工作目錄；本機檔案與 terminal 工具的相對路徑會以此為基準。
-
-        返回值：None。
+            使用者上下文物件: 目前使用者權限；用於二次執行檢查與參數注入。
+            已知工具名稱集合: schema 檔內所有已知工具，用於區分未知與未授權。
         """
         self.工作目錄 = str(Path(工作目錄 or os.getcwd()).expanduser().resolve())
+        self.使用者上下文物件 = 使用者上下文物件
+        self.已知工具名稱集合 = 已知工具名稱集合 or set()
         self.工具表: dict[str, 工具定義] = {}
 
     def 登錄工具(self, 工具: 工具定義) -> None:
-        """登錄單一工具。
-
-        參數：
-            工具: 工具定義。
-
-        返回值：
-            None。
-        """
+        """登錄單一工具。"""
         self.工具表[工具.名稱] = 工具
 
     def 列出工具結構(self) -> list[dict[str, Any]]:
-        """列出所有 OpenAI-compatible tool schema。
-
-        參數：無。
-        返回值：tool schema 清單。
-        """
+        """列出所有 OpenAI-compatible tool schema。"""
         return [工具.轉成OpenAI工具() for 工具 in self.工具表.values()]
 
     def 呼叫工具(self, 名稱: str, 參數: dict[str, Any]) -> str:
-        """呼叫工具並回傳 JSON 字串。
-
-        參數：
-            名稱: tool_call function.name。
-            參數: tool_call function.arguments 解析後的 dict。
-
-        返回值：
-            JSON 字串；若工具不存在或執行失敗會包含 success=false。
-        """
+        """呼叫工具並回傳 JSON 字串。"""
         工具 = self.工具表.get(名稱)
         if not 工具:
+            if 名稱 in self.已知工具名稱集合:
+                return json.dumps({"success": False, "error": f"使用者無權使用工具：{名稱}", "permission_denied": True}, ensure_ascii=False)
             return json.dumps({"success": False, "error": f"未知工具：{名稱}"}, ensure_ascii=False)
+        if self.使用者上下文物件 and not self.使用者上下文物件.工具是否允許(名稱):
+            return json.dumps({"success": False, "error": f"使用者無權使用工具：{名稱}", "permission_denied": True}, ensure_ascii=False)
         try:
             工具參數 = dict(參數)
-            工具參數.setdefault("_runtime_workdir", self.工作目錄)
+            工具參數["_runtime_workdir"] = self.工作目錄
+            if self.使用者上下文物件:
+                工具參數["_current_user_id"] = self.使用者上下文物件.user_id
+                工具參數["_enabled_skills"] = sorted(self.使用者上下文物件.enabled_skills) if self.使用者上下文物件.enabled_skills is not None else None
+                工具參數["_skill_roots"] = [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots] if self.使用者上下文物件.skill_roots is not None else None
+                工具參數["_allowed_workdirs"] = [str(路徑) for 路徑 in self.使用者上下文物件.allowed_workdirs] if self.使用者上下文物件.allowed_workdirs is not None else None
+                工具參數["_memory_home"] = str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None
             結果 = 工具.處理函數(工具參數)
             return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
+        except PermissionError as 錯誤:
+            return json.dumps({"success": False, "error": str(錯誤), "permission_denied": True}, ensure_ascii=False)
         except Exception as 錯誤:
             return json.dumps({"success": False, "error": str(錯誤)}, ensure_ascii=False)
 
 
-def 寫入檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
-    """完整覆寫文字檔案內容。
-
-    參數：
-        參數: 包含 path 與 content。
-
-    返回值：
-        包含 path 與 bytes_written 的 dict。
-    """
-    路徑 = 解析工具路徑(參數.get("path", ""), 參數.get("_runtime_workdir"))
-    內容 = str(參數.get("content", ""))
-    路徑.parent.mkdir(parents=True, exist_ok=True)
-    路徑.write_text(內容, encoding="utf-8")
-    return {"path": str(路徑), "bytes_written": len(內容.encode("utf-8"))}
-
-
-def 套用文字修補(參數: dict[str, Any]) -> dict[str, Any]:
-    """執行簡化版文字替換修補。
-
-    參數：
-        參數: 包含 path、old_string、new_string 與 replace_all。
-
-    返回值：
-        包含 path 與 replacements 的 dict。
-    """
-    路徑 = 解析工具路徑(參數.get("path", ""), 參數.get("_runtime_workdir"))
-    舊文字 = str(參數.get("old_string", ""))
-    新文字 = str(參數.get("new_string", ""))
-    是否全部替換 = bool(參數.get("replace_all", False))
-    原文 = 路徑.read_text(encoding="utf-8", errors="replace")
-    if not 舊文字:
-        raise ValueError("old_string 不可為空")
-    次數 = 原文.count(舊文字)
-    if 次數 == 0:
-        raise ValueError("找不到 old_string")
-    if 次數 > 1 and not 是否全部替換:
-        raise ValueError("old_string 不唯一；請設定 replace_all=true")
-    替換後 = 原文.replace(舊文字, 新文字) if 是否全部替換 else 原文.replace(舊文字, 新文字, 1)
-    路徑.write_text(替換後, encoding="utf-8")
-    return {"path": str(路徑), "replacements": 次數 if 是否全部替換 else 1}
-
-
 def 回報工具未啟用(名稱: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
-    """建立未啟用工具的明確回報 handler。
-
-    參數：
-        名稱: Hermes core tool 名稱。
-
-    返回值：
-        handler 函數；呼叫時回傳 success=false 與原因。
-    """
+    """建立未啟用工具的明確回報 handler。"""
 
     def 處理未啟用工具(參數: dict[str, Any]) -> dict[str, Any]:
-        """回報工具 schema 已複製但本機外部整合尚未啟用。
-
-        參數：
-            參數: 模型提供的工具參數。
-
-        返回值：
-            說明未啟用原因的 dict。
-        """
+        """回報工具 schema 已複製但本機外部整合尚未啟用。"""
         return {
             "success": False,
             "tool": 名稱,

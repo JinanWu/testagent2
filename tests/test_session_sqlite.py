@@ -14,6 +14,8 @@ from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.模型供應商 import 假模型供應商, 模型回應
 from 繁中代理.工具註冊 import 建立預設工具登錄器
 
+專案根目錄 = Path(__file__).resolve().parents[1]
+
 
 def test_session_sqlite_roundtrip(tmp_path):
     """確認 session 與 messages 可寫入再讀回，system prompt 不混入 transcript。
