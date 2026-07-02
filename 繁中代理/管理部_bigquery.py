@@ -225,20 +225,29 @@ def 查詢語意候選(客戶端, 設定: 管理部BigQuery設定, 查詢向量:
     return [dict(列) for 列 in 客戶端.query(sql, job_config=工作設定).result()]
 
 
+def 建立包含關鍵字條件(欄位表達式: str) -> str:
+    """建立不把使用者輸入當 LIKE 萬用字元的 BigQuery substring 條件。"""
+    return f"STRPOS(LOWER({欄位表達式}), LOWER(@keyword)) > 0"
+
+
 def 查詢關鍵字候選(客戶端, 設定: 管理部BigQuery設定, 查詢: str, 過濾: dict[str, Any], 候選數量: int) -> list[dict[str, Any]]:
     """查詢 title/content/category/headings 的關鍵字候選。"""
     from google.cloud import bigquery
 
-    條件 = ["""
+    標題包含 = 建立包含關鍵字條件("COALESCE(title, '')")
+    內容包含 = 建立包含關鍵字條件("COALESCE(content, '')")
+    分類包含 = 建立包含關鍵字條件("COALESCE(category, '')")
+    標題階層包含 = 建立包含關鍵字條件("ARRAY_TO_STRING(IFNULL(headings, []), ' ')")
+    條件 = [f"""
     (
-      LOWER(COALESCE(title, '')) LIKE LOWER(@keyword_like)
-      OR LOWER(COALESCE(content, '')) LIKE LOWER(@keyword_like)
-      OR LOWER(COALESCE(category, '')) LIKE LOWER(@keyword_like)
-      OR LOWER(ARRAY_TO_STRING(IFNULL(headings, []), ' ')) LIKE LOWER(@keyword_like)
+      {標題包含}
+      OR {內容包含}
+      OR {分類包含}
+      OR {標題階層包含}
     )
     """]
     參數 = [
-        建立查詢參數(bigquery, "keyword_like", "STRING", f"%{查詢}%"),
+        建立查詢參數(bigquery, "keyword", "STRING", 查詢),
         建立查詢參數(bigquery, "limit", "INT64", 候選數量),
     ]
     for 欄位 in ["category", "version", "source_file"]:
@@ -249,10 +258,10 @@ def 查詢關鍵字候選(客戶端, 設定: 管理部BigQuery設定, 查詢: st
     SELECT
       doc_id AS document_id, title, source_file, version, category, headings, content,
       (
-        IF(LOWER(COALESCE(title, '')) LIKE LOWER(@keyword_like), 4, 0)
-        + IF(LOWER(ARRAY_TO_STRING(IFNULL(headings, []), ' ')) LIKE LOWER(@keyword_like), 3, 0)
-        + IF(LOWER(COALESCE(category, '')) LIKE LOWER(@keyword_like), 2, 0)
-        + IF(LOWER(COALESCE(content, '')) LIKE LOWER(@keyword_like), 1, 0)
+        IF({標題包含}, 4, 0)
+        + IF({標題階層包含}, 3, 0)
+        + IF({分類包含}, 2, 0)
+        + IF({內容包含}, 1, 0)
       ) AS keyword_score
     FROM `{設定.文件表完整名稱}`
     WHERE {' AND '.join(條件)}

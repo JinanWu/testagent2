@@ -78,11 +78,22 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None) -> 工�
 
     核心結構清單 = 載入工具結構清單(核心結構路徑)
     自訂結構清單 = 載入工具結構清單(自訂結構路徑)
-    if 核心結構清單 or 自訂結構清單:
-        登錄結構清單(登錄器, 核心結構清單, 已實作處理器)
-        登錄結構清單(登錄器, 自訂結構清單, 已實作處理器)
-        return 登錄器
 
-    for 名稱, 處理器 in 已實作處理器.items():
-        登錄器.登錄工具(工具定義(名稱, 名稱, {"type": "object", "properties": {}}, 處理器))
+    if 核心結構清單:
+        登錄結構清單(登錄器, 核心結構清單, 已實作處理器)
+    else:
+        for 名稱, 處理器 in 已實作處理器.items():
+            if 名稱 == "administrative_search":
+                continue
+            登錄器.登錄工具(工具定義(名稱, 名稱, {"type": "object", "properties": {}}, 處理器))
+
+    if 自訂結構清單:
+        登錄結構清單(登錄器, 自訂結構清單, 已實作處理器)
+    else:
+        登錄器.登錄工具(工具定義(
+            "administrative_search",
+            "administrative_search",
+            {"type": "object", "properties": {}},
+            已實作處理器["administrative_search"],
+        ))
     return 登錄器
