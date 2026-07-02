@@ -16,12 +16,13 @@ from pathlib import Path
 from typing import Any
 
 from .上下文壓縮器 import 上下文壓縮器
-from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑
+from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑, 設定目前使用者
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器, 建立預設工具登錄器
-from .技能索引器 import 建立技能摘要 as 建立技能索引摘要
+from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技能強制載入指引, 技能無相關項目指引
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
+from .使用者 import 使用者上下文, 使用者庫, 取得預設記憶根目錄, 建立預設使用者上下文
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
 
 _logger = logging.getLogger(__name__)
@@ -73,6 +74,7 @@ class 代理執行階段:
         壓縮模式: str | None = None,
         壓縮模型: str | None = None,
         user_id: str | None = None,
+        使用者上下文物件: 使用者上下文 | None = None,
         source: str = "cli",
         model_config: dict[str, Any] | None = None,
         事件回呼: Any | None = None,
@@ -112,11 +114,13 @@ class 代理執行階段:
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
         self.平台名稱 = 平台名稱
-        self.user_id = user_id
+        self.使用者上下文物件 = self.解析使用者上下文(user_id, 使用者上下文物件, 工作目錄)
+        self.user_id = self.使用者上下文物件.user_id
+        設定目前使用者(self.user_id, self.使用者上下文物件)
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
-        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄)
+        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄, self.使用者上下文物件)
         self.最大迭代次數 = 最大迭代次數
         self.事件回呼 = 事件回呼
         self.記憶管理器 = 記憶管理器
@@ -129,6 +133,54 @@ class 代理執行階段:
             摘要函式=摘要函式,
             摘要失敗是否中止=解析摘要失敗是否中止() if 摘要失敗是否中止 is None else 摘要失敗是否中止,
         )
+
+    def 解析使用者上下文(self, user_id: str | None, 使用者上下文物件: 使用者上下文 | None, 工作目錄: str) -> 使用者上下文:
+        """解析 runtime 使用者上下文，避免 session owner 與 runtime 權限脫鉤。
+
+        參數：
+            user_id: 呼叫端指定的使用者識別碼；僅作為完整 context 載入或 local fallback。
+            使用者上下文物件: 呼叫端已解析的完整使用者上下文。
+            工作目錄: fallback allowed_workdirs 使用的工作目錄。
+
+        返回值：
+            完整且不會就地修改呼叫端物件的使用者上下文。
+        """
+        if 使用者上下文物件 is not None:
+            if user_id and user_id != 使用者上下文物件.user_id:
+                if 使用者上下文物件.user_id != "local":
+                    raise ValueError(f"user_id 與使用者上下文不一致：{user_id} != {使用者上下文物件.user_id}")
+                return self.依user_id建立使用者上下文(user_id, 工作目錄)
+            return 使用者上下文物件
+        if user_id:
+            return self.依user_id建立使用者上下文(user_id, 工作目錄)
+        return 建立預設使用者上下文(工作目錄)
+
+    def 依user_id建立使用者上下文(self, user_id: str, 工作目錄: str) -> 使用者上下文:
+        """依 user_id 從 DB 載入完整權限，未知使用者則建立受限 fallback。
+
+        參數：
+            user_id: 使用者識別碼。
+            工作目錄: fallback allowed_workdirs 使用的工作目錄。
+
+        返回值：
+            完整使用者上下文；不會沿用 local/admin 預設權限。
+        """
+        try:
+            return 使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
+        except ValueError:
+            允許目錄 = [Path(工作目錄).expanduser().resolve()]
+            return 使用者上下文(
+                user_id=user_id,
+                username=user_id,
+                display_name=user_id,
+                roles=["user"],
+                enabled_tools=set(),
+                enabled_skills=set(),
+                skill_roots=[],
+                allowed_workdirs=允許目錄,
+                memory_home=取得預設記憶根目錄(user_id),
+                is_admin=False,
+            )
 
     def 建立壓縮摘要函式(
         self,
@@ -177,6 +229,7 @@ class 代理執行階段:
             模型呼叫次數、工具呼叫次數，以及本 turn 是否發生 compression split。
         """
         原始工作階段識別碼 = 工作階段識別碼
+        設定目前使用者(self.user_id, self.使用者上下文物件)
         工作階段識別碼 = self.工作階段庫物件.建立或讀取工作階段(
             工作階段識別碼,
             source=self.source,
@@ -186,7 +239,7 @@ class 代理執行階段:
             cwd=self.工作目錄,
         )
         if 原始工作階段識別碼:
-            工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+            工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼, user_id=self.user_id, source=self.source)
         設定目前工作階段識別碼(工作階段識別碼)
         歷史訊息 = self.工作階段庫物件.讀取訊息(工作階段識別碼)
         工作階段資料 = self.工作階段庫物件.讀取工作階段(工作階段識別碼) or {}
@@ -268,9 +321,10 @@ class 代理執行階段:
 
         返回值：dict[str, Any]。工作階段庫回傳的 rewind 結果，並包含 active session id。
         """
-        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼)
+        設定目前使用者(self.user_id, self.使用者上下文物件)
+        作用中工作階段識別碼 = self.工作階段庫物件.解析Resume工作階段(工作階段識別碼, user_id=self.user_id, source=self.source)
         設定目前工作階段識別碼(作用中工作階段識別碼)
-        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id)
+        結果 = self.工作階段庫物件.rewind到訊息(作用中工作階段識別碼, 目標訊息id, user_id=self.user_id)
         結果["session_id"] = 作用中工作階段識別碼
         return 結果
 
@@ -439,7 +493,7 @@ class 代理執行階段:
         try:
             from .記憶存放 import 記憶存放
 
-            暫存設定 = 提示詞設定(工作目錄=self.工作目錄)
+            暫存設定 = 提示詞設定(工作目錄=self.工作目錄, Hermes家目錄=str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None)
             hermes家目錄 = 提示詞組裝器(暫存設定).取得Hermes家目錄()
             存放 = 記憶存放(hermes家目錄)
             存放.載入()
@@ -454,15 +508,52 @@ class 代理執行階段:
             return ""
 
     def 建立技能摘要(self) -> str:
-        """掃描本專案內建 Hermes skills 並建立 prompt 用摘要。
+        """依使用者可用技能根目錄建立 prompt 用摘要。
 
         參數：
-            無。函數會從專案 `assets/hermes_skills` 目錄讀取可用 SKILL.md。
+            無。函數會依目前 UserContext 的 skill_roots 掃描；None 代表使用
+            專案內建 `assets/hermes_skills`，空清單代表不注入任何技能摘要。
 
         返回值：
-            str：`<available_skills>` 區塊文字，包含最多 300 個技能名稱；若 skills
-            尚未複製則回傳明確的 placeholder。
+            str：依 enabled_skills 與可用工具過濾後的 `<available_skills>` 區塊。
+            多個根目錄會合併成單一區塊，避免重複技能載入指引。
         """
-        技能根目錄 = Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
+        if self.使用者上下文物件.skill_roots is None:
+            根目錄清單 = [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+        else:
+            根目錄清單 = self.使用者上下文物件.skill_roots
+        if not 根目錄清單:
+            return ""
         工具名稱集合 = set(self.工具登錄器物件.工具表.keys())
-        return 建立技能索引摘要(技能根目錄, 工具名稱集合)
+        摘要清單 = [建立技能索引摘要(根目錄, 工具名稱集合, self.使用者上下文物件.enabled_skills) for 根目錄 in 根目錄清單]
+        if len(摘要清單) == 1:
+            return 摘要清單[0]
+        技能行清單: list[str] = []
+        已出現技能名稱: set[str] = set()
+        已出現行: set[str] = set()
+        for 摘要 in 摘要清單:
+            區塊內 = False
+            for 行 in 摘要.splitlines():
+                if 行.strip() == "<available_skills>":
+                    區塊內 = True
+                    continue
+                if 行.strip() == "</available_skills>":
+                    區塊內 = False
+                    continue
+                if not 區塊內 or "(no skills found)" in 行:
+                    continue
+                指紋 = 行.strip()
+                技能名稱 = ""
+                if 指紋.startswith("- "):
+                    技能名稱 = 指紋[2:].split(":", 1)[0].strip()
+                if 技能名稱 and 技能名稱 in 已出現技能名稱:
+                    continue
+                if 指紋 in 已出現行:
+                    continue
+                if 技能名稱:
+                    已出現技能名稱.add(技能名稱)
+                已出現行.add(指紋)
+                技能行清單.append(行)
+        if not 技能行清單:
+            return 技能強制載入指引 + "\n\n<available_skills>\n  (no skills found)\n</available_skills>\n\n" + 技能無相關項目指引
+        return "\n".join([技能強制載入指引, "", "<available_skills>", *技能行清單, "</available_skills>", "", 技能無相關項目指引])

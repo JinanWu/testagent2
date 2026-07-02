@@ -443,6 +443,9 @@ class 工作階段庫:
 
             返回值：None。
             """
+            現有資料列 = 資料庫連線.execute("SELECT user_id, source FROM sessions WHERE id=?", (識別碼,)).fetchone()
+            if 現有資料列 and user_id and 現有資料列["user_id"] and 現有資料列["user_id"] != user_id:
+                raise PermissionError(f"使用者 {user_id} 無權接管 session {識別碼}")
             資料庫連線.execute(
                 """
                 INSERT OR IGNORE INTO sessions(
@@ -535,6 +538,26 @@ class 工作階段庫:
             self._附加訊息清單(資料庫連線, 新識別碼, 壓縮訊息清單, 起始索引=0)
         self._執行寫入(寫入)
         return 新識別碼
+
+    def 檢查工作階段存取(self, 工作階段識別碼: str, user_id: str | None = None, source: str | None = None) -> dict[str, Any] | None:
+        """確認目前使用者可存取指定 session。
+
+        參數：
+            工作階段識別碼: session id。
+            user_id: 目前使用者識別碼；None 表示不檢查使用者。
+            source: 可選來源平台檢查。
+
+        返回值：
+            session row dict；找不到時回傳 None。若 owner/source 不符會丟出 PermissionError。
+        """
+        工作階段 = self.讀取工作階段(工作階段識別碼)
+        if not 工作階段:
+            return None
+        if user_id and 工作階段.get("user_id") and 工作階段.get("user_id") != user_id:
+            raise PermissionError(f"使用者 {user_id} 無權存取 session {工作階段識別碼}")
+        if source and 工作階段.get("source") and 工作階段.get("source") != source:
+            raise PermissionError(f"來源 {source} 無權存取 session {工作階段識別碼}")
+        return 工作階段
 
     def 讀取工作階段(self, 工作階段識別碼: str) -> dict[str, Any] | None:
         """讀取單一工作階段資料。
@@ -663,17 +686,19 @@ class 工作階段庫:
             self._附加訊息清單(資料庫連線, 工作階段識別碼, 訊息清單, 起始索引=0)
         self._執行寫入(寫入)
 
-    def 讀取訊息(self, 工作階段識別碼: str, 包含停用: bool = False, include_ancestors: bool = False) -> list[dict[str, Any]]:
+    def 讀取訊息(self, 工作階段識別碼: str, 包含停用: bool = False, include_ancestors: bool = False, user_id: str | None = None) -> list[dict[str, Any]]:
         """依序讀取某工作階段的 canonical messages。
 
         參數：
             工作階段識別碼: session id。
             包含停用: 是否包含 active=0 的 rewind/audit 訊息。
             include_ancestors: 是否讀取 root→tip 整條 compression lineage。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者讀取。
 
         返回值：
             list[dict[str, Any]]：OpenAI-compatible message dict 清單。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         工作階段識別碼清單 = [工作階段識別碼]
         if include_ancestors:
             工作階段識別碼清單 = self.取得工作階段譜系(工作階段識別碼)
@@ -949,16 +974,21 @@ class 工作階段庫:
             目前識別碼 = 資料列["id"]
         return 目前識別碼
 
-    def 解析Resume工作階段(self, 工作階段識別碼: str) -> str:
+    def 解析Resume工作階段(self, 工作階段識別碼: str, user_id: str | None = None, source: str | None = None) -> str:
         """把任意 lineage 內的 session id 導向 compression tip。
 
         參數：
             工作階段識別碼: 使用者指定的 session id。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者 resume。
+            source: 可選來源平台 scope。
 
         返回值：
             str：應實際 resume 的 session id。
         """
-        return self.取得壓縮Tip(工作階段識別碼)
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id, source=source)
+        tip = self.取得壓縮Tip(工作階段識別碼)
+        self.檢查工作階段存取(tip, user_id=user_id, source=source)
+        return tip
 
     def 取得工作階段譜系(self, 工作階段識別碼: str) -> list[str]:
         """取得 root→tip 的 compression lineage。
@@ -984,36 +1014,40 @@ class 工作階段庫:
                 目前識別碼 = 資料列["parent_session_id"]
         return list(reversed(譜系鏈)) or [工作階段識別碼]
 
-    def 設定封存狀態(self, 工作階段識別碼: str, 是否封存: bool = True) -> None:
+    def 設定封存狀態(self, 工作階段識別碼: str, 是否封存: bool = True, user_id: str | None = None) -> None:
         """設定 session archived 狀態。
 
         參數：
             工作階段識別碼: session id。
             是否封存: True 表示封存；False 表示取消封存。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者修改。
 
         返回值：None。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         self._執行寫入(lambda 資料庫連線: 資料庫連線.execute("UPDATE sessions SET archived=?, updated_at=? WHERE id=?", (1 if 是否封存 else 0, time.time(), 工作階段識別碼)))
 
-    def 封存工作階段(self, 工作階段識別碼: str) -> None:
+    def 封存工作階段(self, 工作階段識別碼: str, user_id: str | None = None) -> None:
         """封存指定 session，讓預設列表與搜尋排除它。
 
         參數：
             工作階段識別碼: session id。
+            user_id: 可選使用者 scope。
 
         返回值：None。
         """
-        self.設定封存狀態(工作階段識別碼, True)
+        self.設定封存狀態(工作階段識別碼, True, user_id=user_id)
 
-    def 取消封存工作階段(self, 工作階段識別碼: str) -> None:
+    def 取消封存工作階段(self, 工作階段識別碼: str, user_id: str | None = None) -> None:
         """取消封存指定 session。
 
         參數：
             工作階段識別碼: session id。
+            user_id: 可選使用者 scope。
 
         返回值：None。
         """
-        self.設定封存狀態(工作階段識別碼, False)
+        self.設定封存狀態(工作階段識別碼, False, user_id=user_id)
 
     def 列出工作階段(self, limit: int = 20, include_children: bool = False, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
         """列出 session，預設把 compression chain 投影成單一 logical conversation。
@@ -1187,15 +1221,16 @@ class 工作階段庫:
                 break
         return 結果
 
-    def 讀取工作階段全文(self, 工作階段識別碼: str) -> dict[str, Any]:
+    def 讀取工作階段全文(self, 工作階段識別碼: str, user_id: str | None = None) -> dict[str, Any]:
         """讀取指定 session 的 metadata 與訊息；大量訊息時回傳首尾摘要。
 
         參數：
             工作階段識別碼: session id。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者讀取。
 
         返回值：dict[str, Any]。包含 session、messages、total_messages 與 truncated。
         """
-        工作階段 = self.讀取工作階段(工作階段識別碼)
+        工作階段 = self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         if not 工作階段:
             raise ValueError(f"session not found: {工作階段識別碼}")
         with self._鎖:
@@ -1215,16 +1250,18 @@ class 工作階段庫:
             "truncated": 是否截斷,
         }
 
-    def 捲動工作階段訊息(self, 工作階段識別碼: str, around_message_id: int, window: int = 5) -> dict[str, Any]:
+    def 捲動工作階段訊息(self, 工作階段識別碼: str, around_message_id: int, window: int = 5, user_id: str | None = None) -> dict[str, Any]:
         """讀取 anchor message 周邊視窗，供 session_search scroll 形狀使用。
 
         參數：
             工作階段識別碼: session id。
             around_message_id: 視窗中心 message row id。
             window: 前後各取幾則。
+            user_id: 可選使用者 scope。
 
         返回值：dict[str, Any]。包含 messages 與邊界計數。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         視圖 = self.取得錨點視圖(工作階段識別碼, around_message_id, window=window, bookend=0)
         return {
             "session_id": 工作階段識別碼,
@@ -1248,15 +1285,17 @@ class 工作階段庫:
         工作階段清單 = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
         return {"sessions": 工作階段清單, "total_count": len(工作階段清單)}
 
-    def 重新命名工作階段(self, 工作階段識別碼: str, 標題: str) -> None:
+    def 重新命名工作階段(self, 工作階段識別碼: str, 標題: str, user_id: str | None = None) -> None:
         """更新 session title。
 
         參數：
             工作階段識別碼: 要重新命名的 session id。
             標題: 新 title，會去除前後空白。
+            user_id: 可選使用者 scope。
 
         返回值：None。找不到 session 或標題為空時會丟出 ValueError。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         新標題 = 標題.strip()
         if not 新標題:
             raise ValueError("title 不可為空")
@@ -1351,21 +1390,23 @@ class 工作階段庫:
         with 路徑.open("w", encoding="utf-8") as handle:
             for session in sessions:
                 sid = str(session["id"])
-                messages = self.讀取訊息(sid, include_ancestors=True)
+                messages = self.讀取訊息(sid, include_ancestors=True, user_id=user_id)
                 訊息總數 += len(messages)
                 handle.write(json.dumps({"session": session, "messages": messages}, ensure_ascii=False) + "\n")
         return {"output": str(路徑), "session_count": len(sessions), "message_count": 訊息總數}
 
-    def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int) -> dict[str, Any]:
+    def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int, user_id: str | None = None) -> dict[str, Any]:
         """把指定訊息及之後的訊息標記為 inactive，保留 audit 紀錄。
 
         參數：
             工作階段識別碼: session id。
             目標訊息id: 要 rewind 到的 message row id；該 row 也會被停用。
+            user_id: 可選使用者 scope。
 
         返回值：
             dict[str, Any]：包含 rewound_count、target_message 與 new_head_id。
         """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
         with self._鎖:
             目標資料列 = self.連線.execute("SELECT * FROM messages WHERE id=? AND session_id=?", (目標訊息id, 工作階段識別碼)).fetchone()
         if not 目標資料列:

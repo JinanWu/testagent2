@@ -29,7 +29,6 @@ def test_prompt_組裝_保持_hermes_三層順序(tmp_path):
         工具名稱清單=["read_file", "skills_list", "skill_view"],
         技能摘要="<available_skills>\n  - hermes-agent\n</available_skills>",
         Hermes家目錄=str(tmp_path / ".hermes"),
-        工作目錄=str(專案根目錄),
     )
     區塊 = 提示詞組裝器(設定).組裝提示詞區塊("額外系統訊息")
     assert set(區塊) == {"stable", "context", "volatile"}
