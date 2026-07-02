@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 from 繁中代理.代理執行階段 import 代理執行階段
-from 繁中代理.工具 import 建立預設工具登錄器
+from 繁中代理.工具註冊 import 建立預設工具登錄器
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
 from 繁中代理.記憶存放 import 記憶存放
