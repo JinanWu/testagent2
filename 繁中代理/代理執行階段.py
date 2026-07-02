@@ -18,7 +18,8 @@ from typing import Any
 from .上下文壓縮器 import 上下文壓縮器
 from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑, 設定目前使用者
 from .工作階段庫 import 工作階段庫
-from .工具 import 工具登錄器, 建立預設工具登錄器
+from .工具 import 工具登錄器
+from .工具註冊 import 建立預設工具登錄器
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技能強制載入指引, 技能無相關項目指引
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商

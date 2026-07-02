@@ -17,7 +17,8 @@ from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段上下文 import 設定目前使用者, 設定目前工作階段資料庫路徑, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
-from 繁中代理.工具 import 建立預設工具登錄器, 搜尋工作階段工具
+from 繁中代理.基本工具 import 搜尋工作階段工具
+from 繁中代理.工具註冊 import 建立預設工具登錄器
 from 繁中代理.使用者 import 使用者上下文, 使用者庫, 預設登入Token有效秒數, 雜湊Token
 
 專案根目錄 = Path(__file__).resolve().parents[1]

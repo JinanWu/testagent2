@@ -1,0 +1,74 @@
+[
+  {
+    "name": "administrative_search",
+    "toolset": "administrative",
+    "schema": {
+      "name": "administrative_search",
+      "description": "Search administrative department documents in BigQuery. Defaults to hybrid retrieval: semantic search over documents.embedding plus keyword search over title, content, category, and headings. Images are returned only as supplementary context for matched documents.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "The administrative question or exact text to search for."
+          },
+          "search_mode": {
+            "type": "string",
+            "enum": ["hybrid", "semantic", "keyword"],
+            "description": "Retrieval mode. Use hybrid by default. Use keyword only for explicit exact-field or exact-text searches. Use semantic only when explicitly requested or for debugging.",
+            "default": "hybrid"
+          },
+          "include_images": {
+            "type": "boolean",
+            "description": "Whether to fetch image metadata for matched documents. Images are supplementary and are not used as the primary search key.",
+            "default": true
+          },
+          "filters": {
+            "type": "object",
+            "description": "Optional exact filters applied to documents.",
+            "properties": {
+              "category": {
+                "type": "string",
+                "description": "Exact document category filter."
+              },
+              "version": {
+                "type": "string",
+                "description": "Exact document version filter."
+              },
+              "source_file": {
+                "type": "string",
+                "description": "Exact source file filter."
+              }
+            },
+            "additionalProperties": false
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Maximum number of merged document results to return.",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5
+          },
+          "hybrid_weights": {
+            "type": "object",
+            "description": "Optional hybrid scoring weights. Do not set unless the user explicitly asks to tune retrieval.",
+            "properties": {
+              "semantic": {
+                "type": "number",
+                "description": "Semantic retrieval weight. Default is 0.65.",
+                "minimum": 0
+              },
+              "keyword": {
+                "type": "number",
+                "description": "Keyword retrieval weight. Default is 0.35.",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  }
+]
