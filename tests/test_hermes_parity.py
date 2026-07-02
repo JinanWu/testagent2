@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from 繁中代理 import 工具註冊
 from 繁中代理.工具註冊 import 建立預設工具登錄器
 from 繁中代理.提示詞常數 import 完成任務指引, 工具使用強制指引, 壓縮摘要前綴
 
@@ -37,3 +38,29 @@ def test_core_tool_schema_完整載入_hermes_核心工具():
         assert 名稱 in 登錄器.工具表
     assert "administrative_search" in 登錄器.工具表
     assert 登錄器.工具表["read_file"].說明 == 結構清單[5]["schema"]["description"]
+
+
+def test_custom_schema_存在但_core_schema_缺失時仍保留內建工具(monkeypatch):
+    """確認 core schema 遺失時，不會因自訂工具存在而漏註冊內建工具。"""
+    自訂結構清單 = [
+        {
+            "schema": {
+                "name": "administrative_search",
+                "description": "管理部搜尋",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        }
+    ]
+
+    def 假載入工具結構清單(路徑):
+        if 路徑.name == "hermes_custom_tool_schemas.json":
+            return 自訂結構清單
+        return []
+
+    monkeypatch.setattr(工具註冊, "載入工具結構清單", 假載入工具結構清單)
+    登錄器 = 建立預設工具登錄器()
+
+    assert "administrative_search" in 登錄器.工具表
+    assert "read_file" in 登錄器.工具表
+    assert "terminal" in 登錄器.工具表
+    assert 登錄器.工具表["administrative_search"].說明 == "管理部搜尋"
