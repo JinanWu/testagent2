@@ -58,3 +58,25 @@ def test_cli_建立runtime前正規化模型名稱(tmp_path):
     assert runtime.模型名稱 == "gemini-2.5-flash-lite"
     assert runtime.model_config["requested_model"] == "gemini-flash-lite"
     assert runtime.model_config["resolved_model"] == "gemini-2.5-flash-lite"
+
+
+def test_gemini_adapter_平行工具呼叫的函數回應合併為單一Content():
+    """平行 tool_calls：多個 tool 回應要合併成單一 user Content，函數回應數需等於
+    前一個 model turn 的 function_call 數(Gemini 硬性要求,否則回 400)。"""
+    provider = GeminiADC供應商("gemini-2.5-flash-lite", "lab-cola-rd", "global")
+    訊息清單 = [
+        {"role": "user", "content": "建立技能"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "skill_manage", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "clarify", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "name": "skill_manage", "content": '{"success": true}'},
+        {"role": "tool", "tool_call_id": "c2", "name": "clarify", "content": '{"success": true}'},
+    ]
+    contents = provider.轉成Gemini內容(訊息清單)
+    # 找到 model turn 的 function_call 數,與其後 user turn 的 function_response 數
+    model_fc = next(sum(1 for p in c.parts if getattr(p, "function_call", None)) for c in contents if c.role == "model")
+    fr_contents = [c for c in contents if any(getattr(p, "function_response", None) for p in c.parts)]
+    assert model_fc == 2
+    assert len(fr_contents) == 1, "兩個函數回應應合併成單一 Content,而非兩個"
+    assert sum(1 for p in fr_contents[0].parts if getattr(p, "function_response", None)) == 2
