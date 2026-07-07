@@ -180,8 +180,27 @@ class GeminiADC供應商:
         from google.genai import types
 
         內容清單: list[Any] = []
+        # 連續的 tool 回應要合併成「單一個」user Content，函數回應數才會等於前一個
+        # model turn 的 function_call 數（平行工具呼叫時 Gemini 硬性要求）。
+        待沖函數回應: list[Any] = []
+
+        def 沖出函數回應() -> None:
+            if 待沖函數回應:
+                內容清單.append(types.Content(role="user", parts=待沖函數回應[:]))
+                待沖函數回應.clear()
+
         for 訊息 in 訊息清單:
             角色 = 訊息.get("role")
+            if 角色 == "tool":
+                名稱 = 訊息.get("name") or "tool"
+                try:
+                    工具結果 = json.loads(str(訊息.get("content", "{}")))
+                except Exception:
+                    工具結果 = {"content": str(訊息.get("content", ""))}
+                待沖函數回應.append(types.Part(function_response=types.FunctionResponse(name=名稱, response=工具結果)))
+                continue
+            # 非 tool 訊息：先把累積的函數回應沖成一個 Content，再處理本則
+            沖出函數回應()
             if 角色 == "system":
                 內容清單.append(types.Content(role="user", parts=[types.Part(text=f"[System]\n{訊息.get('content', '')}")]))
             elif 角色 == "user":
@@ -199,13 +218,7 @@ class GeminiADC供應商:
                     內容清單.append(types.Content(role="model", parts=零件清單))
                 else:
                     內容清單.append(types.Content(role="model", parts=[types.Part(text=str(訊息.get("content", "")))]))
-            elif 角色 == "tool":
-                名稱 = 訊息.get("name") or "tool"
-                try:
-                    工具結果 = json.loads(str(訊息.get("content", "{}")))
-                except Exception:
-                    工具結果 = {"content": str(訊息.get("content", ""))}
-                內容清單.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(name=名稱, response=工具結果))]))
+        沖出函數回應()  # 收尾：歷史以 tool 回應結束時也要沖出
         return 內容清單
 
     def 轉成Gemini工具(self, 工具清單: list[dict[str, Any]]) -> list[Any]:
