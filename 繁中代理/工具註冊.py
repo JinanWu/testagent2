@@ -24,8 +24,9 @@ from .基本工具 import (
     讀取檔案內容,
 )
 from .工具 import 回報工具未啟用, 工具定義, 工具登錄器
+from .工具集.技能管理 import 管理技能
+from .工具集.管理部_bigquery import 管理部文件搜尋
 from .使用者 import 使用者上下文
-from .管理部_bigquery import 管理部文件搜尋
 
 
 def 載入工具結構清單(路徑: Path) -> list[dict[str, Any]]:
@@ -81,6 +82,7 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用�
         "terminal": 執行終端指令,
         "skills_list": 列出技能,
         "skill_view": 讀取技能,
+        "skill_manage": 管理技能,
         "session_search": 搜尋工作階段工具,
         "memory": 記憶工具,
         "administrative_search": 管理部文件搜尋,
