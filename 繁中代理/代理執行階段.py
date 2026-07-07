@@ -24,6 +24,7 @@ from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
 from .使用者 import 使用者上下文, 使用者庫, 取得預設記憶根目錄, 建立預設使用者上下文
+from .儲存 import 建立使用者庫
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
 
 _logger = logging.getLogger(__name__)
@@ -167,7 +168,7 @@ class 代理執行階段:
             完整使用者上下文；不會沿用 local/admin 預設權限。
         """
         try:
-            return 使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
+            return 建立使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
         except ValueError:
             允許目錄 = [Path(工作目錄).expanduser().resolve()]
             return 使用者上下文(

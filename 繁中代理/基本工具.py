@@ -159,7 +159,7 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
 def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     """搜尋 SQLite session history，提供 Hermes-like session_search 四種形狀。"""
     from .工作階段上下文 import 讀取目前工作階段資料庫路徑, 讀取目前使用者識別碼
-    from .工作階段庫 import 工作階段庫
+    from .儲存 import 建立工作階段庫
 
     限制 = int(參數.get("limit", 3) or 3)
     視窗 = int(參數.get("window", 5) or 5)
@@ -167,7 +167,7 @@ def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
     資料庫路徑文字 = Path(str(參數.get("db_path") or 預設DB)).expanduser()
     if not 資料庫路徑文字.exists():
         return {"matches": [], "total_count": 0, "db_path": str(資料庫路徑文字), "error": "session database 不存在"}
-    庫 = 工作階段庫(資料庫路徑文字)
+    庫 = 建立工作階段庫(資料庫路徑文字)
     工作階段識別碼 = str(參數.get("session_id") or "").strip()
     錨點訊息識別碼 = 參數.get("around_message_id")
     查詢 = str(參數.get("query") or 參數.get("q") or "").strip()

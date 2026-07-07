@@ -23,6 +23,7 @@ from typing import Any
 
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
+from .儲存 import 建立工作階段庫, 建立使用者庫
 from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
 from .使用者 import (
@@ -180,13 +181,13 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果輸出到 stdout。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     if 參數.auth_command == "login":
         密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
         使用者 = 使用者庫物件.驗證使用者密碼(參數.username, 密碼)
         舊auth資料 = 讀取Auth檔案()
         if 舊auth資料 and 舊auth資料.get("token"):
-            使用者庫(舊auth資料.get("db_path") or 參數.db).撤銷登入Token(str(舊auth資料["token"]))
+            建立使用者庫(舊auth資料.get("db_path") or 參數.db).撤銷登入Token(str(舊auth資料["token"]))
         token = 使用者庫物件.建立登入Token(str(使用者["id"]))
         路徑 = 寫入Auth檔案(str(使用者["username"]), str(使用者["id"]), token, db_path=參數.db)
         印出JSON({"logged_in": True, "username": 使用者["username"], "user_id": 使用者["id"], "auth_file": str(路徑)})
@@ -195,7 +196,7 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         auth資料 = 讀取Auth檔案()
         token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
         if auth資料 and auth資料.get("token"):
-            使用者庫(token資料庫路徑 or 參數.db).撤銷登入Token(str(auth資料["token"]))
+            建立使用者庫(token資料庫路徑 or 參數.db).撤銷登入Token(str(auth資料["token"]))
         刪除Auth檔案()
         印出JSON({"logged_out": True})
         return
@@ -206,7 +207,7 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
             return
         try:
             token資料庫路徑 = auth資料.get("db_path") or 參數.db
-            上下文 = 使用者庫(token資料庫路徑).驗證登入Token(str(auth資料["token"]))
+            上下文 = 建立使用者庫(token資料庫路徑).驗證登入Token(str(auth資料["token"]))
         except ValueError:
             印出JSON({"logged_in": False})
             return
@@ -222,7 +223,7 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果輸出到 stdout。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     if 參數.users_command == "create":
         密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
         使用者 = 使用者庫物件.建立使用者(
@@ -357,7 +358,7 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
     返回值：
         使用者上下文。若要求登入但無 token，會中止程式。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     auth資料 = 讀取Auth檔案()
     要求登入 = os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1"
     if 要求登入:
@@ -553,7 +554,7 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果會輸出到 stdout 或寫入指定檔案。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     if not getattr(參數, "user_id", None):
         參數.user_id = 解析目前使用者上下文(argparse.Namespace(db=參數.db, workdir=os.getcwd(), user_id=None)).user_id
     if 參數.sessions_command == "list":
@@ -638,7 +639,7 @@ class 互動CLI:
         """
         self.參數 = 參數
         self.解析器 = 解析器
-        self.工作階段庫物件 = 工作階段庫(參數.db)
+        self.工作階段庫物件 = 建立工作階段庫(參數.db)
         self.執行階段 = 建立執行階段(參數, self.工作階段庫物件, 解析器)
         self.目前工作階段識別碼 = 參數.session
         if 參數.resume or 參數.continue_session:
@@ -1018,7 +1019,7 @@ def 執行一次性操作(參數: argparse.Namespace, 解析器: argparse.Argume
 
     返回值：bool。True 表示已處理並可結束程式；False 表示應進入 chat/REPL。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     if 參數.resume or 參數.continue_session:
         參照 = 參數.resume or 參數.continue_session
         解析後 = 解析工作階段參照(工作階段庫物件, 參照, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
@@ -1057,7 +1058,7 @@ def 執行單次訊息(參數: argparse.Namespace, 解析器: argparse.ArgumentP
 
     返回值：None。最終回答會輸出到 stdout。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     執行階段 = 建立執行階段(參數, 工作階段庫物件, 解析器)
     訊息 = 參數.query or 參數.message
     結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼=參數.session)
