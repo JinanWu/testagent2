@@ -1148,6 +1148,11 @@ def 執行主程式() -> None:
         參數 = users解析器.parse_args(sys.argv[2:])
         執行Users子命令(參數)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "skill":
+        skill解析器 = 建立Skill參數解析器()
+        參數 = skill解析器.parse_args(sys.argv[2:])
+        執行Skill子命令(參數)
+        return
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
     if not 參數.user_id:
