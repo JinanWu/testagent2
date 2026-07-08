@@ -1,6 +1,6 @@
 """測試管理部 BigQuery 搜尋工具。"""
 
-from 繁中代理.管理部_bigquery import 管理部BigQuery設定, 查詢關鍵字候選
+from 繁中代理.工具集.管理部_bigquery import 管理部BigQuery設定, 查詢關鍵字候選
 
 
 class 假查詢工作:

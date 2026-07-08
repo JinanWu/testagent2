@@ -111,10 +111,30 @@ def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
     return {"output": 完成程序.stdout[-12000:], "exit_code": 完成程序.returncode}
 
 
+def 內建技能根目錄() -> Path:
+    """回傳專案內建（唯讀）Hermes 技能根目錄。"""
+    return Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
+
+
+def 使用者技能根目錄() -> Path:
+    """回傳使用者技能（可寫）根目錄。
+
+    代理透過 skill_manage 建立/修改/刪除的技能都存在這裡；本地測試用，
+    日後可改接 BigQuery。
+    """
+    return Path(__file__).resolve().parents[1] / "assets" / "user_skill"
+
+
 def 取得技能根目錄清單(參數: dict[str, Any]) -> list[Path]:
-    """取得目前使用者允許的技能根目錄。"""
+    """取得目前使用者允許的技能根目錄。
+
+    多租戶隔離：一旦使用者明確設定 skill_roots（含空清單），就只回傳使用者
+    指定的根目錄，不混入全域技能。其餘情況（admin 的 `*` 語意或本地 admin
+    fallback，`_skill_roots is None`）回傳內建技能 + 使用者可寫技能根目錄，
+    讓 skill_manage 建立的技能能在本地被看見。
+    """
     if "_skill_roots" in 參數 and 參數.get("_skill_roots") is None:
-        return [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+        return [內建技能根目錄(), 使用者技能根目錄()]
     return [Path(str(路徑)).expanduser().resolve() for 路徑 in (參數.get("_skill_roots") or [])]
 
 
@@ -140,8 +160,70 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
     return {"skills": 技能清單[:200], "total_count": len(技能清單)}
 
 
+def 讀取技能skill_id(skill_md路徑: Path) -> str | None:
+    """讀取 SKILL.md frontmatter 的 `id` 欄位（技能的穩定 skill_id）。
+
+    內建技能沒有 id → 回傳 None。使用者技能由 skill_manage(create) 在建立時
+    注入 UUID。
+    """
+    try:
+        文字 = skill_md路徑.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return None
+    在frontmatter = False
+    for 行 in 文字.split("\n"):
+        剝除 = 行.strip()
+        if 剝除 == "---":
+            if 在frontmatter:
+                break
+            在frontmatter = True
+            continue
+        if 在frontmatter:
+            匹配 = re.match(r"^\s*id\s*:\s*(.+)$", 行)
+            if 匹配:
+                return 匹配.group(1).strip().strip("\"'")
+    return None
+
+
+def 列出使用者技能身分() -> list[dict[str, Any]]:
+    """列出 user_skill 底下每個技能的 {skill_id, name, path}。
+
+    name 為目錄名（LLM 定位用），skill_id 為 frontmatter 的穩定 UUID。供 usage /
+    curator 以 skill_id 為 key 運作。
+    """
+    根目錄 = 使用者技能根目錄()
+    if not 根目錄.exists():
+        return []
+    清單: list[dict[str, Any]] = []
+    for skill_md in 根目錄.rglob("SKILL.md"):
+        相對 = skill_md.relative_to(根目錄)
+        if 相對.parts and 相對.parts[0].startswith("."):
+            continue
+        清單.append({
+            "skill_id": 讀取技能skill_id(skill_md),
+            "name": skill_md.parent.name,
+            "path": str(skill_md),
+        })
+    return 清單
+
+
+def _記錄技能使用事件(skill_md路徑: Path, 參數: dict[str, Any]) -> None:
+    """best-effort 記錄一筆技能使用事件（以 skill_id 為 key）；失敗不影響 skill_view。
+
+    只有帶 skill_id 的技能（= 使用者技能）會記；內建技能沒有 id，自然略過。
+    """
+    try:
+        skill_id = 讀取技能skill_id(skill_md路徑)
+        if not skill_id:
+            return
+        from .工具集.技能使用事件 import 記錄事件
+        記錄事件(skill_id, 參數.get("_current_user_id"))
+    except Exception:
+        pass
+
+
 def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
-    """依技能名稱讀取 SKILL.md 內容。"""
+    """依技能名稱讀取 SKILL.md 內容，並記錄一筆使用事件（以 skill_id 為 key）。"""
     名稱 = str(參數.get("name", ""))
     允許技能集合 = 取得允許技能集合(參數)
     if 允許技能集合 is not None and 名稱 not in 允許技能集合:
@@ -152,7 +234,9 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
                 實際名稱 = 路徑.parent.name
                 if 允許技能集合 is not None and 實際名稱 not in 允許技能集合:
                     raise PermissionError(f"使用者無權讀取技能：{實際名稱}")
-                return {"name": 名稱, "path": str(路徑), "content": 路徑.read_text(encoding="utf-8", errors="replace")[:50000]}
+                內容 = 路徑.read_text(encoding="utf-8", errors="replace")[:50000]
+                _記錄技能使用事件(路徑, 參數)  # best-effort，成功讀到才記
+                return {"name": 名稱, "path": str(路徑), "content": 內容}
     raise FileNotFoundError(f"找不到技能：{名稱}")
 
 

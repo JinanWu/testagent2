@@ -21,6 +21,42 @@ from typing import Any, Callable
 from .使用者 import 使用者上下文
 
 
+# 有些模型會用很多不同工具名稱（像是 memory_add、delete_memory 之類），
+# 但我們其實只註冊一個 `memory` 工具，用 action 參數來分辨要做什麼。
+# 將常見的寫入別名對應回來（變成統一名稱和 action），不管模型用哪種叫法都能命中，
+# 避免「未知工具」而失敗。讀取不提供別名：記憶已隨系統提示注入，模型應直接讀上下文。
+記憶工具別名對照: dict[str, tuple[str, str]] = {
+    "memory_add": ("memory", "add"),
+    "memory_create": ("memory", "add"),
+    "add_memory": ("memory", "add"),
+    "memory_replace": ("memory", "replace"),
+    "memory_update": ("memory", "replace"),
+    "update_memory": ("memory", "replace"),
+    "memory_remove": ("memory", "remove"),
+    "memory_delete": ("memory", "remove"),
+    "delete_memory": ("memory", "remove"),
+}
+
+
+def 正規化工具別名(名稱: str, 參數: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """把模型慣用的工具別名轉回本專案 canonical 工具與 action。
+
+    參數：
+        名稱: 模型呼叫的工具名稱。
+        參數: 模型提供的工具參數。
+
+    返回值：
+        (canonical 工具名稱, 已補上 action 的參數)。非別名時原樣回傳。
+    """
+    對應 = 記憶工具別名對照.get(名稱)
+    if not 對應:
+        return 名稱, 參數
+    canonical名稱, 動作 = 對應
+    正規化參數 = dict(參數)
+    正規化參數["action"] = 動作
+    return canonical名稱, 正規化參數
+
+
 def 解析工具路徑(路徑值: Any, 工作目錄: str | Path | None = None, 預設: str = ".") -> Path:
     """把工具收到的路徑解析成絕對路徑；相對路徑以 runtime 工作目錄為基準。
 
@@ -132,6 +168,7 @@ class 工具登錄器:
 
     def 呼叫工具(self, 名稱: str, 參數: dict[str, Any]) -> str:
         """呼叫工具並回傳 JSON 字串。"""
+        名稱, 參數 = 正規化工具別名(名稱, 參數)
         工具 = self.工具表.get(名稱)
         if not 工具:
             if 名稱 in self.已知工具名稱集合:

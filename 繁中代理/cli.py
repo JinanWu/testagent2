@@ -256,6 +256,67 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
         return
 
 
+def 建立Skill參數解析器() -> argparse.ArgumentParser:
+    """建立 skill 子命令參數解析器（pin / unpin / list）。
+
+    參數：無。
+    返回值：ArgumentParser。管理使用者技能的 pin 狀態與使用量檢視。
+    """
+    說明 = """管理使用者技能的 pin 與使用量
+
+範例：
+  python3 -m 繁中代理.cli skill list
+  python3 -m 繁中代理.cli skill pin <技能名>
+  python3 -m 繁中代理.cli skill unpin <技能名>
+
+pin 住的技能不會被 skill_manage(delete) 刪除，也不會被 Curator 自動搬去封存。
+技能名為 assets/user_skill 底下的技能目錄名。
+"""
+    解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli skill", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
+    子命令 = 解析器.add_subparsers(dest="skill_command", required=True)
+    pin解析器 = 子命令.add_parser("pin", help="pin 一個技能（禁止刪除與自動搬移）")
+    pin解析器.add_argument("name", help="技能名（user_skill 目錄名）")
+    unpin解析器 = 子命令.add_parser("unpin", help="解除技能 pin")
+    unpin解析器.add_argument("name", help="技能名")
+    子命令.add_parser("list", help="列出使用者技能與 pin / state / 使用量")
+    子命令.add_parser("curate", help="執行 Curator：彙總事件 + 生命週期轉移（跳過 pinned）")
+    return 解析器
+
+
+def 執行Skill子命令(參數: argparse.Namespace) -> None:
+    """執行 skill 子命令。
+
+    參數：
+        參數: argparse namespace。
+
+    返回值：None。結果輸出到 stdout。
+    """
+    from .工具集 import 技能使用量
+    from .基本工具 import 列出使用者技能身分
+
+    if 參數.skill_command == "list":
+        印出JSON({"skills": 技能使用量.使用量報告()})
+        return
+    if 參數.skill_command == "curate":
+        from .工具集 import 技能策展器
+        印出JSON({"success": True, "curator": 技能策展器.執行策展()})
+        return
+    if 參數.skill_command in ("pin", "unpin"):
+        身分清單 = 列出使用者技能身分()
+        命中 = next((身分 for 身分 in 身分清單 if 身分.get("name") == 參數.name and 身分.get("skill_id")), None)
+        if not 命中:
+            印出JSON({
+                "success": False,
+                "error": f"找不到使用者技能 '{參數.name}'。",
+                "available": sorted(身分.get("name") for 身分 in 身分清單),
+            })
+            return
+        要pin = 參數.skill_command == "pin"
+        技能使用量.設定pin(命中["skill_id"], 要pin)
+        印出JSON({"success": True, "name": 參數.name, "skill_id": 命中["skill_id"], "pinned": 要pin})
+        return
+
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
@@ -268,6 +329,7 @@ def 建立參數解析器() -> argparse.ArgumentParser:
   python3 -m 繁中代理.cli --help
   python3 -m 繁中代理.cli users --help
   python3 -m 繁中代理.cli auth --help
+  python3 -m 繁中代理.cli skill --help
   python3 -m 繁中代理.cli users create alice --password <密碼> --workdirs /path/to/repo
   python3 -m 繁中代理.cli auth login alice
   python3 -m 繁中代理.cli --session demo "請讀取 README"
@@ -1086,6 +1148,11 @@ def 執行主程式() -> None:
         users解析器 = 建立Users參數解析器()
         參數 = users解析器.parse_args(sys.argv[2:])
         執行Users子命令(參數)
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "skill":
+        skill解析器 = 建立Skill參數解析器()
+        參數 = skill解析器.parse_args(sys.argv[2:])
+        執行Skill子命令(參數)
         return
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
