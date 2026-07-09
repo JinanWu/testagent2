@@ -20,6 +20,7 @@ from .工作階段上下文 import 設定目前工作階段識別碼, 設定目�
 from .工作階段庫 import 工作階段庫
 from .工具 import 工具登錄器
 from .工具註冊 import 建立預設工具登錄器
+from .基本工具 import 取得技能根目錄清單
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技能強制載入指引, 技能無相關項目指引
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
 from .模型供應商 import 建立模型供應商, 模型供應商
@@ -513,14 +514,15 @@ class 代理執行階段:
 
         參數：
             無。函數會依目前 UserContext 的 skill_roots 掃描；None 代表使用
-            專案內建 `assets/hermes_skills`，空清單代表不注入任何技能摘要。
+            專案內建技能根目錄（hermes_skills + user_skill），與 skills_list /
+            skill_view 的預設掃描範圍一致。空清單代表不注入任何技能摘要。
 
         返回值：
             str：依 enabled_skills 與可用工具過濾後的 `<available_skills>` 區塊。
             多個根目錄會合併成單一區塊，避免重複技能載入指引。
         """
         if self.使用者上下文物件.skill_roots is None:
-            根目錄清單 = [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+            根目錄清單 = 取得技能根目錄清單({"_skill_roots": None})
         else:
             根目錄清單 = self.使用者上下文物件.skill_roots
         if not 根目錄清單:
