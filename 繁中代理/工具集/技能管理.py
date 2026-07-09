@@ -221,7 +221,7 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
     技能目錄.mkdir(parents=True, exist_ok=True)
     skill_md = 技能目錄 / "SKILL.md"
     _原子寫入技能檔(skill_md, 內容)
-    技能使用量.初始化記錄(skill_id, user_id=user_id)
+    技能使用量.初始化技能使用量記錄(skill_id, user_id=user_id)
     結果: dict[str, Any] = {"success": True, "message": f"技能 '{名稱}' 已建立。", "path": str(skill_md), "skill_id": skill_id}
     if 分類:
         結果["category"] = 分類
@@ -291,12 +291,12 @@ def _刪除技能(名稱: str) -> dict[str, Any]:
     if not 技能目錄:
         return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
     skill_id = 讀取技能skill_id(技能目錄 / "SKILL.md")
-    if skill_id and 技能使用量.是否pin(skill_id):
+    if skill_id and 技能使用量.檢查技能是否Pin(skill_id):
         return {"success": False, "error": f"技能 '{名稱}' 已被 pin，無法刪除。請先解除 pin（unpin）再刪除。"}
     根目錄 = 使用者技能根目錄()
     shutil.rmtree(技能目錄)
     if skill_id:
-        技能使用量.遺忘(skill_id)
+        技能使用量.移除技能使用量記錄(skill_id)
     父目錄 = 技能目錄.parent
     if 父目錄 != 根目錄 and 父目錄.exists() and not any(父目錄.iterdir()):
         父目錄.rmdir()

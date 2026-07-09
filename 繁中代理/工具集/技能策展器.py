@@ -80,7 +80,7 @@ def 彙總事件到使用量() -> int:
         skill_id = 列.get("skill_id")
         if skill_id not in 存在ids:
             continue
-        技能使用量.設定彙總(skill_id, 列.get("use_count") or 0, 列.get("last_used_at"), user_id=列.get("user_id"))
+        技能使用量.設定技能使用量彙總(skill_id, 列.get("use_count") or 0, 列.get("last_used_at"), user_id=列.get("user_id"))
         更新數 += 1
     return 更新數
 
@@ -108,7 +108,7 @@ def 封存技能(skill_id: str, 名稱: str) -> bool:
     except OSError as 錯誤:
         logger.debug("封存技能 %s 失敗：%s", 名稱, 錯誤, exc_info=True)
         return False
-    技能使用量.設定狀態(skill_id, 技能使用量.狀態_封存)
+    技能使用量.設定技能生命狀態(skill_id, 技能使用量.技能生命狀態_封存)
     # 清掉空的 category 目錄
     父目錄 = 技能目錄.parent
     根目錄 = 基本工具.使用者技能根目錄()
@@ -129,7 +129,7 @@ def 套用生命週期轉移(now: datetime | None = None) -> dict[str, int]:
     封存界線 = now - timedelta(days=封存門檻天數())
     計數 = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0, "skipped_pinned": 0}
 
-    for 列 in 技能使用量.使用量報告():
+    for 列 in 技能使用量.產生技能使用量報告():
         計數["checked"] += 1
         if 列.get("pinned"):
             計數["skipped_pinned"] += 1
@@ -137,16 +137,16 @@ def 套用生命週期轉移(now: datetime | None = None) -> dict[str, int]:
         skill_id = 列["skill_id"]
         名稱 = 列.get("name") or ""
         錨點 = _解析ISO(列.get("last_used_at")) or _解析ISO(列.get("created_at")) or now
-        目前狀態 = 列.get("state", 技能使用量.狀態_使用中)
+        目前狀態 = 列.get("state", 技能使用量.技能生命狀態_使用中)
 
-        if 錨點 <= 封存界線 and 目前狀態 != 技能使用量.狀態_封存:
+        if 錨點 <= 封存界線 and 目前狀態 != 技能使用量.技能生命狀態_封存:
             if 封存技能(skill_id, 名稱):
                 計數["archived"] += 1
-        elif 錨點 <= 閒置界線 and 目前狀態 == 技能使用量.狀態_使用中:
-            技能使用量.設定狀態(skill_id, 技能使用量.狀態_閒置)
+        elif 錨點 <= 閒置界線 and 目前狀態 == 技能使用量.技能生命狀態_使用中:
+            技能使用量.設定技能生命狀態(skill_id, 技能使用量.技能生命狀態_閒置)
             計數["marked_stale"] += 1
-        elif 錨點 > 閒置界線 and 目前狀態 == 技能使用量.狀態_閒置:
-            技能使用量.設定狀態(skill_id, 技能使用量.狀態_使用中)
+        elif 錨點 > 閒置界線 and 目前狀態 == 技能使用量.技能生命狀態_閒置:
+            技能使用量.設定技能生命狀態(skill_id, 技能使用量.技能生命狀態_使用中)
             計數["reactivated"] += 1
 
     return 計數

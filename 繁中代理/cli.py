@@ -294,7 +294,7 @@ def 執行Skill子命令(參數: argparse.Namespace) -> None:
     from .基本工具 import 列出使用者技能身分
 
     if 參數.skill_command == "list":
-        印出JSON({"skills": 技能使用量.使用量報告()})
+        印出JSON({"skills": 技能使用量.產生技能使用量報告()})
         return
     if 參數.skill_command == "curate":
         from .工具集 import 技能策展器
@@ -311,7 +311,7 @@ def 執行Skill子命令(參數: argparse.Namespace) -> None:
             })
             return
         要pin = 參數.skill_command == "pin"
-        技能使用量.設定pin(命中["skill_id"], 要pin)
+        技能使用量.設定技能Pin(命中["skill_id"], 要pin)
         印出JSON({"success": True, "name": 參數.name, "skill_id": 命中["skill_id"], "pinned": 要pin})
         return
 
