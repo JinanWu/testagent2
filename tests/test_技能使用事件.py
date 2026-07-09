@@ -72,6 +72,17 @@ def test_彙總依user_id與skill_id分列(假技能環境):
     assert 彙總[("bob", "shared-name")]["use_count"] == 1
 
 
+def test_彙總依技能合併多使用者事件(假技能環境):
+    技能使用事件.記錄技能使用事件("demo", "alice", used_at="2026-07-01T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("demo", "alice", used_at="2026-07-03T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("demo", "bob", used_at="2026-07-10T00:00:00+00:00")
+    彙總 = {列["skill_id"]: 列 for 列 in 技能使用事件.彙總技能使用事件依技能()}
+    列 = 彙總["demo"]
+    assert 列["use_count"] == 3
+    assert 列["last_used_at"] == "2026-07-10T00:00:00+00:00"
+    assert 列["user_id"] == "bob"
+
+
 def test_毀損行被略過(假技能環境):
     技能使用事件.記錄技能使用事件("demo", "alice")
     with open(技能使用事件.取得技能使用事件檔路徑(), "a", encoding="utf-8") as f:
