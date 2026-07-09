@@ -274,6 +274,32 @@ def 設定技能使用量彙總(
     _變更技能使用量記錄(skill_id, _套用)
 
 
+def 補齊缺少的技能使用量記錄() -> int:
+    """為 user_skill 中存在但 sidecar 尚無記錄的技能建立並寫回 created_at。
+
+    避免 Curator 每次執行都在記憶體中以「現在」當錨點、永遠無法觸發閒置/封存。
+
+    參數：無。
+    返回：int。本次新寫入的記錄數。
+    """
+    try:
+        with _鎖定技能使用量檔():
+            資料 = 讀取全部技能使用量(毀損時拋出=True)
+            補齊數 = 0
+            for 身分 in 基本工具.列出使用者技能身分():
+                skill_id = 身分.get("skill_id")
+                if not skill_id or skill_id in 資料:
+                    continue
+                資料[skill_id] = _建立空白技能使用量記錄()
+                補齊數 += 1
+            if 補齊數:
+                寫入全部技能使用量(資料)
+            return 補齊數
+    except Exception as 錯誤:
+        logger.debug("補齊缺少的技能使用量記錄 失敗：%s", 錯誤, exc_info=True)
+        return 0
+
+
 def 設定技能Pin(skill_id: str, pinned: bool) -> None:
     """設定技能 pin 狀態；pinned 技能永不被 Curator 自動搬移或被刪除。
 

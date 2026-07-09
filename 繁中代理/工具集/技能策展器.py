@@ -125,6 +125,7 @@ def 套用生命週期轉移(now: datetime | None = None) -> dict[str, int]:
     """
     if now is None:
         now = datetime.now(timezone.utc)
+    技能使用量.補齊缺少的技能使用量記錄()
     標記閒置時間界線 = now - timedelta(days=標記技能閒置的未使用天數())
     封存時間界線 = now - timedelta(days=封存技能的未使用天數())
     計數 = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0, "skipped_pinned": 0}

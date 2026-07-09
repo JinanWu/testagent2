@@ -44,6 +44,18 @@ def test_彙總不重建已刪除技能的殭屍記錄(假環境):
     assert "sid-gone" not in 技能使用量.讀取全部技能使用量()
 
 
+def test_彙總多使用者事件合併為單一技能記錄(假環境):
+    _建立技能(假環境, "demo", "sid-1")
+    技能使用事件.記錄技能使用事件("sid-1", "alice", used_at="2026-07-01T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("sid-1", "alice", used_at="2026-07-03T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("sid-1", "bob", used_at="2026-07-10T00:00:00+00:00")
+    assert 技能策展器.彙總事件到使用量() == 1
+    記錄 = 技能使用量.取得技能使用量記錄("sid-1")
+    assert 記錄["use_count"] == 3
+    assert 記錄["last_used_at"] == "2026-07-10T00:00:00+00:00"
+    assert 記錄["user_id"] == "bob"
+
+
 def test_閒置技能被標記為stale(假環境, monkeypatch):
     monkeypatch.setenv("TESTAGENT2_SKILL_STALE_DAYS", "30")
     monkeypatch.setenv("TESTAGENT2_SKILL_ARCHIVE_DAYS", "60")
@@ -92,12 +104,23 @@ def test_stale技能又被使用會復活(假環境, monkeypatch):
 
 
 def test_新建技能不會立刻被封存(假環境):
-    # 沒有 last_used_at，但 created_at 是現在 → 錨點是現在 → 不動
+    # 沒有 sidecar 記錄時，Curator 會先補齊 created_at 再判斷 → 不會立刻封存
     _建立技能(假環境, "demo", "sid-1")
-    技能使用量.初始化技能使用量記錄("sid-1", user_id="alice")
     統計 = 技能策展器.套用生命週期轉移()
     assert 統計["archived"] == 0
     assert 統計["marked_stale"] == 0
+    assert "sid-1" in 技能使用量.讀取全部技能使用量()
+
+
+def test_缺少sidecar的技能會在策展時寫回created_at(假環境):
+    _建立技能(假環境, "demo", "sid-1")
+    固定現在 = datetime(2026, 7, 9, 12, 0, 0, tzinfo=timezone.utc)
+    技能策展器.套用生命週期轉移(now=固定現在)
+    第一次 = 技能使用量.讀取全部技能使用量()["sid-1"]["created_at"]
+    稍後 = 固定現在 + timedelta(hours=1)
+    技能策展器.套用生命週期轉移(now=稍後)
+    第二次 = 技能使用量.讀取全部技能使用量()["sid-1"]["created_at"]
+    assert 第一次 == 第二次
 
 
 def test_執行策展整合彙總與轉移(假環境, monkeypatch):

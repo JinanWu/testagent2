@@ -90,6 +90,15 @@ def test_使用量報告以skill_id為key並帶name(假技能環境):
     assert 報告["sid-never"]["last_used_at"] is None
 
 
+def test_補齊缺少的技能使用量記錄會寫回sidecar(假技能環境):
+    _建立技能檔(假技能環境, "new-skill", "sid-new")
+    assert "sid-new" not in 技能使用量.讀取全部技能使用量()
+    assert 技能使用量.補齊缺少的技能使用量記錄() == 1
+    記錄 = 技能使用量.讀取全部技能使用量()["sid-new"]
+    assert 記錄["created_at"]
+    assert 記錄["state"] == 技能使用量.技能生命狀態_使用中
+
+
 def test_使用量報告略過無skill_id的技能(假技能環境):
     # 沒有 frontmatter id 的技能（異常/未經 skill_manage 建立）不入報告
     目錄 = 假技能環境 / "no-id"
