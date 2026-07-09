@@ -8,7 +8,7 @@ Curator 讀取本檔，彙總成每 (user_id, skill_id) 的 use_count / last_use
 技能使用量（表三）。events 為 **append-only**，Curator 只讀不改。
 
 未來規劃：本檔以 JSONL 當儲存後端；日後改接 BigQuery `skill_usage_events` 表時，
-只需替換 `記錄多筆事件` / `讀取所有事件` 兩個 I/O 出入口。
+只需替換 `記錄多筆技能使用事件` / `讀取全部技能使用事件` 兩個 I/O 出入口。
 """
 
 from __future__ import annotations
@@ -24,16 +24,16 @@ from .. import 基本工具
 logger = logging.getLogger(__name__)
 
 
-def 事件檔路徑() -> Path:
+def 取得技能使用事件檔路徑() -> Path:
     """回傳 skill_usage_events.jsonl 路徑（assets 根目錄，與 user_skill 同層）。"""
     return 基本工具.使用者技能根目錄().parent / "skill_usage_events.jsonl"
 
 
-def _現在ISO() -> str:
+def _產生現在ISO時間() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def 記錄多筆事件(skill_ids: Iterable[str], user_id: str | None, used_at: str | None = None) -> int:
+def 記錄多筆技能使用事件(skill_ids: Iterable[str], user_id: str | None, used_at: str | None = None) -> int:
     """把多個技能各 append 一筆使用事件；回傳實際寫入筆數。
 
     參數：
@@ -44,33 +44,36 @@ def 記錄多筆事件(skill_ids: Iterable[str], user_id: str | None, used_at: s
     識別碼清單 = [str(s) for s in skill_ids if s]
     if not 識別碼清單:
         return 0
-    時間 = used_at or _現在ISO()
+    時間 = used_at or _產生現在ISO時間()
     使用者 = str(user_id) if user_id else None
-    路徑 = 事件檔路徑()
+    路徑 = 取得技能使用事件檔路徑()
+    內容 = "".join(
+        json.dumps(
+            {"skill_id": skill_id, "user_id": 使用者, "used_at": 時間},
+            ensure_ascii=False,
+        ) + "\n"
+        for skill_id in 識別碼清單
+    )
     try:
         路徑.parent.mkdir(parents=True, exist_ok=True)
         with open(路徑, "a", encoding="utf-8") as f:
-            for skill_id in 識別碼清單:
-                f.write(json.dumps(
-                    {"skill_id": skill_id, "user_id": 使用者, "used_at": 時間},
-                    ensure_ascii=False,
-                ) + "\n")
+            f.write(內容)
     except OSError as 錯誤:
         logger.debug("寫入 %s 失敗：%s", 路徑, 錯誤, exc_info=True)
         return 0
     return len(識別碼清單)
 
 
-def 記錄事件(skill_id: str, user_id: str | None, used_at: str | None = None) -> int:
+def 記錄技能使用事件(skill_id: str, user_id: str | None, used_at: str | None = None) -> int:
     """append 單筆使用事件；回傳寫入筆數（0 或 1）。"""
     if not skill_id:
         return 0
-    return 記錄多筆事件([skill_id], user_id, used_at)
+    return 記錄多筆技能使用事件([skill_id], user_id, used_at)
 
 
-def 讀取所有事件() -> list[dict[str, Any]]:
+def 讀取全部技能使用事件() -> list[dict[str, Any]]:
     """讀取整份事件檔；毀損的行會被略過。"""
-    路徑 = 事件檔路徑()
+    路徑 = 取得技能使用事件檔路徑()
     if not 路徑.exists():
         return []
     事件清單: list[dict[str, Any]] = []
@@ -92,7 +95,7 @@ def 讀取所有事件() -> list[dict[str, Any]]:
     return 事件清單
 
 
-def 彙總() -> list[dict[str, Any]]:
+def 彙總技能使用事件() -> list[dict[str, Any]]:
     """把事件彙總成每 (user_id, skill_id) 的 use_count / last_used_at。
 
     回傳 [{skill_id, user_id, use_count, last_used_at}, ...]，供 Curator 更新
@@ -100,7 +103,7 @@ def 彙總() -> list[dict[str, Any]]:
     (user_id, skill_id)）。
     """
     彙整表: dict[tuple[str | None, str], dict[str, Any]] = {}
-    for 事件 in 讀取所有事件():
+    for 事件 in 讀取全部技能使用事件():
         skill_id = 事件.get("skill_id")
         if not skill_id:
             continue

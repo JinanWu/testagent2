@@ -27,8 +27,8 @@ def _建立技能(根目錄, name, skill_id):
 
 def test_彙總事件到使用量覆寫use_count與last_used(假環境):
     _建立技能(假環境, "demo", "sid-1")
-    技能使用事件.記錄事件("sid-1", "alice", used_at="2026-07-01T00:00:00+00:00")
-    技能使用事件.記錄事件("sid-1", "alice", used_at="2026-07-05T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("sid-1", "alice", used_at="2026-07-01T00:00:00+00:00")
+    技能使用事件.記錄技能使用事件("sid-1", "alice", used_at="2026-07-05T00:00:00+00:00")
     更新數 = 技能策展器.彙總事件到使用量()
     assert 更新數 == 1
     記錄 = 技能使用量.取得技能使用量記錄("sid-1")
@@ -39,7 +39,7 @@ def test_彙總事件到使用量覆寫use_count與last_used(假環境):
 
 def test_彙總不重建已刪除技能的殭屍記錄(假環境):
     # 事件存在，但技能已不在 user_skill（已刪除）→ 不應建立記錄
-    技能使用事件.記錄事件("sid-gone", "alice")
+    技能使用事件.記錄技能使用事件("sid-gone", "alice")
     assert 技能策展器.彙總事件到使用量() == 0
     assert "sid-gone" not in 技能使用量.讀取全部技能使用量()
 
@@ -103,7 +103,7 @@ def test_新建技能不會立刻被封存(假環境):
 def test_執行策展整合彙總與轉移(假環境, monkeypatch):
     monkeypatch.setenv("TESTAGENT2_SKILL_ARCHIVE_DAYS", "60")
     _建立技能(假環境, "demo", "sid-1")
-    技能使用事件.記錄事件("sid-1", "alice", used_at=(datetime.now(timezone.utc) - timedelta(days=90)).isoformat())
+    技能使用事件.記錄技能使用事件("sid-1", "alice", used_at=(datetime.now(timezone.utc) - timedelta(days=90)).isoformat())
     結果 = 技能策展器.執行策展()
     assert 結果["aggregated"] == 1
     assert 結果["archived"] == 1

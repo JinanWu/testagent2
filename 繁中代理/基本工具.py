@@ -216,8 +216,8 @@ def _記錄技能使用事件(skill_md路徑: Path, 參數: dict[str, Any]) -> N
         skill_id = 讀取技能skill_id(skill_md路徑)
         if not skill_id:
             return
-        from .工具集.技能使用事件 import 記錄事件
-        記錄事件(skill_id, 參數.get("_current_user_id"))
+        from .工具集.技能使用事件 import 記錄技能使用事件
+        記錄技能使用事件(skill_id, 參數.get("_current_user_id"))
     except Exception:
         pass
 

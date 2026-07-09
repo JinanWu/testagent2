@@ -37,7 +37,7 @@ def test_skill_view成功以skill_id記一筆事件(假環境):
     skill_id = 技能管理.管理技能({"action": "create", "name": "demo", "content": 技能內容})["skill_id"]
     參數 = {"name": "demo", "_current_user_id": "alice", "_skill_roots": [str(假環境)]}
     基本工具.讀取技能(參數)
-    事件 = 技能使用事件.讀取所有事件()
+    事件 = 技能使用事件.讀取全部技能使用事件()
     assert len(事件) == 1
     assert 事件[0]["skill_id"] == skill_id  # 記 skill_id，不是 name
     assert 事件[0]["user_id"] == "alice"
@@ -48,7 +48,7 @@ def test_skill_view找不到技能不記事件(假環境):
     參數 = {"name": "不存在", "_current_user_id": "alice", "_skill_roots": [str(假環境)]}
     with pytest.raises(FileNotFoundError):
         基本工具.讀取技能(參數)
-    assert 技能使用事件.讀取所有事件() == []
+    assert 技能使用事件.讀取全部技能使用事件() == []
 
 
 def test_create自動用參數name補進frontmatter(假環境):

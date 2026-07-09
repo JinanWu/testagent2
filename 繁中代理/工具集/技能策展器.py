@@ -76,7 +76,7 @@ def 彙總事件到使用量() -> int:
     """
     存在ids = {身分.get("skill_id") for 身分 in 基本工具.列出使用者技能身分() if 身分.get("skill_id")}
     更新數 = 0
-    for 列 in 技能使用事件.彙總():
+    for 列 in 技能使用事件.彙總技能使用事件():
         skill_id = 列.get("skill_id")
         if skill_id not in 存在ids:
             continue
