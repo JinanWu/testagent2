@@ -4,13 +4,13 @@
 
   1. 彙總：讀技能使用事件（表二）→ 覆寫技能使用量（表三）的 use_count / last_used_at，
      讓表三成為事件表的物化快照。
-  2. 轉移：讀表三的 last_used_at，依門檻天數決定生命週期：
-       active   → stale      閒置超過 `閒置門檻天數`
-       stale/active → archived  閒置超過 `封存門檻天數`（把技能目錄搬到 .archive/）
+  2. 轉移：讀表三的 last_used_at，依未使用天數決定生命週期：
+       active   → stale      未使用超過 `標記技能閒置的未使用天數`
+       stale/active → archived  未使用超過 `封存技能的未使用天數`（把技能目錄搬到 .archive/）
        stale    → active     又被使用（last_used_at 變新）就復活
      **pinned 技能一律跳過**，永不自動轉移。
 
-只處理 user_skill 底下的技能（內建技能無 skill_id、不受管理）。門檻可用環境變數覆寫。
+只處理 user_skill 底下的技能（內建技能無 skill_id、不受管理）。天數可用環境變數覆寫。
 """
 
 from __future__ import annotations
@@ -27,24 +27,24 @@ from . import 技能使用事件, 技能使用量
 
 logger = logging.getLogger(__name__)
 
-預設閒置門檻天數 = 30
-預設封存門檻天數 = 60
+預設標記技能閒置的未使用天數 = 30
+預設封存技能的未使用天數 = 60
 
 
-def 閒置門檻天數() -> int:
-    """閒置多久標記為 stale（天）；可用 TESTAGENT2_SKILL_STALE_DAYS 覆寫。"""
+def 標記技能閒置的未使用天數() -> int:
+    """技能連續未使用幾天後標記為 stale；可用 TESTAGENT2_SKILL_STALE_DAYS 覆寫。"""
     try:
-        return int(os.getenv("TESTAGENT2_SKILL_STALE_DAYS") or 預設閒置門檻天數)
+        return int(os.getenv("TESTAGENT2_SKILL_STALE_DAYS") or 預設標記技能閒置的未使用天數)
     except ValueError:
-        return 預設閒置門檻天數
+        return 預設標記技能閒置的未使用天數
 
 
-def 封存門檻天數() -> int:
-    """閒置多久搬去封存（天）；可用 TESTAGENT2_SKILL_ARCHIVE_DAYS 覆寫。"""
+def 封存技能的未使用天數() -> int:
+    """技能連續未使用幾天後搬去封存；可用 TESTAGENT2_SKILL_ARCHIVE_DAYS 覆寫。"""
     try:
-        return int(os.getenv("TESTAGENT2_SKILL_ARCHIVE_DAYS") or 預設封存門檻天數)
+        return int(os.getenv("TESTAGENT2_SKILL_ARCHIVE_DAYS") or 預設封存技能的未使用天數)
     except ValueError:
-        return 預設封存門檻天數
+        return 預設封存技能的未使用天數
 
 
 def _解析ISO(值: Any) -> datetime | None:
@@ -125,8 +125,8 @@ def 套用生命週期轉移(now: datetime | None = None) -> dict[str, int]:
     """
     if now is None:
         now = datetime.now(timezone.utc)
-    閒置界線 = now - timedelta(days=閒置門檻天數())
-    封存界線 = now - timedelta(days=封存門檻天數())
+    標記閒置時間界線 = now - timedelta(days=標記技能閒置的未使用天數())
+    封存時間界線 = now - timedelta(days=封存技能的未使用天數())
     計數 = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0, "skipped_pinned": 0}
 
     for 列 in 技能使用量.產生技能使用量報告():
@@ -139,13 +139,13 @@ def 套用生命週期轉移(now: datetime | None = None) -> dict[str, int]:
         錨點 = _解析ISO(列.get("last_used_at")) or _解析ISO(列.get("created_at")) or now
         目前狀態 = 列.get("state", 技能使用量.技能生命狀態_使用中)
 
-        if 錨點 <= 封存界線 and 目前狀態 != 技能使用量.技能生命狀態_封存:
+        if 錨點 <= 封存時間界線 and 目前狀態 != 技能使用量.技能生命狀態_封存:
             if 封存技能(skill_id, 名稱):
                 計數["archived"] += 1
-        elif 錨點 <= 閒置界線 and 目前狀態 == 技能使用量.技能生命狀態_使用中:
+        elif 錨點 <= 標記閒置時間界線 and 目前狀態 == 技能使用量.技能生命狀態_使用中:
             技能使用量.設定技能生命狀態(skill_id, 技能使用量.技能生命狀態_閒置)
             計數["marked_stale"] += 1
-        elif 錨點 > 閒置界線 and 目前狀態 == 技能使用量.技能生命狀態_閒置:
+        elif 錨點 > 標記閒置時間界線 and 目前狀態 == 技能使用量.技能生命狀態_閒置:
             技能使用量.設定技能生命狀態(skill_id, 技能使用量.技能生命狀態_使用中)
             計數["reactivated"] += 1
 
