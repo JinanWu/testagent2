@@ -80,3 +80,21 @@ def test_stepC不誤擋正常步驟型skill(假環境):
     好內容 = "---\nname: y\ndescription: d\n---\n\n# 標題\n## 步驟\n1. 用 web_search 搜尋\n2. 回報結果\n"
     結果 = 技能管理.管理技能({"action": "create", "name": "y", "content": 好內容})
     assert 結果["success"] is True
+
+
+def test_create擋下與內建技能同名(假環境, tmp_path, monkeypatch):
+    """與內建技能同名時應拒絕建立，避免 skills_list / skill_view 命名衝突。"""
+    內建根目錄 = tmp_path / "assets" / "hermes_skills"
+    內建技能目錄 = 內建根目錄 / "bundled-demo"
+    內建技能目錄.mkdir(parents=True)
+    (內建技能目錄 / "SKILL.md").write_text(
+        "---\nname: bundled-demo\ndescription: d\n---\n\n# T\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(技能管理, "內建技能根目錄", lambda: 內建根目錄)
+
+    結果 = 技能管理.管理技能({"action": "create", "name": "bundled-demo", "content": 技能內容})
+
+    assert 結果["success"] is False
+    assert "內建技能" in 結果["error"]
+    assert not (假環境 / "bundled-demo").exists()

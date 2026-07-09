@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from ..基本工具 import 使用者技能根目錄, 讀取技能skill_id
+from ..基本工具 import 使用者技能根目錄, 內建技能根目錄, 讀取技能skill_id
 from . import 技能使用量
 
 技能名稱規則 = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -119,6 +119,29 @@ def _尋找使用者技能(名稱: str) -> Path | None:
         if skill_md.parent.name == 名稱:
             return skill_md.parent
     return None
+
+
+def _檢查內建技能是否存在(名稱: str) -> bool:
+    """檢查內建技能目錄是否已有指定名稱的技能。
+
+    描述：
+        掃描 `hermes_skills` 下所有 SKILL.md，比對目錄名（name 鍵）是否與
+        給定名稱相同。用於 skill_manage(create) 阻擋與內建技能同名的使用者技能，
+        避免 skills_list / skill_view 命名衝突。
+
+    輸入：
+        名稱: 待檢查的技能名稱（與 skills_list / skill_view 的 name 一致）。
+
+    返回：
+        bool。True 表示內建技能已存在同名項目；False 表示無衝突或根目錄不存在。
+    """
+    根目錄 = 內建技能根目錄()
+    if not 根目錄.exists():
+        return False
+    for skill_md in 根目錄.rglob("SKILL.md"):
+        if skill_md.parent.name == 名稱:
+            return True
+    return False
 
 
 def _驗證支援檔路徑(檔案路徑: str) -> str | None:
@@ -215,6 +238,14 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
             return {"success": False, "error": 錯誤}
     if _尋找使用者技能(名稱):
         return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
+    if _檢查內建技能是否存在(名稱):
+        return {
+            "success": False,
+            "error": (
+                f"名稱 '{名稱}' 與內建技能衝突。"
+                f"請改用其他名稱（例如 'my-{名稱}' 或 '{名稱}-custom'）。"
+            ),
+        }
     skill_id = str(uuid.uuid4())
     內容 = _注入skill_id(內容, skill_id)
     技能目錄 = (使用者技能根目錄() / 分類 / 名稱) if 分類 else (使用者技能根目錄() / 名稱)
