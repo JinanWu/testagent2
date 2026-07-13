@@ -411,6 +411,19 @@ def 解析執行模型名稱(模式: str, 模型名稱: str) -> str:
     return 模型名稱
 
 
+def 是否BigQuery後端() -> bool:
+    """目前儲存後端是否為 BigQuery（雲端）。
+
+    BQ 模式下所有啟動共用同一個雲端 dataset，本機 sqlite 路徑與登入身分無關，
+    故 auth 的「token 綁它建立時的 DB 路徑」檢查在此模式應略過，直接驗 token。
+
+    參數：無。
+    返回值：bool。
+    """
+    from .儲存 import 取得儲存後端
+    return 取得儲存後端() == "bigquery"
+
+
 def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上下文:
     """依 CLI 參數與本機 auth token 解析目前使用者。
 
@@ -451,12 +464,15 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
                 is_admin=False,
             )
     if auth資料 and auth資料.get("token"):
-        token資料庫路徑 = auth資料.get("db_path")
-        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
-        if token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() != 目前資料庫路徑:
-            return 建立預設使用者上下文(參數.workdir)
-        if not token資料庫路徑 and 目前資料庫路徑 != Path(預設資料庫路徑).expanduser().resolve():
-            return 建立預設使用者上下文(參數.workdir)
+        # SQLite 模式：token 綁它建立時的 DB 檔案，路徑不符就當未登入（走匿名預設）。
+        # BQ 模式：與本機 sqlite 路徑無關，略過路徑比對直接驗 token。
+        if not 是否BigQuery後端():
+            token資料庫路徑 = auth資料.get("db_path")
+            目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+            if token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() != 目前資料庫路徑:
+                return 建立預設使用者上下文(參數.workdir)
+            if not token資料庫路徑 and 目前資料庫路徑 != Path(預設資料庫路徑).expanduser().resolve():
+                return 建立預設使用者上下文(參數.workdir)
         try:
             return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:
@@ -1159,9 +1175,13 @@ def 執行主程式() -> None:
     if not 參數.user_id:
         一次性Session操作 = bool(參數.archive_session or 參數.unarchive_session or 參數.session_search)
         auth資料 = 讀取Auth檔案()
-        token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
-        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
-        auth符合目前DB = bool(auth資料 and auth資料.get("token") and ((token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() == 目前資料庫路徑) or (not token資料庫路徑 and 目前資料庫路徑 == Path(預設資料庫路徑).expanduser().resolve())))
+        有token = bool(auth資料 and auth資料.get("token"))
+        if 是否BigQuery後端():
+            auth符合目前DB = 有token
+        else:
+            token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
+            目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+            auth符合目前DB = bool(有token and ((token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() == 目前資料庫路徑) or (not token資料庫路徑 and 目前資料庫路徑 == Path(預設資料庫路徑).expanduser().resolve())))
         if not 一次性Session操作 or auth符合目前DB or os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
             使用者上下文物件 = 解析目前使用者上下文(參數)
             參數.user_id = 使用者上下文物件.user_id
