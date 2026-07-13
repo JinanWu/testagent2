@@ -535,15 +535,19 @@ class BigQuery工作階段庫:
         }
 
     def 列出工作階段(self, limit: int = 20, include_children: bool = False, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
-        """列出工作階段；預設排除封存與壓縮子 session。"""
+        """列出工作階段；預設把每條壓縮鏈投影成單一 logical conversation（最新 tip）。
+
+        先抓近期候選（含壓縮 child），再把每條 lineage 投影到`取得壓縮Tip`、
+        依 lineage root 去重，回傳 tip 列（含 `_lineage_root_id`）。
+        `include_children=True` 時回傳原始列、不投影。
+        這樣 `sessions list` 等顯示的是使用者實際續聊的 tip，而非壓縮前的舊 root。
+        """
         from google.cloud import bigquery
 
         條件: list[str] = []
         參數: list[Any] = []
         if not include_archived:
             條件.append("archived = FALSE")
-        if not include_children:
-            條件.append("parent_session_id IS NULL")
         if source:
             條件.append("source = @source")
             參數.append(bigquery.ScalarQueryParameter("source", "STRING", source))
@@ -551,11 +555,32 @@ class BigQuery工作階段庫:
             條件.append("user_id = @user_id")
             參數.append(bigquery.ScalarQueryParameter("user_id", "STRING", user_id))
         where = (" WHERE " + " AND ".join(條件)) if 條件 else ""
-        參數.append(bigquery.ScalarQueryParameter("limit", "INT64", int(limit)))
-        return self._查詢多列(
+        參數.append(bigquery.ScalarQueryParameter("limit", "INT64", int(max(limit * 5, limit))))
+        候選清單 = self._查詢多列(
             f"SELECT * FROM `{self._表名(會話表)}`{where} ORDER BY started_at DESC, id DESC LIMIT @limit",
             參數,
         )
+        if include_children:
+            return 候選清單[:limit]
+        投影結果: list[dict[str, Any]] = []
+        已見根: set[str] = set()
+        for 列 in 候選清單:
+            根 = self.取得工作階段譜系(列["id"])[0]
+            if 根 in 已見根:
+                continue
+            已見根.add(根)
+            末端 = dict(self.讀取工作階段(self.取得壓縮Tip(根)) or 列)
+            if not include_archived and 末端.get("archived"):
+                continue
+            if source and 末端.get("source") != source:
+                continue
+            if user_id and 末端.get("user_id") != user_id:
+                continue
+            末端["_lineage_root_id"] = 根
+            投影結果.append(末端)
+            if len(投影結果) >= limit:
+                break
+        return 投影結果
 
     # ── 續接 / 壓縮譜系 tip ────────────────────────────────────────────────
     def 解析Resume工作階段(self, 工作階段識別碼: str, user_id: str | None = None, source: str | None = None) -> str:
@@ -805,24 +830,9 @@ class BigQuery工作階段庫:
 
     # ── 瀏覽 / 匯出（把壓縮鏈投影成單一 logical conversation）──────────────────
     def 瀏覽近期工作階段(self, limit: int = 10, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> dict[str, Any]:
-        """瀏覽近期 logical sessions；把每條壓縮鏈投影到最新 tip。"""
-        根清單 = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
-        sessions: list[dict[str, Any]] = []
-        已見: set[str] = set()
-        for 根 in 根清單:
-            根識別碼 = 根["id"]
-            if 根識別碼 in 已見:
-                continue
-            已見.add(根識別碼)
-            末端 = self.讀取工作階段(self.取得壓縮Tip(根識別碼)) or 根
-            末端 = dict(末端)
-            if not include_archived and 末端.get("archived"):
-                continue
-            末端["_lineage_root_id"] = 根識別碼
-            sessions.append(末端)
-            if len(sessions) >= limit:
-                break
-        return {"sessions": sessions, "total_count": len(sessions)}
+        """瀏覽近期 logical sessions（`列出工作階段` 已把壓縮鏈投影到最新 tip）。"""
+        工作階段清單 = self.列出工作階段(limit=limit, include_archived=include_archived, source=source, user_id=user_id)
+        return {"sessions": 工作階段清單, "total_count": len(工作階段清單)}
 
     def 匯出工作階段JSONL(self, 輸出路徑: str | Path, limit: int = 1000, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> dict[str, Any]:
         """把 logical sessions（含壓縮譜系訊息）匯出成 JSONL。"""
