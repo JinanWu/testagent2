@@ -30,9 +30,8 @@ from pathlib import Path
 from typing import Any
 
 from .工作階段庫 import 工作階段庫
-from .管理部_bigquery import 載入本機環境檔, 檢查資源名稱
+from .環境設定 import 應跳過建表, 讀取核心BigQuery設定
 
-預設資料集 = "agent_core"
 會話表 = "sessions"
 訊息表 = "messages"
 用量事件表 = "session_usage_events"
@@ -54,28 +53,6 @@ _已確保會話資料表: set[str] = set()
     "codex_message_items": "STRING", "platform_message_id": "STRING", "observed": "BOOL",
     "active": "BOOL", "created_at": "FLOAT64", "timestamp": "FLOAT64",
 }
-
-
-def 應跳過建表() -> bool:
-    """讀 CORE_BQ_SKIP_DDL；為真時跳過 CREATE TABLE（表已存在時加速啟動）。"""
-    載入本機環境檔()
-    return os.getenv("CORE_BQ_SKIP_DDL", "").strip().lower() in {"1", "true", "yes"}
-
-
-def 讀取核心BigQuery設定() -> dict[str, str | None]:
-    """從環境變數讀取核心資料的 BigQuery 設定。"""
-    載入本機環境檔()
-    專案 = os.getenv("CORE_BQ_PROJECT", "").strip()
-    if not 專案:
-        raise ValueError("BigQuery 儲存後端尚未設定：缺少 CORE_BQ_PROJECT")
-    資料集 = os.getenv("CORE_BQ_DATASET", 預設資料集).strip() or 預設資料集
-    for 名稱, 值 in [("project", 專案), ("dataset", 資料集)]:
-        檢查資源名稱(值, 名稱)
-    return {
-        "project": 專案,
-        "dataset": 資料集,
-        "location": os.getenv("CORE_BQ_LOCATION", "").strip() or None,
-    }
 
 
 class BigQuery工作階段庫:

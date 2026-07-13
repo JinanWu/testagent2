@@ -21,7 +21,7 @@ from pathlib import Path
 
 from .工作階段庫 import 工作階段庫
 from .使用者 import 使用者庫
-from .管理部_bigquery import 載入本機環境檔
+from .環境設定 import 載入本機環境檔
 
 支援的後端 = ("sqlite", "bigquery")
 

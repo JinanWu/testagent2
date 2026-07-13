@@ -8,7 +8,7 @@
     儲存層。使用者相關操作（註冊、登入、權限變更）頻率低，且需要「寫後即讀」，因此
     一律走 DML（非 streaming insert）以確保一致性。
 
-環境變數：見 `BigQuery工作階段庫.讀取核心BigQuery設定`（CORE_BQ_PROJECT 等）。
+環境變數：見 `環境設定.讀取核心BigQuery設定`（CORE_BQ_PROJECT 等）。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .BigQuery工作階段庫 import 讀取核心BigQuery設定, 應跳過建表
+from .環境設定 import 讀取核心BigQuery設定, 應跳過建表
 from .使用者 import (
     使用者上下文,
     產生密碼雜湊,
