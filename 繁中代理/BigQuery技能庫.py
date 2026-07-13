@@ -272,18 +272,29 @@ class BigQuery技能庫:
             "content": 內容, "created_at": 建立時間, "updated_at": 建立時間,
         }], 內容型別)
 
-    def 讀取技能內容(self, 名稱: str) -> dict[str, Any] | None:
+    def 讀取技能內容(self, 名稱: str, user_id: str | None = None,
+                 限定使用者: bool = False) -> dict[str, Any] | None:
         """依名稱讀取單一技能列（含 content）；找不到回 None。
 
         參數：
             名稱: 技能名稱。
+            user_id: 擁有者識別碼；`限定使用者=True` 時據此過濾（None 代表 NULL 擁有者）。
+            限定使用者: True 時只找該 user_id 的技能，達成跨使用者隔離；False 為全域查。
         返回值：dict | None，欄位同 user_skills。
         """
         from google.cloud import bigquery
 
+        條件 = ["name=@name"]
+        參數 = [bigquery.ScalarQueryParameter("name", "STRING", 名稱)]
+        if 限定使用者:
+            if user_id is None:
+                條件.append("user_id IS NULL")
+            else:
+                條件.append("user_id=@uid")
+                參數.append(bigquery.ScalarQueryParameter("uid", "STRING", user_id))
         列清單 = self.查詢多列(
-            f"SELECT * FROM `{self.組出完整表名(內容表)}` WHERE name=@name LIMIT 1",
-            [bigquery.ScalarQueryParameter("name", "STRING", 名稱)],
+            f"SELECT * FROM `{self.組出完整表名(內容表)}` WHERE {' AND '.join(條件)} LIMIT 1",
+            參數,
         )
         return 列清單[0] if 列清單 else None
 
@@ -321,15 +332,17 @@ class BigQuery技能庫:
             [bigquery.ScalarQueryParameter("sid", "STRING", skill_id)],
         )
 
-    def 列出技能身分(self, user_id: str | None = None, 是否包含封存: bool = False) -> list[dict[str, Any]]:
+    def 列出技能身分(self, user_id: str | None = None, 是否包含封存: bool = False,
+                 限定使用者: bool = False) -> list[dict[str, Any]]:
         """列出技能身分（skill_id/name/category…），預設濾掉封存。
 
         封存狀態不在本表：以 skill_id LEFT JOIN 表三 skill_usage 取得 state，
         state=archived 者預設排除（對照硬碟版把封存技能搬到 .archive 而不列出）。
 
         參數：
-            user_id: 可選；只列該使用者的技能。
+            user_id: 擁有者識別碼；`限定使用者=True` 時據此過濾（None 代表 NULL 擁有者）。
             是否包含封存: True 時連 archived 一起列出。
+            限定使用者: True 時只列該 user_id 的技能，達成跨使用者隔離；False 為全域（供策展器/使用量）。
         返回值：list[dict]，每筆為 user_skills 的欄位。
         """
         from google.cloud import bigquery
@@ -338,9 +351,12 @@ class BigQuery技能庫:
         參數: list[Any] = []
         if not 是否包含封存:
             條件.append("COALESCE(u.state, 'active') != 'archived'")
-        if user_id:
-            條件.append("s.user_id = @user_id")
-            參數.append(bigquery.ScalarQueryParameter("user_id", "STRING", user_id))
+        if 限定使用者:
+            if user_id is None:
+                條件.append("s.user_id IS NULL")
+            else:
+                條件.append("s.user_id = @user_id")
+                參數.append(bigquery.ScalarQueryParameter("user_id", "STRING", user_id))
         where = (" WHERE " + " AND ".join(條件)) if 條件 else ""
         return self.查詢多列(
             f"""

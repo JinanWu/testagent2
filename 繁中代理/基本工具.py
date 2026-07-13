@@ -159,7 +159,7 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
                 技能清單.append({"name": 技能名稱, "path": str(路徑)})
     庫 = _取得雲端技能庫()
     if 庫 is not None:
-        for 列 in 庫.列出技能身分():
+        for 列 in 庫.列出技能身分(user_id=參數.get("_current_user_id"), 限定使用者=True):
             技能名稱 = 列.get("name")
             if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
                 continue
@@ -265,7 +265,7 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
     # bigquery 模式：硬碟只有內建技能；使用者技能改從 user_skills 表讀
     庫 = _取得雲端技能庫()
     if 庫 is not None:
-        列 = 庫.讀取技能內容(名稱)
+        列 = 庫.讀取技能內容(名稱, user_id=參數.get("_current_user_id"), 限定使用者=True)
         if 列:
             skill_id = 列.get("skill_id")
             if skill_id:  # best-effort 記一筆使用事件（以 skill_id 為 key）

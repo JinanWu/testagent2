@@ -238,7 +238,7 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
     庫 = _取得雲端技能庫()
     # 重名檢查：bigquery 查表，sqlite 掃硬碟
     if 庫 is not None:
-        if 庫.讀取技能內容(名稱) is not None:
+        if 庫.讀取技能內容(名稱, user_id=user_id, 限定使用者=True) is not None:
             return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
     elif _尋找使用者技能(名稱):
         return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
@@ -260,7 +260,7 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
     return 結果
 
 
-def _編輯技能(名稱: str, 內容: str) -> dict[str, Any]:
+def _編輯技能(名稱: str, 內容: str, user_id: str | None = None) -> dict[str, Any]:
     """完整重寫既有使用者技能的 SKILL.md；保留原 skill_id 不變、frontmatter name 對齊目錄。"""
     內容 = _設定frontmatter欄位(內容, "name", 名稱)
     for 錯誤 in (_驗證技能frontmatter(內容), _驗證技能內容大小(內容), _驗證非工具規格(內容)):
@@ -268,7 +268,7 @@ def _編輯技能(名稱: str, 內容: str) -> dict[str, Any]:
             return {"success": False, "error": 錯誤}
     庫 = _取得雲端技能庫()
     if 庫 is not None:
-        列 = 庫.讀取技能內容(名稱)
+        列 = 庫.讀取技能內容(名稱, user_id=user_id, 限定使用者=True)
         if not 列:
             return {"success": False, "error": f"找不到使用者技能 '{名稱}'。請先用 skills_list() 查看。"}
         現有識別碼 = 列.get("skill_id")
@@ -287,7 +287,7 @@ def _編輯技能(名稱: str, 內容: str) -> dict[str, Any]:
     return {"success": True, "message": f"技能 '{名稱}' 已更新。", "path": str(技能目錄)}
 
 
-def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路徑: str | None = None, 全部替換: bool = False) -> dict[str, Any]:
+def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路徑: str | None = None, 全部替換: bool = False, user_id: str | None = None) -> dict[str, Any]:
     """對技能檔做定向查找替換；預設針對 SKILL.md，可用 file_path 指定支援檔。"""
     if not 舊文字:
         return {"success": False, "error": "patch 需要 old_string。"}
@@ -297,7 +297,7 @@ def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路�
     if 庫 is not None:
         if 檔案路徑:
             return {"success": False, "error": "BigQuery 模式尚未支援技能支援檔（references/scripts 等）的修補；支援檔尚未搬到 BQ。"}
-        列 = 庫.讀取技能內容(名稱)
+        列 = 庫.讀取技能內容(名稱, user_id=user_id, 限定使用者=True)
         if not 列:
             return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
         原文 = str(列.get("content") or "")
@@ -353,11 +353,11 @@ def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路�
     return {"success": True, "message": f"已修補技能 '{名稱}' 的 {標籤}（{實際次數} 處替換）。"}
 
 
-def _刪除技能(名稱: str) -> dict[str, Any]:
+def _刪除技能(名稱: str, user_id: str | None = None) -> dict[str, Any]:
     """完整刪除使用者技能；被 pin 的技能拒絕刪除。pin/usage 以 skill_id 為 key。"""
     庫 = _取得雲端技能庫()
     if 庫 is not None:
-        列 = 庫.讀取技能內容(名稱)
+        列 = 庫.讀取技能內容(名稱, user_id=user_id, 限定使用者=True)
         if not 列:
             return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
         skill_id = 列.get("skill_id")
@@ -453,7 +453,7 @@ def 管理技能(參數: dict[str, Any]) -> dict[str, Any]:
         內容 = 參數.get("content")
         if not 內容:
             return {"success": False, "error": "edit 需要 content（完整更新後的 SKILL.md）。"}
-        return _編輯技能(名稱, str(內容))
+        return _編輯技能(名稱, str(內容), user_id=參數.get("_current_user_id"))
     if 動作 == "patch":
         return _修補技能(
             名稱,
@@ -461,9 +461,10 @@ def 管理技能(參數: dict[str, Any]) -> dict[str, Any]:
             參數.get("new_string"),
             參數.get("file_path"),
             bool(參數.get("replace_all", False)),
+            user_id=參數.get("_current_user_id"),
         )
     if 動作 == "delete":
-        return _刪除技能(名稱)
+        return _刪除技能(名稱, user_id=參數.get("_current_user_id"))
     if 動作 == "write_file":
         return _寫入技能支援檔(名稱, str(參數.get("file_path") or ""), 參數.get("file_content"))
     if 動作 == "remove_file":
