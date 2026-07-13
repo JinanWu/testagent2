@@ -24,12 +24,28 @@ from .. import 基本工具
 logger = logging.getLogger(__name__)
 
 
+def _取得BigQuery技能庫():
+    """取得雲端技能庫；未啟用 BigQuery 後端時回傳 None（改走本機 JSONL）。
+
+    參數：無。
+    返回值：BigQuery技能庫 實例（STORAGE_BACKEND=bigquery 時），否則 None。
+    """
+    from ..BigQuery技能庫 import 取得啟用中的技能庫
+
+    return 取得啟用中的技能庫()
+
+
 def 事件檔路徑() -> Path:
     """回傳 skill_usage_events.jsonl 路徑（assets 根目錄，與 user_skill 同層）。"""
     return 基本工具.使用者技能根目錄().parent / "skill_usage_events.jsonl"
 
 
-def _現在ISO() -> str:
+def 產生目前時間字串() -> str:
+    """產生目前 UTC 時間的 ISO 8601 字串，供使用事件的 used_at 欄位使用。
+
+    參數：無。
+    返回值：str，ISO 8601 時間字串，例如 `2026-07-13T08:30:00+00:00`。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -44,8 +60,11 @@ def 記錄多筆事件(skill_ids: Iterable[str], user_id: str | None, used_at: s
     識別碼清單 = [str(s) for s in skill_ids if s]
     if not 識別碼清單:
         return 0
-    時間 = used_at or _現在ISO()
+    時間 = used_at or 產生目前時間字串()
     使用者 = str(user_id) if user_id else None
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        return 技能庫.記錄多筆事件(識別碼清單, 使用者, 時間)
     路徑 = 事件檔路徑()
     try:
         路徑.parent.mkdir(parents=True, exist_ok=True)
@@ -70,6 +89,9 @@ def 記錄事件(skill_id: str, user_id: str | None, used_at: str | None = None)
 
 def 讀取所有事件() -> list[dict[str, Any]]:
     """讀取整份事件檔；毀損的行會被略過。"""
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        return 技能庫.讀取所有事件()
     路徑 = 事件檔路徑()
     if not 路徑.exists():
         return []

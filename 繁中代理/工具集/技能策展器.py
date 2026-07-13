@@ -90,7 +90,14 @@ def 彙總事件到使用量() -> int:
 # ---------------------------------------------------------------------------
 
 def 封存技能(skill_id: str, 名稱: str) -> bool:
-    """把技能目錄搬到 .archive/，並把 state 設為 archived。回傳是否成功。"""
+    """把技能目錄搬到 .archive/，並把 state 設為 archived。回傳是否成功。
+
+    bigquery 模式下沒有目錄可搬——封存就只是把表三 state 設為 archived；列技能時
+    JOIN 表三自然濾掉，效果等同硬碟版搬進 .archive。
+    """
+    if 基本工具._取得雲端技能庫() is not None:
+        技能使用量.設定狀態(skill_id, 技能使用量.狀態_封存)
+        return True
     技能目錄: Path | None = None
     for 身分 in 基本工具.列出使用者技能身分():
         if 身分.get("skill_id") == skill_id:

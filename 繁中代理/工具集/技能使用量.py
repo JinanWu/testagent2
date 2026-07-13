@@ -45,12 +45,28 @@ except ImportError:
 _有效狀態 = {狀態_使用中, 狀態_閒置, 狀態_封存}
 
 
+def _取得BigQuery技能庫():
+    """取得雲端技能庫；未啟用 BigQuery 後端時回傳 None（改走本機 JSON）。
+
+    參數：無。
+    返回值：BigQuery技能庫 實例（STORAGE_BACKEND=bigquery 時），否則 None。
+    """
+    from ..BigQuery技能庫 import 取得啟用中的技能庫
+
+    return 取得啟用中的技能庫()
+
+
 def 使用量檔路徑() -> Path:
     """回傳 skill_usage.json 路徑（assets 根目錄，與 user_skill 同層）。"""
     return 基本工具.使用者技能根目錄().parent / "skill_usage.json"
 
 
-def _現在ISO() -> str:
+def 產生目前時間字串() -> str:
+    """產生目前 UTC 時間的 ISO 8601 字串，供使用量的建立/最後使用時間欄位使用。
+
+    參數：無。
+    返回值：str，ISO 8601 時間字串，例如 `2026-07-13T08:30:00+00:00`。
+    """
     return datetime.now(timezone.utc).isoformat()
 
 
@@ -62,7 +78,7 @@ def _空白記錄() -> dict[str, Any]:
         "last_used_at": None,
         "state": 狀態_使用中,
         "pinned": False,
-        "created_at": _現在ISO(),
+        "created_at": 產生目前時間字串(),
     }
 
 
@@ -88,6 +104,9 @@ def _使用量檔鎖():
 
 def 讀取全部使用量() -> dict[str, dict[str, Any]]:
     """讀取整份 skill_usage.json；檔案缺失或毀損時回傳空 dict。"""
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        return 技能庫.讀取全部使用量()
     路徑 = 使用量檔路徑()
     if not 路徑.exists():
         return {}
@@ -107,6 +126,10 @@ def 讀取全部使用量() -> dict[str, dict[str, Any]]:
 
 def 寫入全部使用量(資料: dict[str, dict[str, Any]]) -> None:
     """原子寫入整份使用量；best-effort，失敗只記 log 不丟出。"""
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        技能庫.寫入全部使用量(資料)
+        return
     路徑 = 使用量檔路徑()
     try:
         路徑.parent.mkdir(parents=True, exist_ok=True)
@@ -163,7 +186,7 @@ def _變更(skill_id: str, 變更函數: Callable[[dict[str, Any]], None]) -> No
 def 初始化記錄(skill_id: str, user_id: str | None = None) -> None:
     """技能建立時呼叫，確保有一筆記錄（保留既有 created_at），並寫入擁有者 user_id。"""
     def _套用(記錄: dict[str, Any]) -> None:
-        記錄.setdefault("created_at", _現在ISO())
+        記錄.setdefault("created_at", 產生目前時間字串())
         if user_id is not None:
             記錄["user_id"] = str(user_id)
     _變更(skill_id, _套用)
@@ -179,7 +202,7 @@ def 記錄使用(skill_id: str, 次數: int = 1) -> None:
         return
     def _套用(記錄: dict[str, Any]) -> None:
         記錄["use_count"] = int(記錄.get("use_count") or 0) + 次數
-        記錄["last_used_at"] = _現在ISO()
+        記錄["last_used_at"] = 產生目前時間字串()
     _變更(skill_id, _套用)
 
 

@@ -157,10 +157,17 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
                 if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
                     continue
                 技能清單.append({"name": 技能名稱, "path": str(路徑)})
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        for 列 in 庫.列出技能身分():
+            技能名稱 = 列.get("name")
+            if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
+                continue
+            技能清單.append({"name": 技能名稱, "path": None})
     return {"skills": 技能清單[:200], "total_count": len(技能清單)}
 
 
-def 讀取技能skill_id(skill_md路徑: Path) -> str | None:
+def 讀取技能識別碼(skill_md路徑: Path) -> str | None:
     """讀取 SKILL.md frontmatter 的 `id` 欄位（技能的穩定 skill_id）。
 
     內建技能沒有 id → 回傳 None。使用者技能由 skill_manage(create) 在建立時
@@ -185,12 +192,30 @@ def 讀取技能skill_id(skill_md路徑: Path) -> str | None:
     return None
 
 
+def _取得雲端技能庫():
+    """取得目前後端對應的雲端技能庫實例（維持單一分流來源）。
+
+    沿用 `技能使用量._取得BigQuery技能庫()` 的判斷：`STORAGE_BACKEND=bigquery`
+    時回傳 BigQuery 技能庫，否則回傳 None（表示改走本機硬碟）。此處採用延遲
+    匯入（lazy import），以避免 基本工具 ←→ 技能使用量 之間的模組層循環匯入。
+
+    參數：無。
+    返回值：BigQuery技能庫 實例；sqlite 模式時為 None。
+    """
+    from .工具集.技能使用量 import _取得BigQuery技能庫
+    return _取得BigQuery技能庫()
+
+
 def 列出使用者技能身分() -> list[dict[str, Any]]:
     """列出 user_skill 底下每個技能的 {skill_id, name, path}。
 
     name 為目錄名（LLM 定位用），skill_id 為 frontmatter 的穩定 UUID。供 usage /
-    curator 以 skill_id 為 key 運作。
+    curator 以 skill_id 為 key 運作。bigquery 模式改從 user_skills 表列出（已濾封存）。
     """
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        return [{"skill_id": 列.get("skill_id"), "name": 列.get("name"), "path": None}
+                for 列 in 庫.列出技能身分()]
     根目錄 = 使用者技能根目錄()
     if not 根目錄.exists():
         return []
@@ -200,7 +225,7 @@ def 列出使用者技能身分() -> list[dict[str, Any]]:
         if 相對.parts and 相對.parts[0].startswith("."):
             continue
         清單.append({
-            "skill_id": 讀取技能skill_id(skill_md),
+            "skill_id": 讀取技能識別碼(skill_md),
             "name": skill_md.parent.name,
             "path": str(skill_md),
         })
@@ -213,7 +238,7 @@ def _記錄技能使用事件(skill_md路徑: Path, 參數: dict[str, Any]) -> N
     只有帶 skill_id 的技能（= 使用者技能）會記；內建技能沒有 id，自然略過。
     """
     try:
-        skill_id = 讀取技能skill_id(skill_md路徑)
+        skill_id = 讀取技能識別碼(skill_md路徑)
         if not skill_id:
             return
         from .工具集.技能使用事件 import 記錄事件
@@ -237,6 +262,19 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
                 內容 = 路徑.read_text(encoding="utf-8", errors="replace")[:50000]
                 _記錄技能使用事件(路徑, 參數)  # best-effort，成功讀到才記
                 return {"name": 名稱, "path": str(路徑), "content": 內容}
+    # bigquery 模式：硬碟只有內建技能；使用者技能改從 user_skills 表讀
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        列 = 庫.讀取技能內容(名稱)
+        if 列:
+            skill_id = 列.get("skill_id")
+            if skill_id:  # best-effort 記一筆使用事件（以 skill_id 為 key）
+                try:
+                    from .工具集.技能使用事件 import 記錄事件
+                    記錄事件(skill_id, 參數.get("_current_user_id"))
+                except Exception:
+                    pass
+            return {"name": 名稱, "path": None, "content": str(列.get("content") or "")[:50000]}
     raise FileNotFoundError(f"找不到技能：{名稱}")
 
 

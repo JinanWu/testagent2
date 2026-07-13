@@ -24,11 +24,33 @@ import re
 import shutil
 import tempfile
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..基本工具 import 使用者技能根目錄, 讀取技能skill_id
+from ..基本工具 import 使用者技能根目錄, 讀取技能識別碼
 from . import 技能使用量
+
+
+def _取得雲端技能庫():
+    """取得目前後端對應的雲端技能庫實例（維持單一分流來源）。
+
+    沿用 `技能使用量._取得BigQuery技能庫()` 的判斷：`STORAGE_BACKEND=bigquery`
+    時回傳 BigQuery 技能庫，否則回傳 None（表示改走本機硬碟）。
+
+    參數：無。
+    返回值：BigQuery技能庫 實例；sqlite 模式時為 None。
+    """
+    return 技能使用量._取得BigQuery技能庫()
+
+
+def 產生目前時間字串() -> str:
+    """產生目前 UTC 時間的 ISO 8601 字串，供技能建立/更新時間欄位使用。
+
+    參數：無。
+    返回值：str，ISO 8601 時間字串，例如 `2026-07-13T08:30:00+00:00`。
+    """
+    return datetime.now(timezone.utc).isoformat()
 
 技能名稱規則 = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 最大技能名稱長度 = 64
@@ -197,7 +219,7 @@ def _設定frontmatter欄位(內容: str, 鍵: str, 值: str) -> str:
     return "\n".join([行清單[0], f"{鍵}: {值}", *frontmatter行, *行清單[結束索引:]])
 
 
-def _注入skill_id(內容: str, skill_id: str) -> str:
+def _寫入技能識別碼(內容: str, skill_id: str) -> str:
     """把 skill_id 寫進 frontmatter 的 `id:` 欄位；id 是穩定主鍵，改名/改寫都不變。"""
     return _設定frontmatter欄位(內容, "id", skill_id)
 
@@ -213,16 +235,26 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
     for 錯誤 in (_驗證技能frontmatter(內容), _驗證非工具規格(內容)):
         if 錯誤:
             return {"success": False, "error": 錯誤}
-    if _尋找使用者技能(名稱):
+    庫 = _取得雲端技能庫()
+    # 重名檢查：bigquery 查表，sqlite 掃硬碟
+    if 庫 is not None:
+        if 庫.讀取技能內容(名稱) is not None:
+            return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
+    elif _尋找使用者技能(名稱):
         return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
     skill_id = str(uuid.uuid4())
-    內容 = _注入skill_id(內容, skill_id)
-    技能目錄 = (使用者技能根目錄() / 分類 / 名稱) if 分類 else (使用者技能根目錄() / 名稱)
-    技能目錄.mkdir(parents=True, exist_ok=True)
-    skill_md = 技能目錄 / "SKILL.md"
-    _原子寫入技能檔(skill_md, 內容)
+    內容 = _寫入技能識別碼(內容, skill_id)
+    技能檔路徑: str | None = None
+    if 庫 is not None:
+        庫.建立技能(skill_id, 名稱, 內容, 分類, user_id=user_id, 建立時間=產生目前時間字串())
+    else:
+        技能目錄 = (使用者技能根目錄() / 分類 / 名稱) if 分類 else (使用者技能根目錄() / 名稱)
+        技能目錄.mkdir(parents=True, exist_ok=True)
+        skill_md = 技能目錄 / "SKILL.md"
+        _原子寫入技能檔(skill_md, 內容)
+        技能檔路徑 = str(skill_md)
     技能使用量.初始化記錄(skill_id, user_id=user_id)
-    結果: dict[str, Any] = {"success": True, "message": f"技能 '{名稱}' 已建立。", "path": str(skill_md), "skill_id": skill_id}
+    結果: dict[str, Any] = {"success": True, "message": f"技能 '{名稱}' 已建立。", "path": 技能檔路徑, "skill_id": skill_id}
     if 分類:
         結果["category"] = 分類
     return 結果
@@ -234,13 +266,23 @@ def _編輯技能(名稱: str, 內容: str) -> dict[str, Any]:
     for 錯誤 in (_驗證技能frontmatter(內容), _驗證技能內容大小(內容), _驗證非工具規格(內容)):
         if 錯誤:
             return {"success": False, "error": 錯誤}
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        列 = 庫.讀取技能內容(名稱)
+        if not 列:
+            return {"success": False, "error": f"找不到使用者技能 '{名稱}'。請先用 skills_list() 查看。"}
+        現有識別碼 = 列.get("skill_id")
+        if 現有識別碼:
+            內容 = _寫入技能識別碼(內容, 現有識別碼)  # 全量改寫不能弄丟身分
+        庫.更新技能內容(現有識別碼, 內容, 產生目前時間字串())
+        return {"success": True, "message": f"技能 '{名稱}' 已更新。", "path": None}
     技能目錄 = _尋找使用者技能(名稱)
     if not 技能目錄:
         return {"success": False, "error": f"找不到使用者技能 '{名稱}'。請先用 skills_list() 查看。"}
     skill_md = 技能目錄 / "SKILL.md"
-    現有skill_id = 讀取技能skill_id(skill_md)
-    if 現有skill_id:
-        內容 = _注入skill_id(內容, 現有skill_id)  # 全量改寫不能弄丟身分
+    現有識別碼 = 讀取技能識別碼(skill_md)
+    if 現有識別碼:
+        內容 = _寫入技能識別碼(內容, 現有識別碼)  # 全量改寫不能弄丟身分
     _原子寫入技能檔(skill_md, 內容)
     return {"success": True, "message": f"技能 '{名稱}' 已更新。", "path": str(技能目錄)}
 
@@ -251,6 +293,32 @@ def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路�
         return {"success": False, "error": "patch 需要 old_string。"}
     if 新文字 is None:
         return {"success": False, "error": "patch 需要 new_string；要刪除時傳空字串。"}
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        if 檔案路徑:
+            return {"success": False, "error": "BigQuery 模式尚未支援技能支援檔（references/scripts 等）的修補；支援檔尚未搬到 BQ。"}
+        列 = 庫.讀取技能內容(名稱)
+        if not 列:
+            return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
+        原文 = str(列.get("content") or "")
+        次數 = 原文.count(舊文字)
+        if 次數 == 0:
+            return {"success": False, "error": "找不到 old_string。", "file_preview": 原文[:500]}
+        if 次數 > 1 and not 全部替換:
+            return {"success": False, "error": "old_string 不唯一；請加大上下文或設定 replace_all=true。"}
+        替換後 = 原文.replace(舊文字, 新文字) if 全部替換 else 原文.replace(舊文字, 新文字, 1)
+        錯誤 = _驗證技能內容大小(替換後)
+        if 錯誤:
+            return {"success": False, "error": 錯誤}
+        錯誤 = _驗證技能frontmatter(替換後)
+        if 錯誤:
+            return {"success": False, "error": f"修補會破壞 SKILL.md 結構：{錯誤}"}
+        現有識別碼 = 列.get("skill_id")
+        if 現有識別碼:
+            替換後 = _寫入技能識別碼(替換後, 現有識別碼)  # 修補不能弄丟身分
+        庫.更新技能內容(現有識別碼, 替換後, 產生目前時間字串())
+        實際次數 = 次數 if 全部替換 else 1
+        return {"success": True, "message": f"已修補技能 '{名稱}' 的 SKILL.md（{實際次數} 處替換）。"}
     技能目錄 = _尋找使用者技能(名稱)
     if not 技能目錄:
         return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
@@ -287,10 +355,22 @@ def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路�
 
 def _刪除技能(名稱: str) -> dict[str, Any]:
     """完整刪除使用者技能；被 pin 的技能拒絕刪除。pin/usage 以 skill_id 為 key。"""
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        列 = 庫.讀取技能內容(名稱)
+        if not 列:
+            return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
+        skill_id = 列.get("skill_id")
+        if skill_id and 技能使用量.是否pin(skill_id):
+            return {"success": False, "error": f"技能 '{名稱}' 已被 pin，無法刪除。請先解除 pin（unpin）再刪除。"}
+        庫.刪除技能(skill_id)
+        if skill_id:
+            技能使用量.遺忘(skill_id)
+        return {"success": True, "message": f"技能 '{名稱}' 已刪除。"}
     技能目錄 = _尋找使用者技能(名稱)
     if not 技能目錄:
         return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
-    skill_id = 讀取技能skill_id(技能目錄 / "SKILL.md")
+    skill_id = 讀取技能識別碼(技能目錄 / "SKILL.md")
     if skill_id and 技能使用量.是否pin(skill_id):
         return {"success": False, "error": f"技能 '{名稱}' 已被 pin，無法刪除。請先解除 pin（unpin）再刪除。"}
     根目錄 = 使用者技能根目錄()
@@ -305,6 +385,8 @@ def _刪除技能(名稱: str) -> dict[str, Any]:
 
 def _寫入技能支援檔(名稱: str, 檔案路徑: str, 檔案內容: str | None) -> dict[str, Any]:
     """新增或覆寫技能目錄下的支援檔。"""
+    if _取得雲端技能庫() is not None:
+        return {"success": False, "error": "BigQuery 模式尚未支援技能支援檔（references/scripts 等）；目前只把 SKILL.md 內容存進 BQ。"}
     錯誤 = _驗證支援檔路徑(檔案路徑)
     if 錯誤:
         return {"success": False, "error": 錯誤}
@@ -328,6 +410,8 @@ def _寫入技能支援檔(名稱: str, 檔案路徑: str, 檔案內容: str | N
 
 def _移除技能支援檔(名稱: str, 檔案路徑: str) -> dict[str, Any]:
     """移除技能目錄下的支援檔。"""
+    if _取得雲端技能庫() is not None:
+        return {"success": False, "error": "BigQuery 模式尚未支援技能支援檔（references/scripts 等）；目前只把 SKILL.md 內容存進 BQ。"}
     錯誤 = _驗證支援檔路徑(檔案路徑)
     if 錯誤:
         return {"success": False, "error": 錯誤}
