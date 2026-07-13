@@ -156,17 +156,19 @@ class BigQuery使用者庫:
         帳號 = username.strip()
         if not 帳號:
             raise ValueError("username 不可為空")
-        if self.讀取使用者(username=帳號):
-            raise ValueError(f"使用者已存在：{帳號}")
         目前時間 = time.time()
         user_id = f"user-{secrets.token_hex(8)}"
         密碼雜湊 = 產生密碼雜湊(password) if password else None
         角色 = roles or ["user"]
-        self._執行DML(
+        # BQ 沒有 UNIQUE 約束，且 INSERT 可並發。改用 MERGE：第二個 MERGE 會看到第一個插入的列而不再插入。
+        影響列數 = self._執行DML(
             f"""
-            INSERT INTO `{self._表名(使用者表)}`
-                (id, username, display_name, password_hash, auth_provider, roles_json, disabled, created_at, updated_at)
-            VALUES (@id, @username, @display_name, @password_hash, 'local', @roles_json, FALSE, @now, @now)
+            MERGE `{self._表名(使用者表)}` AS T
+            USING (SELECT @username AS username) AS S
+            ON T.username = S.username
+            WHEN NOT MATCHED THEN
+              INSERT (id, username, display_name, password_hash, auth_provider, roles_json, disabled, created_at, updated_at)
+              VALUES (@id, @username, @display_name, @password_hash, 'local', @roles_json, FALSE, @now, @now)
             """,
             [
                 bigquery.ScalarQueryParameter("id", "STRING", user_id),
@@ -177,6 +179,8 @@ class BigQuery使用者庫:
                 bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
             ],
         )
+        if 影響列數 == 0:
+            raise ValueError(f"使用者已存在：{帳號}")
         self._執行DML(
             f"""
             INSERT INTO `{self._表名(使用者設定表)}`
