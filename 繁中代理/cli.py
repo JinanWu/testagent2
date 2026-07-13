@@ -492,6 +492,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     """
     模型設定 = 解析模型設定(參數, 解析器)
     執行模型名稱 = 解析執行模型名稱(參數.mode, 參數.model)
+    上下文長度 = 解析上下文長度(參數.mode)
     模型設定.setdefault("requested_model", 參數.model)
     模型設定.setdefault("resolved_model", 執行模型名稱)
     模型供應商物件 = 建立模型供應商(參數.mode, 執行模型名稱)
@@ -512,7 +513,26 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
         摘要失敗是否中止=參數.abort_on_summary_failure or 解析摘要失敗是否中止(),
         壓縮模式=參數.compression_mode,
         壓縮模型=參數.compression_model,
+        上下文長度=上下文長度,
     )
+
+
+def 解析上下文長度(模式: str) -> int:
+    """決定壓縮門檻用的 context window 長度。
+
+    壓縮門檻 = context window × 觸發比例（預設 0.5）。若沿用舊預設 32768，門檻只有
+    16384，光是系統提示詞＋工具 schema 的固定開銷就逼近門檻，會在對話極早期就誤觸壓縮。
+
+    參數：
+        模式: 模型模式（fake / gemini）。
+    返回值：int，context window token 數。
+    """
+    覆寫 = (os.getenv("AIAGENT_CONTEXT_WINDOW") or "").strip()
+    if 覆寫.isdigit() and int(覆寫) > 0:
+        return int(覆寫)
+    if 模式 == "fake":
+        return 32768
+    return 1_048_576
 
 
 def 印出JSON(資料: Any) -> None:
@@ -1150,6 +1170,10 @@ def 執行主程式() -> None:
     參數：無。
     返回值：None。依參數執行 sessions 子命令、一次性 prompt 或互動 REPL。
     """
+    # 先載入 .env，讓下方各 argparse 的 default（os.getenv("AIAGENT_MODEL") 等）
+    # 讀得到 .env 值；否則 .env 只會在 runtime 延遲載入，模型 default 會 fallback。
+    from .環境設定 import 載入本機環境檔
+    載入本機環境檔()
     if len(sys.argv) > 1 and sys.argv[1] == "sessions":
         sessions解析器 = 建立Sessions參數解析器()
         參數 = sessions解析器.parse_args(sys.argv[2:])
