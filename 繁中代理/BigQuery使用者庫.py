@@ -38,6 +38,9 @@ from .使用者 import (
 # 每個 process 已確保過資料表的 dataset（避免重複跑 DDL）
 _已確保使用者資料表: set[str] = set()
 
+# BigQuery script RAISE 訊息標記，供 Python 轉成 ValueError
+_使用者已存在錯誤標記 = "__USER_ALREADY_EXISTS__"
+
 
 class BigQuery使用者庫:
     """以 BigQuery 儲存 users / user_settings / auth_sessions 的使用者庫。"""
@@ -160,44 +163,53 @@ class BigQuery使用者庫:
         user_id = f"user-{secrets.token_hex(8)}"
         密碼雜湊 = 產生密碼雜湊(password) if password else None
         角色 = roles or ["user"]
-        # BQ 沒有 UNIQUE 約束，且 INSERT 可並發。改用 MERGE：第二個 MERGE 會看到第一個插入的列而不再插入。
-        影響列數 = self._執行DML(
-            f"""
-            MERGE `{self._表名(使用者表)}` AS T
-            USING (SELECT @username AS username) AS S
-            ON T.username = S.username
-            WHEN NOT MATCHED THEN
-              INSERT (id, username, display_name, password_hash, auth_provider, roles_json, disabled, created_at, updated_at)
-              VALUES (@id, @username, @display_name, @password_hash, 'local', @roles_json, FALSE, @now, @now)
-            """,
-            [
-                bigquery.ScalarQueryParameter("id", "STRING", user_id),
-                bigquery.ScalarQueryParameter("username", "STRING", 帳號),
-                bigquery.ScalarQueryParameter("display_name", "STRING", display_name or 帳號),
-                bigquery.ScalarQueryParameter("password_hash", "STRING", 密碼雜湊),
-                bigquery.ScalarQueryParameter("roles_json", "STRING", json.dumps(角色, ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
-            ],
-        )
-        if 影響列數 == 0:
-            raise ValueError(f"使用者已存在：{帳號}")
-        self._執行DML(
-            f"""
-            INSERT INTO `{self._表名(使用者設定表)}`
-                (user_id, enabled_tools_json, enabled_skills_json, skill_roots_json, allowed_workdirs_json, memory_home, settings_json, updated_at)
-            VALUES (@user_id, @tools, @skills, @roots, @workdirs, @memory_home, @settings, @now)
-            """,
-            [
-                bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
-                bigquery.ScalarQueryParameter("tools", "STRING", json.dumps(enabled_tools or ["*"], ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("skills", "STRING", json.dumps(enabled_skills or ["*"], ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("roots", "STRING", json.dumps(skill_roots or [], ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("workdirs", "STRING", json.dumps(allowed_workdirs or [], ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("memory_home", "STRING", memory_home or str(取得預設記憶根目錄(user_id))),
-                bigquery.ScalarQueryParameter("settings", "STRING", json.dumps({}, ensure_ascii=False)),
-                bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
-            ],
-        )
+        參數 = [
+            bigquery.ScalarQueryParameter("id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("username", "STRING", 帳號),
+            bigquery.ScalarQueryParameter("display_name", "STRING", display_name or 帳號),
+            bigquery.ScalarQueryParameter("password_hash", "STRING", 密碼雜湊),
+            bigquery.ScalarQueryParameter("roles_json", "STRING", json.dumps(角色, ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("user_id", "STRING", user_id),
+            bigquery.ScalarQueryParameter("tools", "STRING", json.dumps(enabled_tools or ["*"], ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("skills", "STRING", json.dumps(enabled_skills or ["*"], ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("roots", "STRING", json.dumps(skill_roots or [], ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("workdirs", "STRING", json.dumps(allowed_workdirs or [], ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("memory_home", "STRING", memory_home or str(取得預設記憶根目錄(user_id))),
+            bigquery.ScalarQueryParameter("settings", "STRING", json.dumps({}, ensure_ascii=False)),
+            bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
+        ]
+        # BQ 沒有 UNIQUE 約束；MERGE 防重複。users + user_settings 須同一交易，避免第二步失敗留下孤兒列。
+        try:
+            self._執行DML腳本(
+                f"""
+                BEGIN
+                  BEGIN TRANSACTION;
+
+                  MERGE `{self._表名(使用者表)}` AS T
+                  USING (SELECT @username AS username) AS S
+                  ON T.username = S.username
+                  WHEN NOT MATCHED THEN
+                    INSERT (id, username, display_name, password_hash, auth_provider, roles_json, disabled, created_at, updated_at)
+                    VALUES (@id, @username, @display_name, @password_hash, 'local', @roles_json, FALSE, @now, @now);
+
+                  IF @@row_count = 0 THEN
+                    ROLLBACK TRANSACTION;
+                    RAISE USING MESSAGE = '{_使用者已存在錯誤標記}';
+                  END IF;
+
+                  INSERT INTO `{self._表名(使用者設定表)}`
+                      (user_id, enabled_tools_json, enabled_skills_json, skill_roots_json, allowed_workdirs_json, memory_home, settings_json, updated_at)
+                  VALUES (@user_id, @tools, @skills, @roots, @workdirs, @memory_home, @settings, @now);
+
+                  COMMIT TRANSACTION;
+                END;
+                """,
+                參數,
+            )
+        except ValueError as 錯誤:
+            if str(錯誤) == _使用者已存在錯誤標記:
+                raise ValueError(f"使用者已存在：{帳號}") from 錯誤
+            raise
         return self.讀取使用者(username=帳號) or {"id": user_id, "username": 帳號}
 
     def 讀取使用者(self, user_id: str | None = None, username: str | None = None) -> dict[str, Any] | None:
@@ -384,3 +396,16 @@ class BigQuery使用者庫:
         工作 = self.客戶端.query(語句, job_config=工作設定)
         工作.result()
         return int(工作.num_dml_affected_rows or 0)
+
+    def _執行DML腳本(self, 語句: str, 參數: list[Any] | None = None) -> None:
+        """執行含 BEGIN/COMMIT TRANSACTION 的多陳述 DML script。"""
+        from google.cloud import bigquery
+
+        工作設定 = bigquery.QueryJobConfig(query_parameters=參數 or [])
+        工作 = self.客戶端.query(語句, job_config=工作設定)
+        try:
+            工作.result()
+        except Exception as 錯誤:
+            if _使用者已存在錯誤標記 in str(錯誤):
+                raise ValueError(_使用者已存在錯誤標記) from 錯誤
+            raise
