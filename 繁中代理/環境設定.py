@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import re
+from pathlib import Path
 
-from dotenv import find_dotenv, load_dotenv
+from dotenv import load_dotenv
 
 # 核心資料（sessions / messages / 技能）預設 dataset；管理部走自己的 ADMIN_BQ_DATASET。
 核心預設資料集 = "agent_core"
+環境檔路徑 = Path(__file__).resolve().parents[1] / ".env"
 
 
 def 載入本機環境檔() -> None:
@@ -25,7 +27,7 @@ def 載入本機環境檔() -> None:
     參數：無。
     返回值：無。
     """
-    load_dotenv(find_dotenv(), override=False)
+    load_dotenv(環境檔路徑, override=False)
 
 
 def 檢查資源名稱(名稱: str, 欄位: str) -> None:
