@@ -28,7 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..基本工具 import 使用者技能根目錄, 讀取技能識別碼
+from ..基本工具 import 內建技能根目錄, 使用者技能根目錄, 讀取技能識別碼
 from . import 技能使用量
 
 
@@ -159,6 +159,14 @@ def _尋找使用者技能(名稱: str) -> Path | None:
     return None
 
 
+def _檢查內建技能是否存在(名稱: str) -> bool:
+    """檢查唯讀內建技能是否已有同名技能，避免列表與檢視時名稱衝突。"""
+    根目錄 = 內建技能根目錄()
+    if not 根目錄.exists():
+        return False
+    return any(skill_md.parent.name == 名稱 for skill_md in 根目錄.rglob("SKILL.md"))
+
+
 def _驗證支援檔路徑(檔案路徑: str) -> str | None:
     """驗證 write_file/remove_file 的檔案路徑；合法回傳 None。"""
     if not 檔案路徑:
@@ -258,6 +266,14 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
             return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
     elif _尋找使用者技能(名稱):
         return {"success": False, "error": f"已存在名為 '{名稱}' 的使用者技能。"}
+    if _檢查內建技能是否存在(名稱):
+        return {
+            "success": False,
+            "error": (
+                f"名稱 '{名稱}' 與內建技能衝突。"
+                f"請改用其他名稱（例如 'my-{名稱}' 或 '{名稱}-custom'）。"
+            ),
+        }
     skill_id = str(uuid.uuid4())
     內容 = _寫入技能識別碼(內容, skill_id)
     技能檔路徑: str | None = None

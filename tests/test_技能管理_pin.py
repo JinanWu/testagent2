@@ -23,12 +23,12 @@ def test_create生成skill_id並初始化記錄(假環境):
     assert 結果["success"] is True
     skill_id = 結果["skill_id"]
     assert skill_id
-    assert skill_id in 技能使用量.讀取全部使用量()  # 記錄以 skill_id 為 key
+    assert skill_id in 技能使用量.讀取全部技能使用量()  # 記錄以 skill_id 為 key
 
 
 def test_pin住的技能拒絕刪除且檔案仍在(假環境):
     skill_id = 技能管理.管理技能({"action": "create", "name": "demo", "content": 技能內容})["skill_id"]
-    技能使用量.設定pin(skill_id, True)
+    技能使用量.設定技能Pin(skill_id, True)
     結果 = 技能管理.管理技能({"action": "delete", "name": "demo"})
     assert 結果["success"] is False
     assert "pin" in 結果["error"]
@@ -37,12 +37,12 @@ def test_pin住的技能拒絕刪除且檔案仍在(假環境):
 
 def test_unpin後可刪除並清除使用量記錄(假環境):
     skill_id = 技能管理.管理技能({"action": "create", "name": "demo", "content": 技能內容})["skill_id"]
-    技能使用量.設定pin(skill_id, True)
-    技能使用量.設定pin(skill_id, False)
+    技能使用量.設定技能Pin(skill_id, True)
+    技能使用量.設定技能Pin(skill_id, False)
     結果 = 技能管理.管理技能({"action": "delete", "name": "demo"})
     assert 結果["success"] is True
     assert not (假環境 / "demo").exists()
-    assert skill_id not in 技能使用量.讀取全部使用量()
+    assert skill_id not in 技能使用量.讀取全部技能使用量()
 
 
 def test_未pin的技能可正常刪除(假環境):

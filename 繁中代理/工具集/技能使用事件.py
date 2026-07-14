@@ -66,14 +66,17 @@ def 記錄多筆事件(skill_ids: Iterable[str], user_id: str | None, used_at: s
     if 技能庫 is not None:
         return 技能庫.記錄多筆事件(識別碼清單, 使用者, 時間)
     路徑 = 事件檔路徑()
+    內容 = "".join(
+        json.dumps(
+            {"skill_id": skill_id, "user_id": 使用者, "used_at": 時間},
+            ensure_ascii=False,
+        ) + "\n"
+        for skill_id in 識別碼清單
+    )
     try:
         路徑.parent.mkdir(parents=True, exist_ok=True)
         with open(路徑, "a", encoding="utf-8") as f:
-            for skill_id in 識別碼清單:
-                f.write(json.dumps(
-                    {"skill_id": skill_id, "user_id": 使用者, "used_at": 時間},
-                    ensure_ascii=False,
-                ) + "\n")
+            f.write(內容)
     except OSError as 錯誤:
         logger.debug("寫入 %s 失敗：%s", 路徑, 錯誤, exc_info=True)
         return 0
@@ -141,3 +144,34 @@ def 彙總() -> list[dict[str, Any]]:
         if used_at and (列["last_used_at"] is None or str(used_at) > str(列["last_used_at"])):
             列["last_used_at"] = used_at
     return sorted(彙整表.values(), key=lambda 列: (str(列["user_id"]), 列["skill_id"]))
+
+
+def 彙總依技能() -> list[dict[str, Any]]:
+    """跨使用者合併同一 skill_id 的事件，供使用量快照以 skill_id 單列寫入。"""
+    彙整表: dict[str, dict[str, Any]] = {}
+    for 列 in 彙總():
+        skill_id = 列["skill_id"]
+        合併 = 彙整表.setdefault(skill_id, {
+            "skill_id": skill_id,
+            "user_id": 列.get("user_id"),
+            "use_count": 0,
+            "last_used_at": None,
+        })
+        合併["use_count"] += int(列.get("use_count") or 0)
+        最後使用時間 = 列.get("last_used_at")
+        if 最後使用時間 and (
+            合併["last_used_at"] is None
+            or str(最後使用時間) > str(合併["last_used_at"])
+        ):
+            合併["last_used_at"] = 最後使用時間
+            合併["user_id"] = 列.get("user_id")
+    return sorted(彙整表.values(), key=lambda 列: 列["skill_id"])
+
+
+# 相容 feature/skill-manage-usage 已公開並由既有測試使用的名稱。
+取得技能使用事件檔路徑 = 事件檔路徑
+記錄多筆技能使用事件 = 記錄多筆事件
+記錄技能使用事件 = 記錄事件
+讀取全部技能使用事件 = 讀取所有事件
+彙總技能使用事件 = 彙總
+彙總技能使用事件依技能 = 彙總依技能

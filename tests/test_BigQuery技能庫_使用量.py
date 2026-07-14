@@ -138,3 +138,35 @@ def test_bigquery遺忘使用刪除列(monkeypatch, 假技能庫):
 
     技能使用量.遺忘("sid-del")
     assert 刪除紀錄 == ["sid-del"]
+
+
+def test_bigquery補齊只讀寫雲端技能庫(monkeypatch):
+    """補齊時從 BQ 技能表找缺漏，逐列寫入 BQ，不碰本機技能目錄。"""
+    class 假雲端技能庫:
+        def __init__(self):
+            self.寫入紀錄 = []
+
+        def 讀取全部使用量(self):
+            return {"sid-old": {"use_count": 3}}
+
+        def 列出技能身分(self, user_id=None, 是否包含封存=False, 限定使用者=False):
+            assert 是否包含封存 is True
+            return [
+                {"skill_id": "sid-old", "user_id": "alice"},
+                {"skill_id": "sid-new", "user_id": "bob"},
+            ]
+
+        def 覆寫使用量列(self, skill_id, 記錄):
+            self.寫入紀錄.append((skill_id, 記錄))
+
+    技能庫 = 假雲端技能庫()
+    monkeypatch.setattr(技能使用量, "_取得BigQuery技能庫", lambda: 技能庫)
+
+    assert 技能使用量.補齊缺少的記錄() == 1
+    assert len(技能庫.寫入紀錄) == 1
+    skill_id, 記錄 = 技能庫.寫入紀錄[0]
+    assert skill_id == "sid-new"
+    assert 記錄["user_id"] == "bob"
+    assert 記錄["use_count"] == 0
+    assert 記錄["state"] == "active"
+    assert 記錄["created_at"]

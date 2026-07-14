@@ -197,6 +197,10 @@ def 讀取技能識別碼(skill_md路徑: Path) -> str | None:
     return None
 
 
+# 相容 feature/skill-manage-usage 合併前的公開名稱。
+讀取技能skill_id = 讀取技能識別碼
+
+
 def _取得雲端技能庫():
     """取得目前後端對應的雲端技能庫實例（維持單一分流來源）。
 
@@ -253,8 +257,8 @@ def _記錄技能使用事件(skill_md路徑: Path, 參數: dict[str, Any]) -> N
         skill_id = 讀取技能識別碼(skill_md路徑)
         if not skill_id:
             return
-        from .工具集.技能使用事件 import 記錄事件
-        記錄事件(skill_id, 參數.get("_current_user_id"))
+        from .工具集.技能使用事件 import 記錄技能使用事件
+        記錄技能使用事件(skill_id, 參數.get("_current_user_id"))
     except Exception:
         pass
 

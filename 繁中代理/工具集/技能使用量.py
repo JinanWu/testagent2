@@ -45,6 +45,10 @@ except ImportError:
 _有效狀態 = {狀態_使用中, 狀態_閒置, 狀態_封存}
 
 
+class 技能使用量資料格式錯誤(ValueError):
+    """本機 skill_usage.json 根型別或內容不符合預期。"""
+
+
 def _取得BigQuery技能庫():
     """取得雲端技能庫；未啟用 BigQuery 後端時回傳 None（改走本機 JSON）。
 
@@ -102,8 +106,8 @@ def _使用量檔鎖():
         檔案.close()
 
 
-def 讀取全部使用量() -> dict[str, dict[str, Any]]:
-    """讀取整份 skill_usage.json；檔案缺失或毀損時回傳空 dict。"""
+def 讀取全部使用量(*, 毀損時拋出: bool = False) -> dict[str, dict[str, Any]]:
+    """讀取使用量；本機毀損時可選擇拋出，避免變更流程覆寫原檔。"""
     技能庫 = _取得BigQuery技能庫()
     if 技能庫 is not None:
         return 技能庫.讀取全部使用量()
@@ -114,8 +118,15 @@ def 讀取全部使用量() -> dict[str, dict[str, Any]]:
         資料 = json.loads(路徑.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as 錯誤:
         logger.debug("讀取 %s 失敗：%s", 路徑, 錯誤)
+        if 毀損時拋出:
+            raise
         return {}
     if not isinstance(資料, dict):
+        logger.debug("讀取 %s 失敗：根型別應為 dict，實際為 %s", 路徑, type(資料).__name__)
+        if 毀損時拋出:
+            raise 技能使用量資料格式錯誤(
+                f"skill_usage.json 根型別應為 dict，實際為 {type(資料).__name__}"
+            )
         return {}
     清理: dict[str, dict[str, Any]] = {}
     for 鍵, 值 in 資料.items():
@@ -206,7 +217,7 @@ def _變更(skill_id: str, 變更函數: Callable[[dict[str, Any]], None]) -> No
         return
     try:
         with _使用量檔鎖():
-            資料 = 讀取全部使用量()
+            資料 = 讀取全部使用量(毀損時拋出=True)
             記錄 = _補齊使用量記錄(資料.get(skill_id))
             變更函數(記錄)
             資料[skill_id] = 記錄
@@ -249,6 +260,49 @@ def 設定彙總(skill_id: str, use_count: int, last_used_at: str | None, user_i
         if user_id is not None:
             記錄["user_id"] = str(user_id)
     _變更(skill_id, _套用)
+
+
+def 補齊缺少的記錄() -> int:
+    """依目前後端的技能來源，補齊缺少的使用量記錄。
+
+    BigQuery 模式列出 BigQuery 技能並逐列 MERGE；本機模式在檔鎖內掃描
+    user_skill 並原子寫回 JSON。兩種模式不混用資料來源或寫入目標。
+    """
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        try:
+            既有資料 = 技能庫.讀取全部使用量()
+            補齊數 = 0
+            for 身分 in 技能庫.列出技能身分(是否包含封存=True):
+                skill_id = 身分.get("skill_id")
+                if not skill_id or skill_id in 既有資料:
+                    continue
+                記錄 = _空白記錄()
+                if 身分.get("user_id") is not None:
+                    記錄["user_id"] = str(身分["user_id"])
+                技能庫.覆寫使用量列(str(skill_id), 記錄)
+                補齊數 += 1
+            return 補齊數
+        except Exception as 錯誤:
+            logger.debug("BigQuery 補齊缺少的技能使用量記錄失敗：%s", 錯誤, exc_info=True)
+            return 0
+
+    try:
+        with _使用量檔鎖():
+            資料 = 讀取全部使用量(毀損時拋出=True)
+            補齊數 = 0
+            for 身分 in 基本工具.列出使用者技能身分():
+                skill_id = 身分.get("skill_id")
+                if not skill_id or skill_id in 資料:
+                    continue
+                資料[str(skill_id)] = _空白記錄()
+                補齊數 += 1
+            if 補齊數:
+                寫入全部使用量(資料)
+            return 補齊數
+    except Exception as 錯誤:
+        logger.debug("補齊缺少的技能使用量記錄失敗：%s", 錯誤, exc_info=True)
+        return 0
 
 
 def 設定pin(skill_id: str, pinned: bool) -> None:
@@ -296,7 +350,7 @@ def 遺忘(skill_id: str) -> None:
         return
     try:
         with _使用量檔鎖():
-            資料 = 讀取全部使用量()
+            資料 = 讀取全部使用量(毀損時拋出=True)
             if skill_id in 資料:
                 del 資料[skill_id]
                 寫入全部使用量(資料)
@@ -326,3 +380,22 @@ def 使用量報告() -> list[dict[str, Any]]:
                 記錄.setdefault(鍵, 值)
         列表.append({"skill_id": skill_id, "name": 身分.get("name"), **記錄})
     return 列表
+
+
+# 相容 feature/skill-manage-usage 的既有公開名稱，避免合併後呼叫端一次性斷裂。
+技能生命狀態_使用中 = 狀態_使用中
+技能生命狀態_閒置 = 狀態_閒置
+技能生命狀態_封存 = 狀態_封存
+取得技能使用量檔路徑 = 使用量檔路徑
+讀取全部技能使用量 = 讀取全部使用量
+寫入全部技能使用量 = 寫入全部使用量
+取得技能使用量記錄 = 取得記錄
+初始化技能使用量記錄 = 初始化記錄
+記錄技能使用 = 記錄使用
+設定技能使用量彙總 = 設定彙總
+補齊缺少的技能使用量記錄 = 補齊缺少的記錄
+設定技能Pin = 設定pin
+檢查技能是否Pin = 是否pin
+設定技能生命狀態 = 設定狀態
+移除技能使用量記錄 = 遺忘
+產生技能使用量報告 = 使用量報告

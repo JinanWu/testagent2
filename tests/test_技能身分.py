@@ -37,7 +37,7 @@ def test_skill_view成功以skill_id記一筆事件(假環境):
     skill_id = 技能管理.管理技能({"action": "create", "name": "demo", "content": 技能內容})["skill_id"]
     參數 = {"name": "demo", "_current_user_id": "alice", "_skill_roots": [str(假環境)]}
     基本工具.讀取技能(參數)
-    事件 = 技能使用事件.讀取所有事件()
+    事件 = 技能使用事件.讀取全部技能使用事件()
     assert len(事件) == 1
     assert 事件[0]["skill_id"] == skill_id  # 記 skill_id，不是 name
     assert 事件[0]["user_id"] == "alice"
@@ -48,7 +48,7 @@ def test_skill_view找不到技能不記事件(假環境):
     參數 = {"name": "不存在", "_current_user_id": "alice", "_skill_roots": [str(假環境)]}
     with pytest.raises(FileNotFoundError):
         基本工具.讀取技能(參數)
-    assert 技能使用事件.讀取所有事件() == []
+    assert 技能使用事件.讀取全部技能使用事件() == []
 
 
 def test_create自動用參數name補進frontmatter(假環境):
@@ -80,3 +80,21 @@ def test_stepC不誤擋正常步驟型skill(假環境):
     好內容 = "---\nname: y\ndescription: d\n---\n\n# 標題\n## 步驟\n1. 用 web_search 搜尋\n2. 回報結果\n"
     結果 = 技能管理.管理技能({"action": "create", "name": "y", "content": 好內容})
     assert 結果["success"] is True
+
+
+def test_create擋下與內建技能同名(假環境, tmp_path, monkeypatch):
+    """與內建技能同名時應拒絕建立，避免 skills_list / skill_view 命名衝突。"""
+    內建根目錄 = tmp_path / "assets" / "hermes_skills"
+    內建技能目錄 = 內建根目錄 / "bundled-demo"
+    內建技能目錄.mkdir(parents=True)
+    (內建技能目錄 / "SKILL.md").write_text(
+        "---\nname: bundled-demo\ndescription: d\n---\n\n# T\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(技能管理, "內建技能根目錄", lambda: 內建根目錄)
+
+    結果 = 技能管理.管理技能({"action": "create", "name": "bundled-demo", "content": 技能內容})
+
+    assert 結果["success"] is False
+    assert "內建技能" in 結果["error"]
+    assert not (假環境 / "bundled-demo").exists()
