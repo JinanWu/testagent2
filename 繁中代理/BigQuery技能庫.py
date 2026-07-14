@@ -52,6 +52,10 @@ from .環境設定 import 讀取核心BigQuery設定, 應跳過建表
 已確保技能資料表: set[str] = set()
 
 
+class 技能使用量儲存錯誤(RuntimeError):
+    """BigQuery skill_usage 讀寫失敗時拋出，避免呼叫端把錯誤當空表處理。"""
+
+
 class BigQuery技能庫:
     """以 BigQuery 儲存 skill_usage_events / skill_usage / user_skills 的技能庫。
 
@@ -214,14 +218,18 @@ class BigQuery技能庫:
     def 讀取全部使用量(self) -> dict[str, dict[str, Any]]:
         """讀取整張使用量表。
 
-        參數：無。
-        返回值：dict，鍵為 skill_id、值為不含 skill_id 的記錄 dict；失敗時回空 dict。
+        參數：
+            無。
+
+        返回：
+            dict，鍵為 skill_id、值為不含 skill_id 的記錄 dict；查詢失敗時拋出
+            技能使用量儲存錯誤，避免呼叫端誤以為表為空而覆寫資料。
         """
         try:
             列清單 = self.查詢多列(f"SELECT * FROM `{self.組出完整表名(使用量表)}`")
         except Exception as 錯誤:
             記錄器.debug("BigQuery 讀取全部使用量失敗：%s", 錯誤, exc_info=True)
-            return {}
+            raise 技能使用量儲存錯誤("讀取 skill_usage 失敗") from 錯誤
         結果: dict[str, dict[str, Any]] = {}
         for 列 in 列清單:
             技能識別碼 = 列.get("skill_id")
@@ -230,28 +238,114 @@ class BigQuery技能庫:
             結果[str(技能識別碼)] = {欄位: 列.get(欄位) for 欄位 in 使用量欄位}
         return 結果
 
-    def 寫入全部使用量(self, 使用量資料: dict[str, dict[str, Any]]) -> None:
-        """整表覆寫使用量快照；盡力而為，失敗只記錄日誌不丟出。
+    def 讀取使用量列(self, skill_id: str) -> dict[str, Any] | None:
+        """依 skill_id 讀取單筆使用量記錄。
 
-        呼叫端（技能使用量.變更 / 遺忘）已在檔鎖內完成「讀取-修改-寫回」，這裡
-        以「清空後整批寫入」落地整份快照。寫入量低（工作階段結束、策展器每 72
-        小時），整表覆寫可接受。
+        參數：
+            skill_id: 技能穩定 UUID。
+
+        返回：
+            不含 skill_id 的記錄 dict；不存在時回 None；查詢失敗時拋出
+            技能使用量儲存錯誤。
+        """
+        if not skill_id:
+            return None
+        from google.cloud import bigquery
+
+        try:
+            列清單 = self.查詢多列(
+                f"SELECT * FROM `{self.組出完整表名(使用量表)}` WHERE skill_id=@sid LIMIT 1",
+                [bigquery.ScalarQueryParameter("sid", "STRING", str(skill_id))],
+            )
+        except Exception as 錯誤:
+            記錄器.debug("BigQuery 讀取使用量列失敗：%s", 錯誤, exc_info=True)
+            raise 技能使用量儲存錯誤(f"讀取 skill_usage({skill_id}) 失敗") from 錯誤
+        if not 列清單:
+            return None
+        列 = 列清單[0]
+        return {欄位: 列.get(欄位) for 欄位 in 使用量欄位}
+
+    def 覆寫使用量列(self, skill_id: str, 記錄: dict[str, Any]) -> None:
+        """以 MERGE 單列 upsert 使用量，避免整表 TRUNCATE 造成資料遺失或並行覆蓋。
+
+        參數：
+            skill_id: 技能穩定 UUID。
+            記錄: 不含 skill_id 的使用量欄位 dict（對照 使用量欄位）。
+
+        返回：
+            無；寫入失敗時拋出 技能使用量儲存錯誤。
+        """
+        if not skill_id or not isinstance(記錄, dict):
+            return
+        from google.cloud import bigquery
+
+        參數 = [
+            bigquery.ScalarQueryParameter("skill_id", "STRING", str(skill_id)),
+            bigquery.ScalarQueryParameter("user_id", "STRING", 記錄.get("user_id")),
+            bigquery.ScalarQueryParameter("use_count", "INT64", int(記錄.get("use_count") or 0)),
+            bigquery.ScalarQueryParameter("last_used_at", "STRING", 記錄.get("last_used_at")),
+            bigquery.ScalarQueryParameter("state", "STRING", 記錄.get("state")),
+            bigquery.ScalarQueryParameter("pinned", "BOOL", bool(記錄.get("pinned"))),
+            bigquery.ScalarQueryParameter("created_at", "STRING", 記錄.get("created_at")),
+        ]
+        try:
+            self.執行DML(
+                f"""
+                MERGE `{self.組出完整表名(使用量表)}` AS T
+                USING (SELECT @skill_id AS skill_id) AS S
+                ON T.skill_id = S.skill_id
+                WHEN MATCHED THEN
+                  UPDATE SET
+                    user_id = @user_id,
+                    use_count = @use_count,
+                    last_used_at = @last_used_at,
+                    state = @state,
+                    pinned = @pinned,
+                    created_at = @created_at
+                WHEN NOT MATCHED THEN
+                  INSERT (skill_id, user_id, use_count, last_used_at, state, pinned, created_at)
+                  VALUES (@skill_id, @user_id, @use_count, @last_used_at, @state, @pinned, @created_at)
+                """,
+                參數,
+            )
+        except Exception as 錯誤:
+            記錄器.debug("BigQuery 覆寫使用量列失敗：%s", 錯誤, exc_info=True)
+            raise 技能使用量儲存錯誤(f"寫入 skill_usage({skill_id}) 失敗") from 錯誤
+
+    def 刪除使用量列(self, skill_id: str) -> None:
+        """刪除單筆使用量記錄（技能刪除時呼叫）。
+
+        參數：
+            skill_id: 技能穩定 UUID。
+
+        返回：
+            無；刪除失敗時拋出 技能使用量儲存錯誤。
+        """
+        if not skill_id:
+            return
+        from google.cloud import bigquery
+
+        try:
+            self.執行DML(
+                f"DELETE FROM `{self.組出完整表名(使用量表)}` WHERE skill_id=@sid",
+                [bigquery.ScalarQueryParameter("sid", "STRING", str(skill_id))],
+            )
+        except Exception as 錯誤:
+            記錄器.debug("BigQuery 刪除使用量列失敗：%s", 錯誤, exc_info=True)
+            raise 技能使用量儲存錯誤(f"刪除 skill_usage({skill_id}) 失敗") from 錯誤
+
+    def 寫入全部使用量(self, 使用量資料: dict[str, dict[str, Any]]) -> None:
+        """整批覆寫使用量快照（兼容舊呼叫）；以逐列 MERGE 落地，不再 TRUNCATE 整表。
 
         參數：
             使用量資料: 鍵為 skill_id、值為記錄 dict 的完整快照。
-        返回值：無。
+
+        返回：
+            無；任一笔寫入失敗時拋出 技能使用量儲存錯誤。
         """
-        try:
-            self.執行DML(f"TRUNCATE TABLE `{self.組出完整表名(使用量表)}`")
-            列清單 = [
-                {"skill_id": str(技能識別碼), **{欄位: 記錄.get(欄位) for 欄位 in 使用量欄位}}
-                for 技能識別碼, 記錄 in 使用量資料.items()
-                if isinstance(記錄, dict)
-            ]
-            if 列清單:
-                self.插入多列(使用量表, 列清單, 使用量型別)
-        except Exception as 錯誤:
-            記錄器.debug("BigQuery 寫入全部使用量失敗：%s", 錯誤, exc_info=True)
+        for 技能識別碼, 記錄 in 使用量資料.items():
+            if isinstance(記錄, dict):
+                self.覆寫使用量列(str(技能識別碼), 記錄)
 
     # ── 內容表（技能全文）I/O 出入口 ────────────────────────────────────────
     def 建立技能(self, skill_id: str, 名稱: str, 內容: str, 分類: str | None = None,
