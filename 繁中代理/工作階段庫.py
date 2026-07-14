@@ -1395,6 +1395,25 @@ class 工作階段庫:
                 handle.write(json.dumps({"session": session, "messages": messages}, ensure_ascii=False) + "\n")
         return {"output": str(路徑), "session_count": len(sessions), "message_count": 訊息總數}
 
+    def 取得最後作用中User訊息(self, 工作階段識別碼: str, user_id: str | None = None) -> dict[str, Any] | None:
+        """讀取目前 session 最後一則 active user message（供 /retry、/undo 用）。
+
+        參數：
+            工作階段識別碼: session id。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者讀取。
+
+        返回值：
+            dict | None：含 `id`（rowid，即 rewind到訊息 需要的錨點）與 `content`；
+            無此類訊息時回傳 None。
+        """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
+        with self._鎖:
+            資料列 = self.連線.execute(
+                "SELECT id, content FROM messages WHERE session_id=? AND active=1 AND role='user' ORDER BY id DESC LIMIT 1",
+                (工作階段識別碼,),
+            ).fetchone()
+        return dict(資料列) if 資料列 else None
+
     def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int, user_id: str | None = None) -> dict[str, Any]:
         """把指定訊息及之後的訊息標記為 inactive，保留 audit 紀錄。
 

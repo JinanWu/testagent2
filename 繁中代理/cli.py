@@ -1010,20 +1010,17 @@ class 互動CLI:
             print(f"{i:>3}. {訊息.get('role', '?'):<9} {取訊息摘要(訊息, 長度=120)}")
 
     def 取得最後User訊息列(self) -> dict[str, Any] | None:
-        """讀取目前 session 最後一則 active user message row。
+        """讀取目前 session 最後一則 active user message（後端無關）。
+
+        委派 store 的 `取得最後作用中User訊息`，讓 SQLite / BigQuery 各自實作；
+        回傳的 `id` 即該後端 `rewind到訊息` 需要的錨點（SQLite=rowid、BQ=message_index）。
 
         參數：無。
         返回值：dict | None。包含 id 與 content；沒有目前 session 或 user row 時回傳 None。
         """
         if not self.目前工作階段識別碼:
             return None
-        self.工作階段庫物件.檢查工作階段存取(self.目前工作階段識別碼, user_id=self.參數.user_id)
-        with self.工作階段庫物件._鎖:
-            row = self.工作階段庫物件.連線.execute(
-                "SELECT id, content FROM messages WHERE session_id=? AND active=1 AND role='user' ORDER BY id DESC LIMIT 1",
-                (self.目前工作階段識別碼,),
-            ).fetchone()
-        return dict(row) if row else None
+        return self.工作階段庫物件.取得最後作用中User訊息(self.目前工作階段識別碼, user_id=self.參數.user_id)
 
     def 命令Retry(self) -> None:
         """處理 /retry 命令。

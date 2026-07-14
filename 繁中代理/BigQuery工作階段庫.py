@@ -999,6 +999,26 @@ class BigQuery工作階段庫:
         self._下一索引快取[工作階段識別碼] = 0
         self._附加訊息清單(工作階段識別碼, 訊息清單, 起始索引=0)
 
+    def 取得最後作用中User訊息(self, 工作階段識別碼: str, user_id: str | None = None) -> dict[str, Any] | None:
+        """讀取目前 session 最後一則 active user message（供 /retry、/undo 用）。
+
+        BQ 無共用連線、不需鎖；`id` 回傳 `message_index`（即 rewind到訊息 需要的錨點）。
+
+        參數：
+            工作階段識別碼: session id。
+            user_id: 可選使用者 scope；提供時會拒絕跨使用者讀取。
+        返回值：dict | None，含 `id`（message_index）與 `content`；無則 None。
+        """
+        from google.cloud import bigquery
+
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
+        列 = self._查詢單列(
+            f"SELECT message_index, content FROM `{self._表名(訊息表)}` "
+            f"WHERE session_id=@sid AND active=TRUE AND role='user' ORDER BY message_index DESC LIMIT 1",
+            [bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼)],
+        )
+        return {"id": int(列["message_index"]), "content": 列.get("content")} if 列 else None
+
     def rewind到訊息(self, 工作階段識別碼: str, 目標訊息id: int, user_id: str | None = None) -> dict[str, Any]:
         """把 message_index >= 目標的 active 訊息標記為 inactive（保留 audit）。目標訊息id 為 message_index。"""
         from google.cloud import bigquery
