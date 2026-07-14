@@ -122,6 +122,50 @@ def 正規化Gemini模型名稱(模型名稱: str) -> str:
     return 別名表.get(模型名稱, 模型名稱)
 
 
+Gemini模型上下文長度表: dict[str, int] = {
+    "gemini-2.5-flash-lite": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.0-flash": 1_048_576,
+    "gemini-2.0-flash-lite": 1_048_576,
+    "gemini-1.5-flash": 1_048_576,
+    "gemini-1.5-flash-8b": 1_048_576,
+    "gemini-1.5-flash-002": 1_048_576,
+    "gemini-1.5-pro": 2_097_152,
+    "gemini-1.5-pro-002": 2_097_152,
+    "gemini-1.0-pro": 32_768,
+    "gemini-1.0-pro-001": 32_768,
+    "gemini-1.0-pro-002": 32_768,
+    "gemini-pro": 32_768,
+}
+Gemini預設上下文長度 = 1_048_576
+
+
+def 查詢Gemini上下文長度(模型名稱: str) -> int:
+    """依 Gemini 模型 ID 查詢 context window 長度。
+
+    參數：
+        模型名稱: 使用者或環境變數提供的模型名稱，會先經別名正規化。
+
+    返回值：
+        int，context window token 數。
+    """
+    正式名稱 = 正規化Gemini模型名稱(模型名稱)
+    if 正式名稱 in Gemini模型上下文長度表:
+        return Gemini模型上下文長度表[正式名稱]
+    底線名稱 = 正式名稱.replace(".", "_")
+    if 底線名稱 in Gemini模型上下文長度表:
+        return Gemini模型上下文長度表[底線名稱]
+    小寫 = 正式名稱.lower()
+    if "1.0" in 小寫 or 小寫 == "gemini-pro":
+        return 32_768
+    if "1.5-pro" in 小寫:
+        return 2_097_152
+    if any(標記 in 小寫 for 標記 in ("1.5", "2.0", "2.5")):
+        return 1_048_576
+    return Gemini預設上下文長度
+
+
 class GeminiADC供應商:
     """使用 gcloud ADC/Vertex AI Gemini 的 provider adapter。
 

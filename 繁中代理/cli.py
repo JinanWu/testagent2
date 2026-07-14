@@ -24,7 +24,7 @@ from typing import Any
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
 from .儲存 import 建立工作階段庫, 建立使用者庫
-from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱
+from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱, 查詢Gemini上下文長度
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
 from .使用者 import (
     使用者上下文,
@@ -507,7 +507,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     """
     模型設定 = 解析模型設定(參數, 解析器)
     執行模型名稱 = 解析執行模型名稱(參數.mode, 參數.model)
-    上下文長度 = 解析上下文長度(參數.mode)
+    上下文長度 = 解析上下文長度(參數.mode, 執行模型名稱)
     模型設定.setdefault("requested_model", 參數.model)
     模型設定.setdefault("resolved_model", 執行模型名稱)
     模型供應商物件 = 建立模型供應商(參數.mode, 執行模型名稱)
@@ -532,7 +532,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     )
 
 
-def 解析上下文長度(模式: str) -> int:
+def 解析上下文長度(模式: str, 模型名稱: str) -> int:
     """決定壓縮門檻用的 context window 長度。
 
     壓縮門檻 = context window × 觸發比例（預設 0.5）。若沿用舊預設 32768，門檻只有
@@ -540,6 +540,7 @@ def 解析上下文長度(模式: str) -> int:
 
     參數：
         模式: 模型模式（fake / gemini）。
+        模型名稱: 已正規化的執行模型名稱。
     返回值：int，context window token 數。
     """
     覆寫 = (os.getenv("AIAGENT_CONTEXT_WINDOW") or "").strip()
@@ -547,7 +548,7 @@ def 解析上下文長度(模式: str) -> int:
         return int(覆寫)
     if 模式 == "fake":
         return 32768
-    return 1_048_576
+    return 查詢Gemini上下文長度(模型名稱)
 
 
 def 印出JSON(資料: Any) -> None:
