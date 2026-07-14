@@ -368,10 +368,8 @@ class BigQuery工作階段庫:
         self._下一索引快取[工作階段識別碼] = 索引
         return 索引
 
-    def _附加訊息清單(self, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]], 起始索引: int) -> None:
-        """把訊息清單逐列 INSERT 到 messages，並更新 session updated_at。"""
-        from google.cloud import bigquery
-
+    def _準備訊息列(self, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]], 起始索引: int) -> list[dict[str, Any]]:
+        """把 canonical messages 轉成 messages 表列 dict（不寫入）。"""
         目前時間 = time.time()
         待插入: list[dict[str, Any]] = []
         for 偏移, 訊息 in enumerate(訊息清單):
@@ -409,6 +407,13 @@ class BigQuery工作階段庫:
                 "created_at": 時間戳,
                 "timestamp": 時間戳,
             })
+        return 待插入
+
+    def _附加訊息清單(self, 工作階段識別碼: str, 訊息清單: list[dict[str, Any]], 起始索引: int) -> None:
+        """把訊息清單逐列 INSERT 到 messages，並更新 session updated_at。"""
+        from google.cloud import bigquery
+
+        待插入 = self._準備訊息列(工作階段識別碼, 訊息清單, 起始索引)
         self._插入多列(訊息表, 待插入, 訊息型別)
         self._下一索引快取[工作階段識別碼] = 起始索引 + len(待插入)
         self._執行DML(
@@ -595,7 +600,11 @@ class BigQuery工作階段庫:
         from google.cloud import bigquery
 
         目前識別碼 = 工作階段識別碼
+        已見集合: set[str] = set()
         for _ in range(100):
+            if 目前識別碼 in 已見集合:
+                break
+            已見集合.add(目前識別碼)
             列 = self._查詢單列(
                 f"""
                 SELECT child.id AS id
@@ -637,30 +646,48 @@ class BigQuery工作階段庫:
         工作設定 = bigquery.QueryJobConfig(query_parameters=參數 or [])
         self.客戶端.query(語句, job_config=工作設定).result()
 
-    def _插入單列(self, 表: str, 列: dict[str, Any], 型別對應: dict[str, str]) -> None:
-        """以 DML 插入單列（依欄位型別建立參數）。"""
+    def _執行DML腳本(self, 語句: str, 參數: list[Any] | None = None) -> None:
+        """執行含 BEGIN/COMMIT TRANSACTION 的多陳述 DML script。"""
+        from google.cloud import bigquery
+
+        工作設定 = bigquery.QueryJobConfig(query_parameters=參數 or [])
+        self.客戶端.query(語句, job_config=工作設定).result()
+
+    def _建構插入單列SQL(self, 表: str, 列: dict[str, Any], 型別對應: dict[str, str]) -> tuple[str, list[Any]]:
+        """建構 INSERT 單列 SQL 與參數（不執行）。"""
         from google.cloud import bigquery
 
         欄位 = list(列.keys())
         欄位字串 = ", ".join(欄位)
         佔位字串 = ", ".join(f"@{名}" for 名 in 欄位)
         參數 = [bigquery.ScalarQueryParameter(名, 型別對應[名], 列[名]) for 名 in 欄位]
-        self._執行DML(f"INSERT INTO `{self._表名(表)}` ({欄位字串}) VALUES ({佔位字串})", 參數)
+        return f"INSERT INTO `{self._表名(表)}` ({欄位字串}) VALUES ({佔位字串})", 參數
 
-    def _插入多列(self, 表: str, 列清單: list[dict[str, Any]], 型別對應: dict[str, str]) -> None:
-        """以單一 DML 插入多列（每列參數名加序號後綴以避免衝突）。"""
+    def _建構插入多列SQL(self, 表: str, 列清單: list[dict[str, Any]], 型別對應: dict[str, str]) -> tuple[str, list[Any]]:
+        """建構 INSERT 多列 SQL 與參數（不執行）。"""
         from google.cloud import bigquery
 
         if not 列清單:
-            return
+            return "", []
         欄位 = list(列清單[0].keys())
         欄位字串 = ", ".join(欄位)
         群組: list[str] = []
-        參數 = []
+        參數: list[Any] = []
         for 序, 列 in enumerate(列清單):
             群組.append("(" + ", ".join(f"@{名}_{序}" for 名 in 欄位) + ")")
             參數.extend(bigquery.ScalarQueryParameter(f"{名}_{序}", 型別對應[名], 列[名]) for 名 in 欄位)
-        self._執行DML(f"INSERT INTO `{self._表名(表)}` ({欄位字串}) VALUES {', '.join(群組)}", 參數)
+        return f"INSERT INTO `{self._表名(表)}` ({欄位字串}) VALUES {', '.join(群組)}", 參數
+
+    def _插入單列(self, 表: str, 列: dict[str, Any], 型別對應: dict[str, str]) -> None:
+        """以 DML 插入單列（依欄位型別建立參數）。"""
+        語句, 參數 = self._建構插入單列SQL(表, 列, 型別對應)
+        self._執行DML(語句, 參數)
+
+    def _插入多列(self, 表: str, 列清單: list[dict[str, Any]], 型別對應: dict[str, str]) -> None:
+        """以單一 DML 插入多列（每列參數名加序號後綴以避免衝突）。"""
+        語句, 參數 = self._建構插入多列SQL(表, 列清單, 型別對應)
+        if 語句:
+            self._執行DML(語句, 參數)
 
     # ── 壓縮分裂：結束 parent、建立 child、載入壓縮後訊息 ──────────────────────
     def 建立壓縮後工作階段(self, 舊工作階段識別碼: str, 壓縮訊息清單: list[dict[str, Any]], 系統提示詞: str) -> str:
@@ -683,25 +710,13 @@ class BigQuery工作階段庫:
         """
         from google.cloud import bigquery
 
-        舊工作階段 = self.讀取工作階段(舊工作階段識別碼) or {}
+        舊工作階段 = self.讀取工作階段(舊工作階段識別碼)
+        if not 舊工作階段:
+            raise ValueError(f"session not found: {舊工作階段識別碼}")
         新識別碼 = f"session-{uuid.uuid4().hex[:12]}"
         目前時間 = time.time()
 
-        # 1) 結束 parent：標記壓縮，保留既有 ended_at（重複壓縮時不覆蓋首次結束時間）
-        self._執行DML(
-            f"""
-            UPDATE `{self._表名(會話表)}`
-            SET end_reason='compression', ended_at=COALESCE(ended_at, @now), updated_at=@now
-            WHERE id=@id
-            """,
-            [
-                bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
-                bigquery.ScalarQueryParameter("id", "STRING", 舊工作階段識別碼),
-            ],
-        )
-
-        # 2) 建立 child：複製描述性欄位、接上譜系、compression_count+1
-        self._插入單列(會話表, {
+        child列 = {
             "id": 新識別碼,
             "source": 舊工作階段.get("source") or "cli",
             "user_id": 舊工作階段.get("user_id"),
@@ -721,70 +736,73 @@ class BigQuery工作階段庫:
             "created_at": 目前時間,
             "started_at": 目前時間,
             "updated_at": 目前時間,
-        }, 會話表型別)
+        }
+        待插入訊息 = self._準備訊息列(新識別碼, 壓縮訊息清單, 起始索引=0)
+        child_sql, child_params = self._建構插入單列SQL(會話表, child列, 會話表型別)
+        訊息sql, 訊息params = self._建構插入多列SQL(訊息表, 待插入訊息, 訊息型別)
 
-        # child 中繼快取，讓後續 更新模型使用量 / 建立或讀取工作階段 命中快取免再查
+        腳本段落 = [
+            "BEGIN",
+            "BEGIN TRANSACTION;",
+            f"""
+            UPDATE `{self._表名(會話表)}`
+            SET end_reason='compression', ended_at=COALESCE(ended_at, @now), updated_at=@now
+            WHERE id=@parent_id
+            """,
+            child_sql + ";",
+        ]
+        if 訊息sql:
+            腳本段落.append(訊息sql + ";")
+        腳本段落.extend([
+            f"UPDATE `{self._表名(會話表)}` SET updated_at=@now WHERE id=@child_id;",
+            "COMMIT TRANSACTION;",
+            "END;",
+        ])
+        參數 = [
+            bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
+            bigquery.ScalarQueryParameter("parent_id", "STRING", 舊工作階段識別碼),
+            bigquery.ScalarQueryParameter("child_id", "STRING", 新識別碼),
+            *child_params,
+            *訊息params,
+        ]
+        self._執行DML腳本("\n".join(腳本段落), 參數)
+
         self._會話中繼快取[新識別碼] = {
             "source": 舊工作階段.get("source") or "cli", "user_id": 舊工作階段.get("user_id"),
             "model": 舊工作階段.get("model"), "model_config": 舊工作階段.get("model_config"),
             "cwd": 舊工作階段.get("cwd"), "billing_provider": 舊工作階段.get("billing_provider"),
         }
-
-        # 3) 壓縮後訊息從 index 0 重新寫入 child
-        self._下一索引快取[新識別碼] = 0
-        self._附加訊息清單(新識別碼, 壓縮訊息清單, 起始索引=0)
+        self._下一索引快取[新識別碼] = len(待插入訊息)
         return 新識別碼
 
     def 取得工作階段譜系(self, 工作階段識別碼: str) -> list[str]:
-        """回傳含指定 session 的完整壓縮譜系 id 清單（root→…→tip，依時間序）。
+        """回傳 root→指定 session 的 compression lineage id 清單（依時間序）。
 
-        沿 parent_session_id 往上找到 root，再沿壓縮子代往下走到 tip，與
-        `取得壓縮Tip` 用同一組 lineage 條件。
+        沿 parent_session_id 往上走到 root 後反轉，與 SQLite 版 `工作階段庫.取得工作階段譜系`
+        語意對齊。需完整 root→tip 時，應先 `取得壓縮Tip(id)` 再呼叫本方法。
 
         參數：
             工作階段識別碼: 譜系內任一 session id。
-        返回值：list[str]，由 root 到 tip 的 session id（至少含自身）。
+        返回值：list[str]，由 root 到指定 session 的 id（至少含自身）。
         """
         from google.cloud import bigquery
 
-        # 往上找 root（壓縮子代的 parent 一定標了 end_reason='compression'）
-        root = 工作階段識別碼
+        譜系鏈: list[str] = []
+        目前識別碼 = 工作階段識別碼
+        已見集合: set[str] = set()
         for _ in range(100):
-            列 = self._查詢單列(
-                f"""
-                SELECT parent.id AS id
-                FROM `{self._表名(會話表)}` child
-                JOIN `{self._表名(會話表)}` parent ON parent.id = child.parent_session_id
-                WHERE child.id = @cid AND parent.end_reason = 'compression'
-                LIMIT 1
-                """,
-                [bigquery.ScalarQueryParameter("cid", "STRING", root)],
-            )
-            if not 列:
+            if not 目前識別碼 or 目前識別碼 in 已見集合:
                 break
-            root = 列["id"]
-
-        # 從 root 往下沿壓縮子代走到 tip，收集整條鏈
-        譜系 = [root]
-        目前 = root
-        for _ in range(100):
+            已見集合.add(目前識別碼)
+            譜系鏈.append(目前識別碼)
             列 = self._查詢單列(
-                f"""
-                SELECT child.id AS id
-                FROM `{self._表名(會話表)}` child
-                JOIN `{self._表名(會話表)}` parent ON parent.id = child.parent_session_id
-                WHERE child.parent_session_id = @pid
-                  AND parent.end_reason = 'compression'
-                  AND child.started_at >= COALESCE(parent.ended_at, 0)
-                ORDER BY child.started_at DESC, child.id DESC LIMIT 1
-                """,
-                [bigquery.ScalarQueryParameter("pid", "STRING", 目前)],
+                f"SELECT parent_session_id FROM `{self._表名(會話表)}` WHERE id=@id",
+                [bigquery.ScalarQueryParameter("id", "STRING", 目前識別碼)],
             )
-            if not 列:
+            if not 列 or not 列["parent_session_id"]:
                 break
-            目前 = 列["id"]
-            譜系.append(目前)
-        return 譜系
+            目前識別碼 = 列["parent_session_id"]
+        return list(reversed(譜系鏈)) or [工作階段識別碼]
 
     # ── 封存 / 改名 ────────────────────────────────────────────────────────
     def 設定封存狀態(self, 工作階段識別碼: str, 是否封存: bool = True, user_id: str | None = None) -> None:
@@ -1002,17 +1020,27 @@ class BigQuery工作階段庫:
         """以 active=FALSE soft-delete 舊 messages 後 append 新 transcript（從 index 0）。"""
         from google.cloud import bigquery
 
-        self._執行DML(
-            f"UPDATE `{self._表名(訊息表)}` SET active=FALSE WHERE session_id=@sid AND active=TRUE",
-            [bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼)],
+        目前時間 = time.time()
+        待插入 = self._準備訊息列(工作階段識別碼, 訊息清單, 起始索引=0)
+        訊息sql, 訊息params = self._建構插入多列SQL(訊息表, 待插入, 訊息型別)
+        腳本段落 = [
+            "BEGIN",
+            "BEGIN TRANSACTION;",
+            f"UPDATE `{self._表名(訊息表)}` SET active=FALSE WHERE session_id=@sid AND active=TRUE;",
+            f"UPDATE `{self._表名(會話表)}` SET rewind_count=COALESCE(rewind_count,0)+1, updated_at=@now WHERE id=@sid;",
+        ]
+        if 訊息sql:
+            腳本段落.append(訊息sql + ";")
+        腳本段落.extend(["COMMIT TRANSACTION;", "END;"])
+        self._執行DML腳本(
+            "\n".join(腳本段落),
+            [
+                bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼),
+                bigquery.ScalarQueryParameter("now", "FLOAT64", 目前時間),
+                *訊息params,
+            ],
         )
-        self._執行DML(
-            f"UPDATE `{self._表名(會話表)}` SET rewind_count=COALESCE(rewind_count,0)+1, updated_at=@now WHERE id=@sid",
-            [bigquery.ScalarQueryParameter("now", "FLOAT64", time.time()),
-             bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼)],
-        )
-        self._下一索引快取[工作階段識別碼] = 0
-        self._附加訊息清單(工作階段識別碼, 訊息清單, 起始索引=0)
+        self._下一索引快取[工作階段識別碼] = len(待插入)
 
     def 取得最後作用中User訊息(self, 工作階段識別碼: str, user_id: str | None = None) -> dict[str, Any] | None:
         """讀取目前 session 最後一則 active user message（供 /retry、/undo 用）。
@@ -1053,15 +1081,20 @@ class BigQuery工作階段庫:
              bigquery.ScalarQueryParameter("idx", "INT64", 目標索引)],
         )
         停用數 = int((計數列 or {}).get("c") or 0)
-        self._執行DML(
-            f"UPDATE `{self._表名(訊息表)}` SET active=FALSE WHERE session_id=@sid AND message_index>=@idx AND active=TRUE",
-            [bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼),
-             bigquery.ScalarQueryParameter("idx", "INT64", 目標索引)],
-        )
-        self._執行DML(
-            f"UPDATE `{self._表名(會話表)}` SET rewind_count=COALESCE(rewind_count,0)+1, updated_at=@now WHERE id=@sid",
-            [bigquery.ScalarQueryParameter("now", "FLOAT64", time.time()),
-             bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼)],
+        self._執行DML腳本(
+            f"""
+            BEGIN
+              BEGIN TRANSACTION;
+              UPDATE `{self._表名(訊息表)}` SET active=FALSE WHERE session_id=@sid AND message_index>=@idx AND active=TRUE;
+              UPDATE `{self._表名(會話表)}` SET rewind_count=COALESCE(rewind_count,0)+1, updated_at=@now WHERE id=@sid;
+              COMMIT TRANSACTION;
+            END
+            """,
+            [
+                bigquery.ScalarQueryParameter("sid", "STRING", 工作階段識別碼),
+                bigquery.ScalarQueryParameter("idx", "INT64", 目標索引),
+                bigquery.ScalarQueryParameter("now", "FLOAT64", time.time()),
+            ],
         )
         新前端列 = self._查詢單列(
             f"SELECT MAX(message_index) AS m FROM `{self._表名(訊息表)}` WHERE session_id=@sid AND active=TRUE",
