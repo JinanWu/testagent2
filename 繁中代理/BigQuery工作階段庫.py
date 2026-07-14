@@ -850,29 +850,44 @@ class BigQuery工作階段庫:
 
     # ── 搜尋（方案 A：LIKE 直查 + Python 端 snippet；錨點用 message_index）────────
     @staticmethod
-    def _製作snippet(內容: str | None, 查詢: str, 前後: int = 40) -> str:
-        """在命中處左右各取一段字做 snippet，用 >>> <<< 標記命中；找不到則取開頭。"""
+    def _製作snippet(內容: str | None, 詞清單: list[str], 前後: int = 40) -> str:
+        """在「最早命中的詞」左右各取一段字做 snippet，用 >>> <<< 標記；都找不到則取開頭。
+
+        分詞 AND 搜尋下，命中的各詞未必相鄰，故以最早出現的那個詞為中心產生 snippet。
+        """
         文字 = 內容 or ""
-        位置 = 文字.lower().find(查詢.lower())
-        if 位置 < 0:
+        小寫文字 = 文字.lower()
+        最早位置, 命中詞 = -1, ""
+        for 詞 in 詞清單:
+            位置 = 小寫文字.find(詞.lower())
+            if 位置 >= 0 and (最早位置 < 0 or 位置 < 最早位置):
+                最早位置, 命中詞 = 位置, 詞
+        if 最早位置 < 0:
             return 文字[:160]
-        起 = max(0, 位置 - 前後)
-        迄 = min(len(文字), 位置 + len(查詢) + 前後)
-        前綴 = "…" if 起 > 0 else ""
-        後綴 = "…" if 迄 < len(文字) else ""
-        return f"{前綴}{文字[起:位置]}>>>{文字[位置:位置 + len(查詢)]}<<<{文字[位置 + len(查詢):迄]}{後綴}"
+        命中結束 = 最早位置 + len(命中詞)
+        片段起 = max(0, 最早位置 - 前後)
+        片段迄 = min(len(文字), 命中結束 + 前後)
+        前綴 = "…" if 片段起 > 0 else ""
+        後綴 = "…" if 片段迄 < len(文字) else ""
+        return f"{前綴}{文字[片段起:最早位置]}>>>{文字[最早位置:命中結束]}<<<{文字[命中結束:片段迄]}{後綴}"
 
     def 搜尋訊息(self, 查詢: str, limit: int = 20, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
-        """以 LIKE 搜尋訊息內容 / 工具名 / tool_calls；回傳的 id 為 message_index（整數錨點）。"""
+        """以 LIKE「分詞 AND」搜尋訊息內容 / 工具名 / tool_calls；回傳 id 為 message_index。
+
+        對齊 SQLite FTS 的預設 AND 語意：多字查詢拆成各詞，每個詞都要出現（不限相鄰、
+        不限順序）才算命中，而非要求整串為連續子字串；單一詞時等同單一 LIKE。
+        """
         from google.cloud import bigquery
 
-        查詢 = 查詢.strip()
-        if not 查詢:
+        詞清單 = 查詢.split()
+        if not 詞清單:
             return []
-        模糊 = f"%{查詢.lower()}%"
-        條件 = ["m.active = TRUE",
-              "(LOWER(m.content) LIKE @q OR LOWER(m.tool_name) LIKE @q OR LOWER(m.tool_calls) LIKE @q)"]
-        參數: list[Any] = [bigquery.ScalarQueryParameter("q", "STRING", 模糊)]
+        條件 = ["m.active = TRUE"]
+        參數: list[Any] = []
+        for 序號, 詞 in enumerate(詞清單):
+            參數名 = f"t{序號}"
+            條件.append(f"(LOWER(m.content) LIKE @{參數名} OR LOWER(m.tool_name) LIKE @{參數名} OR LOWER(m.tool_calls) LIKE @{參數名})")
+            參數.append(bigquery.ScalarQueryParameter(參數名, "STRING", f"%{詞.lower()}%"))
         if not include_archived:
             條件.append("COALESCE(s.archived, FALSE) = FALSE")
         if source:
@@ -896,7 +911,7 @@ class BigQuery工作階段庫:
         return [{
             "id": int(列["message_index"]), "session_id": 列["session_id"], "role": 列["role"],
             "content": 列["content"], "tool_name": 列["tool_name"],
-            "snippet": self._製作snippet(列["content"], 查詢),
+            "snippet": self._製作snippet(列["content"], 詞清單),
         } for 列 in 列清單]
 
     def 取得錨點視圖(self, 工作階段識別碼: str, 訊息id: int, window: int = 5, bookend: int = 3) -> dict[str, Any]:
@@ -910,18 +925,18 @@ class BigQuery工作階段庫:
         訊息id = int(訊息id)
         錨點參數 = [bigquery.ScalarQueryParameter("idx", "INT64", 訊息id)]
         表 = self._表名(訊息表)
-        前方 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND message_index<=@idx AND active=TRUE ORDER BY message_index DESC LIMIT @lim", 錨點參數, window + 1)
-        後方 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND message_index>@idx AND active=TRUE ORDER BY message_index ASC LIMIT @lim", 錨點參數, window)
-        開頭 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND active=TRUE AND role IN ('user','assistant') AND LENGTH(COALESCE(content,''))>0 ORDER BY message_index ASC LIMIT @lim", [], bookend)
-        結尾 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND active=TRUE AND role IN ('user','assistant') AND LENGTH(COALESCE(content,''))>0 ORDER BY message_index DESC LIMIT @lim", [], bookend)
-        視窗列 = list(reversed(前方)) + list(後方)
+        前方資料列清單 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND message_index<=@idx AND active=TRUE ORDER BY message_index DESC LIMIT @lim", 錨點參數, window + 1)
+        後方資料列清單 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND message_index>@idx AND active=TRUE ORDER BY message_index ASC LIMIT @lim", 錨點參數, window)
+        開頭資料列清單 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND active=TRUE AND role IN ('user','assistant') AND LENGTH(COALESCE(content,''))>0 ORDER BY message_index ASC LIMIT @lim", [], bookend)
+        結尾資料列清單 = 查(f"SELECT * FROM `{表}` WHERE session_id=@sid AND active=TRUE AND role IN ('user','assistant') AND LENGTH(COALESCE(content,''))>0 ORDER BY message_index DESC LIMIT @lim", [], bookend)
+        視窗列 = list(reversed(前方資料列清單)) + list(後方資料列清單)
         轉 = lambda 列: self._資料列轉訊息(列) | {"id": int(列["message_index"])}
         return {
             "messages": [轉(列) for 列 in 視窗列],
-            "messages_before": max(0, len(前方) - 1),
-            "messages_after": len(後方),
-            "bookend_start": [轉(列) for 列 in 開頭],
-            "bookend_end": [轉(列) for 列 in reversed(結尾)],
+            "messages_before": max(0, len(前方資料列清單) - 1),
+            "messages_after": len(後方資料列清單),
+            "bookend_start": [轉(列) for 列 in 開頭資料列清單],
+            "bookend_end": [轉(列) for 列 in reversed(結尾資料列清單)],
         }
 
     def 搜尋工作階段(self, 查詢: str, limit: int = 3, window: int = 5, include_archived: bool = False, source: str | None = None, user_id: str | None = None) -> list[dict[str, Any]]:
