@@ -47,10 +47,26 @@ def _取得雲端技能庫():
 def 產生目前時間字串() -> str:
     """產生目前 UTC 時間的 ISO 8601 字串，供技能建立/更新時間欄位使用。
 
-    參數：無。
-    返回值：str，ISO 8601 時間字串，例如 `2026-07-13T08:30:00+00:00`。
+    參數：
+        無。
+
+    返回：
+        str，ISO 8601 時間字串，例如 `2026-07-13T08:30:00+00:00`。
     """
     return datetime.now(timezone.utc).isoformat()
+
+
+def _包裝雲端技能錯誤(動作: str, 錯誤: Exception) -> dict[str, Any]:
+    """把 BigQuery 技能操作例外轉成 skill_manage 結構化錯誤回應。
+
+    參數：
+        動作: 操作描述（例如「建立技能」），會出現在錯誤訊息中。
+        錯誤: 雲端儲存層拋出的例外。
+
+    返回：
+        dict，含 success=False 與 error 欄位。
+    """
+    return {"success": False, "error": f"{動作}失敗：{錯誤}"}
 
 技能名稱規則 = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 最大技能名稱長度 = 64
@@ -246,7 +262,10 @@ def _建立技能(名稱: str, 內容: str, 分類: str | None = None, user_id: 
     內容 = _寫入技能識別碼(內容, skill_id)
     技能檔路徑: str | None = None
     if 庫 is not None:
-        庫.建立技能(skill_id, 名稱, 內容, 分類, user_id=user_id, 建立時間=產生目前時間字串())
+        try:
+            庫.建立技能(skill_id, 名稱, 內容, 分類, user_id=user_id, 建立時間=產生目前時間字串())
+        except Exception as 錯誤:
+            return _包裝雲端技能錯誤("建立技能", 錯誤)
     else:
         技能目錄 = (使用者技能根目錄() / 分類 / 名稱) if 分類 else (使用者技能根目錄() / 名稱)
         技能目錄.mkdir(parents=True, exist_ok=True)
@@ -274,7 +293,10 @@ def _編輯技能(名稱: str, 內容: str, user_id: str | None = None) -> dict[
         現有識別碼 = 列.get("skill_id")
         if 現有識別碼:
             內容 = _寫入技能識別碼(內容, 現有識別碼)  # 全量改寫不能弄丟身分
-        庫.更新技能內容(現有識別碼, 內容, 產生目前時間字串())
+        try:
+            庫.更新技能內容(現有識別碼, 內容, 產生目前時間字串())
+        except Exception as 錯誤:
+            return _包裝雲端技能錯誤("更新技能", 錯誤)
         return {"success": True, "message": f"技能 '{名稱}' 已更新。", "path": None}
     技能目錄 = _尋找使用者技能(名稱)
     if not 技能目錄:
@@ -316,7 +338,10 @@ def _修補技能(名稱: str, 舊文字: str, 新文字: str | None, 檔案路�
         現有識別碼 = 列.get("skill_id")
         if 現有識別碼:
             替換後 = _寫入技能識別碼(替換後, 現有識別碼)  # 修補不能弄丟身分
-        庫.更新技能內容(現有識別碼, 替換後, 產生目前時間字串())
+        try:
+            庫.更新技能內容(現有識別碼, 替換後, 產生目前時間字串())
+        except Exception as 錯誤:
+            return _包裝雲端技能錯誤("修補技能", 錯誤)
         實際次數 = 次數 if 全部替換 else 1
         return {"success": True, "message": f"已修補技能 '{名稱}' 的 SKILL.md（{實際次數} 處替換）。"}
     技能目錄 = _尋找使用者技能(名稱)
@@ -363,7 +388,10 @@ def _刪除技能(名稱: str, user_id: str | None = None) -> dict[str, Any]:
         skill_id = 列.get("skill_id")
         if skill_id and 技能使用量.是否pin(skill_id):
             return {"success": False, "error": f"技能 '{名稱}' 已被 pin，無法刪除。請先解除 pin（unpin）再刪除。"}
-        庫.刪除技能(skill_id)
+        try:
+            庫.刪除技能(skill_id)
+        except Exception as 錯誤:
+            return _包裝雲端技能錯誤("刪除技能", 錯誤)
         if skill_id:
             技能使用量.遺忘(skill_id)
         return {"success": True, "message": f"技能 '{名稱}' 已刪除。"}

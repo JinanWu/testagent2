@@ -289,10 +289,11 @@ def 執行Skill子命令(參數: argparse.Namespace) -> None:
     參數：
         參數: argparse namespace。
 
-    返回值：None。結果輸出到 stdout。
+    返回：
+        無。結果輸出到 stdout。
     """
     from .工具集 import 技能使用量
-    from .基本工具 import 列出使用者技能身分
+    from .基本工具 import 列出使用者技能身分, _取得雲端技能庫
 
     if 參數.skill_command == "list":
         印出JSON({"skills": 技能使用量.使用量報告()})
@@ -302,8 +303,22 @@ def 執行Skill子命令(參數: argparse.Namespace) -> None:
         印出JSON({"success": True, "curator": 技能策展器.執行策展()})
         return
     if 參數.skill_command in ("pin", "unpin"):
-        身分清單 = 列出使用者技能身分()
-        命中 = next((身分 for 身分 in 身分清單 if 身分.get("name") == 參數.name and 身分.get("skill_id")), None)
+        庫 = _取得雲端技能庫()
+        if 庫 is not None:
+            auth資料 = 讀取Auth檔案()
+            使用者識別碼 = str(auth資料["user_id"]) if auth資料 and auth資料.get("user_id") else None
+            身分清單 = 列出使用者技能身分(user_id=使用者識別碼, 限定使用者=True)
+        else:
+            身分清單 = 列出使用者技能身分()
+        命中清單 = [身分 for 身分 in 身分清單 if 身分.get("name") == 參數.name and 身分.get("skill_id")]
+        if len(命中清單) > 1:
+            印出JSON({
+                "success": False,
+                "error": f"技能名稱 '{參數.name}' 不唯一；請用 skill_id 區分。",
+                "candidates": [{"skill_id": 身分.get("skill_id"), "name": 身分.get("name")} for 身分 in 命中清單],
+            })
+            return
+        命中 = 命中清單[0] if 命中清單 else None
         if not 命中:
             印出JSON({
                 "success": False,

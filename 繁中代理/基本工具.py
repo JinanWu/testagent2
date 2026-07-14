@@ -150,14 +150,19 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
     """列出專案內複製的 Hermes skills。"""
     允許技能集合 = 取得允許技能集合(參數)
     技能清單 = []
-    for 根目錄 in 取得技能根目錄清單(參數):
+    庫 = _取得雲端技能庫()
+    根目錄清單 = 取得技能根目錄清單(參數)
+    if 庫 is not None:
+        # BigQuery 模式：使用者技能只從 BQ 列出，避免本機遷移殘留造成重複
+        使用者根 = 使用者技能根目錄().resolve()
+        根目錄清單 = [根 for 根 in 根目錄清單 if 根.resolve() != 使用者根]
+    for 根目錄 in 根目錄清單:
         if 根目錄.exists():
             for 路徑 in 根目錄.rglob("SKILL.md"):
                 技能名稱 = 路徑.parent.name
                 if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
                     continue
                 技能清單.append({"name": 技能名稱, "path": str(路徑)})
-    庫 = _取得雲端技能庫()
     if 庫 is not None:
         for 列 in 庫.列出技能身分(user_id=參數.get("_current_user_id"), 限定使用者=True):
             技能名稱 = 列.get("name")
@@ -206,16 +211,23 @@ def _取得雲端技能庫():
     return _取得BigQuery技能庫()
 
 
-def 列出使用者技能身分() -> list[dict[str, Any]]:
+def 列出使用者技能身分(user_id: str | None = None, 限定使用者: bool = False) -> list[dict[str, Any]]:
     """列出 user_skill 底下每個技能的 {skill_id, name, path}。
 
     name 為目錄名（LLM 定位用），skill_id 為 frontmatter 的穩定 UUID。供 usage /
     curator 以 skill_id 為 key 運作。bigquery 模式改從 user_skills 表列出（已濾封存）。
+
+    參數：
+        user_id: 擁有者識別碼；`限定使用者=True` 時據此過濾（None 代表 NULL 擁有者）。
+        限定使用者: True 時只列該 user_id 的技能；False 為全域（供策展器/報表）。
+
+    返回：
+        list[dict]，每筆含 skill_id、name、path（BigQuery 模式 path 為 None）。
     """
     庫 = _取得雲端技能庫()
     if 庫 is not None:
         return [{"skill_id": 列.get("skill_id"), "name": 列.get("name"), "path": None}
-                for 列 in 庫.列出技能身分()]
+                for 列 in 庫.列出技能身分(user_id=user_id, 限定使用者=限定使用者)]
     根目錄 = 使用者技能根目錄()
     if not 根目錄.exists():
         return []
