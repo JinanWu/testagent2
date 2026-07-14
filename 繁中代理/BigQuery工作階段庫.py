@@ -897,6 +897,7 @@ class BigQuery工作階段庫:
         """
         from google.cloud import bigquery
 
+        查詢 = 查詢.strip()
         詞清單 = 查詢.split()
         if not 詞清單:
             return []
