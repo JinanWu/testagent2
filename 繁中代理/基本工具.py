@@ -279,15 +279,19 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
 
 
 def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
-    """搜尋 SQLite session history，提供 Hermes-like session_search 四種形狀。"""
+    """搜尋 session history，提供 Hermes-like session_search 四種形狀。
+
+    後端依 STORAGE_BACKEND 由 `建立工作階段庫` 工廠切換（sqlite / bigquery）；
+    搜尋、捲動、讀取全文、瀏覽四種在兩個後端行為一致。
+    """
     from .工作階段上下文 import 讀取目前工作階段資料庫路徑, 讀取目前使用者識別碼
-    from .儲存 import 建立工作階段庫
+    from .儲存 import 建立工作階段庫, 取得儲存後端
 
     限制 = int(參數.get("limit", 3) or 3)
     視窗 = int(參數.get("window", 5) or 5)
     預設DB = 讀取目前工作階段資料庫路徑() or os.getenv("TESTAGENT2_SESSION_DB") or str(Path.home() / ".testagent2" / "sessions.sqlite3")
     資料庫路徑文字 = Path(str(參數.get("db_path") or 預設DB)).expanduser()
-    if not 資料庫路徑文字.exists():
+    if 取得儲存後端() != "bigquery" and not 資料庫路徑文字.exists():
         return {"matches": [], "total_count": 0, "db_path": str(資料庫路徑文字), "error": "session database 不存在"}
     庫 = 建立工作階段庫(資料庫路徑文字)
     工作階段識別碼 = str(參數.get("session_id") or "").strip()
