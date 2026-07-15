@@ -23,7 +23,8 @@ from typing import Any
 
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
-from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱
+from .儲存 import 建立工作階段庫, 建立使用者庫
+from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱, 查詢Gemini上下文長度
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
 from .使用者 import (
     使用者上下文,
@@ -180,13 +181,13 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果輸出到 stdout。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     if 參數.auth_command == "login":
         密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
         使用者 = 使用者庫物件.驗證使用者密碼(參數.username, 密碼)
         舊auth資料 = 讀取Auth檔案()
         if 舊auth資料 and 舊auth資料.get("token"):
-            使用者庫(舊auth資料.get("db_path") or 參數.db).撤銷登入Token(str(舊auth資料["token"]))
+            建立使用者庫(舊auth資料.get("db_path") or 參數.db).撤銷登入Token(str(舊auth資料["token"]))
         token = 使用者庫物件.建立登入Token(str(使用者["id"]))
         路徑 = 寫入Auth檔案(str(使用者["username"]), str(使用者["id"]), token, db_path=參數.db)
         印出JSON({"logged_in": True, "username": 使用者["username"], "user_id": 使用者["id"], "auth_file": str(路徑)})
@@ -195,7 +196,7 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
         auth資料 = 讀取Auth檔案()
         token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
         if auth資料 and auth資料.get("token"):
-            使用者庫(token資料庫路徑 or 參數.db).撤銷登入Token(str(auth資料["token"]))
+            建立使用者庫(token資料庫路徑 or 參數.db).撤銷登入Token(str(auth資料["token"]))
         刪除Auth檔案()
         印出JSON({"logged_out": True})
         return
@@ -206,7 +207,7 @@ def 執行Auth子命令(參數: argparse.Namespace) -> None:
             return
         try:
             token資料庫路徑 = auth資料.get("db_path") or 參數.db
-            上下文 = 使用者庫(token資料庫路徑).驗證登入Token(str(auth資料["token"]))
+            上下文 = 建立使用者庫(token資料庫路徑).驗證登入Token(str(auth資料["token"]))
         except ValueError:
             印出JSON({"logged_in": False})
             return
@@ -222,7 +223,7 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果輸出到 stdout。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     if 參數.users_command == "create":
         密碼 = 參數.password if 參數.password is not None else 讀取密碼輸入()
         使用者 = 使用者庫物件.建立使用者(
@@ -255,6 +256,82 @@ def 執行Users子命令(參數: argparse.Namespace) -> None:
         return
 
 
+def 建立Skill參數解析器() -> argparse.ArgumentParser:
+    """建立 skill 子命令參數解析器（pin / unpin / list）。
+
+    參數：無。
+    返回值：ArgumentParser。管理使用者技能的 pin 狀態與使用量檢視。
+    """
+    說明 = """管理使用者技能的 pin 與使用量
+
+範例：
+  python3 -m 繁中代理.cli skill list
+  python3 -m 繁中代理.cli skill pin <技能名>
+  python3 -m 繁中代理.cli skill unpin <技能名>
+
+pin 住的技能不會被 skill_manage(delete) 刪除，也不會被 Curator 自動搬去封存。
+技能名為 assets/user_skill 底下的技能目錄名。
+"""
+    解析器 = argparse.ArgumentParser(prog="python3 -m 繁中代理.cli skill", description=說明, formatter_class=argparse.RawDescriptionHelpFormatter)
+    子命令 = 解析器.add_subparsers(dest="skill_command", required=True)
+    pin解析器 = 子命令.add_parser("pin", help="pin 一個技能（禁止刪除與自動搬移）")
+    pin解析器.add_argument("name", help="技能名（user_skill 目錄名）")
+    unpin解析器 = 子命令.add_parser("unpin", help="解除技能 pin")
+    unpin解析器.add_argument("name", help="技能名")
+    子命令.add_parser("list", help="列出使用者技能與 pin / state / 使用量")
+    子命令.add_parser("curate", help="執行 Curator：彙總事件 + 生命週期轉移（跳過 pinned）")
+    return 解析器
+
+
+def 執行Skill子命令(參數: argparse.Namespace) -> None:
+    """執行 skill 子命令。
+
+    參數：
+        參數: argparse namespace。
+
+    返回：
+        無。結果輸出到 stdout。
+    """
+    from .工具集 import 技能使用量
+    from .基本工具 import 列出使用者技能身分, _取得雲端技能庫
+
+    if 參數.skill_command == "list":
+        印出JSON({"skills": 技能使用量.產生技能使用量報告()})
+        return
+    if 參數.skill_command == "curate":
+        from .工具集 import 技能策展器
+        印出JSON({"success": True, "curator": 技能策展器.執行策展()})
+        return
+    if 參數.skill_command in ("pin", "unpin"):
+        庫 = _取得雲端技能庫()
+        if 庫 is not None:
+            auth資料 = 讀取Auth檔案()
+            使用者識別碼 = str(auth資料["user_id"]) if auth資料 and auth資料.get("user_id") else None
+            身分清單 = 列出使用者技能身分(user_id=使用者識別碼, 限定使用者=True)
+        else:
+            身分清單 = 列出使用者技能身分()
+        命中清單 = [身分 for 身分 in 身分清單 if 身分.get("name") == 參數.name and 身分.get("skill_id")]
+        if len(命中清單) > 1:
+            印出JSON({
+                "success": False,
+                "error": f"技能名稱 '{參數.name}' 不唯一；請用 skill_id 區分。",
+                "candidates": [{"skill_id": 身分.get("skill_id"), "name": 身分.get("name")} for 身分 in 命中清單],
+            })
+            return
+        命中 = 命中清單[0] if 命中清單 else None
+        if not 命中:
+            印出JSON({
+                "success": False,
+                "error": f"找不到使用者技能 '{參數.name}'。",
+                "available": sorted(身分.get("name") for 身分 in 身分清單),
+            })
+            return
+        要pin = 參數.skill_command == "pin"
+        技能使用量.設定技能Pin(命中["skill_id"], 要pin)
+        印出JSON({"success": True, "name": 參數.name, "skill_id": 命中["skill_id"], "pinned": 要pin})
+        return
+
+
 def 建立參數解析器() -> argparse.ArgumentParser:
     """建立一般 agent CLI 參數解析器。
 
@@ -267,6 +344,7 @@ def 建立參數解析器() -> argparse.ArgumentParser:
   python3 -m 繁中代理.cli --help
   python3 -m 繁中代理.cli users --help
   python3 -m 繁中代理.cli auth --help
+  python3 -m 繁中代理.cli skill --help
   python3 -m 繁中代理.cli users create alice --password <密碼> --workdirs /path/to/repo
   python3 -m 繁中代理.cli auth login alice
   python3 -m 繁中代理.cli --session demo "請讀取 README"
@@ -348,6 +426,19 @@ def 解析執行模型名稱(模式: str, 模型名稱: str) -> str:
     return 模型名稱
 
 
+def 是否BigQuery後端() -> bool:
+    """目前儲存後端是否為 BigQuery（雲端）。
+
+    BQ 模式下所有啟動共用同一個雲端 dataset，本機 sqlite 路徑與登入身分無關，
+    故 auth 的「token 綁它建立時的 DB 路徑」檢查在此模式應略過，直接驗 token。
+
+    參數：無。
+    返回值：bool。
+    """
+    from .儲存 import 取得儲存後端
+    return 取得儲存後端() == "bigquery"
+
+
 def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上下文:
     """依 CLI 參數與本機 auth token 解析目前使用者。
 
@@ -357,7 +448,7 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
     返回值：
         使用者上下文。若要求登入但無 token，會中止程式。
     """
-    使用者庫物件 = 使用者庫(參數.db)
+    使用者庫物件 = 建立使用者庫(參數.db)
     auth資料 = 讀取Auth檔案()
     要求登入 = os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1"
     if 要求登入:
@@ -388,12 +479,15 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
                 is_admin=False,
             )
     if auth資料 and auth資料.get("token"):
-        token資料庫路徑 = auth資料.get("db_path")
-        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
-        if token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() != 目前資料庫路徑:
-            return 建立預設使用者上下文(參數.workdir)
-        if not token資料庫路徑 and 目前資料庫路徑 != Path(預設資料庫路徑).expanduser().resolve():
-            return 建立預設使用者上下文(參數.workdir)
+        # SQLite 模式：token 綁它建立時的 DB 檔案，路徑不符就當未登入（走匿名預設）。
+        # BQ 模式：與本機 sqlite 路徑無關，略過路徑比對直接驗 token。
+        if not 是否BigQuery後端():
+            token資料庫路徑 = auth資料.get("db_path")
+            目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+            if token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() != 目前資料庫路徑:
+                return 建立預設使用者上下文(參數.workdir)
+            if not token資料庫路徑 and 目前資料庫路徑 != Path(預設資料庫路徑).expanduser().resolve():
+                return 建立預設使用者上下文(參數.workdir)
         try:
             return 使用者庫物件.驗證登入Token(str(auth資料["token"]))
         except ValueError:
@@ -413,6 +507,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
     """
     模型設定 = 解析模型設定(參數, 解析器)
     執行模型名稱 = 解析執行模型名稱(參數.mode, 參數.model)
+    上下文長度 = 解析上下文長度(參數.mode, 執行模型名稱)
     模型設定.setdefault("requested_model", 參數.model)
     模型設定.setdefault("resolved_model", 執行模型名稱)
     模型供應商物件 = 建立模型供應商(參數.mode, 執行模型名稱)
@@ -433,7 +528,27 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
         摘要失敗是否中止=參數.abort_on_summary_failure or 解析摘要失敗是否中止(),
         壓縮模式=參數.compression_mode,
         壓縮模型=參數.compression_model,
+        上下文長度=上下文長度,
     )
+
+
+def 解析上下文長度(模式: str, 模型名稱: str) -> int:
+    """決定壓縮門檻用的 context window 長度。
+
+    壓縮門檻 = context window × 觸發比例（預設 0.5）。若沿用舊預設 32768，門檻只有
+    16384，光是系統提示詞＋工具 schema 的固定開銷就逼近門檻，會在對話極早期就誤觸壓縮。
+
+    參數：
+        模式: 模型模式（fake / gemini）。
+        模型名稱: 已正規化的執行模型名稱。
+    返回值：int，context window token 數。
+    """
+    覆寫 = (os.getenv("AIAGENT_CONTEXT_WINDOW") or "").strip()
+    if 覆寫.isdigit() and int(覆寫) > 0:
+        return int(覆寫)
+    if 模式 == "fake":
+        return 32768
+    return 查詢Gemini上下文長度(模型名稱)
 
 
 def 印出JSON(資料: Any) -> None:
@@ -553,7 +668,7 @@ def 執行Sessions子命令(參數: argparse.Namespace) -> None:
 
     返回值：None。結果會輸出到 stdout 或寫入指定檔案。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     if not getattr(參數, "user_id", None):
         參數.user_id = 解析目前使用者上下文(argparse.Namespace(db=參數.db, workdir=os.getcwd(), user_id=None)).user_id
     if 參數.sessions_command == "list":
@@ -638,7 +753,7 @@ class 互動CLI:
         """
         self.參數 = 參數
         self.解析器 = 解析器
-        self.工作階段庫物件 = 工作階段庫(參數.db)
+        self.工作階段庫物件 = 建立工作階段庫(參數.db)
         self.執行階段 = 建立執行階段(參數, self.工作階段庫物件, 解析器)
         self.目前工作階段識別碼 = 參數.session
         if 參數.resume or 參數.continue_session:
@@ -911,20 +1026,17 @@ class 互動CLI:
             print(f"{i:>3}. {訊息.get('role', '?'):<9} {取訊息摘要(訊息, 長度=120)}")
 
     def 取得最後User訊息列(self) -> dict[str, Any] | None:
-        """讀取目前 session 最後一則 active user message row。
+        """讀取目前 session 最後一則 active user message（後端無關）。
+
+        委派 store 的 `取得最後作用中User訊息`，讓 SQLite / BigQuery 各自實作；
+        回傳的 `id` 即該後端 `rewind到訊息` 需要的錨點（SQLite=rowid、BQ=message_index）。
 
         參數：無。
         返回值：dict | None。包含 id 與 content；沒有目前 session 或 user row 時回傳 None。
         """
         if not self.目前工作階段識別碼:
             return None
-        self.工作階段庫物件.檢查工作階段存取(self.目前工作階段識別碼, user_id=self.參數.user_id)
-        with self.工作階段庫物件._鎖:
-            row = self.工作階段庫物件.連線.execute(
-                "SELECT id, content FROM messages WHERE session_id=? AND active=1 AND role='user' ORDER BY id DESC LIMIT 1",
-                (self.目前工作階段識別碼,),
-            ).fetchone()
-        return dict(row) if row else None
+        return self.工作階段庫物件.取得最後作用中User訊息(self.目前工作階段識別碼, user_id=self.參數.user_id)
 
     def 命令Retry(self) -> None:
         """處理 /retry 命令。
@@ -1018,7 +1130,7 @@ def 執行一次性操作(參數: argparse.Namespace, 解析器: argparse.Argume
 
     返回值：bool。True 表示已處理並可結束程式；False 表示應進入 chat/REPL。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     if 參數.resume or 參數.continue_session:
         參照 = 參數.resume or 參數.continue_session
         解析後 = 解析工作階段參照(工作階段庫物件, 參照, include_archived=參數.include_archived, source=參數.source, user_id=參數.user_id)
@@ -1057,7 +1169,7 @@ def 執行單次訊息(參數: argparse.Namespace, 解析器: argparse.ArgumentP
 
     返回值：None。最終回答會輸出到 stdout。
     """
-    工作階段庫物件 = 工作階段庫(參數.db)
+    工作階段庫物件 = 建立工作階段庫(參數.db)
     執行階段 = 建立執行階段(參數, 工作階段庫物件, 解析器)
     訊息 = 參數.query or 參數.message
     結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼=參數.session)
@@ -1071,6 +1183,10 @@ def 執行主程式() -> None:
     參數：無。
     返回值：None。依參數執行 sessions 子命令、一次性 prompt 或互動 REPL。
     """
+    # 先載入 .env，讓下方各 argparse 的 default（os.getenv("AIAGENT_MODEL") 等）
+    # 讀得到 .env 值；否則 .env 只會在 runtime 延遲載入，模型 default 會 fallback。
+    from .環境設定 import 載入本機環境檔
+    載入本機環境檔()
     if len(sys.argv) > 1 and sys.argv[1] == "sessions":
         sessions解析器 = 建立Sessions參數解析器()
         參數 = sessions解析器.parse_args(sys.argv[2:])
@@ -1086,14 +1202,23 @@ def 執行主程式() -> None:
         參數 = users解析器.parse_args(sys.argv[2:])
         執行Users子命令(參數)
         return
+    if len(sys.argv) > 1 and sys.argv[1] == "skill":
+        skill解析器 = 建立Skill參數解析器()
+        參數 = skill解析器.parse_args(sys.argv[2:])
+        執行Skill子命令(參數)
+        return
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args()
     if not 參數.user_id:
         一次性Session操作 = bool(參數.archive_session or 參數.unarchive_session or 參數.session_search)
         auth資料 = 讀取Auth檔案()
-        token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
-        目前資料庫路徑 = Path(參數.db).expanduser().resolve()
-        auth符合目前DB = bool(auth資料 and auth資料.get("token") and ((token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() == 目前資料庫路徑) or (not token資料庫路徑 and 目前資料庫路徑 == Path(預設資料庫路徑).expanduser().resolve())))
+        有token = bool(auth資料 and auth資料.get("token"))
+        if 是否BigQuery後端():
+            auth符合目前DB = 有token
+        else:
+            token資料庫路徑 = auth資料.get("db_path") if auth資料 else None
+            目前資料庫路徑 = Path(參數.db).expanduser().resolve()
+            auth符合目前DB = bool(有token and ((token資料庫路徑 and Path(token資料庫路徑).expanduser().resolve() == 目前資料庫路徑) or (not token資料庫路徑 and 目前資料庫路徑 == Path(預設資料庫路徑).expanduser().resolve())))
         if not 一次性Session操作 or auth符合目前DB or os.getenv("TESTAGENT2_REQUIRE_LOGIN") == "1":
             使用者上下文物件 = 解析目前使用者上下文(參數)
             參數.user_id = 使用者上下文物件.user_id

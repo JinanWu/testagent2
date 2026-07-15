@@ -4,9 +4,34 @@
 只驗證 OpenAI-compatible message 到 adapter 的基本轉換可被匯入。
 """
 
-from 繁中代理.cli import 建立參數解析器, 建立執行階段
+from 繁中代理.cli import 建立參數解析器, 建立執行階段, 解析上下文長度
 from 繁中代理.工作階段庫 import 工作階段庫
-from 繁中代理.模型供應商 import GeminiADC供應商, 正規化Gemini模型名稱
+from 繁中代理.模型供應商 import GeminiADC供應商, 正規化Gemini模型名稱, 查詢Gemini上下文長度
+
+
+def test_查詢Gemini上下文長度_依模型查表():
+    """確認壓縮門檻會依實際模型 context window 查表，而非 gemini 模式一律 1M。"""
+    assert 查詢Gemini上下文長度("gemini-2.5-flash-lite") == 1_048_576
+    assert 查詢Gemini上下文長度("gemini-flash-lite") == 1_048_576
+    assert 查詢Gemini上下文長度("gemini-1.0-pro") == 32_768
+    assert 查詢Gemini上下文長度("gemini-1.5-pro") == 2_097_152
+
+
+def test_解析上下文長度_依執行模型名稱(monkeypatch):
+    """確認 CLI 層會把已正規化的模型名稱傳入上下文長度解析。"""
+    monkeypatch.delenv("AIAGENT_CONTEXT_WINDOW", raising=False)
+    assert 解析上下文長度("gemini", "gemini-1.0-pro") == 32_768
+    assert 解析上下文長度("gemini", "gemini-2.5-flash-lite") == 1_048_576
+    assert 解析上下文長度("fake", "anything") == 32_768
+
+
+def test_cli_建立runtime_上下文長度依模型(tmp_path, monkeypatch):
+    """確認建立 runtime 時壓縮器會帶入模型對應的 context window。"""
+    monkeypatch.delenv("AIAGENT_CONTEXT_WINDOW", raising=False)
+    解析器 = 建立參數解析器()
+    參數 = 解析器.parse_args(["--mode", "gemini", "--model", "gemini-1.0-pro", "hello"])
+    runtime = 建立執行階段(參數, 工作階段庫(tmp_path / "sessions.sqlite3"), 解析器)
+    assert runtime.上下文壓縮器物件.上下文長度 == 32_768
 
 
 def test_gemini_adapter_可建立並保留設定():
@@ -58,3 +83,25 @@ def test_cli_建立runtime前正規化模型名稱(tmp_path):
     assert runtime.模型名稱 == "gemini-2.5-flash-lite"
     assert runtime.model_config["requested_model"] == "gemini-flash-lite"
     assert runtime.model_config["resolved_model"] == "gemini-2.5-flash-lite"
+
+
+def test_gemini_adapter_平行工具呼叫的函數回應合併為單一Content():
+    """平行 tool_calls：多個 tool 回應要合併成單一 user Content，函數回應數需等於
+    前一個 model turn 的 function_call 數(Gemini 硬性要求,否則回 400)。"""
+    provider = GeminiADC供應商("gemini-2.5-flash-lite", "lab-cola-rd", "global")
+    訊息清單 = [
+        {"role": "user", "content": "建立技能"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"id": "c1", "type": "function", "function": {"name": "skill_manage", "arguments": "{}"}},
+            {"id": "c2", "type": "function", "function": {"name": "clarify", "arguments": "{}"}},
+        ]},
+        {"role": "tool", "tool_call_id": "c1", "name": "skill_manage", "content": '{"success": true}'},
+        {"role": "tool", "tool_call_id": "c2", "name": "clarify", "content": '{"success": true}'},
+    ]
+    contents = provider.轉成Gemini內容(訊息清單)
+    # 找到 model turn 的 function_call 數,與其後 user turn 的 function_response 數
+    model_fc = next(sum(1 for p in c.parts if getattr(p, "function_call", None)) for c in contents if c.role == "model")
+    fr_contents = [c for c in contents if any(getattr(p, "function_response", None) for p in c.parts)]
+    assert model_fc == 2
+    assert len(fr_contents) == 1, "兩個函數回應應合併成單一 Content,而非兩個"
+    assert sum(1 for p in fr_contents[0].parts if getattr(p, "function_response", None)) == 2

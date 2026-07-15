@@ -94,6 +94,40 @@ Session 儲存層已整理成獨立說明：
 
 內容涵蓋 append-first messages、compression session split、FTS / `session_search`、metadata、usage counters、rewind soft-delete、CLI 用法、測試與目前仍未達 Hermes parity 的差距。
 
+## 儲存後端切換（SQLite / BigQuery）
+
+儲存後端由環境變數 `STORAGE_BACKEND` 決定，可寫在專案根目錄 `.env`。上層程式碼一律透過 `繁中代理/儲存.py` 的工廠（`建立工作階段庫` / `建立使用者庫`）取得儲存物件，切換後端不需改動呼叫端。
+
+```bash
+STORAGE_BACKEND=sqlite     # 地端開發（預設）：全部存本機 SQLite
+STORAGE_BACKEND=bigquery   # 雲端：核心資料改存 BigQuery
+```
+
+各表歸屬：
+
+| 表 | `sqlite` 模式 | `bigquery` 模式 |
+| --- | --- | --- |
+| `sessions` / `messages` / `session_usage_events` | 本機 SQLite | **BigQuery** |
+| `users` / `user_settings` / `auth_sessions` | 本機 SQLite | **BigQuery** |
+| `compression_locks`、FTS、`state_meta`、`schema_version` | 本機 SQLite | **仍本機 SQLite** |
+
+- 用量 token 在 BigQuery 模式改為獨立的 append-only 表 `session_usage_events`（每次模型呼叫 INSERT 一列、不累加；總量由查詢時 `SUM` 得出）。
+- 壓縮鎖不進 BigQuery（無交易/原子性），委派本機 SQLite。
+
+
+BigQuery 相關環境變數（沿用 `管理部_bigquery` 的 `.env` 載入）：
+
+```bash
+export CORE_BQ_PROJECT=lab-cola-rd    # 必填：BigQuery 專案
+export CORE_BQ_DATASET=agent_core     # dataset，預設 agent_core
+# export CORE_BQ_LOCATION=US           # 可選 job location
+export CORE_BQ_SKIP_DDL=1             # 表已建好時跳過啟動建表，加速；新建/改 schema 時改回 0
+```
+
+使用前需完成 `gcloud auth application-default login`，並確保帳號對 `CORE_BQ_PROJECT` 有 BigQuery 權限。
+
+
+
 ## 測試
 
 ```bash

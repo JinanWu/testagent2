@@ -122,6 +122,50 @@ def 正規化Gemini模型名稱(模型名稱: str) -> str:
     return 別名表.get(模型名稱, 模型名稱)
 
 
+Gemini模型上下文長度表: dict[str, int] = {
+    "gemini-2.5-flash-lite": 1_048_576,
+    "gemini-2.5-flash": 1_048_576,
+    "gemini-2.5-pro": 1_048_576,
+    "gemini-2.0-flash": 1_048_576,
+    "gemini-2.0-flash-lite": 1_048_576,
+    "gemini-1.5-flash": 1_048_576,
+    "gemini-1.5-flash-8b": 1_048_576,
+    "gemini-1.5-flash-002": 1_048_576,
+    "gemini-1.5-pro": 2_097_152,
+    "gemini-1.5-pro-002": 2_097_152,
+    "gemini-1.0-pro": 32_768,
+    "gemini-1.0-pro-001": 32_768,
+    "gemini-1.0-pro-002": 32_768,
+    "gemini-pro": 32_768,
+}
+Gemini預設上下文長度 = 1_048_576
+
+
+def 查詢Gemini上下文長度(模型名稱: str) -> int:
+    """依 Gemini 模型 ID 查詢 context window 長度。
+
+    參數：
+        模型名稱: 使用者或環境變數提供的模型名稱，會先經別名正規化。
+
+    返回值：
+        int，context window token 數。
+    """
+    正式名稱 = 正規化Gemini模型名稱(模型名稱)
+    if 正式名稱 in Gemini模型上下文長度表:
+        return Gemini模型上下文長度表[正式名稱]
+    底線名稱 = 正式名稱.replace(".", "_")
+    if 底線名稱 in Gemini模型上下文長度表:
+        return Gemini模型上下文長度表[底線名稱]
+    小寫 = 正式名稱.lower()
+    if "1.0" in 小寫 or 小寫 == "gemini-pro":
+        return 32_768
+    if "1.5-pro" in 小寫:
+        return 2_097_152
+    if any(標記 in 小寫 for 標記 in ("1.5", "2.0", "2.5")):
+        return 1_048_576
+    return Gemini預設上下文長度
+
+
 class GeminiADC供應商:
     """使用 gcloud ADC/Vertex AI Gemini 的 provider adapter。
 
@@ -180,8 +224,27 @@ class GeminiADC供應商:
         from google.genai import types
 
         內容清單: list[Any] = []
+        # 連續的 tool 回應要合併成「單一個」user Content，函數回應數才會等於前一個
+        # model turn 的 function_call 數（平行工具呼叫時 Gemini 硬性要求）。
+        待沖函數回應: list[Any] = []
+
+        def 沖出函數回應() -> None:
+            if 待沖函數回應:
+                內容清單.append(types.Content(role="user", parts=待沖函數回應[:]))
+                待沖函數回應.clear()
+
         for 訊息 in 訊息清單:
             角色 = 訊息.get("role")
+            if 角色 == "tool":
+                名稱 = 訊息.get("name") or "tool"
+                try:
+                    工具結果 = json.loads(str(訊息.get("content", "{}")))
+                except Exception:
+                    工具結果 = {"content": str(訊息.get("content", ""))}
+                待沖函數回應.append(types.Part(function_response=types.FunctionResponse(name=名稱, response=工具結果)))
+                continue
+            # 非 tool 訊息：先把累積的函數回應沖成一個 Content，再處理本則
+            沖出函數回應()
             if 角色 == "system":
                 內容清單.append(types.Content(role="user", parts=[types.Part(text=f"[System]\n{訊息.get('content', '')}")]))
             elif 角色 == "user":
@@ -199,13 +262,7 @@ class GeminiADC供應商:
                     內容清單.append(types.Content(role="model", parts=零件清單))
                 else:
                     內容清單.append(types.Content(role="model", parts=[types.Part(text=str(訊息.get("content", "")))]))
-            elif 角色 == "tool":
-                名稱 = 訊息.get("name") or "tool"
-                try:
-                    工具結果 = json.loads(str(訊息.get("content", "{}")))
-                except Exception:
-                    工具結果 = {"content": str(訊息.get("content", ""))}
-                內容清單.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(name=名稱, response=工具結果))]))
+        沖出函數回應()  # 收尾：歷史以 tool 回應結束時也要沖出
         return 內容清單
 
     def 轉成Gemini工具(self, 工具清單: list[dict[str, Any]]) -> list[Any]:

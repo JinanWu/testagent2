@@ -35,6 +35,7 @@ from .提示詞常數 import (
     技能管理指引,
     記憶工具指引,
     電腦操作指引,
+    誠實回報指引,
     預設代理身份,
 )
 
@@ -191,6 +192,8 @@ class 提示詞組裝器:
             模型小寫 = self.設定.模型名稱.lower()
             if "gemini" in 模型小寫 or "gemma" in 模型小寫:
                 穩定區塊.append(Google模型操作指引)
+                # gemini 拿不到 執行紀律指引，改補自訂誠實/grounding 條款，避免工具失敗時仍謊稱成功。
+                穩定區塊.append(誠實回報指引)
             if any(片段 in 模型小寫 for 片段 in ["gpt", "codex", "grok"]):
                 穩定區塊.append(執行紀律指引)
         if {"skills_list", "skill_view", "skill_manage"}.intersection(工具名稱集合):

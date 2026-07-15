@@ -17,9 +17,10 @@ from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.工作階段上下文 import 設定目前使用者, 設定目前工作階段資料庫路徑, 讀取目前使用者識別碼
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import 假模型供應商
+from 繁中代理 import 基本工具
 from 繁中代理.基本工具 import 搜尋工作階段工具
 from 繁中代理.工具註冊 import 建立預設工具登錄器
-from 繁中代理.使用者 import 使用者上下文, 使用者庫, 預設登入Token有效秒數, 雜湊Token
+from 繁中代理.使用者 import 使用者上下文, 使用者庫, 建立預設使用者上下文, 預設登入Token有效秒數, 雜湊Token
 
 專案根目錄 = Path(__file__).resolve().parents[1]
 
@@ -131,6 +132,31 @@ def test_empty_skill_roots不fallback到內建技能(tmp_path):
     結果 = json.loads(runtime.工具登錄器物件.呼叫工具("skills_list", {}))
     assert 結果["success"] is True
     assert 結果["result"]["skills"] == []
+
+
+def test_skill_roots為None時技能摘要納入user_skill(tmp_path, monkeypatch):
+    """確認 admin fallback（skill_roots=None）時 prompt 索引包含 user_skill。"""
+    內建根 = tmp_path / "hermes_skills"
+    使用者根 = tmp_path / "user_skill"
+    內建根.mkdir()
+    使用者根.mkdir()
+    寫入技能(使用者根, "custom", "my-flow", "使用者自訂流程")
+    monkeypatch.setattr(基本工具, "內建技能根目錄", lambda: 內建根)
+    monkeypatch.setattr(基本工具, "使用者技能根目錄", lambda: 使用者根)
+
+    runtime = 代理執行階段(
+        工作階段庫(tmp_path / "default-skills.sqlite3"),
+        假模型供應商(),
+        "fake",
+        供應商名稱="fake",
+        工作目錄=str(tmp_path),
+        使用者上下文物件=建立預設使用者上下文(tmp_path),
+    )
+    摘要 = runtime.建立技能摘要()
+
+    assert "<available_skills>" in 摘要
+    assert "- my-flow" in 摘要
+    assert "使用者自訂流程" in 摘要
 
 
 def test_多個skill_roots只產生單一技能提示區塊並去重(tmp_path):

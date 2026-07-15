@@ -111,10 +111,30 @@ def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
     return {"output": 完成程序.stdout[-12000:], "exit_code": 完成程序.returncode}
 
 
+def 內建技能根目錄() -> Path:
+    """回傳專案內建（唯讀）Hermes 技能根目錄。"""
+    return Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"
+
+
+def 使用者技能根目錄() -> Path:
+    """回傳使用者技能（可寫）根目錄。
+
+    代理透過 skill_manage 建立/修改/刪除的技能都存在這裡；本地測試用，
+    日後可改接 BigQuery。
+    """
+    return Path(__file__).resolve().parents[1] / "assets" / "user_skill"
+
+
 def 取得技能根目錄清單(參數: dict[str, Any]) -> list[Path]:
-    """取得目前使用者允許的技能根目錄。"""
+    """取得目前使用者允許的技能根目錄。
+
+    多租戶隔離：一旦使用者明確設定 skill_roots（含空清單），就只回傳使用者
+    指定的根目錄，不混入全域技能。其餘情況（admin 的 `*` 語意或本地 admin
+    fallback，`_skill_roots is None`）回傳內建技能 + 使用者可寫技能根目錄，
+    讓 skill_manage 建立的技能能在本地被看見。
+    """
     if "_skill_roots" in 參數 and 參數.get("_skill_roots") is None:
-        return [Path(__file__).resolve().parents[1] / "assets" / "hermes_skills"]
+        return [內建技能根目錄(), 使用者技能根目錄()]
     return [Path(str(路徑)).expanduser().resolve() for 路徑 in (參數.get("_skill_roots") or [])]
 
 
@@ -130,18 +150,121 @@ def 列出技能(參數: dict[str, Any]) -> dict[str, Any]:
     """列出專案內複製的 Hermes skills。"""
     允許技能集合 = 取得允許技能集合(參數)
     技能清單 = []
-    for 根目錄 in 取得技能根目錄清單(參數):
+    庫 = _取得雲端技能庫()
+    根目錄清單 = 取得技能根目錄清單(參數)
+    if 庫 is not None:
+        # BigQuery 模式：使用者技能只從 BQ 列出，避免本機遷移殘留造成重複
+        使用者根 = 使用者技能根目錄().resolve()
+        根目錄清單 = [根 for 根 in 根目錄清單 if 根.resolve() != 使用者根]
+    for 根目錄 in 根目錄清單:
         if 根目錄.exists():
             for 路徑 in 根目錄.rglob("SKILL.md"):
                 技能名稱 = 路徑.parent.name
                 if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
                     continue
                 技能清單.append({"name": 技能名稱, "path": str(路徑)})
+    if 庫 is not None:
+        for 列 in 庫.列出技能身分(user_id=參數.get("_current_user_id"), 限定使用者=True):
+            技能名稱 = 列.get("name")
+            if 允許技能集合 is not None and 技能名稱 not in 允許技能集合:
+                continue
+            技能清單.append({"name": 技能名稱, "path": None})
     return {"skills": 技能清單[:200], "total_count": len(技能清單)}
 
 
+def 讀取技能識別碼(skill_md路徑: Path) -> str | None:
+    """讀取 SKILL.md frontmatter 的 `id` 欄位（技能的穩定 skill_id）。
+
+    內建技能沒有 id → 回傳 None。使用者技能由 skill_manage(create) 在建立時
+    注入 UUID。
+    """
+    try:
+        文字 = skill_md路徑.read_text(encoding="utf-8", errors="replace")[:4000]
+    except OSError:
+        return None
+    在frontmatter = False
+    for 行 in 文字.split("\n"):
+        剝除 = 行.strip()
+        if 剝除 == "---":
+            if 在frontmatter:
+                break
+            在frontmatter = True
+            continue
+        if 在frontmatter:
+            匹配 = re.match(r"^\s*id\s*:\s*(.+)$", 行)
+            if 匹配:
+                return 匹配.group(1).strip().strip("\"'")
+    return None
+
+
+# 相容 feature/skill-manage-usage 合併前的公開名稱。
+讀取技能skill_id = 讀取技能識別碼
+
+
+def _取得雲端技能庫():
+    """取得目前後端對應的雲端技能庫實例（維持單一分流來源）。
+
+    沿用 `技能使用量._取得BigQuery技能庫()` 的判斷：`STORAGE_BACKEND=bigquery`
+    時回傳 BigQuery 技能庫，否則回傳 None（表示改走本機硬碟）。此處採用延遲
+    匯入（lazy import），以避免 基本工具 ←→ 技能使用量 之間的模組層循環匯入。
+
+    參數：無。
+    返回值：BigQuery技能庫 實例；sqlite 模式時為 None。
+    """
+    from .工具集.技能使用量 import _取得BigQuery技能庫
+    return _取得BigQuery技能庫()
+
+
+def 列出使用者技能身分(user_id: str | None = None, 限定使用者: bool = False) -> list[dict[str, Any]]:
+    """列出 user_skill 底下每個技能的 {skill_id, name, path}。
+
+    name 為目錄名（LLM 定位用），skill_id 為 frontmatter 的穩定 UUID。供 usage /
+    curator 以 skill_id 為 key 運作。bigquery 模式改從 user_skills 表列出（已濾封存）。
+
+    參數：
+        user_id: 擁有者識別碼；`限定使用者=True` 時據此過濾（None 代表 NULL 擁有者）。
+        限定使用者: True 時只列該 user_id 的技能；False 為全域（供策展器/報表）。
+
+    返回：
+        list[dict]，每筆含 skill_id、name、path（BigQuery 模式 path 為 None）。
+    """
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        return [{"skill_id": 列.get("skill_id"), "name": 列.get("name"), "path": None}
+                for 列 in 庫.列出技能身分(user_id=user_id, 限定使用者=限定使用者)]
+    根目錄 = 使用者技能根目錄()
+    if not 根目錄.exists():
+        return []
+    清單: list[dict[str, Any]] = []
+    for skill_md in 根目錄.rglob("SKILL.md"):
+        相對 = skill_md.relative_to(根目錄)
+        if 相對.parts and 相對.parts[0].startswith("."):
+            continue
+        清單.append({
+            "skill_id": 讀取技能識別碼(skill_md),
+            "name": skill_md.parent.name,
+            "path": str(skill_md),
+        })
+    return 清單
+
+
+def _記錄技能使用事件(skill_md路徑: Path, 參數: dict[str, Any]) -> None:
+    """best-effort 記錄一筆技能使用事件（以 skill_id 為 key）；失敗不影響 skill_view。
+
+    只有帶 skill_id 的技能（= 使用者技能）會記；內建技能沒有 id，自然略過。
+    """
+    try:
+        skill_id = 讀取技能識別碼(skill_md路徑)
+        if not skill_id:
+            return
+        from .工具集.技能使用事件 import 記錄技能使用事件
+        記錄技能使用事件(skill_id, 參數.get("_current_user_id"))
+    except Exception:
+        pass
+
+
 def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
-    """依技能名稱讀取 SKILL.md 內容。"""
+    """依技能名稱讀取 SKILL.md 內容，並記錄一筆使用事件（以 skill_id 為 key）。"""
     名稱 = str(參數.get("name", ""))
     允許技能集合 = 取得允許技能集合(參數)
     if 允許技能集合 is not None and 名稱 not in 允許技能集合:
@@ -152,22 +275,41 @@ def 讀取技能(參數: dict[str, Any]) -> dict[str, Any]:
                 實際名稱 = 路徑.parent.name
                 if 允許技能集合 is not None and 實際名稱 not in 允許技能集合:
                     raise PermissionError(f"使用者無權讀取技能：{實際名稱}")
-                return {"name": 名稱, "path": str(路徑), "content": 路徑.read_text(encoding="utf-8", errors="replace")[:50000]}
+                內容 = 路徑.read_text(encoding="utf-8", errors="replace")[:50000]
+                _記錄技能使用事件(路徑, 參數)  # best-effort，成功讀到才記
+                return {"name": 名稱, "path": str(路徑), "content": 內容}
+    # bigquery 模式：硬碟只有內建技能；使用者技能改從 user_skills 表讀
+    庫 = _取得雲端技能庫()
+    if 庫 is not None:
+        列 = 庫.讀取技能內容(名稱, user_id=參數.get("_current_user_id"), 限定使用者=True)
+        if 列:
+            skill_id = 列.get("skill_id")
+            if skill_id:  # best-effort 記一筆使用事件（以 skill_id 為 key）
+                try:
+                    from .工具集.技能使用事件 import 記錄事件
+                    記錄事件(skill_id, 參數.get("_current_user_id"))
+                except Exception:
+                    pass
+            return {"name": 名稱, "path": None, "content": str(列.get("content") or "")[:50000]}
     raise FileNotFoundError(f"找不到技能：{名稱}")
 
 
 def 搜尋工作階段工具(參數: dict[str, Any]) -> dict[str, Any]:
-    """搜尋 SQLite session history，提供 Hermes-like session_search 四種形狀。"""
+    """搜尋 session history，提供 Hermes-like session_search 四種形狀。
+
+    後端依 STORAGE_BACKEND 由 `建立工作階段庫` 工廠切換（sqlite / bigquery）；
+    搜尋、捲動、讀取全文、瀏覽四種在兩個後端行為一致。
+    """
     from .工作階段上下文 import 讀取目前工作階段資料庫路徑, 讀取目前使用者識別碼
-    from .工作階段庫 import 工作階段庫
+    from .儲存 import 建立工作階段庫, 取得儲存後端
 
     限制 = int(參數.get("limit", 3) or 3)
     視窗 = int(參數.get("window", 5) or 5)
     預設DB = 讀取目前工作階段資料庫路徑() or os.getenv("TESTAGENT2_SESSION_DB") or str(Path.home() / ".testagent2" / "sessions.sqlite3")
     資料庫路徑文字 = Path(str(參數.get("db_path") or 預設DB)).expanduser()
-    if not 資料庫路徑文字.exists():
+    if 取得儲存後端() != "bigquery" and not 資料庫路徑文字.exists():
         return {"matches": [], "total_count": 0, "db_path": str(資料庫路徑文字), "error": "session database 不存在"}
-    庫 = 工作階段庫(資料庫路徑文字)
+    庫 = 建立工作階段庫(資料庫路徑文字)
     工作階段識別碼 = str(參數.get("session_id") or "").strip()
     錨點訊息識別碼 = 參數.get("around_message_id")
     查詢 = str(參數.get("query") or 參數.get("q") or "").strip()

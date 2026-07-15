@@ -17,11 +17,10 @@ from __future__ import annotations
 
 import math
 import os
-import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
+from ..環境設定 import 檢查資源名稱, 載入本機環境檔
 
 預設語意權重 = 0.65
 預設關鍵字權重 = 0.35
@@ -31,7 +30,6 @@ from typing import Any
 預設圖片表 = "images"
 預設Embedding模型 = "gemini-embedding-001"
 預設Embedding維度 = 768
-環境檔路徑 = Path(__file__).resolve().parents[1] / ".env"
 
 
 @dataclass(frozen=True)
@@ -78,27 +76,6 @@ def 讀取管理部BigQuery設定() -> 管理部BigQuery設定:
         embedding模型=os.getenv("ADMIN_EMBEDDING_MODEL", 預設Embedding模型).strip() or 預設Embedding模型,
         embedding維度=int(os.getenv("ADMIN_EMBEDDING_DIM", "").strip() or 預設Embedding維度),
     )
-
-
-def 載入本機環境檔() -> None:
-    """載入專案根目錄 `.env`，但不覆寫已存在的環境變數。"""
-    if not 環境檔路徑.exists():
-        return
-    for 原始行 in 環境檔路徑.read_text(encoding="utf-8", errors="replace").splitlines():
-        行 = 原始行.strip()
-        if not 行 or 行.startswith("#") or "=" not in 行:
-            continue
-        鍵, _, 值 = 行.partition("=")
-        鍵 = 鍵.strip()
-        值 = 值.strip().strip("'\"")
-        if 鍵 and 鍵 not in os.environ:
-            os.environ[鍵] = 值
-
-
-def 檢查資源名稱(名稱: str, 欄位: str) -> None:
-    """避免把不安全的資源名稱插入 SQL。"""
-    if not re.fullmatch(r"[A-Za-z0-9_\-]+", 名稱):
-        raise ValueError(f"{欄位} 含有不支援的字元：{名稱}")
 
 
 def 建立BigQuery客戶端(設定: 管理部BigQuery設定):
