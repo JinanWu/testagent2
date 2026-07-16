@@ -34,6 +34,7 @@ class 遷移授權狀態:
 def 拆分遷移SQL(腳本: str) -> tuple[str, ...]:
     """用 SQLite lexical completeness 將遷移腳本切為 semicolon-terminated statements。"""
     if not isinstance(腳本, str):
+        腳本 = None
         raise 遷移SQL錯誤("遷移 SQL 不符合契約")
 
     陳述清單: list[str] = []
@@ -49,6 +50,12 @@ def 拆分遷移SQL(腳本: str) -> tuple[str, ...]:
     尾端 = "".join(目前片段)
     只有註解, 未關閉註解 = _只含空白或註解(尾端)
     if 未關閉註解 or not 只有註解:
+        腳本 = None
+        尾端 = None
+        目前片段 = []
+        陳述 = None
+        陳述清單 = []
+        字元 = None
         raise 遷移SQL錯誤("遷移 SQL 不符合契約")
     return tuple(陳述清單)
 
@@ -60,6 +67,7 @@ def 驗證遷移SQL(
 ) -> None:
     """以獨立 in-memory SQLite connection 做 parser-only prepare 驗證。"""
     if not isinstance(陳述清單, (tuple, list)):
+        陳述清單 = ()
         raise 遷移SQL錯誤("遷移 SQL 不符合契約")
 
     連線 = sqlite3.connect(":memory:")
@@ -68,8 +76,11 @@ def 驗證遷移SQL(
         連線.set_authorizer(狀態)
         for 陳述 in 陳述清單:
             if not isinstance(陳述, str):
+                陳述 = None
+                陳述清單 = ()
                 raise 遷移SQL錯誤("遷移 SQL 不符合契約")
             錯誤訊息: str | None = None
+            狀態.拒絕類型 = None
             try:
                 游標 = 連線.execute("EXPLAIN " + 陳述)
                 游標.close()
@@ -79,6 +90,10 @@ def 驗證遷移SQL(
                 elif not _是可延後語意錯誤(錯誤):
                     錯誤訊息 = "遷移 SQL 不符合契約"
             if 錯誤訊息 is not None:
+                陳述 = None
+                陳述清單 = ()
+                游標 = None
+                錯誤 = None
                 raise 遷移SQL錯誤(錯誤訊息)
     finally:
         連線.close()

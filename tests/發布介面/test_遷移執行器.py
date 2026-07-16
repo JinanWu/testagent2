@@ -6,6 +6,7 @@ from 繁中代理.發布介面.遷移執行器 import 拆分遷移SQL, 遷移SQL
 
 
 秘密標記 = "唯一SQL_SECRET_MARKER_不可外洩"
+PRODUCTION_MODULE = "繁中代理.發布介面.遷移執行器"
 
 
 def _錯誤不含SQL標記(錯誤):
@@ -13,6 +14,24 @@ def _錯誤不含SQL標記(錯誤):
     assert 秘密標記 not in repr(錯誤)
     assert 錯誤.__cause__ is None
     assert 錯誤.__context__ is None
+
+
+def _production_traceback_locals不含SQL標記(錯誤):
+    traceback = 錯誤.__traceback__
+    checked = False
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_globals.get("__name__") == PRODUCTION_MODULE:
+            checked = True
+            for 名稱, 值 in frame.f_locals.items():
+                assert 秘密標記 not in repr(值), 名稱
+        traceback = traceback.tb_next
+    assert checked
+
+
+def _assert_sanitized_exception(錯誤):
+    _錯誤不含SQL標記(錯誤)
+    _production_traceback_locals不含SQL標記(錯誤)
 
 
 def test_拆分遷移SQL切分基本多陳述並strip():
@@ -69,6 +88,21 @@ def test_拆分遷移SQL非字串錯誤固定():
     assert str(錯誤.value) == "遷移 SQL 不符合契約"
 
 
+@pytest.mark.parametrize(
+    "腳本",
+    [
+        f"SELECT 1 /* {秘密標記}",
+        f"SELECT '{秘密標記}'",
+        {"sql": 秘密標記},
+    ],
+)
+def test_拆分遷移SQL錯誤traceback_locals不保留raw腳本(腳本):
+    with pytest.raises(遷移SQL錯誤) as 錯誤:
+        拆分遷移SQL(腳本)
+
+    _assert_sanitized_exception(錯誤.value)
+
+
 @pytest.mark.parametrize("陳述", ["CREATE TABLE ;", "SELECT FROM;", "SELECT 'unterminated;"])
 def test_驗證遷移SQL拒絕parser語法與不完整輸入(陳述):
     with pytest.raises(遷移SQL錯誤):
@@ -113,12 +147,35 @@ def test_遷移授權狀態只在真opcode拒絕且記錄類型():
     assert 狀態.拒絕類型 == "PRAGMA"
 
 
-def test_驗證遷移SQL錯誤不含整段SQL且錯誤路徑可重複使用():
-    陳述 = f"SELECT FROM {秘密標記};"
+def test_驗證遷移SQL重用授權狀態不被前次拒絕污染():
+    狀態 = 遷移授權狀態()
 
+    with pytest.raises(遷移SQL錯誤):
+        驗證遷移SQL(["PRAGMA user_version;"], 授權狀態=狀態)
+
+    驗證遷移SQL(["SELECT * FROM later_table;"], 授權狀態=狀態)
+    assert 狀態.拒絕類型 is None
+
+
+@pytest.mark.parametrize(
+    "陳述",
+    [
+        f"SELECT FROM {秘密標記};",
+        f"PRAGMA {秘密標記};",
+    ],
+)
+def test_驗證遷移SQL錯誤不含整段SQL且錯誤路徑可重複使用(陳述):
     with pytest.raises(遷移SQL錯誤) as 錯誤:
         驗證遷移SQL([陳述])
 
-    陳述 = None
-    _錯誤不含SQL標記(錯誤.value)
+    _assert_sanitized_exception(錯誤.value)
+    驗證遷移SQL(["SELECT 1;"])
+
+
+def test_驗證遷移SQL非字串陳述traceback_locals不保留raw_sql():
+    陳述 = {"sql": 秘密標記}
+    with pytest.raises(遷移SQL錯誤) as 錯誤:
+        驗證遷移SQL([陳述])
+
+    _assert_sanitized_exception(錯誤.value)
     驗證遷移SQL(["SELECT 1;"])
