@@ -1,6 +1,7 @@
 """發布介面共同嚴格 JSON 契約測試。"""
 
 import math
+import traceback
 
 import pytest
 
@@ -10,6 +11,24 @@ from 繁中代理.發布介面 import (
     解析嚴格JSON,
     計算正規JSON雜湊,
 )
+
+
+解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
+深層錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_深層_不外洩"
+
+
+def _錯誤狀態不含marker(錯誤, marker):
+    assert marker not in str(錯誤)
+    assert marker not in repr(錯誤)
+    assert 錯誤.__cause__ is None
+    assert 錯誤.__context__ is None
+    for frame_summary in traceback.extract_tb(錯誤.__traceback__):
+        assert marker not in repr(frame_summary)
+    traceback物件 = 錯誤.__traceback__
+    while traceback物件 is not None:
+        for 區域值 in traceback物件.tb_frame.f_locals.values():
+            assert marker not in repr(區域值)
+        traceback物件 = traceback物件.tb_next
 
 
 def test_解析嚴格JSON接受一般JSON值並保留陣列順序():
@@ -48,6 +67,17 @@ def test_解析嚴格JSON拒絕語法錯誤且錯誤不含原始payload():
 
     assert 原始文字 not in str(錯誤.value)
     assert "不可出現在錯誤訊息" not in str(錯誤.value)
+
+
+def test_解析嚴格JSON語法錯誤不保留payload於例外鏈與traceback_locals():
+    """public error 物件、例外鏈與 traceback locals 都不可保留 raw payload。"""
+    原始文字 = f'{{"secret":"{解析錯誤唯一SECRET_MARKER}",'
+
+    with pytest.raises(嚴格JSON錯誤) as 錯誤:
+        解析嚴格JSON(原始文字)
+
+    原始文字 = None
+    _錯誤狀態不含marker(錯誤.value, 解析錯誤唯一SECRET_MARKER)
 
 
 def test_解析嚴格JSON只接受字串輸入():
@@ -90,6 +120,51 @@ def test_建立正規JSON拒絕非JSON值(資料):
     """只接受 JSON value 型別與有限 float。"""
     with pytest.raises(嚴格JSON錯誤):
         建立正規JSON(資料)
+
+
+def test_建立正規JSON拒絕self_referential_list且不保留例外鏈():
+    """cyclic list 必須轉成公開嚴格 JSON 錯誤而非 RecursionError。"""
+    資料 = []
+    資料.append(資料)
+
+    with pytest.raises(嚴格JSON錯誤) as 錯誤:
+        建立正規JSON(資料)
+
+    assert 錯誤.value.__cause__ is None
+    assert 錯誤.value.__context__ is None
+
+
+def test_建立正規JSON拒絕self_referential_dict且不保留例外鏈():
+    """cyclic dict 必須轉成公開嚴格 JSON 錯誤而非 RecursionError。"""
+    資料 = {}
+    資料["self"] = 資料
+
+    with pytest.raises(嚴格JSON錯誤) as 錯誤:
+        建立正規JSON(資料)
+
+    assert 錯誤.value.__cause__ is None
+    assert 錯誤.value.__context__ is None
+
+
+def test_建立正規JSON過深nested_list轉公開錯誤且不洩漏marker():
+    """實際 Python recursion overflow 必須轉成 sanitized public error。"""
+    資料 = 深層錯誤唯一SECRET_MARKER
+    for _ in range(2000):
+        資料 = [資料]
+
+    with pytest.raises(嚴格JSON錯誤) as 錯誤:
+        建立正規JSON(資料)
+
+    資料 = None
+    _錯誤狀態不含marker(錯誤.value, 深層錯誤唯一SECRET_MARKER)
+
+
+def test_建立正規JSON允許不同keys共享同一child_list且無cycle():
+    """cycle detection 只追蹤目前路徑，不能把共享 child 當成 cycle。"""
+    child = [1, {"ok": True}]
+    資料 = {"a": child, "b": child}
+
+    assert 建立正規JSON(資料) == '{"a":[1,{"ok":true}],"b":[1,{"ok":true}]}'
 
 
 def test_建立正規JSON允許bool且不被int判斷誤傷():
