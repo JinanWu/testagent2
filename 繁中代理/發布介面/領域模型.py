@@ -52,6 +52,10 @@ class AuditEventError(ValueError):
     """AuditEvent 不符合公開安全契約時使用的固定錯誤型別。"""
 
 
+class AuditReceiptError(ValueError):
+    """AuditAppendReceipt 不符合公開安全契約時使用的固定錯誤型別。"""
+
+
 class _公開DTO:
     """提供公開 DTO 共用的 JSON 輸出行為。"""
 
@@ -373,6 +377,72 @@ class AuditEvent:
             "endpoint_id": self.endpoint_id,
             "invocation_id": self.invocation_id,
             "metadata": self.metadata.to_json(),
+        }
+
+
+@dataclass(frozen=True, init=False)
+class AuditAppendReceipt:
+    """稽核事件 append 結果的公開安全 receipt。
+
+    event_id 重用稽核安全 identifier 規則；committed 僅接受 exact bool。
+    committed=True 表示事件已持久提交，sequence 必須是 exact int 且落在
+    1..2**63-1；committed=False 表示未提交，sequence 必須為 None。
+    """
+
+    event_id: str
+    committed: bool
+    sequence: int | None
+
+    def __init__(self, event_id: str, committed: bool, sequence: int | None) -> None:
+        """驗證 receipt 並建立 frozen DTO。
+
+        任一 validation failure 都轉成固定 AuditReceiptError。錯誤路徑會先把
+        self 放入安全預設值，再清除原始輸入與安全暫存值，避免 production
+        traceback locals 保留 raw secret、digest、path 或測試 marker。
+        """
+        錯誤 = False
+        安全event_id: str | None = None
+        安全committed: bool = False
+        安全sequence: int | None = None
+        object.__setattr__(self, "event_id", None)
+        object.__setattr__(self, "committed", False)
+        object.__setattr__(self, "sequence", None)
+        try:
+            if not _稽核安全識別值合法(event_id):
+                錯誤 = True
+            elif type(committed) is not bool:
+                錯誤 = True
+            elif committed:
+                if type(sequence) is not int or sequence < 1 or sequence > 2**63 - 1:
+                    錯誤 = True
+                else:
+                    安全event_id = event_id
+                    安全committed = committed
+                    安全sequence = sequence
+            elif sequence is not None:
+                錯誤 = True
+            else:
+                安全event_id = event_id
+                安全committed = committed
+                安全sequence = None
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            event_id = committed = sequence = None
+            安全event_id = 安全committed = 安全sequence = None
+            raise AuditReceiptError("AuditAppendReceipt 不符合公開契約") from None
+
+        object.__setattr__(self, "event_id", 安全event_id)
+        object.__setattr__(self, "committed", 安全committed)
+        object.__setattr__(self, "sequence", 安全sequence)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 receipt JSON，且每次都是 ordinary new dict。"""
+        return {
+            "event_id": self.event_id,
+            "committed": self.committed,
+            "sequence": self.sequence,
         }
 
 
