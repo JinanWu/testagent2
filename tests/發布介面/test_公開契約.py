@@ -21,6 +21,8 @@ from 繁中代理.發布介面.領域模型 import PublishedError
 from 繁中代理.發布介面.領域模型 import PublishedUsage
 from 繁中代理.發布介面.領域模型 import PublishedWarning
 from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
+from 繁中代理.發布介面.契約 import 建立失敗信封
+from 繁中代理.發布介面.契約 import 建立成功信封
 
 
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
@@ -84,6 +86,16 @@ def _領域模型錯誤狀態不含marker(錯誤, marker):
     assert 錯誤.__context__ is None
     for frame, _ in traceback.walk_tb(錯誤.__traceback__):
         if frame.f_globals.get("__name__") == "繁中代理.發布介面.領域模型":
+            assert marker not in repr(frame.f_locals)
+
+
+def _契約模組錯誤狀態不含marker(錯誤, marker):
+    assert marker not in str(錯誤)
+    assert marker not in repr(錯誤)
+    assert 錯誤.__cause__ is None
+    assert 錯誤.__context__ is None
+    for frame, _ in traceback.walk_tb(錯誤.__traceback__):
+        if frame.f_globals.get("__name__") == "繁中代理.發布介面.契約":
             assert marker not in repr(frame.f_locals)
 
 
@@ -507,3 +519,128 @@ def test_invoke_envelope_warnings_are_tuple_default_and_type_guarded():
     assert (empty.warnings, warned.warnings) == ((), (warning,))
     with pytest.raises(Exception):
         InvokeEnvelope(ok=True, endpoint=EndpointRef("e", "s", 1), invocation=InvocationRef("i", "r"), data=None, warnings=["bad"])
+
+
+def test_factory_建立成功信封_exact_output_and_warning_passthrough():
+    """成功 factory 只建立 ok True，並交由領域模型處理 warning 與 snapshot。"""
+    data = {"items": [{"name": "old"}]}
+    envelope = 建立成功信封(
+        EndpointRef("ep_1", "hello", 3),
+        InvocationRef("inv_1", "req_1"),
+        data,
+        usage=PublishedUsage(7),
+        warnings=[PublishedWarning("notice", "metadata omitted")],
+    )
+    data["items"][0]["name"] = "new"
+
+    assert envelope.to_json() == {
+        "ok": True,
+        "endpoint": {"id": "ep_1", "slug": "hello", "version": 3},
+        "invocation": {"id": "inv_1", "request_id": "req_1", "session_id": None},
+        "data": {"items": [{"name": "old"}]},
+        "usage": {"total_tokens": 7},
+        "warnings": [{"code": "notice", "message": "metadata omitted"}],
+        "error": None,
+    }
+
+
+def test_factory_建立失敗信封_endpoint_not_found_null_refs_only():
+    """endpoint_not_found 依 R84 固定不公開 endpoint/invocation refs。"""
+    envelope = 建立失敗信封(PublishedError("endpoint_not_found", "not found"))
+
+    assert envelope.to_json() == {
+        "ok": False,
+        "endpoint": None,
+        "invocation": None,
+        "data": None,
+        "usage": None,
+        "warnings": [],
+        "error": {"code": "endpoint_not_found", "message": "not found"},
+    }
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["invalid_api_key", "input_schema_invalid", "model_output_schema_invalid", "tool_execution_failed"],
+)
+def test_factory_建立失敗信封_non_not_found_requires_and_outputs_refs(code):
+    """非 endpoint_not_found 失敗依 R93 必須帶 exact endpoint/invocation refs。"""
+    envelope = 建立失敗信封(
+        PublishedError(code, "failed"),
+        endpoint=EndpointRef("ep_1", "hello", 3),
+        invocation=InvocationRef("inv_1", "req_1", "session_1"),
+        warnings=[PublishedWarning("notice", "metadata omitted")],
+    )
+
+    assert envelope.to_json() == {
+        "ok": False,
+        "endpoint": {"id": "ep_1", "slug": "hello", "version": 3},
+        "invocation": {"id": "inv_1", "request_id": "req_1", "session_id": "session_1"},
+        "data": None,
+        "usage": None,
+        "warnings": [{"code": "notice", "message": "metadata omitted"}],
+        "error": {"code": code, "message": "failed"},
+    }
+
+
+def test_factory_建立失敗信封_rejects_endpoint_not_found_with_refs():
+    """endpoint_not_found 不可同時帶 refs，避免 R84 外洩解析資訊。"""
+    with pytest.raises(ValueError):
+        建立失敗信封(
+            PublishedError("endpoint_not_found", "not found"),
+            endpoint=EndpointRef("ep_1", "hello", 3),
+            invocation=InvocationRef("inv_1", "req_1"),
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"endpoint": EndpointRef("ep_1", "hello", 3)},
+        {"invocation": InvocationRef("inv_1", "req_1")},
+        {},
+    ],
+)
+def test_factory_建立失敗信封_rejects_non_not_found_missing_refs(kwargs):
+    """非 endpoint_not_found 失敗缺任一 ref 都不符合 R93。"""
+    with pytest.raises(ValueError):
+        建立失敗信封(PublishedError("invalid_api_key", "failed"), **kwargs)
+
+
+@pytest.mark.parametrize(
+    "呼叫",
+    [
+        lambda: 建立成功信封(EvilEndpointRef("e", "s", 1), InvocationRef("i", "r"), None),
+        lambda: 建立成功信封(EndpointRef("e", "s", 1), EvilInvocationRef("i", "r"), None),
+        lambda: 建立成功信封(EndpointRef("e", "s", 1), InvocationRef("i", "r"), None, usage=EvilPublishedUsage(7)),
+        lambda: 建立失敗信封(EvilPublishedError("endpoint_not_found", "x")),
+        lambda: 建立失敗信封(PublishedError("invalid_api_key", "x"), endpoint=EvilEndpointRef("e", "s", 1), invocation=InvocationRef("i", "r")),
+        lambda: 建立失敗信封(PublishedError("invalid_api_key", "x"), endpoint=EndpointRef("e", "s", 1), invocation=EvilInvocationRef("i", "r")),
+    ],
+)
+def test_factory_rejects_wrong_dto_subclasses_before_domain_fallback(呼叫):
+    """factory 先拒絕 subclass DTO，domain exact-type guard 仍保留最後防線。"""
+    with pytest.raises(ValueError):
+        呼叫()
+
+
+def test_factory_建立成功信封_nonjson_error_clears_contract_frame_locals():
+    """成功 data validation 失敗時，契約模組 frame locals 不保留 marker。"""
+    marker = "唯一SECRET_MARKER_factory_success_data"
+    with pytest.raises(嚴格JSON錯誤) as 錯誤:
+        建立成功信封(
+            EndpointRef("e", "s", 1),
+            InvocationRef("i", "r"),
+            {"bad": object(), "marker": marker},
+        )
+
+    _契約模組錯誤狀態不含marker(錯誤.value, marker)
+
+
+def test_factory_建立失敗信封_error_subclass_clears_contract_frame_locals():
+    """失敗 error exact-type guard 失敗時，契約模組 frame locals 不保留 marker。"""
+    marker = "唯一SECRET_MARKER_factory_failure_error"
+    with pytest.raises(ValueError) as 錯誤:
+        建立失敗信封(EvilPublishedError("endpoint_not_found", "x", secret=marker))
+
+    _契約模組錯誤狀態不含marker(錯誤.value, marker)
