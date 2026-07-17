@@ -248,6 +248,8 @@ def test_audit_actor_ref_rejects_enum_and_system_rule(actor_type, actor_id):
         "svc.pk_live_123",
         "sk-prod-123",
         "user:sk-prod-123",
+        "sk_live_123",
+        "svc.sk_test_123",
         "BearerToken",
         "id:BearerToken",
         "a" * 64,

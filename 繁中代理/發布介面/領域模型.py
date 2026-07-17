@@ -34,7 +34,7 @@ _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
     }
 )
 _AUDIT_SAFE_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-_AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk-|bearer)")
+_AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk[-_]|bearer)")
 _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN = re.compile(r"(?i)[0-9a-f]{64}")
 _AUDIT_ACTOR_TYPES = frozenset(("user", "service_account", "system"))
 
