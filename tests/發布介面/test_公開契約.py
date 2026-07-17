@@ -1,5 +1,6 @@
 """發布介面共同公開契約測試。"""
 
+from collections.abc import Mapping
 import json
 from dataclasses import FrozenInstanceError
 from dataclasses import dataclass
@@ -33,6 +34,9 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
 深層錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_深層_不外洩"
 信封錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_信封_不外洩"
+稽核ITEMS錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_items_不外洩"
+稽核重複鍵唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_duplicate_不外洩"
+稽核異常PAIR唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_pair_不外洩"
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,68 @@ class EvilPublishedError(PublishedError):
     secret: str = "error-secret"
 
 
+class EvilItemsRaisesMapping(Mapping):
+    """測試用惡意 mapping，items() 會丟出含 marker 的 runtime exception。"""
+
+    def __init__(self, marker):
+        self._marker = marker
+
+    def __getitem__(self, key):
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def __repr__(self):
+        return f"EvilItemsRaisesMapping({self._marker!r})"
+
+    def items(self):
+        raise RuntimeError(self._marker)
+
+
+class EvilDuplicateItemsMapping(Mapping):
+    """測試用惡意 mapping，items() 回傳重複 exact key pair。"""
+
+    def __init__(self, marker):
+        self._marker = marker
+
+    def __getitem__(self, key):
+        if key == "duplicate":
+            return False
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(("duplicate",))
+
+    def __len__(self):
+        return 1
+
+    def __repr__(self):
+        return f"EvilDuplicateItemsMapping({self._marker!r})"
+
+    def items(self):
+        return (("duplicate", True), ("duplicate", False))
+
+
+class EvilMalformedItemsMapping(Mapping):
+    """測試用惡意mapping，items()回傳無法解包且帶marker的pair。"""
+
+    def __getitem__(self, key):
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self):
+        return 0
+
+    def items(self):  # type: ignore[override]
+        return ((稽核異常PAIR唯一SECRET_MARKER, 1, 2),)
+
+
 def _錯誤狀態不含marker(錯誤, marker):
     assert marker not in str(錯誤)
     assert marker not in repr(錯誤)
@@ -90,7 +156,7 @@ def _領域模型錯誤狀態不含marker(錯誤, marker):
     assert 錯誤.__cause__ is None
     assert 錯誤.__context__ is None
     for frame, _ in traceback.walk_tb(錯誤.__traceback__):
-        if frame.f_globals.get("__name__") == "繁中代理.發布介面.領域模型":
+        if frame.f_globals.get("__name__", "").startswith("繁中代理.發布介面"):
             assert marker not in repr(frame.f_locals)
 
 
@@ -161,7 +227,14 @@ def test_audit_metadata_rejects_bad_key_formats(key):
         "private_ref",
         "filesystem_root",
         "raw_value",
+        "path",
+        "hash",
+        "sha256",
+        "file_path",
+        "content_hash",
+        "path_id",
         "schema_path",
+        "sha256_digest",
         "token_count",
     ],
 )
@@ -171,7 +244,7 @@ def test_audit_metadata_rejects_sensitive_keys(key):
         AuditMetadata({key: True})
 
 
-@pytest.mark.parametrize("key", ["a", "a1_b2", "endpoint_version", "schema_version", "path_id"])
+@pytest.mark.parametrize("key", ["a", "a1_b2", "endpoint_version", "schema_version"])
 def test_audit_metadata_accepts_safe_key_formats(key):
     """合法格式且不含敏感片段的 metadata key 不可被誤拒。"""
     assert AuditMetadata({key: True}).to_json() == {key: True}
@@ -195,6 +268,36 @@ def test_audit_metadata_rejects_string_values_and_sanitizes_production_frames(va
 
     value = None
     _領域模型錯誤狀態不含marker(錯誤.value, marker)
+
+
+def test_audit_metadata_rejects_mapping_items_exception_without_exception_context():
+    """惡意 Mapping.items exception 必須轉成固定錯誤且不保留原始例外鏈。"""
+    metadata = EvilItemsRaisesMapping(稽核ITEMS錯誤唯一SECRET_MARKER)
+
+    with pytest.raises(AuditMetadataError) as 錯誤:
+        AuditMetadata(metadata)
+
+    metadata = None
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核ITEMS錯誤唯一SECRET_MARKER)
+
+
+def test_audit_metadata_rejects_mapping_items_duplicate_exact_key_without_later_wins():
+    """custom Mapping.items 回傳重複 exact key 必須 fail closed，不能 later-wins。"""
+    metadata = EvilDuplicateItemsMapping(稽核重複鍵唯一SECRET_MARKER)
+
+    with pytest.raises(AuditMetadataError) as 錯誤:
+        AuditMetadata(metadata)
+
+    metadata = None
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核重複鍵唯一SECRET_MARKER)
+
+
+def test_audit_metadata_rejects_malformed_mapping_items_with_sanitized_error():
+    """custom Mapping.items回傳異常pair時也必須轉成無marker的固定錯誤。"""
+    with pytest.raises(AuditMetadataError) as 錯誤:
+        AuditMetadata(EvilMalformedItemsMapping())
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核異常PAIR唯一SECRET_MARKER)
 
 
 class EvilInt(int):

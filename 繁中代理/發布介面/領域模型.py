@@ -26,6 +26,9 @@ _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
         "master",
         "private",
         "filesystem",
+        "path",
+        "hash",
+        "sha256",
         "full_hash",
         "schema_path",
     }
@@ -70,6 +73,7 @@ class AuditMetadata:
         錯誤 = False
         項目列: tuple[tuple[Any, Any], ...] | None = None
         快照: dict[str, AuditMetadataScalar] | None = None
+        已見鍵: set[str] | None = None
         鍵: Any = None
         值: Any = None
         try:
@@ -80,28 +84,33 @@ class AuditMetadata:
             else:
                 錯誤 = True
                 項目列 = ()
+        except Exception:
+            object.__setattr__(self, "_資料", MappingProxyType({}))
+            錯誤 = True
 
-            if not 錯誤:
+        if not 錯誤:
+            try:
+                assert 項目列 is not None
                 快照 = {}
+                已見鍵 = set()
                 for 鍵, 值 in 項目列:
                     if not _稽核Metadata鍵合法(鍵) or not _稽核Metadata值合法(值):
                         錯誤 = True
                         break
+                    if 鍵 in 已見鍵:
+                        錯誤 = True
+                        break
+                    已見鍵.add(鍵)
                     快照[鍵] = 值
+            except Exception:
+                錯誤 = True
 
-            if 錯誤:
-                object.__setattr__(self, "_資料", MappingProxyType({}))
-                metadata = 項目列 = 快照 = 鍵 = 值 = None
-                raise AuditMetadataError("AuditMetadata 不符合公開契約")
-
-            object.__setattr__(self, "_資料", MappingProxyType(快照 if 快照 is not None else {}))
-        except AuditMetadataError:
-            metadata = 項目列 = 快照 = 鍵 = 值 = None
-            raise
-        except Exception:
+        if 錯誤:
             object.__setattr__(self, "_資料", MappingProxyType({}))
-            metadata = 項目列 = 快照 = 鍵 = 值 = None
-            raise AuditMetadataError("AuditMetadata 不符合公開契約") from None
+            metadata = 項目列 = 快照 = 已見鍵 = 鍵 = 值 = None
+            raise AuditMetadataError("AuditMetadata 不符合公開契約")
+
+        object.__setattr__(self, "_資料", MappingProxyType(快照 if 快照 is not None else {}))
 
     def to_json(self) -> dict[str, AuditMetadataScalar]:
         """回傳依原始順序建立的 ordinary new dict。
