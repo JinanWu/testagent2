@@ -14,6 +14,7 @@ from .嚴格JSON import 建立正規JSON, 解析嚴格JSON
 JsonObject = dict[str, Any]
 AuditMetadataScalar = bool | int | float | None
 _AUDIT_METADATA_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_AUDIT_RESOURCE_TYPE_PATTERN = re.compile(r"[a-z][a-z0-9_.]{0,63}")
 _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
     {
         "raw",
@@ -179,6 +180,51 @@ class AuditActorRef:
     def to_json(self) -> JsonObject:
         """回傳固定鍵序 actor JSON，且每次都是 ordinary new dict。"""
         return {"actor_type": self.actor_type, "actor_id": self.actor_id}
+
+
+@dataclass(frozen=True, init=False)
+class AuditResourceRef:
+    """公開稽核事件 resource 的最小安全參照。
+
+    resource_type 是小寫資源分類 code，只接受 ``[a-z][a-z0-9_.]{0,63}``；
+    resource_id 重用稽核參照安全 identifier 規則。兩個欄位都必須是 exact str，
+    且都拒絕 raw secret、完整 digest 與本機路徑特徵。
+    """
+
+    resource_type: str | None
+    resource_id: str | None
+
+    def __init__(self, resource_type: str, resource_id: str) -> None:
+        """驗證 resource 參照並建立 frozen DTO。
+
+        所有 validation failure 都轉成固定 AuditReferenceError；錯誤路徑先清除
+        原始輸入與 safe locals，再於 except 區塊外丟出，避免 production traceback
+        locals 保留 secret、digest、path 或測試 marker。
+        """
+        錯誤 = False
+        安全resource_type: str | None = None
+        安全resource_id: str | None = None
+        object.__setattr__(self, "resource_type", None)
+        object.__setattr__(self, "resource_id", None)
+        try:
+            if _稽核資源型別合法(resource_type) and _稽核安全識別值合法(resource_id):
+                安全resource_type = resource_type
+                安全resource_id = resource_id
+            else:
+                錯誤 = True
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            resource_type = resource_id = 安全resource_type = 安全resource_id = None
+            raise AuditReferenceError("AuditResourceRef 不符合公開契約")
+
+        object.__setattr__(self, "resource_type", 安全resource_type)
+        object.__setattr__(self, "resource_id", 安全resource_id)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 resource JSON，且每次都是 ordinary new dict。"""
+        return {"resource_type": self.resource_type, "resource_id": self.resource_id}
 
 
 @dataclass(frozen=True)
@@ -374,6 +420,15 @@ def _稽核安全識別值合法(值: Any) -> bool:
     if type(值) is not str:
         return False
     if _AUDIT_SAFE_IDENTIFIER_PATTERN.fullmatch(值) is None:
+        return False
+    return not _稽核參照字串含不安全內容(值)
+
+
+def _稽核資源型別合法(值: Any) -> bool:
+    """檢查稽核 resource_type 是否為安全小寫公開 code。"""
+    if type(值) is not str:
+        return False
+    if _AUDIT_RESOURCE_TYPE_PATTERN.fullmatch(值) is None:
         return False
     return not _稽核參照字串含不安全內容(值)
 

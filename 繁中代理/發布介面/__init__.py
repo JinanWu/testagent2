@@ -7,6 +7,7 @@ from .領域模型 import (
     AuditMetadata,
     AuditMetadataError,
     AuditReferenceError,
+    AuditResourceRef,
 )
 
 __all__ = [
@@ -14,6 +15,7 @@ __all__ = [
     "AuditMetadata",
     "AuditMetadataError",
     "AuditReferenceError",
+    "AuditResourceRef",
     "嚴格JSON錯誤",
     "解析嚴格JSON",
     "建立正規JSON",

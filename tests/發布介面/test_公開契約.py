@@ -15,6 +15,7 @@ from 繁中代理.發布介面 import (
     AuditMetadata,
     AuditMetadataError,
     AuditReferenceError,
+    AuditResourceRef,
     嚴格JSON錯誤,
     建立失敗信封,
     建立正規JSON,
@@ -41,6 +42,8 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 稽核重複鍵唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_duplicate_不外洩"
 稽核異常PAIR唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_pair_不外洩"
 稽核參照唯一SECRET_MARKER = "pk_唯一SECRET_MARKER_audit_ref_不外洩"
+稽核資源型別唯一SECRET_MARKER = "sk_unique_marker_audit_resource_type"
+稽核資源識別唯一SECRET_MARKER = "pk_unique_marker_audit_resource_id"
 
 
 @dataclass(frozen=True)
@@ -194,12 +197,14 @@ def test_package_root_exports_audit_metadata_contract():
 
 def test_package_root_exports_audit_reference_contract():
     """稽核參照 DTO 必須從 package root 穩定匯出且保留類別 identity。"""
-    for name in ("AuditActorRef", "AuditReferenceError"):
+    for name in ("AuditActorRef", "AuditReferenceError", "AuditResourceRef"):
         assert name in 發布介面套件.__all__
     assert 發布介面套件.AuditActorRef is AuditActorRef
     assert 發布介面套件.AuditReferenceError is AuditReferenceError
+    assert 發布介面套件.AuditResourceRef is AuditResourceRef
     assert AuditActorRef is 發布領域模型.AuditActorRef
     assert AuditReferenceError is 發布領域模型.AuditReferenceError
+    assert AuditResourceRef is 發布領域模型.AuditResourceRef
 
 
 def test_audit_actor_ref_valid_user_service_system_json_order_and_new_dict():
@@ -310,6 +315,94 @@ def test_audit_reference_error_sanitizes_all_package_frames():
         AuditActorRef("user", 稽核參照唯一SECRET_MARKER)
 
     _領域模型錯誤狀態不含marker(錯誤.value, 稽核參照唯一SECRET_MARKER)
+
+
+def test_audit_resource_ref_valid_endpoint_version_req_uuid_order_and_new_dict():
+    """resource 參照接受小寫 dotted type 與安全 id，輸出固定鍵序與新 dict。"""
+    request_ref = AuditResourceRef("endpoint.version", "req_ab12")
+    uuid = "550e8400-e29b-41d4-a716-446655440000"
+    uuid_ref = AuditResourceRef("endpoint.version", uuid)
+    輸出 = request_ref.to_json()
+
+    assert list(輸出) == ["resource_type", "resource_id"]
+    assert 輸出 == {"resource_type": "endpoint.version", "resource_id": "req_ab12"}
+    assert uuid_ref.to_json() == {"resource_type": "endpoint.version", "resource_id": uuid}
+    assert type(輸出) is dict
+    assert 輸出 is not request_ref.to_json()
+
+
+@pytest.mark.parametrize(
+    "resource_type",
+    [
+        b"endpoint",
+        "Endpoint.version",
+        "endpoint-version",
+        "a" * 65,
+        "pk_live",
+        "svc.sk_test",
+        "bearer_token",
+        "a" * 64,
+    ],
+)
+def test_audit_resource_ref_rejects_bad_resource_type_exact_type_case_hyphen_length_and_secret(
+    resource_type,
+):
+    """resource_type 只接受 exact str 小寫 code，且拒絕 secret/digest 特徵。"""
+    with pytest.raises(AuditReferenceError):
+        AuditResourceRef(resource_type, "req_1")
+
+
+@pytest.mark.parametrize(
+    "resource_id",
+    [
+        "svc.sk_test_123",
+        "svc.pk_live_123",
+        "id:BearerToken",
+        "user:" + "a" * 64,
+        "/Users/example/token",
+        稽核資源識別唯一SECRET_MARKER,
+    ],
+)
+def test_audit_resource_ref_rejects_bad_resource_id_using_shared_safe_identifier_validator(
+    resource_id,
+):
+    """resource_id 重用稽核安全識別值規則，拒絕 secret、digest、path 與 marker。"""
+    with pytest.raises(AuditReferenceError):
+        AuditResourceRef("endpoint.version", resource_id)
+
+
+def test_audit_resource_ref_rejects_str_subclasses_for_both_fields():
+    """resource 參照欄位只接受 exact str，不接受 str subclass。"""
+    for args in (
+        (EvilStr("endpoint.version"), "req_1"),
+        ("endpoint.version", EvilStr("req_1")),
+    ):
+        with pytest.raises(AuditReferenceError):
+            AuditResourceRef(*args)
+
+
+def test_audit_resource_ref_is_frozen():
+    """resource 參照本身為 frozen dataclass。"""
+    resource = AuditResourceRef("endpoint.version", "req_1")
+
+    with pytest.raises(FrozenInstanceError):
+        resource.resource_id = "req_2"
+
+
+def test_audit_resource_type_error_sanitizes_all_package_frames():
+    """resource_type 錯誤不可在任何發布介面 frame locals 留下敏感 marker。"""
+    with pytest.raises(AuditReferenceError) as 錯誤:
+        AuditResourceRef(稽核資源型別唯一SECRET_MARKER, "req_1")
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核資源型別唯一SECRET_MARKER)
+
+
+def test_audit_resource_id_error_sanitizes_all_package_frames():
+    """resource_id 錯誤不可在任何發布介面 frame locals 留下敏感 marker。"""
+    with pytest.raises(AuditReferenceError) as 錯誤:
+        AuditResourceRef("endpoint.version", 稽核資源識別唯一SECRET_MARKER)
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核資源識別唯一SECRET_MARKER)
 
 
 def test_audit_metadata_empty_and_exact_output_order():
