@@ -4,8 +4,10 @@ from collections.abc import Mapping
 import json
 from dataclasses import FrozenInstanceError
 from dataclasses import dataclass
+from dataclasses import fields
 import math
 import traceback
+from typing import get_type_hints
 
 import pytest
 
@@ -46,6 +48,10 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 稽核參照唯一SECRET_MARKER = "pk_唯一SECRET_MARKER_audit_ref_不外洩"
 稽核資源型別唯一SECRET_MARKER = "sk_unique_marker_audit_resource_type"
 稽核資源識別唯一SECRET_MARKER = "pk_unique_marker_audit_resource_id"
+稽核事件時間唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_event_time_不外洩"
+稽核事件動作唯一SECRET_MARKER = "sk_unique_marker_audit_event_action"
+稽核事件DTO子類唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_event_dto_subclass_不外洩"
+稽核事件純量唯一SECRET_MARKER = "sk_unique_marker_audit_event_scalar"
 
 
 @dataclass(frozen=True)
@@ -531,6 +537,32 @@ class EvilFloat(float):
     """測試用 float subclass，避免被 exact type 檢查放行。"""
 
 
+class EvilAuditActorRef(AuditActorRef):
+    """測試用 actor ref subclass，repr 會暴露 marker 以證明 locals 已清理。"""
+
+    def __repr__(self):
+        return f"EvilAuditActorRef({稽核事件DTO子類唯一SECRET_MARKER!r})"
+
+
+class EvilAuditResourceRef(AuditResourceRef):
+    """測試用 resource ref subclass，repr 會暴露 marker 以證明 locals 已清理。"""
+
+    def __repr__(self):
+        return f"EvilAuditResourceRef({稽核事件DTO子類唯一SECRET_MARKER!r})"
+
+
+class EvilAuditMetadata(AuditMetadata):
+    """測試用 metadata subclass，repr 會暴露 marker 以證明 locals 已清理。"""
+
+    def __repr__(self):
+        return f"EvilAuditMetadata({稽核事件DTO子類唯一SECRET_MARKER!r})"
+
+
+def _建立惡意稽核DTO子類實例(類別):
+    """不呼叫父 constructor，建立只用於 exact-type guard 的惡意 subclass instance。"""
+    return object.__new__(類別)
+
+
 @pytest.mark.parametrize(
     "value",
     [{"nested": True}, [1], b"secret", object(), math.nan, math.inf, -math.inf, EvilInt(1), EvilFloat(1.0)],
@@ -650,6 +682,174 @@ def test_audit_event_rejects_core_invalid_values(欄位, 值):
     """B1d1 core invalid：時間、code、identifier 與 exact DTO 都必須 fail closed。"""
     with pytest.raises(AuditEventError):
         _建立合法稽核事件(**{欄位: 值})
+
+
+@pytest.mark.parametrize(
+    "occurred_at",
+    [
+        EvilInt(1),
+        EvilFloat(1.0),
+        math.nan,
+        math.inf,
+        -math.inf,
+        10**1000,
+        2**53 + 1,
+    ],
+)
+def test_audit_event_rejects_negative_time_matrix_with_sanitized_error_state(occurred_at):
+    """occurred_at 負向矩陣皆轉固定 AuditEventError，且不保留例外鏈。"""
+    with pytest.raises(AuditEventError) as 錯誤:
+        _建立合法稽核事件(occurred_at=occurred_at)
+
+    assert 錯誤.value.__cause__ is None
+    assert 錯誤.value.__context__ is None
+
+
+def test_audit_event_rejects_huge_timestamp_without_traceback_marker_leak():
+    """巨大 int 溢位路徑也必須清除 production traceback locals。"""
+    marker = 稽核事件時間唯一SECRET_MARKER
+    with pytest.raises(AuditEventError) as 錯誤:
+        _建立合法稽核事件(occurred_at=10**1000, action=marker)
+
+    _領域模型錯誤狀態不含marker(錯誤.value, marker)
+
+
+@pytest.mark.parametrize(
+    "action",
+    [
+        b"endpoint.invoke",
+        "Endpoint.invoke",
+        "endpoint-invoke",
+        f"endpoint.{稽核事件動作唯一SECRET_MARKER}",
+        "endpoint.pk_live_123",
+        "endpoint.bearer_token",
+        "a" * 64,
+        "/Users/example/action",
+    ],
+)
+def test_audit_event_rejects_action_bytes_case_hyphen_secrets_digest_and_path(action):
+    """action 僅接受安全小寫 code，拒絕 bytes、大小寫、hyphen、secret、digest 與 path。"""
+    with pytest.raises(AuditEventError):
+        _建立合法稽核事件(action=action)
+
+
+@pytest.mark.parametrize("outcome", ["success", "denied", "failed"])
+def test_audit_event_accepts_three_outcome_enums(outcome):
+    """outcome 僅有三個公開 enum 正例。"""
+    assert _建立合法稽核事件(outcome=outcome).outcome == outcome
+
+
+@pytest.mark.parametrize("outcome", ["Success", "blocked", b"success", EvilStr("success")])
+def test_audit_event_rejects_outcome_case_code_bytes_and_str_subclass(outcome):
+    """outcome 拒絕大小寫錯誤、未知 code、bytes 與 str subclass。"""
+    with pytest.raises(AuditEventError):
+        _建立合法稽核事件(outcome=outcome)
+
+
+@pytest.mark.parametrize(
+    ("欄位", "值"),
+    [
+        ("event_id", EvilStr("evt_1")),
+        ("event_id", "evt.sk_live_123"),
+        ("event_id", "a" * 64),
+        ("event_id", "/Users/example/event"),
+        ("request_id", EvilStr("req_1")),
+        ("request_id", "req.pk_live_123"),
+        ("request_id", "b" * 64),
+        ("request_id", "~/request"),
+        ("endpoint_id", EvilStr("ep_1")),
+        ("endpoint_id", "ep.BearerToken"),
+        ("endpoint_id", "c" * 64),
+        ("endpoint_id", r"C:\Users\endpoint"),
+        ("invocation_id", EvilStr("inv_1")),
+        ("invocation_id", "inv.sk-prod-123"),
+        ("invocation_id", "d" * 64),
+        ("invocation_id", "/tmp/invocation"),
+    ],
+)
+def test_audit_event_rejects_identifiers_subclass_secrets_digest_and_path(欄位, 值):
+    """event/request/endpoint/invocation id 都拒絕 subclass、secret、64hex 與 path。"""
+    with pytest.raises(AuditEventError):
+        _建立合法稽核事件(**{欄位: 值})
+
+
+@pytest.mark.parametrize(
+    ("欄位", "惡意值"),
+    [
+        ("actor", _建立惡意稽核DTO子類實例(EvilAuditActorRef)),
+        ("resource", _建立惡意稽核DTO子類實例(EvilAuditResourceRef)),
+        ("metadata", _建立惡意稽核DTO子類實例(EvilAuditMetadata)),
+    ],
+)
+def test_audit_event_rejects_exact_dto_subclasses_and_clears_malicious_repr(欄位, 惡意值):
+    """actor/resource/metadata 僅收 exact DTO，惡意 repr marker 不可留在 production locals。"""
+    with pytest.raises(AuditEventError) as 錯誤:
+        _建立合法稽核事件(**{欄位: 惡意值})
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核事件DTO子類唯一SECRET_MARKER)
+
+
+@pytest.mark.parametrize(
+    ("欄位", "值"),
+    [
+        ("event_id", f"evt.{稽核事件純量唯一SECRET_MARKER}"),
+        ("action", f"endpoint.{稽核事件純量唯一SECRET_MARKER}"),
+        ("outcome", 稽核事件純量唯一SECRET_MARKER),
+        ("request_id", f"req.{稽核事件純量唯一SECRET_MARKER}"),
+        ("endpoint_id", f"ep.{稽核事件純量唯一SECRET_MARKER}"),
+        ("invocation_id", f"inv.{稽核事件純量唯一SECRET_MARKER}"),
+    ],
+)
+def test_audit_event_scalar_marker_errors_clear_production_traceback_locals(欄位, 值):
+    """各純量欄位帶 marker 被拒時，發布介面 production locals 不可保留 marker。"""
+    with pytest.raises(AuditEventError) as 錯誤:
+        _建立合法稽核事件(**{欄位: 值})
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核事件純量唯一SECRET_MARKER)
+
+
+def test_audit_event_nested_to_json_mutation_does_not_affect_event():
+    """actor/resource/metadata 的 nested to_json mutation 都不影響 event 快照。"""
+    event = _建立合法稽核事件()
+    output = event.to_json()
+
+    output["actor"]["actor_id"] = "changed"
+    output["resource"]["resource_id"] = "changed"
+    output["metadata"]["count"] = 99
+
+    assert event.to_json()["actor"] == {"actor_type": "user", "actor_id": "user_1"}
+    assert event.to_json()["resource"] == {"resource_type": "endpoint.version", "resource_id": "ver_1"}
+    assert event.to_json()["metadata"] == {"count": 1}
+
+
+def test_audit_event_successful_instance_fields_keep_declared_concrete_types():
+    """成功建立的 AuditEvent 欄位值必須符合公開宣告的 concrete types。"""
+    event = _建立合法稽核事件()
+    hints = get_type_hints(AuditEvent)
+    expected_hints = {
+        "event_id": str,
+        "occurred_at": float,
+        "action": str,
+        "outcome": str,
+        "actor": AuditActorRef,
+        "resource": AuditResourceRef,
+        "request_id": str | None,
+        "endpoint_id": str | None,
+        "invocation_id": str | None,
+        "metadata": AuditMetadata,
+    }
+
+    assert {欄位.name: hints[欄位.name] for 欄位 in fields(AuditEvent)} == expected_hints
+    assert type(event.event_id) is str
+    assert type(event.occurred_at) is float
+    assert type(event.action) is str
+    assert type(event.outcome) is str
+    assert type(event.actor) is AuditActorRef
+    assert type(event.resource) is AuditResourceRef
+    assert type(event.request_id) is str
+    assert type(event.endpoint_id) is str
+    assert type(event.invocation_id) is str
+    assert type(event.metadata) is AuditMetadata
 
 
 def test_audit_event_is_frozen():
