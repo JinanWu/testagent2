@@ -1,8 +1,10 @@
-"""發布介面公開參照 DTO 領域模型。"""
+"""發布介面公開參照 DTO 與安全稽核 metadata 領域模型。"""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import math
+import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
@@ -10,6 +12,29 @@ from .嚴格JSON import 建立正規JSON, 解析嚴格JSON
 
 
 JsonObject = dict[str, Any]
+AuditMetadataScalar = bool | int | float | None
+_AUDIT_METADATA_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "raw",
+        "plaintext",
+        "secret",
+        "token",
+        "password",
+        "api_key",
+        "cipher",
+        "master_key",
+        "private_key",
+        "filesystem_path",
+        "full_hash",
+        "schema_path",
+    }
+)
+
+
+class AuditMetadataError(ValueError):
+    """AuditMetadata 不符合公開安全契約時使用的固定錯誤型別。"""
+
 
 class _公開DTO:
     """提供公開 DTO 共用的 JSON 輸出行為。"""
@@ -22,6 +47,69 @@ class _公開DTO:
         拋出 TypeError。
         """
         return asdict(self)
+
+
+@dataclass(frozen=True, init=False)
+class AuditMetadata:
+    """公開稽核 metadata 的安全快照。
+
+    只接受 key 為受限格式的字串，value 為 bool、int、finite float 或 None。
+    建構時會複製輸入 mapping，內部以 read-only mapping 保存，避免呼叫端後續
+    mutation 影響公開契約輸出。
+    """
+
+    _資料: Mapping[str, AuditMetadataScalar]
+
+    def __init__(self, metadata: Mapping[str, AuditMetadataScalar] | None = None) -> None:
+        """驗證 metadata 並建立不可變 defensive snapshot。
+
+        所有 validation failure 都轉為固定 AuditMetadataError 訊息，且在丟出前清除
+        本 frame 的輸入、key 與 value locals，避免敏感字串被 production traceback
+        locals 保留。
+        """
+        錯誤 = False
+        項目列: tuple[tuple[Any, Any], ...] | None = None
+        快照: dict[str, AuditMetadataScalar] | None = None
+        鍵: Any = None
+        值: Any = None
+        try:
+            if metadata is None:
+                項目列 = ()
+            elif isinstance(metadata, Mapping):
+                項目列 = tuple(metadata.items())
+            else:
+                錯誤 = True
+                項目列 = ()
+
+            if not 錯誤:
+                快照 = {}
+                for 鍵, 值 in 項目列:
+                    if not _稽核Metadata鍵合法(鍵) or not _稽核Metadata值合法(值):
+                        錯誤 = True
+                        break
+                    快照[鍵] = 值
+
+            if 錯誤:
+                object.__setattr__(self, "_資料", MappingProxyType({}))
+                metadata = 項目列 = 快照 = 鍵 = 值 = None
+                raise AuditMetadataError("AuditMetadata 不符合公開契約")
+
+            object.__setattr__(self, "_資料", MappingProxyType(快照 if 快照 is not None else {}))
+        except AuditMetadataError:
+            metadata = 項目列 = 快照 = 鍵 = 值 = None
+            raise
+        except Exception:
+            object.__setattr__(self, "_資料", MappingProxyType({}))
+            metadata = 項目列 = 快照 = 鍵 = 值 = None
+            raise AuditMetadataError("AuditMetadata 不符合公開契約") from None
+
+    def to_json(self) -> dict[str, AuditMetadataScalar]:
+        """回傳依原始順序建立的 ordinary new dict。
+
+        此方法沒有參數與外部副作用；不會拋出contract例外，修改回傳dict也不會改變
+        內部不可變快照。
+        """
+        return dict(self._資料)
 
 
 @dataclass(frozen=True)
@@ -175,6 +263,36 @@ def _建立不可變JSON快照(資料: Any) -> Any:
     except Exception:
         資料 = 正規文字 = 解析結果 = None
         raise
+
+
+def _稽核Metadata鍵合法(鍵: Any) -> bool:
+    """檢查單一metadata key是否安全。
+
+    參數可為任意值；回傳格式與敏感片段檢查結果，不拋出contract例外，也沒有
+    外部副作用。
+    """
+    if type(鍵) is not str:
+        return False
+    if _AUDIT_METADATA_KEY_PATTERN.fullmatch(鍵) is None:
+        return False
+    return not any(敏感片段 in 鍵 for 敏感片段 in _AUDIT_METADATA_SENSITIVE_KEY_PARTS)
+
+
+def _稽核Metadata值合法(值: Any) -> bool:
+    """檢查單一metadata value是否為允許的exact scalar。
+
+    參數可為任意值；回傳型別與有限數檢查結果，不拋出contract例外，也沒有
+    外部副作用。
+    """
+    if 值 is None:
+        return True
+    if type(值) is bool:
+        return True
+    if type(值) is int:
+        return True
+    if type(值) is float:
+        return math.isfinite(值)
+    return False
 
 
 def _凍結JSON值(值: Any) -> Any:

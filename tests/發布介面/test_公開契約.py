@@ -10,6 +10,8 @@ import pytest
 
 import 繁中代理.發布介面 as 發布介面套件
 from 繁中代理.發布介面 import (
+    AuditMetadata,
+    AuditMetadataError,
     嚴格JSON錯誤,
     建立失敗信封,
     建立正規JSON,
@@ -17,6 +19,8 @@ from 繁中代理.發布介面 import (
     解析嚴格JSON,
     計算正規JSON雜湊,
 )
+from 繁中代理.發布介面.領域模型 import AuditMetadata as 領域AuditMetadata
+from 繁中代理.發布介面.領域模型 import AuditMetadataError as 領域AuditMetadataError
 from 繁中代理.發布介面.領域模型 import EndpointRef
 from 繁中代理.發布介面.領域模型 import InvokeEnvelope
 from 繁中代理.發布介面.領域模型 import InvocationRef
@@ -106,6 +110,113 @@ def test_package_root_exports_factory_constructors():
     assert "建立失敗信封" in 發布介面套件.__all__
     assert 發布介面套件.建立成功信封 is 建立成功信封
     assert 發布介面套件.建立失敗信封 is 建立失敗信封
+
+
+def test_package_root_exports_audit_metadata_contract():
+    """AuditMetadata 必須從 package root 穩定匯出且保留類別 identity。"""
+    assert "AuditMetadata" in 發布介面套件.__all__
+    assert "AuditMetadataError" in 發布介面套件.__all__
+    assert 發布介面套件.AuditMetadata is AuditMetadata
+    assert 發布介面套件.AuditMetadataError is AuditMetadataError
+    assert AuditMetadata is 領域AuditMetadata
+    assert AuditMetadataError is 領域AuditMetadataError
+
+
+def test_audit_metadata_empty_and_exact_output_order():
+    """AuditMetadata 空值與輸入 insertion order 都必須穩定輸出。"""
+    empty = AuditMetadata()
+    metadata = AuditMetadata({"enabled": True, "count": 3, "ratio": 1.25, "missing": None})
+
+    assert empty.to_json() == {}
+    assert list(metadata.to_json()) == ["enabled", "count", "ratio", "missing"]
+    assert metadata.to_json() == {"enabled": True, "count": 3, "ratio": 1.25, "missing": None}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [False, True, 0, -1, 2**63 - 1, -(2**63), 0.0, -1.5, 1.0, None],
+)
+def test_audit_metadata_accepts_exact_scalar_boundaries(value):
+    """metadata value 只接受 bool、int、finite float 與 None 的 exact type。"""
+    assert AuditMetadata({"value": value}).to_json() == {"value": value}
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["", "A", "_bad", "bad-", "1bad", "a" * 65, "raw_value", "schema_path", "token_count"],
+)
+def test_audit_metadata_rejects_bad_and_sensitive_keys(key):
+    """metadata key 必須符合白名單格式，且不可含敏感片段。"""
+    with pytest.raises(AuditMetadataError):
+        AuditMetadata({key: True})
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "raw_api_key_唯一SECRET_MARKER",
+        "cipher_唯一SECRET_MARKER",
+        "a" * 64,
+        "/Users/example/private.txt",
+        "唯一SECRET_MARKER_audit_string",
+    ],
+)
+def test_audit_metadata_rejects_string_values_and_sanitizes_production_frames(value):
+    """字串 value 一律拒絕，且 production traceback locals 不保留原始敏感值。"""
+    marker = value
+    with pytest.raises(AuditMetadataError) as 錯誤:
+        AuditMetadata({"allowed": value})
+
+    value = None
+    _領域模型錯誤狀態不含marker(錯誤.value, marker)
+
+
+class EvilInt(int):
+    """測試用 int subclass，避免被 exact type 檢查放行。"""
+
+
+class EvilFloat(float):
+    """測試用 float subclass，避免被 exact type 檢查放行。"""
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{"nested": True}, [1], b"secret", object(), math.nan, math.inf, -math.inf, EvilInt(1), EvilFloat(1.0)],
+)
+def test_audit_metadata_rejects_nested_bytes_nonfinite_and_numeric_subclasses(value):
+    """metadata value 不接受巢狀容器、bytes、custom object、非有限 float 或 numeric subclass。"""
+    with pytest.raises(AuditMetadataError):
+        AuditMetadata({"allowed": value})
+
+
+def test_audit_metadata_caller_mapping_mutation_does_not_affect_snapshot():
+    """建構後會建立 defensive snapshot，呼叫端 mapping 後續 mutation 不影響實例。"""
+    source = {"first": True, "second": 2}
+    metadata = AuditMetadata(source)
+
+    source["first"] = False
+    source["third"] = 3
+
+    assert metadata.to_json() == {"first": True, "second": 2}
+
+
+def test_audit_metadata_to_json_returns_new_mutable_dict_without_affecting_instance():
+    """to_json 每次回傳 ordinary new dict，修改輸出不影響 frozen 實例。"""
+    metadata = AuditMetadata({"count": 1})
+    output = metadata.to_json()
+
+    output["count"] = 2
+
+    assert type(output) is dict
+    assert metadata.to_json() == {"count": 1}
+
+
+def test_audit_metadata_is_frozen():
+    """AuditMetadata 實例凍結，外部不可重新指定內部快照欄位。"""
+    metadata = AuditMetadata({"enabled": True})
+
+    with pytest.raises(FrozenInstanceError):
+        metadata._資料 = {}
 
 
 def test_解析嚴格JSON接受一般JSON值並保留陣列順序():
