@@ -118,38 +118,74 @@ def 驗證遷移SQL(
 
 def 執行遷移(資料庫路徑: str | Path, 遷移清單: Sequence[遷移項目]) -> tuple[int, ...]:
     """以獨立 ledger 與每筆交易原子套用發布介面 schema 遷移。"""
-    已驗證清單 = _驗證遷移清單(遷移清單)
-    if not 已驗證清單:
-        return ()
-
-    連線 = sqlite3.connect(str(資料庫路徑), timeout=30.0, isolation_level=None)
+    已驗證清單: tuple[遷移項目, ...] = ()
+    項目: 遷移項目 | None = None
+    連線: sqlite3.Connection | None = None
     已套用: list[int] = []
     try:
+        已驗證清單 = _驗證遷移清單(遷移清單)
+        遷移清單 = ()
+        if not 已驗證清單:
+            return ()
+
+        連線 = sqlite3.connect(str(資料庫路徑), timeout=30.0, isolation_level=None)
         _啟用並確認外鍵(連線)
         for 項目 in 已驗證清單:
             if _套用單一遷移(連線, 項目):
                 已套用.append(項目.版本)
+    except Exception:
+        遷移清單 = ()
+        已驗證清單 = ()
+        項目 = None
+        raise
     finally:
-        連線.set_authorizer(None)
-        連線.close()
+        if 連線 is not None:
+            連線.set_authorizer(None)
+            連線.close()
     return tuple(已套用)
 
 
 def _驗證遷移清單(遷移清單: Sequence[遷移項目]) -> tuple[遷移項目, ...]:
     版本集合: set[int] = set()
     已驗證: list[遷移項目] = []
+    項目: 遷移項目 | None = None
+    SQL: str | None = None
+    if not isinstance(遷移清單, Sequence) or isinstance(遷移清單, (str, bytes)):
+        遷移清單 = ()
+        raise 遷移執行錯誤("遷移項目不符合契約")
     for 項目 in 遷移清單:
+        if not isinstance(項目, 遷移項目):
+            遷移清單 = ()
+            項目 = None
+            已驗證 = []
+            SQL = None
+            raise 遷移執行錯誤("遷移項目不符合契約")
         版本 = 項目.版本
         名稱 = 項目.名稱
         SQL = 項目.SQL
         if not isinstance(版本, int) or isinstance(版本, bool) or 版本 <= 0:
+            遷移清單 = ()
+            項目 = None
+            SQL = None
+            已驗證 = []
             raise 遷移執行錯誤("遷移項目不符合契約")
         if 版本 in 版本集合:
+            遷移清單 = ()
+            項目 = None
+            SQL = None
+            已驗證 = []
             raise 遷移執行錯誤("遷移項目不符合契約")
         if not isinstance(名稱, str) or 名稱.strip() == "":
+            遷移清單 = ()
+            項目 = None
+            SQL = None
+            已驗證 = []
             raise 遷移執行錯誤("遷移項目不符合契約")
         if not isinstance(SQL, str):
+            遷移清單 = ()
+            項目 = None
             SQL = None
+            已驗證 = []
             raise 遷移執行錯誤("遷移項目不符合契約")
         版本集合.add(版本)
         已驗證.append(遷移項目(版本, 名稱.strip(), SQL))
@@ -165,20 +201,29 @@ def _啟用並確認外鍵(連線: sqlite3.Connection) -> None:
 def _套用單一遷移(連線: sqlite3.Connection, 項目: 遷移項目) -> bool:
     授權狀態: 遷移授權狀態 | None = None
     禁止操作 = False
+    版本 = 項目.版本
+    名稱 = 項目.名稱
+    陳述清單: tuple[str, ...] = ()
+    陳述: str | None = None
     try:
         連線.execute("BEGIN IMMEDIATE")
         _建立ledger(連線)
         既有 = 連線.execute(
             "SELECT name FROM published_api_schema_migrations WHERE version = ?",
-            (項目.版本,),
+            (版本,),
         ).fetchone()
         if 既有 is not None:
             連線.execute("ROLLBACK")
-            if 既有[0] == 項目.名稱:
+            if 既有[0] == 名稱:
+                項目 = 遷移項目(版本, 名稱, "")
                 return False
-            raise 遷移執行錯誤(f"遷移版本 {項目.版本} 名稱衝突: {既有[0]} != {項目.名稱}")
+            項目 = 遷移項目(版本, 名稱, "")
+            陳述清單 = ()
+            陳述 = None
+            raise 遷移執行錯誤(f"遷移版本 {版本} 名稱衝突: {既有[0]} != {名稱}")
 
         陳述清單 = 拆分遷移SQL(項目.SQL)
+        項目 = 遷移項目(版本, 名稱, "")
         授權狀態 = 遷移授權狀態()
         驗證遷移SQL(陳述清單, 授權狀態=授權狀態)
         授權狀態 = 遷移授權狀態()
@@ -189,26 +234,38 @@ def _套用單一遷移(連線: sqlite3.Connection, 項目: 遷移項目) -> boo
         連線.set_authorizer(None)
         連線.execute(
             "INSERT INTO published_api_schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
-            (項目.版本, 項目.名稱, time.time()),
+            (版本, 名稱, time.time()),
         )
         連線.execute("COMMIT")
         return True
     except sqlite3.DatabaseError:
         _rollback並清理authorizer(連線)
+        項目 = 遷移項目(版本, 名稱, "")
+        陳述清單 = ()
+        陳述 = None
         if 授權狀態 is not None and 授權狀態.拒絕類型 is not None:
             禁止操作 = True
         else:
             raise
     except 遷移SQL錯誤 as 錯誤:
         _rollback並清理authorizer(連線)
+        項目 = 遷移項目(版本, 名稱, "")
+        陳述清單 = ()
+        陳述 = None
         if str(錯誤) == "遷移 SQL 包含禁止操作":
             禁止操作 = True
         else:
             raise
     except Exception:
         _rollback並清理authorizer(連線)
+        項目 = 遷移項目(版本, 名稱, "")
+        陳述清單 = ()
+        陳述 = None
         raise
     if 禁止操作:
+        項目 = 遷移項目(版本, 名稱, "")
+        陳述清單 = ()
+        陳述 = None
         raise 遷移執行錯誤("遷移 SQL 包含禁止操作")
     return False
 

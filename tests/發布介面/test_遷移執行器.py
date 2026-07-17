@@ -207,30 +207,56 @@ def test_執行遷移依版本排序_ledger_fields_回傳_applied_且同名重�
 @pytest.mark.parametrize(
     "清單",
     [
+        None,
+        {"sql": 秘密標記},
+        f"not a list {秘密標記}",
+        秘密標記.encode(),
+        [None],
+        [{"sql": 秘密標記}],
+        [object()],
         [遷移項目(1, "a", "CREATE TABLE a(id);"), 遷移項目(1, "b", "CREATE TABLE b(id);")],
         [遷移項目(0, "a", "CREATE TABLE a(id);")],
         [遷移項目(True, "a", "CREATE TABLE a(id);")],
         [遷移項目(1, "  ", "CREATE TABLE a(id);")],
-        [遷移項目(1, "a", b"CREATE TABLE a(id);")],
+        [遷移項目(1, "a", {"sql": 秘密標記})],
     ],
 )
 def test_執行遷移拒絕不合法輸入且不套用任何schema(tmp_path, 清單):
     db = tmp_path / "bad.db"
 
-    with pytest.raises(遷移執行錯誤):
+    with pytest.raises(遷移執行錯誤) as 錯誤:
         執行遷移(db, 清單)
 
+    assert str(錯誤.value) == "遷移項目不符合契約"
+    _assert_sanitized_exception(錯誤.value)
     assert not db.exists() or _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
 
 
 def test_執行遷移一般sqlite錯誤整筆rollback且保留原錯誤型別(tmp_path):
     db = tmp_path / "rollback.db"
-    sql = "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES(1); INSERT INTO missing VALUES(1);"
+    sql = f"CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO missing VALUES(1); /* {秘密標記} */"
 
-    with pytest.raises(sqlite3.OperationalError):
+    with pytest.raises(sqlite3.OperationalError) as 錯誤:
         執行遷移(db, [遷移項目(1, "bad", sql)])
 
+    _assert_sanitized_exception(錯誤.value)
     assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
+
+
+@pytest.mark.parametrize(
+    "sql",
+    [
+        f"CREATE TABLE broken_{秘密標記}(;",
+        f"SELECT 1; /* {秘密標記}",
+    ],
+)
+def test_執行遷移_parser與splitter錯誤traceback_locals不保留raw_sql(tmp_path, sql):
+    db = tmp_path / "parser.db"
+
+    with pytest.raises(遷移SQL錯誤) as 錯誤:
+        執行遷移(db, [遷移項目(1, "bad", sql)])
+
+    _assert_sanitized_exception(錯誤.value)
 
 
 @pytest.mark.parametrize("陳述", ["COMMIT;", "END;", "ROLLBACK;", "BEGIN;", "SAVEPOINT s;", "RELEASE s;"])
@@ -241,7 +267,7 @@ def test_執行遷移交易控制由authorizer固定錯誤且無schema_ledger殘
         執行遷移(db, [遷移項目(1, "bad", f"CREATE TABLE a(id); {陳述} SELECT '{秘密標記}';")])
 
     assert str(錯誤.value) == "遷移 SQL 包含禁止操作"
-    _錯誤不含SQL標記(錯誤.value)
+    _assert_sanitized_exception(錯誤.value)
     assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
 
 
@@ -267,7 +293,7 @@ def test_執行遷移同版本不同名稱rollback且診斷不含SQL(tmp_path):
         執行遷移(db, [遷移項目(1, "new", f"CREATE TABLE leak_{秘密標記}(id);")])
 
     assert "1" in str(錯誤.value) and "old" in str(錯誤.value) and "new" in str(錯誤.value)
-    _錯誤不含SQL標記(錯誤.value)
+    _assert_sanitized_exception(錯誤.value)
     assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='t'") == [("t",)]
 
 
