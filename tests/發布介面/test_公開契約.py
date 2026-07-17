@@ -1,5 +1,6 @@
-"""發布介面共同嚴格 JSON 契約測試。"""
+"""發布介面共同公開契約測試。"""
 
+from dataclasses import FrozenInstanceError
 import math
 import traceback
 
@@ -11,6 +12,12 @@ from 繁中代理.發布介面 import (
     解析嚴格JSON,
     計算正規JSON雜湊,
 )
+from 繁中代理.發布介面.領域模型 import EndpointRef
+from 繁中代理.發布介面.領域模型 import InvocationRef
+from 繁中代理.發布介面.領域模型 import PublishedError
+from 繁中代理.發布介面.領域模型 import PublishedUsage
+from 繁中代理.發布介面.領域模型 import PublishedWarning
+from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 
 
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
@@ -183,3 +190,106 @@ def test_正規JSON雜湊忽略dict順序與來源空白():
 def test_正規JSON雜湊保留陣列順序差異():
     """array order 是語意的一部分，順序不同 digest 必須不同。"""
     assert 計算正規JSON雜湊([1, 2, 3]) != 計算正規JSON雜湊([3, 2, 1])
+
+
+@pytest.mark.parametrize(
+    "dto",
+    [
+        EndpointRef("ep_1", "hello", 3),
+        InvocationRef("inv_1", "req_1"),
+        PublishedUsage(7),
+        PublishedWarning("notice", "metadata omitted"),
+        PublishedError("endpoint_not_found", "not found"),
+        ServiceAccountSnapshotRef("sa_1", "ver_1", "digest"),
+    ],
+)
+def test_公開DTO全部凍結(dto):
+    """公開 DTO 都是 frozen dataclass。"""
+    欄位名稱 = next(iter(dto.to_json()))
+
+    with pytest.raises(FrozenInstanceError):
+        setattr(dto, 欄位名稱, "changed")
+
+
+def test_endpoint_ref_to_json_exact_fields():
+    """EndpointRef 輸出固定欄位與順序。"""
+    輸出 = EndpointRef("ep_1", "hello", 3).to_json()
+
+    assert list(輸出) == ["id", "slug", "version"]
+    assert 輸出 == {"id": "ep_1", "slug": "hello", "version": 3}
+
+
+def test_invocation_ref_to_json_exact_fields且session_nullable():
+    """InvocationRef 輸出固定欄位，session_id 可為 None。"""
+    無session輸出 = InvocationRef("inv_1", "req_1").to_json()
+    有session輸出 = InvocationRef("inv_2", "req_2", "session_1").to_json()
+
+    assert list(無session輸出) == ["id", "request_id", "session_id"]
+    assert 無session輸出 == {"id": "inv_1", "request_id": "req_1", "session_id": None}
+    assert 有session輸出 == {"id": "inv_2", "request_id": "req_2", "session_id": "session_1"}
+
+
+def test_published_usage_to_json_exact_fields且tokens_nullable():
+    """PublishedUsage 輸出固定欄位，total_tokens 可為 None。"""
+    未知用量輸出 = PublishedUsage().to_json()
+    已知用量輸出 = PublishedUsage(7).to_json()
+
+    assert list(未知用量輸出) == ["total_tokens"]
+    assert 未知用量輸出 == {"total_tokens": None}
+    assert 已知用量輸出 == {"total_tokens": 7}
+
+
+def test_published_warning_to_json_exact_fields():
+    """PublishedWarning 輸出固定欄位與順序。"""
+    輸出 = PublishedWarning("notice", "metadata omitted").to_json()
+
+    assert list(輸出) == ["code", "message"]
+    assert 輸出 == {"code": "notice", "message": "metadata omitted"}
+
+
+def test_published_error_to_json_exact_fields():
+    """PublishedError 輸出固定欄位與順序。"""
+    輸出 = PublishedError("endpoint_not_found", "not found").to_json()
+
+    assert list(輸出) == ["code", "message"]
+    assert 輸出 == {"code": "endpoint_not_found", "message": "not found"}
+
+
+def test_service_account_snapshot_ref_to_json_exact_fields且不帶runtime_context():
+    """ServiceAccountSnapshotRef 只公開參照欄位，不暴露 runtime context。"""
+    參考 = ServiceAccountSnapshotRef("sa_1", "ver_1", "digest")
+    輸出 = 參考.to_json()
+    禁止欄位 = {
+        "owner",
+        "memory",
+        "session",
+        "global_skill",
+        "workdir",
+        "provider_secret",
+        "provider_secrets",
+    }
+
+    assert list(輸出) == [
+        "service_account_id",
+        "endpoint_version_id",
+        "permission_snapshot_digest",
+    ]
+    assert 輸出 == {
+        "service_account_id": "sa_1",
+        "endpoint_version_id": "ver_1",
+        "permission_snapshot_digest": "digest",
+    }
+    assert 禁止欄位.isdisjoint(輸出)
+    for 欄位 in 禁止欄位:
+        assert 欄位 not in repr(參考)
+
+
+def test_to_json回傳新dict且修改輸出不影響DTO():
+    """共用 DTO to_json 使用新 dict，避免呼叫端修改輸出影響 frozen 實例。"""
+    參考 = EndpointRef("ep_1", "hello", 3)
+    輸出 = 參考.to_json()
+
+    輸出["slug"] = "changed"
+
+    assert 參考.slug == "hello"
+    assert 參考.to_json() == {"id": "ep_1", "slug": "hello", "version": 3}
