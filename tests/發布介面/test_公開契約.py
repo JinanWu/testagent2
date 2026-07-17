@@ -1,5 +1,6 @@
 """發布介面共同公開契約測試。"""
 
+import json
 from dataclasses import FrozenInstanceError
 import math
 import traceback
@@ -13,6 +14,7 @@ from 繁中代理.發布介面 import (
     計算正規JSON雜湊,
 )
 from 繁中代理.發布介面.領域模型 import EndpointRef
+from 繁中代理.發布介面.領域模型 import InvokeEnvelope
 from 繁中代理.發布介面.領域模型 import InvocationRef
 from 繁中代理.發布介面.領域模型 import PublishedError
 from 繁中代理.發布介面.領域模型 import PublishedUsage
@@ -22,6 +24,7 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
 深層錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_深層_不外洩"
+信封錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_信封_不外洩"
 
 
 def _錯誤狀態不含marker(錯誤, marker):
@@ -36,6 +39,16 @@ def _錯誤狀態不含marker(錯誤, marker):
         for 區域值 in traceback物件.tb_frame.f_locals.values():
             assert marker not in repr(區域值)
         traceback物件 = traceback物件.tb_next
+
+
+def _領域模型錯誤狀態不含marker(錯誤, marker):
+    assert marker not in str(錯誤)
+    assert marker not in repr(錯誤)
+    assert 錯誤.__cause__ is None
+    assert 錯誤.__context__ is None
+    for frame, _ in traceback.walk_tb(錯誤.__traceback__):
+        if frame.f_globals.get("__name__") == "繁中代理.發布介面.領域模型":
+            assert marker not in repr(frame.f_locals)
 
 
 def test_解析嚴格JSON接受一般JSON值並保留陣列順序():
@@ -293,3 +306,109 @@ def test_to_json回傳新dict且修改輸出不影響DTO():
 
     assert 參考.slug == "hello"
     assert 參考.to_json() == {"id": "ep_1", "slug": "hello", "version": 3}
+
+
+def test_invoke_envelope_success_failure_exact_keys_and_json_dumpable():
+    """成功與 endpoint_not_found 失敗信封固定鍵序、nullability 與 JSON 輸出。"""
+    success = InvokeEnvelope(
+        ok=True,
+        endpoint=EndpointRef("ep_1", "hello", 3),
+        invocation=InvocationRef("inv_1", "req_1"),
+        data={"items": [1, None, True]},
+        usage=PublishedUsage(7),
+        warnings=[PublishedWarning("notice", "metadata omitted")],
+    ).to_json()
+    failure = InvokeEnvelope(
+        ok=False,
+        endpoint=None,
+        invocation=None,
+        error=PublishedError("endpoint_not_found", "not found"),
+    ).to_json()
+
+    assert list(success) == ["ok", "endpoint", "invocation", "data", "usage", "warnings", "error"]
+    assert success == {
+        "ok": True,
+        "endpoint": {"id": "ep_1", "slug": "hello", "version": 3},
+        "invocation": {"id": "inv_1", "request_id": "req_1", "session_id": None},
+        "data": {"items": [1, None, True]},
+        "usage": {"total_tokens": 7},
+        "warnings": [{"code": "notice", "message": "metadata omitted"}],
+        "error": None,
+    }
+    assert failure == {
+        "ok": False,
+        "endpoint": None,
+        "invocation": None,
+        "data": None,
+        "usage": None,
+        "warnings": [],
+        "error": {"code": "endpoint_not_found", "message": "not found"},
+    }
+    assert json.loads(json.dumps([success, failure], ensure_ascii=False)) == [success, failure]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"ok": True, "endpoint": None, "invocation": InvocationRef("i", "r"), "data": None},
+        {"ok": True, "endpoint": EndpointRef("e", "s", 1), "invocation": InvocationRef("i", "r"), "error": PublishedError("x", "x")},
+        {"ok": False, "endpoint": None, "invocation": None, "error": PublishedError("x", "x"), "data": {}},
+        {"ok": 1, "endpoint": None, "invocation": None, "error": PublishedError("x", "x")},
+        {"ok": True, "endpoint": "bad", "invocation": InvocationRef("i", "r"), "data": None},
+        {"ok": True, "endpoint": EndpointRef("e", "s", 1), "invocation": "bad", "data": None},
+        {"ok": False, "endpoint": None, "invocation": None, "error": "bad"},
+    ],
+)
+def test_invoke_envelope_rejects_inconsistent_combinations_and_wrong_dto_types(kwargs):
+    """信封狀態組合與 DTO 型別錯誤都必須拒絕。"""
+    with pytest.raises(Exception):
+        InvokeEnvelope(**kwargs)
+
+
+def test_invoke_envelope_data_uses_defensive_deep_immutable_snapshot():
+    """data 建構時深層快照，呼叫端與 to_json 輸出 mutation 都不影響內部。"""
+    data = {"items": [{"name": "old"}]}
+    envelope = InvokeEnvelope(ok=True, endpoint=EndpointRef("e", "s", 1), invocation=InvocationRef("i", "r"), data=data)
+
+    data["items"][0]["name"] = "new"
+    envelope.to_json()["data"]["items"][0]["name"] = "changed"
+
+    assert envelope.to_json()["data"] == {"items": [{"name": "old"}]}
+
+
+@pytest.mark.parametrize("data", [{"tuple": (1, 2)}, {"set": {1, 2}}, {"nan": math.nan}])
+def test_invoke_envelope_rejects_non_json_data(data):
+    """信封 data 只接受合法 JSON value。"""
+    with pytest.raises(嚴格JSON錯誤):
+        InvokeEnvelope(ok=True, endpoint=EndpointRef("e", "s", 1), invocation=InvocationRef("i", "r"), data=data)
+
+
+def test_invoke_envelope_error_clears_marker_from_all_production_frames():
+    """非 JSON 與 invariant 錯誤都不可在領域模型 traceback locals 保留 marker。"""
+    marker = 信封錯誤唯一SECRET_MARKER
+    cases = [
+        {"endpoint": EndpointRef("e", "s", 1), "data": {"bad": object(), "marker": marker}},
+        {"endpoint": marker, "data": None},
+    ]
+    for kwargs in cases:
+        with pytest.raises(Exception) as 錯誤:
+            InvokeEnvelope(ok=True, invocation=InvocationRef("i", "r"), **kwargs)
+        kwargs = None
+        _領域模型錯誤狀態不含marker(錯誤.value, marker)
+
+
+def test_invoke_envelope_warnings_are_tuple_default_and_type_guarded():
+    """warnings 內部為 immutable tuple，預設無 mutable container，且只收 warning DTO。"""
+    warning = PublishedWarning("notice", "metadata omitted")
+    empty = InvokeEnvelope(ok=True, endpoint=EndpointRef("e", "s", 1), invocation=InvocationRef("i", "r"), data=None)
+    warned = InvokeEnvelope(
+        ok=True,
+        endpoint=EndpointRef("e", "s", 1),
+        invocation=InvocationRef("i", "r"),
+        data=None,
+        warnings=[warning],
+    )
+
+    assert (empty.warnings, warned.warnings) == ((), (warning,))
+    with pytest.raises(Exception):
+        InvokeEnvelope(ok=True, endpoint=EndpointRef("e", "s", 1), invocation=InvocationRef("i", "r"), data=None, warnings=["bad"])
