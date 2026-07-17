@@ -92,3 +92,61 @@ def test_loader_returns_only_pending_and_does_not_read_applied_sql(tmp_path, mon
     monkeypatch.setattr(發布資料庫, "_讀取一般檔文字", fail_read)
     assert 載入發布介面遷移(資料庫路徑=db) == ()
     assert 初始化發布介面資料庫(db) == ()
+
+
+def test_loader_missing_db_is_read_only_and_returns_all_pending(tmp_path):
+    """不存在的ledger資料庫不可被loader建立，且所有manifest版本仍為pending。"""
+    db = tmp_path / "missing.sqlite3"
+    assert not db.exists()
+    pending = 載入發布介面遷移(資料庫路徑=db)
+    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5]
+    assert not db.exists()
+
+
+def test_manifest_root_fd_pinned_across_enumeration_and_read(tmp_path, monkeypatch):
+    """列舉後即使原路徑被替換，loader仍只能讀取已釘住的原始manifest目錄。"""
+    root = tmp_path / "manifest"
+    moved = tmp_path / "manifest.original"
+    root.mkdir()
+    (root / "0001_original.sql").write_text("CREATE TABLE original(id INTEGER);", encoding="utf-8")
+
+    def replace_root_after_enumeration(root_fd):
+        """在列舉完成後替換原路徑，檢查後續讀取不會回到路徑解析。"""
+        names = os.listdir(root_fd)
+        root.rename(moved)
+        root.mkdir()
+        (root / "0001_original.sql").write_text("CREATE TABLE replacement(id INTEGER);", encoding="utf-8")
+        return names
+
+    monkeypatch.setattr(發布資料庫, "_列舉目錄名稱", replace_root_after_enumeration)
+    pending = 載入發布介面遷移(root)
+    assert len(pending) == 1
+    assert pending[0].SQL == "CREATE TABLE original(id INTEGER);"
+
+
+def test_manifest_loader_fails_closed_without_required_fd_capabilities(tmp_path, monkeypatch):
+    """平台缺少O_NOFOLLOW/O_DIRECTORY或open(dir_fd)支援時，manifest loader必須固定拒絕。"""
+    root = tmp_path / "manifest"
+    root.mkdir()
+    (root / "0001_a.sql").write_text("SELECT 1;", encoding="utf-8")
+    cases = [
+        ("O_NOFOLLOW", None, None, None),
+        ("O_DIRECTORY", None, None, None),
+        (None, set(), None, None),
+        (None, None, set(), None),
+    ]
+    for missing_attr, supports_dir_fd, supports_fd, message in cases:
+        if missing_attr is not None and not hasattr(os, missing_attr):
+            continue
+        with monkeypatch.context() as patch:
+            if missing_attr is not None:
+                patch.delattr(os, missing_attr)
+            if supports_dir_fd is not None:
+                patch.setattr(os, "supports_dir_fd", supports_dir_fd)
+            if supports_fd is not None:
+                patch.setattr(os, "supports_fd", supports_fd)
+            with pytest.raises(遷移執行錯誤) as 錯誤:
+                載入發布介面遷移(root)
+            assert str(錯誤.value) == "發布介面遷移 manifest 不符合契約"
+            assert 錯誤.value.__cause__ is message
+    assert [項目.版本 for 項目 in 載入發布介面遷移(root)] == [1]

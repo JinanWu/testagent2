@@ -10,8 +10,9 @@ from pathlib import Path
 
 from .遷移執行器 import 執行遷移, 遷移執行錯誤, 遷移項目
 
-_遷移檔名格式 = re.compile(r"^(?P<version>[0-9]{4})_.+\.sql$")
+_遷移檔名格式 = re.compile(r"^(?P<version>[0-9]{4})_[^/]+\.sql$")
 _錯誤訊息 = "發布介面遷移 manifest 不符合契約"
+_列舉目錄名稱 = os.listdir
 
 
 def 載入發布介面遷移(
@@ -21,15 +22,19 @@ def 載入發布介面遷移(
 ) -> tuple[遷移項目, ...]:
     """載入 pending 遷移；參數是 manifest 目錄/資料庫路徑，回傳遷移 tuple；只讀 pending SQL，錯誤丟遷移執行錯誤。"""
     目錄 = _取得遷移目錄(遷移目錄)
-    檔案項目 = _列舉遷移檔名(目錄, 拒絕根連結=遷移目錄 is not None)
-    已套用 = _讀取已套用ledger(資料庫路徑) if 資料庫路徑 is not None else {}
-    _比對已套用名稱(檔案項目, 已套用)
-    結果: list[遷移項目] = []
-    for 版本, 名稱 in 檔案項目:
-        if 已套用.get(版本) == 名稱:
-            continue
-        結果.append(遷移項目(版本, 名稱, _讀取一般檔文字(目錄, 名稱)))
-    return tuple(結果)
+    root_fd = _開啟遷移目錄(目錄)
+    try:
+        檔案項目 = _列舉遷移檔名(root_fd)
+        已套用 = _讀取已套用ledger(資料庫路徑) if 資料庫路徑 is not None else {}
+        _比對已套用名稱(檔案項目, 已套用)
+        結果: list[遷移項目] = []
+        for 版本, 名稱 in 檔案項目:
+            if 已套用.get(版本) == 名稱:
+                continue
+            結果.append(遷移項目(版本, 名稱, _讀取一般檔文字(root_fd, 名稱)))
+        return tuple(結果)
+    finally:
+        os.close(root_fd)
 
 
 def 初始化發布介面資料庫(資料庫路徑: str | Path, 遷移目錄: str | Path | None = None) -> tuple[int, ...]:
@@ -44,19 +49,40 @@ def _取得遷移目錄(遷移目錄: str | Path | None) -> Path:
     return Path(遷移目錄)
 
 
-def _列舉遷移檔名(目錄: Path, *, 拒絕根連結: bool) -> tuple[tuple[int, str], ...]:
-    """列舉檔名；參數是目錄/symlink 策略，回傳排序版本檔名；會讀目錄，非法 manifest 丟遷移執行錯誤。"""
-    讀取失敗 = False
+def _開啟遷移目錄(目錄: Path) -> int:
+    """開啟並釘住 manifest 目錄；參數是 Path，回傳目錄 fd；不支援安全 fd API 或非法根目錄時丟固定錯誤。"""
+    if not _支援安全目錄讀取():
+        _拒絕()
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_fd: int | None = None
     try:
-        狀態 = os.lstat(目錄)
-        if 拒絕根連結 and stat.S_ISLNK(狀態.st_mode):
+        root_fd = os.open(目錄, flags)
+        if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+            os.close(root_fd)
+            root_fd = None
             _拒絕()
-        if not stat.S_ISDIR(狀態.st_mode):
-            _拒絕()
-        名稱清單 = sorted(項目.name for 項目 in 目錄.iterdir())
     except OSError:
-        讀取失敗 = True
-    if 讀取失敗:
+        if root_fd is not None:
+            os.close(root_fd)
+        _拒絕()
+    return root_fd
+
+
+def _支援安全目錄讀取() -> bool:
+    """檢查平台支援；無參數，回傳是否有 O_NOFOLLOW/O_DIRECTORY/open(dir_fd)/listdir(fd)。"""
+    return (
+        hasattr(os, "O_NOFOLLOW")
+        and hasattr(os, "O_DIRECTORY")
+        and os.open in os.supports_dir_fd
+        and os.listdir in os.supports_fd
+    )
+
+
+def _列舉遷移檔名(root_fd: int) -> tuple[tuple[int, str], ...]:
+    """從已釘住目錄fd列舉檔名；參數是目錄fd，回傳排序版本檔名；非法 manifest 丟固定錯誤。"""
+    try:
+        名稱清單 = sorted(_列舉目錄名稱(root_fd))
+    except OSError:
         _拒絕()
     結果: list[tuple[int, str]] = []
     版本集合: set[int] = set()
@@ -80,9 +106,17 @@ def _列舉遷移檔名(目錄: Path, *, 拒絕根連結: bool) -> tuple[tuple[i
 
 
 def _讀取已套用ledger(資料庫路徑: str | Path) -> dict[int, str]:
-    """讀 ledger；參數是 SQLite 路徑，回傳 version/name dict；會開資料庫，查詢失敗丟固定遷移執行錯誤。"""
+    """唯讀讀 ledger；參數是 SQLite 路徑，回傳 version/name dict；不存在不建立，讀取失敗丟固定錯誤。"""
+    path = Path(資料庫路徑).expanduser()
     try:
-        連線 = sqlite3.connect(str(資料庫路徑))
+        path.stat()
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        raise 遷移執行錯誤("發布介面資料庫遷移狀態不符合契約") from None
+    try:
+        uri = path.resolve(strict=False).as_uri() + "?mode=ro"
+        連線 = sqlite3.connect(uri, uri=True)
         try:
             exists = 連線.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='published_api_schema_migrations'"
@@ -92,7 +126,7 @@ def _讀取已套用ledger(資料庫路徑: str | Path) -> dict[int, str]:
             return {int(row[0]): str(row[1]) for row in 連線.execute("SELECT version,name FROM published_api_schema_migrations")}
         finally:
             連線.close()
-    except sqlite3.Error:
+    except (OSError, ValueError, sqlite3.Error):
         raise 遷移執行錯誤("發布介面資料庫遷移狀態不符合契約") from None
 
 
@@ -104,13 +138,15 @@ def _比對已套用名稱(檔案項目: tuple[tuple[int, str], ...], 已套用:
             raise 遷移執行錯誤("發布介面資料庫遷移狀態不符合契約") from None
 
 
-def _讀取一般檔文字(目錄: Path, 名稱: str) -> str:
-    """安全讀 SQL；參數是目錄/檔名，回傳 UTF-8 文字；會 O_NOFOLLOW+fstat，讀取錯誤丟固定遷移執行錯誤。"""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+def _讀取一般檔文字(root_fd: int, 名稱: str) -> str:
+    """從已釘住目錄fd安全讀SQL；參數是目錄fd/檔名，回傳UTF-8文字；錯誤丟固定遷移執行錯誤。"""
+    if "/" in 名稱:
+        _拒絕()
+    flags = os.O_RDONLY | os.O_NOFOLLOW
     fd: int | None = None
     讀取失敗 = False
     try:
-        fd = os.open(目錄 / 名稱, flags)
+        fd = os.open(名稱, flags, dir_fd=root_fd)
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             _拒絕()
         with os.fdopen(fd, "r", encoding="utf-8", errors="strict") as 檔案:
