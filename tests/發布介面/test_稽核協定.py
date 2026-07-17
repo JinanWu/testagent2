@@ -55,6 +55,24 @@ class FakeAuditSink:
         return self.receipt
 
 
+class SideEffectSpy:
+    """測試用不可信nested物件，任何dereference或to_json都算違約。"""
+
+    def __init__(self):
+        """初始化side effect計數。"""
+        self.hits = 0
+
+    def __getattr__(self, name):
+        """任何attribute dereference都記錄並拋出。"""
+        self.hits += 1
+        raise RuntimeError(SINK_MARKER_SECRET)
+
+    def to_json(self):
+        """任何to_json呼叫都記錄並拋出。"""
+        self.hits += 1
+        raise RuntimeError(SINK_MARKER_SECRET)
+
+
 class FakeReceiptSubclass(AuditAppendReceipt):
     """測試用receipt subclass，驗證helper只接受exact type。"""
 
@@ -117,6 +135,21 @@ def _forged_actor(actor_type, actor_id):
     object.__setattr__(actor, "actor_type", actor_type)
     object.__setattr__(actor, "actor_id", actor_id)
     return actor
+
+
+def _forged_resource(resource_type, resource_id):
+    """繞過constructor建立exact resource，驗證helper會深層重新正規化。"""
+    resource = object.__new__(發布領域模型.AuditResourceRef)
+    object.__setattr__(resource, "resource_type", resource_type)
+    object.__setattr__(resource, "resource_id", resource_id)
+    return resource
+
+
+def _forged_metadata(data):
+    """繞過constructor建立exact metadata，驗證helper會深層重新正規化。"""
+    metadata = object.__new__(發布領域模型.AuditMetadata)
+    object.__setattr__(metadata, "_資料", data)
+    return metadata
 
 
 def _forged_event(**overrides):
@@ -302,16 +335,51 @@ def test_append_audit_event_rejects_forged_exact_event_before_sink_lookup():
     forged_actor_event = _forged_event(
         actor=_forged_actor("user", SINK_MARKER_SECRET),
     )
+    forged_resource_event = _forged_event(
+        resource=_forged_resource("audit.event", SINK_MARKER_SECRET),
+    )
+    forged_string_metadata_event = _forged_event(
+        metadata=_forged_metadata({"safe_key": "raw secret"}),
+    )
+    forged_raw_metadata_event = _forged_event(
+        metadata=_forged_metadata({"raw_payload": 1}),
+    )
     secret_event_sink = FakeAuditSink(_make_receipt(), lookup_raises=True)
     actor_event_sink = FakeAuditSink(_make_receipt())
+    resource_event_sink = FakeAuditSink(_make_receipt())
+    string_metadata_event_sink = FakeAuditSink(_make_receipt())
+    raw_metadata_event_sink = FakeAuditSink(_make_receipt())
 
     _assert_sink_failure(secret_event_sink, forged_secret_event)
     _assert_sink_failure(actor_event_sink, forged_actor_event)
+    _assert_sink_failure(resource_event_sink, forged_resource_event)
+    _assert_sink_failure(string_metadata_event_sink, forged_string_metadata_event)
+    _assert_sink_failure(raw_metadata_event_sink, forged_raw_metadata_event)
 
     assert secret_event_sink.calls == []
     assert actor_event_sink.calls == []
+    assert resource_event_sink.calls == []
+    assert string_metadata_event_sink.calls == []
+    assert raw_metadata_event_sink.calls == []
     assert secret_event_sink.lookups == 0
     assert actor_event_sink.lookups == 0
+    assert resource_event_sink.lookups == 0
+    assert string_metadata_event_sink.lookups == 0
+    assert raw_metadata_event_sink.lookups == 0
+
+
+@pytest.mark.parametrize("field", ["actor", "resource", "metadata"])
+def test_append_audit_event_rejects_nonexact_nested_without_dereference_or_sink(field):
+    """nested欄位非exact時，只可type guard fail，不可dereference或lookup sink。"""
+    spy = SideEffectSpy()
+    event = _forged_event(**{field: spy})
+    sink = FakeAuditSink(_make_receipt(), lookup_raises=True)
+
+    _assert_sink_failure(sink, event)
+
+    assert spy.hits == 0
+    assert sink.lookups == 0
+    assert sink.calls == []
 
 
 def test_append_audit_event_failures_close_with_fixed_error():

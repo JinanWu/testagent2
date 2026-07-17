@@ -49,6 +49,9 @@ def 附加稽核事件或失敗關閉(
     canonical_resource = None
     canonical_metadata = None
     canonical_event = None
+    raw_actor = None
+    raw_resource = None
+    raw_metadata = None
     append_audit_event = None
     raw_receipt = None
     canonical_receipt = None
@@ -56,15 +59,29 @@ def 附加稽核事件或失敗關閉(
         if type(raw_event) is not AuditEvent:
             失敗 = True
         else:
+            raw_actor = raw_event.actor
+            raw_resource = raw_event.resource
+            raw_metadata = raw_event.metadata
+            if type(raw_actor) is not AuditActorRef:
+                失敗 = True
+            elif type(raw_resource) is not AuditResourceRef:
+                失敗 = True
+            elif type(raw_metadata) is not AuditMetadata:
+                失敗 = True
+
+        if not 失敗:
+            assert type(raw_actor) is AuditActorRef
+            assert type(raw_resource) is AuditResourceRef
+            assert type(raw_metadata) is AuditMetadata
             canonical_actor = AuditActorRef(
-                raw_event.actor.actor_type,
-                raw_event.actor.actor_id,
+                raw_actor.actor_type,
+                raw_actor.actor_id,
             )
             canonical_resource = AuditResourceRef(
-                raw_event.resource.resource_type,
-                raw_event.resource.resource_id,
+                raw_resource.resource_type,
+                raw_resource.resource_id,
             )
-            canonical_metadata = AuditMetadata(raw_event.metadata.to_json())
+            canonical_metadata = AuditMetadata(raw_metadata.to_json())
             canonical_event = AuditEvent(
                 event_id=raw_event.event_id,
                 occurred_at=raw_event.occurred_at,
@@ -96,12 +113,14 @@ def 附加稽核事件或失敗關閉(
 
     if 失敗 or type(canonical_receipt) is not AuditAppendReceipt:
         sink = event = raw_event = canonical_actor = canonical_resource = None
+        raw_actor = raw_resource = raw_metadata = None
         canonical_metadata = canonical_event = append_audit_event = None
         raw_receipt = canonical_receipt = None
         raise AuditSinkError("稽核事件無法確認提交")
 
     result = canonical_receipt
     sink = event = raw_event = canonical_actor = canonical_resource = None
+    raw_actor = raw_resource = raw_metadata = None
     canonical_metadata = canonical_event = append_audit_event = None
     raw_receipt = canonical_receipt = None
     assert type(result) is AuditAppendReceipt
