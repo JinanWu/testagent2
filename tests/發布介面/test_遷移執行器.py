@@ -15,6 +15,8 @@ PRODUCTION_MODULE = "繁中代理.發布介面.遷移執行器"
 核心遷移檔 = Path("繁中代理/發布介面/遷移/0001_建立發布端點核心.sql")
 憑證稽核遷移檔 = Path("繁中代理/發布介面/遷移/0002_建立憑證與稽核.sql")
 呼叫事件遷移檔 = Path("繁中代理/發布介面/遷移/0003_建立呼叫事件與工具紀錄.sql")
+限流遮蔽遷移檔 = Path("繁中代理/發布介面/遷移/0004_建立限流與遮蔽資料.sql")
+網頁工作階段遷移檔 = Path("繁中代理/發布介面/遷移/0005_建立網頁工作階段.sql")
 快照欄位 = (
     "original_requirement_text",
     "system_prompt",
@@ -91,6 +93,22 @@ def _套用呼叫事件遷移(db):
         (1, 核心遷移檔.name),
         (2, 憑證稽核遷移檔.name),
         (3, 呼叫事件遷移檔.name),
+    ]
+
+
+def _套用至0005(db):
+    檔案清單 = (核心遷移檔, 憑證稽核遷移檔, 呼叫事件遷移檔, 限流遮蔽遷移檔, 網頁工作階段遷移檔)
+    遷移 = []
+    for 版本, 檔案 in enumerate(檔案清單, start=1):
+        sql = 檔案.read_text(encoding="utf-8")
+        assert all(禁用 not in sql.upper() for 禁用 in ("COMMIT", "PRAGMA", "ATTACH"))
+        if 版本 >= 4:
+            assert all(禁用 not in sql.upper() for 禁用 in ("BEGIN", "ROLLBACK"))
+        遷移.append(遷移項目(版本, 檔案.name, sql))
+    assert 執行遷移(db, 遷移) == (1, 2, 3, 4, 5)
+    assert 執行遷移(db, 遷移) == ()
+    assert _查詢(db, "SELECT version,name FROM published_api_schema_migrations ORDER BY version") == [
+        (版本, 檔案.name) for 版本, 檔案 in enumerate(檔案清單, start=1)
     ]
 
 
@@ -224,6 +242,139 @@ def _新增工具呼叫(連線, **覆寫):
     值.update(覆寫)
     cols = tuple(值)
     連線.execute(f"INSERT INTO endpoint_tool_calls({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def _新增遮蔽(連線, **覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "red1"),
+        "invocation_id": "inv1",
+        "target_type": "invocation_input",
+        "target_row_id": "inv1",
+        "json_path": "$.secret",
+        "original_sha256": "a" * 64,
+        "reason": "secret removal",
+        "actor_type": "user",
+        "actor_id": "u1",
+        "audit_event_id": "audit",
+        "is_tombstone": 0,
+        "redacted_at": 5,
+    }
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO endpoint_redactions({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def _新增網頁工作階段(連線, **覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "ws1"),
+        "user_id": "u1",
+        "session_token_hash": 覆寫.pop("session_token_hash", b"session-hash"),
+        "csrf_token_hash": b"csrf-hash",
+        "created_at": 10,
+        "expires_at": 20,
+        "last_seen_at": 10,
+        "revoked_at": None,
+        "user_agent_hash": None,
+    }
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO web_sessions({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def test_0004_0005_fresh_reapply_ledger與foreign_key_check(tmp_path):
+    db = tmp_path / "fresh_0005.db"
+    _套用至0005(db)
+    assert {"rate_limit_counters", "endpoint_redactions", "web_sessions"} <= set(
+        name for (name,) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'")
+    )
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_限流counter約束_unique與單一atomic_upsert可rollback(tmp_path):
+    db = tmp_path / "rate_limit.db"
+    _套用至0005(db)
+    upsert = """
+    INSERT INTO rate_limit_counters(scope_type,scope_id,window_start,request_count,updated_at)
+    VALUES ('endpoint','ep1',100,1,1)
+    ON CONFLICT(scope_type,scope_id,window_start)
+    DO UPDATE SET request_count=request_count+1, updated_at=excluded.updated_at
+    """
+    with sqlite3.connect(db) as 連線:
+        連線.execute(upsert)
+        連線.execute(upsert)
+        assert 連線.execute("SELECT request_count FROM rate_limit_counters").fetchall() == [(2,)]
+        for sql in (
+            "INSERT INTO rate_limit_counters VALUES ('user','u1',1,1,1)",
+            "INSERT INTO rate_limit_counters VALUES ('endpoint',' ',1,1,1)",
+            "INSERT INTO rate_limit_counters VALUES ('endpoint','ep',-1,1,1)",
+            "INSERT INTO rate_limit_counters VALUES ('endpoint','ep',1,-1,1)",
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                連線.execute(sql)
+        連線.commit()
+        連線.execute("BEGIN")
+        連線.execute("INSERT INTO rate_limit_counters VALUES ('credential','c1',200,1,1)")
+        連線.execute("ROLLBACK")
+        assert 連線.execute("SELECT 1 FROM rate_limit_counters WHERE scope_type='credential'").fetchall() == []
+
+
+def test_遮蔽資料約束_fk_hash_enum_bool_unique且無原文欄(tmp_path):
+    db = tmp_path / "redactions.db"
+    _套用至0005(db)
+    _寫入呼叫事件fixture(db)
+    assert not any(禁 in 欄.lower() for 欄 in _欄位(db, "endpoint_redactions") for 禁 in ("raw", "plaintext", "payload", "value", "original_value"))
+    assert 秘密標記 not in 限流遮蔽遷移檔.read_text(encoding="utf-8")
+    assert {("idx_endpoint_redactions_invocation_time",), ("idx_endpoint_redactions_audit",)} <= set(
+        _查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='endpoint_redactions'")
+    )
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增呼叫(連線)
+        _新增稽核事件(連線)
+        _新增遮蔽(連線)
+        assert 連線.execute("SELECT original_sha256,is_tombstone FROM endpoint_redactions").fetchall() == [("a" * 64, 0)]
+        for 覆寫 in (
+            {"id": "missing_audit", "audit_event_id": "missing"},
+            {"id": "null_audit", "audit_event_id": None, "json_path": "$.nullaudit"},
+            {"id": "bad_invocation", "invocation_id": "missing"},
+            {"id": "bad_type", "target_type": "credential"},
+            {"id": "bad_row", "target_row_id": " "},
+            {"id": "bad_hash_upper", "original_sha256": "A" * 64, "json_path": "$.upper"},
+            {"id": "bad_hash_short", "original_sha256": "a" * 63, "json_path": "$.short"},
+            {"id": "bad_reason", "reason": "", "json_path": "$.reason"},
+            {"id": "bad_actor", "actor_id": None, "json_path": "$.actor"},
+            {"id": "bad_bool", "is_tombstone": 2, "json_path": "$.bool"},
+            {"id": "dupe", "json_path": "$.secret"},
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                _新增遮蔽(連線, **覆寫)
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_網頁工作階段hash_constraints_expiry_revocation_unique_獨立索引無raw欄(tmp_path):
+    db = tmp_path / "web_sessions.db"
+    _套用至0005(db)
+    欄位 = _欄位(db, "web_sessions")
+    assert not any(禁 in 欄.lower() for 欄 in 欄位 for 禁 in ("raw", "cookie", "token", "csrf", "password") if not 欄.endswith("_hash"))
+    assert "auth_sessions" not in {name for (name,) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'")}
+    assert ("idx_web_sessions_user_revoked_expires",) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='web_sessions'")
+    with sqlite3.connect(db) as 連線:
+        _新增網頁工作階段(連線)
+        _新增網頁工作階段(連線, id="ws2", session_token_hash=b"other", last_seen_at=12, revoked_at=13, user_agent_hash=b"ua")
+        for 覆寫 in (
+            {"id": "bad_user", "session_token_hash": b"u", "user_id": " "},
+            {"id": "bad_session_hash", "session_token_hash": b""},
+            {"id": "bad_csrf_hash", "session_token_hash": b"c", "csrf_token_hash": b""},
+            {"id": "bad_expiry", "session_token_hash": b"e", "expires_at": 10},
+            {"id": "bad_seen", "session_token_hash": b"s", "last_seen_at": 9},
+            {"id": "bad_revoked", "session_token_hash": b"r", "revoked_at": 9},
+            {"id": "bad_ua", "session_token_hash": b"ua", "user_agent_hash": b""},
+            {"id": "dupe", "session_token_hash": b"session-hash"},
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                _新增網頁工作階段(連線, **覆寫)
 
 
 def test_呼叫事件遷移建立表欄位索引且無明文欄(tmp_path):
