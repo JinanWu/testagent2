@@ -6,6 +6,8 @@ from pathlib import Path
 
 import pytest
 
+from 繁中代理.使用者 import 使用者庫
+from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.發布介面 import 資料庫 as 發布資料庫
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫, 載入發布介面遷移
 from 繁中代理.發布介面.遷移執行器 import 遷移執行錯誤
@@ -25,11 +27,146 @@ def _assert_發布遷移完成(db: Path) -> None:
     assert "service_accounts" in {列[0] for 列 in _q(db, "SELECT name FROM sqlite_master WHERE type='table'")}
 
 
+def _安全關閉(物件) -> None:
+    """安全關閉production store或SQLite連線，避免WAL與transaction影響後續快照。"""
+    連線 = getattr(物件, "連線", 物件)
+    close = getattr(連線, "close", None)
+    if close is not None:
+        close()
+
+
+def _quote_ident(名稱: str) -> str:
+    """替SQLite identifier加上雙引號，供測試快照安全查詢指定legacy table。"""
+    return '"' + 名稱.replace('"', '""') + '"'
+
+
+def _legacy_table_snapshot(db: Path, 表名清單: tuple[str, ...]) -> dict[str, object]:
+    """快照指定legacy表的欄位、rows、sqlite_master SQL與schema_version存在和值。"""
+    with sqlite3.connect(db) as 連線:
+        連線.row_factory = sqlite3.Row
+        tables: dict[str, object] = {}
+        for 表名 in 表名清單:
+            exists = 連線.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                (表名,),
+            ).fetchone()
+            if exists is None:
+                tables[表名] = {"present": False, "columns": (), "rows": ()}
+                continue
+            columns = tuple(tuple(row) for row in 連線.execute(f"PRAGMA table_info({_quote_ident(表名)})"))
+            欄位名稱 = [str(row[1]) for row in columns]
+            order_by = ", ".join(_quote_ident(欄位) for 欄位 in 欄位名稱) or "rowid"
+            rows = tuple(
+                tuple(row)
+                for row in 連線.execute(f"SELECT * FROM {_quote_ident(表名)} ORDER BY {order_by}")
+            )
+            tables[表名] = {"present": True, "columns": columns, "rows": rows}
+        master = tuple(
+            tuple(row)
+            for row in 連線.execute(
+                """
+                SELECT type, name, tbl_name, sql
+                FROM sqlite_master
+                WHERE type IN ('table', 'index', 'trigger')
+                  AND (name IN ({}) OR tbl_name IN ({}))
+                ORDER BY type, name, tbl_name
+                """.format(",".join("?" for _ in 表名清單), ",".join("?" for _ in 表名清單)),
+                tuple(表名清單) + tuple(表名清單),
+            )
+        )
+        schema_version = 連線.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version'"
+        ).fetchone()
+        schema_value = None
+        if schema_version is not None:
+            schema_value = tuple(tuple(row) for row in 連線.execute("SELECT * FROM schema_version ORDER BY version"))
+        return {
+            "tables": tables,
+            "sqlite_master": master,
+            "schema_version": {"present": schema_version is not None, "rows": schema_value},
+        }
+
+
+def _建立使用者與登入(db: Path) -> str:
+    """透過production使用者庫建立user、settings與auth token row並回傳真實user id。"""
+    庫 = 使用者庫(db)
+    try:
+        使用者 = 庫.建立使用者("alice", password="pw", enabled_tools=["shell"], allowed_workdirs=["*"])
+        token = 庫.建立登入Token(str(使用者["id"]), expires_at=0)
+        assert 庫.驗證登入Token(token).user_id == str(使用者["id"])
+        return str(使用者["id"])
+    finally:
+        _安全關閉(庫)
+
+
+def _建立工作階段與訊息(db: Path, user_id: str | None = None) -> str:
+    """透過production工作階段庫建立session與message row並回傳真實session id。"""
+    庫 = 工作階段庫(db)
+    try:
+        session_id = 庫.建立或讀取工作階段("legacy-session", user_id=user_id, model="fake")
+        庫.寫入訊息清單(session_id, [{"role": "user", "content": "legacy message"}])
+        assert 庫.讀取訊息(session_id, user_id=user_id)[0]["content"] == "legacy message"
+        return session_id
+    finally:
+        _安全關閉(庫)
+
+
 def test_fresh_empty_db_apply_0001_to_0005_and_idempotent(tmp_path):
     """空資料庫應依序套用五版，重跑保持無操作。"""
     db = tmp_path / "fresh.sqlite3"
     assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
     assert 初始化發布介面資料庫(db) == ()
+    _assert_發布遷移完成(db)
+    assert _q(db, "PRAGMA foreign_key_check") == []
+
+
+def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
+    """users/auth-only舊DB套用發布遷移後，使用者legacy表與schema_version absence完全不變。"""
+    db = tmp_path / "users-auth.sqlite3"
+    _建立使用者與登入(db)
+    legacy_tables = ("users", "user_settings", "auth_sessions")
+    before = _legacy_table_snapshot(db, legacy_tables)
+    assert before["schema_version"] == {"present": False, "rows": None}
+
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == ()
+
+    after = _legacy_table_snapshot(db, legacy_tables)
+    assert after == before
+    assert after["schema_version"] == {"present": False, "rows": None}
+    assert _q(db, "PRAGMA foreign_key_check") == []
+
+
+def test_sessions_messages_only_db_發布遷移不改legacy_session_tables(tmp_path):
+    """sessions/messages-only舊DB套用發布遷移後，schema_version、sessions與messages完整不變。"""
+    db = tmp_path / "sessions-messages.sqlite3"
+    _建立工作階段與訊息(db)
+    legacy_tables = ("schema_version", "sessions", "messages")
+    before = _legacy_table_snapshot(db, legacy_tables)
+    assert before["schema_version"]["present"] is True
+
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == ()
+
+    after = _legacy_table_snapshot(db, legacy_tables)
+    assert after == before
+    assert _q(db, "PRAGMA foreign_key_check") == []
+
+
+def test_shared_users_and_sessions_db_發布遷移不改任一legacy_table(tmp_path):
+    """同一shared DB內user/auth與session/message並存時，發布遷移只新增published schema。"""
+    db = tmp_path / "shared.sqlite3"
+    user_id = _建立使用者與登入(db)
+    _建立工作階段與訊息(db, user_id=user_id)
+    legacy_tables = ("users", "user_settings", "auth_sessions", "schema_version", "sessions", "messages")
+    before = _legacy_table_snapshot(db, legacy_tables)
+    assert before["schema_version"]["present"] is True
+
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == ()
+
+    after = _legacy_table_snapshot(db, legacy_tables)
+    assert after == before
     _assert_發布遷移完成(db)
     assert _q(db, "PRAGMA foreign_key_check") == []
 
