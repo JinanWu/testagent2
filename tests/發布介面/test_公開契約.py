@@ -11,8 +11,10 @@ import pytest
 
 import 繁中代理.發布介面 as 發布介面套件
 from 繁中代理.發布介面 import (
+    AuditActorRef,
     AuditMetadata,
     AuditMetadataError,
+    AuditReferenceError,
     嚴格JSON錯誤,
     建立失敗信封,
     建立正規JSON,
@@ -20,6 +22,7 @@ from 繁中代理.發布介面 import (
     解析嚴格JSON,
     計算正規JSON雜湊,
 )
+from 繁中代理.發布介面 import 領域模型 as 發布領域模型
 from 繁中代理.發布介面.領域模型 import AuditMetadata as 領域AuditMetadata
 from 繁中代理.發布介面.領域模型 import AuditMetadataError as 領域AuditMetadataError
 from 繁中代理.發布介面.領域模型 import EndpointRef
@@ -37,6 +40,7 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 稽核ITEMS錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_items_不外洩"
 稽核重複鍵唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_duplicate_不外洩"
 稽核異常PAIR唯一SECRET_MARKER = "唯一SECRET_MARKER_audit_pair_不外洩"
+稽核參照唯一SECRET_MARKER = "pk_唯一SECRET_MARKER_audit_ref_不外洩"
 
 
 @dataclass(frozen=True)
@@ -186,6 +190,121 @@ def test_package_root_exports_audit_metadata_contract():
     assert 發布介面套件.AuditMetadataError is AuditMetadataError
     assert AuditMetadata is 領域AuditMetadata
     assert AuditMetadataError is 領域AuditMetadataError
+
+
+def test_package_root_exports_audit_reference_contract():
+    """稽核參照 DTO 必須從 package root 穩定匯出且保留類別 identity。"""
+    for name in ("AuditActorRef", "AuditReferenceError"):
+        assert name in 發布介面套件.__all__
+    assert 發布介面套件.AuditActorRef is AuditActorRef
+    assert 發布介面套件.AuditReferenceError is AuditReferenceError
+    assert AuditActorRef is 發布領域模型.AuditActorRef
+    assert AuditReferenceError is 發布領域模型.AuditReferenceError
+
+
+def test_audit_actor_ref_valid_user_service_system_json_order_and_new_dict():
+    """actor 參照接受合法 enum，輸出固定鍵序且每次回傳新 dict。"""
+    user = AuditActorRef("user", "user_123")
+    service = AuditActorRef("service_account", "svc:deploy.1")
+    system = AuditActorRef("system", None)
+    user_json = user.to_json()
+
+    assert list(user_json) == ["actor_type", "actor_id"]
+    assert user_json == {"actor_type": "user", "actor_id": "user_123"}
+    assert service.to_json() == {
+        "actor_type": "service_account",
+        "actor_id": "svc:deploy.1",
+    }
+    assert system.to_json() == {"actor_type": "system", "actor_id": None}
+    assert type(user_json) is dict
+    assert user_json is not user.to_json()
+
+
+@pytest.mark.parametrize(
+    ("actor_type", "actor_id"),
+    [
+        ("admin", "user_1"),
+        ("User", "user_1"),
+        ("user", None),
+        ("service_account", ""),
+        ("system", "system_1"),
+        (b"user", "user_1"),
+    ],
+)
+def test_audit_actor_ref_rejects_enum_and_system_rule(actor_type, actor_id):
+    """actor_type enum 與 system actor_id None 規則必須 fail closed。"""
+    with pytest.raises(AuditReferenceError):
+        AuditActorRef(actor_type, actor_id)
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "",
+        "a" * 129,
+        "_bad",
+        "bad space",
+        "pk_live_123",
+        "sk-prod-123",
+        "BearerToken",
+        "a" * 64,
+        "/Users/example/token",
+        r"C:\Users\secret",
+        "~/secret",
+        "-----BEGIN PRIVATE KEY-----",
+    ],
+)
+def test_audit_actor_ref_rejects_bad_identifiers_raw_prefixes_digest_path_and_marker(
+    identifier,
+):
+    """actor_id 不可帶 raw secret、完整 digest、路徑、空白或 PEM marker。"""
+    with pytest.raises(AuditReferenceError):
+        AuditActorRef("user", identifier)
+
+
+@pytest.mark.parametrize(
+    "identifier",
+    [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "req_ab12",
+        "A:1.b-2",
+        "id_bearer",
+    ],
+)
+def test_audit_actor_ref_accepts_uuid_request_id_and_safe_ascii_identifier(identifier):
+    """合法 UUID、短 request id 與安全 ASCII identifier 不可被誤拒。"""
+    assert AuditActorRef("user", identifier).actor_id == identifier
+
+
+class EvilStr(str):
+    """測試用 str subclass，避免 exact str 檢查被放寬。"""
+
+
+def test_audit_actor_ref_rejects_type_subclasses():
+    """actor 參照欄位只接受 exact str，不接受 str subclass。"""
+    for args in (
+        (EvilStr("user"), "user_1"),
+        ("user", EvilStr("user_1")),
+    ):
+        with pytest.raises(AuditReferenceError):
+            AuditActorRef(*args)
+
+
+def test_audit_actor_ref_is_frozen():
+    """actor 參照本身為 frozen dataclass。"""
+
+    actor = AuditActorRef("user", "user_1")
+
+    with pytest.raises(FrozenInstanceError):
+        actor.actor_id = "user_2"
+
+
+def test_audit_reference_error_sanitizes_all_package_frames():
+    """稽核參照錯誤不可在任何發布介面 frame locals 留下敏感 marker。"""
+    with pytest.raises(AuditReferenceError) as 錯誤:
+        AuditActorRef("user", 稽核參照唯一SECRET_MARKER)
+
+    _領域模型錯誤狀態不含marker(錯誤.value, 稽核參照唯一SECRET_MARKER)
 
 
 def test_audit_metadata_empty_and_exact_output_order():

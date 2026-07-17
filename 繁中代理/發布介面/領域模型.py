@@ -33,10 +33,18 @@ _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
         "schema_path",
     }
 )
+_AUDIT_SAFE_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk-|bearer)")
+_AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN = re.compile(r"(?i)[0-9a-f]{64}")
+_AUDIT_ACTOR_TYPES = frozenset(("user", "service_account", "system"))
 
 
 class AuditMetadataError(ValueError):
     """AuditMetadata 不符合公開安全契約時使用的固定錯誤型別。"""
+
+
+class AuditReferenceError(ValueError):
+    """稽核參照不符合公開安全契約時使用的固定錯誤型別。"""
 
 
 class _公開DTO:
@@ -119,6 +127,58 @@ class AuditMetadata:
         內部不可變快照。
         """
         return dict(self._資料)
+
+
+@dataclass(frozen=True, init=False)
+class AuditActorRef:
+    """公開稽核事件 actor 的最小安全參照。
+
+    actor_type 僅接受 exact str enum：user、service_account、system。user 與
+    service_account 必須提供安全 actor_id；system 則必須使用 None，避免把系統動作
+    誤綁到任意外部識別值。
+    """
+
+    actor_type: str | None
+    actor_id: str | None
+
+    def __init__(self, actor_type: str, actor_id: str | None) -> None:
+        """驗證 actor 參照並建立 frozen DTO。
+
+        所有 validation failure 都轉成固定 AuditReferenceError；錯誤路徑不保留原始
+        輸入、raw secret、hash 或 path 片段於領域模型 frame locals。
+        """
+        錯誤 = False
+        安全actor_type: str | None = None
+        安全actor_id: str | None = None
+        object.__setattr__(self, "actor_type", None)
+        object.__setattr__(self, "actor_id", None)
+        try:
+            if type(actor_type) is not str or actor_type not in _AUDIT_ACTOR_TYPES:
+                錯誤 = True
+            elif actor_type == "system":
+                if actor_id is not None:
+                    錯誤 = True
+                else:
+                    安全actor_type = actor_type
+                    安全actor_id = None
+            elif _稽核安全識別值合法(actor_id):
+                安全actor_type = actor_type
+                安全actor_id = actor_id
+            else:
+                錯誤 = True
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            actor_type = actor_id = 安全actor_type = 安全actor_id = None
+            raise AuditReferenceError("AuditActorRef 不符合公開契約")
+
+        object.__setattr__(self, "actor_type", 安全actor_type)
+        object.__setattr__(self, "actor_id", 安全actor_id)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 actor JSON，且每次都是 ordinary new dict。"""
+        return {"actor_type": self.actor_type, "actor_id": self.actor_id}
 
 
 @dataclass(frozen=True)
@@ -302,6 +362,31 @@ def _稽核Metadata值合法(值: Any) -> bool:
     if type(值) is float:
         return math.isfinite(值)
     return False
+
+
+def _稽核安全識別值合法(值: Any) -> bool:
+    """檢查稽核參照 identifier 是否可公開保存。
+
+    參數可為任意值；只回傳 bool，不拋出 contract 例外，也不保存輸入值。合法值
+    需為 exact str、長度 1..128、符合安全字元白名單，並拒絕常見 raw secret、
+    PEM marker、完整 64 hex digest、本機路徑與任何 whitespace。
+    """
+    if type(值) is not str:
+        return False
+    if _AUDIT_SAFE_IDENTIFIER_PATTERN.fullmatch(值) is None:
+        return False
+    return not _稽核參照字串含不安全內容(值)
+
+
+def _稽核參照字串含不安全內容(值: str) -> bool:
+    """回傳字串是否帶有 raw secret、digest、路徑或空白特徵。"""
+    if any(字元.isspace() for 字元 in 值):
+        return True
+    if "/" in 值 or "\\" in 值 or 值.startswith("~"):
+        return True
+    if _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN.match(值) is not None:
+        return True
+    return _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN.fullmatch(值) is not None
 
 
 def _凍結JSON值(值: Any) -> Any:
