@@ -9,6 +9,7 @@ import pytest
 
 import 繁中代理.發布介面 as 發布介面套件
 from 繁中代理.發布介面 import AuditAppendReceipt
+from 繁中代理.發布介面 import AuditEventSink
 from 繁中代理.發布介面 import AuditReceiptError
 from 繁中代理.發布介面 import 領域模型 as 發布領域模型
 
@@ -46,13 +47,22 @@ def _make_receipt(**overrides):
 
 
 def test_audit_append_receipt_exports_keep_identity():
-    """AuditAppendReceipt 與 AuditReceiptError 必須從 root 穩定匯出。"""
+    """AuditAppendReceipt、AuditReceiptError 與 AuditEventSink 必須從 root 穩定匯出。"""
     assert "AuditAppendReceipt" in 發布介面套件.__all__
     assert "AuditReceiptError" in 發布介面套件.__all__
+    assert "AuditEventSink" in 發布介面套件.__all__
     assert 發布介面套件.AuditAppendReceipt is AuditAppendReceipt
     assert 發布介面套件.AuditReceiptError is AuditReceiptError
+    assert 發布介面套件.AuditEventSink is AuditEventSink
     assert AuditAppendReceipt is 發布領域模型.AuditAppendReceipt
     assert AuditReceiptError is 發布領域模型.AuditReceiptError
+    assert AuditEventSink is 發布介面套件.AuditEventSink
+
+
+def test_audit_event_sink_protocol_is_not_runtime_checkable():
+    """AuditEventSink 不可 runtime isinstance 檢查，避免結構檢查成公開保證。"""
+    with pytest.raises(TypeError):
+        isinstance(object(), AuditEventSink)
 
 
 def test_audit_append_receipt_valid_committed_json_order_types_and_new_dict():
