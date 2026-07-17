@@ -627,8 +627,10 @@ def test_audit_event_valid_full_optional_none_order_types_nested_json_and_new_di
 def test_audit_event_integer_timestamp_normalized_to_float():
     """occurred_at 可接受 exact int，成功後一律 snapshot 成 float。"""
     event = _建立合法稽核事件(occurred_at=7)
+    max_exact = _建立合法稽核事件(occurred_at=2**53)
 
     assert event.occurred_at == 7.0 and type(event.occurred_at) is float
+    assert max_exact.occurred_at == float(2**53)
 
 
 @pytest.mark.parametrize(
@@ -636,6 +638,7 @@ def test_audit_event_integer_timestamp_normalized_to_float():
     [
         ("occurred_at", True),
         ("occurred_at", -0.01),
+        ("occurred_at", 2**53 + 1),
         ("action", "Endpoint.invoke"),
         ("outcome", "blocked"),
         ("event_id", "svc.pk_live_123"),

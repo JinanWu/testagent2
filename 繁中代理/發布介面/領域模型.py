@@ -302,6 +302,8 @@ class AuditEvent:
                 錯誤 = True
             elif not math.isfinite(occurred_at) or occurred_at < 0:
                 錯誤 = True
+            elif type(occurred_at) is int and int(float(occurred_at)) != occurred_at:
+                錯誤 = True
             elif not _稽核資源型別合法(action):
                 錯誤 = True
             elif type(outcome) is not str or outcome not in ("success", "denied", "failed"):
