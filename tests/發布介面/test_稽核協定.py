@@ -35,12 +35,14 @@ class FakeAuditSink:
         """保存receipt、失敗模式與呼叫紀錄。"""
         self.receipt = receipt
         self.calls = []
+        self.lookups = 0
         self.lookup_raises = lookup_raises
         self.call_raises = call_raises
 
     @property
     def append_audit_event(self):
         """回傳append callable，或在attribute lookup階段拋錯。"""
+        self.lookups += 1
         if self.lookup_raises:
             raise RuntimeError(SINK_MARKER_SECRET)
         return self._append_audit_event
@@ -107,6 +109,27 @@ def _forged_receipt(event_id, sequence):
     object.__setattr__(receipt, "committed", True)
     object.__setattr__(receipt, "sequence", sequence)
     return receipt
+
+
+def _forged_actor(actor_type, actor_id):
+    """繞過constructor建立exact actor，驗證helper會深層重新正規化。"""
+    actor = object.__new__(發布領域模型.AuditActorRef)
+    object.__setattr__(actor, "actor_type", actor_type)
+    object.__setattr__(actor, "actor_id", actor_id)
+    return actor
+
+
+def _forged_event(**overrides):
+    """繞過constructor建立exact event，驗證helper在sink lookup前重新正規化。"""
+    valid_event = _make_event()
+    event = object.__new__(發布領域模型.AuditEvent)
+    for field in fields(發布領域模型.AuditEvent):
+        object.__setattr__(
+            event,
+            field.name,
+            overrides.get(field.name, getattr(valid_event, field.name)),
+        )
+    return event
 
 
 def _assert_sink_failure(sink, event, marker=SINK_MARKER_SECRET):
@@ -252,23 +275,54 @@ def test_audit_append_receipt_error_sanitizes_all_package_frames_and_exception_c
 
 
 def test_append_audit_event_success_returns_canonical_receipt_for_same_event():
-    """成功 append 必須用同一 event 呼叫並回傳 canonical receipt。"""
+    """成功 append 必須用 canonical event 呼叫並回傳 canonical receipt。"""
     event = _make_event()
     raw_receipt = _make_receipt(sequence=9)
     sink = FakeAuditSink(raw_receipt)
 
     receipt = 附加稽核事件或失敗關閉(sink, event)
 
-    assert sink.calls == [event]
+    assert len(sink.calls) == 1
+    canonical_event = sink.calls[0]
+    assert type(canonical_event) is 發布領域模型.AuditEvent
+    assert canonical_event is not event
+    assert canonical_event.to_json() == event.to_json()
+    assert canonical_event.actor is not event.actor
+    assert canonical_event.resource is not event.resource
+    assert canonical_event.metadata is not event.metadata
     assert receipt == raw_receipt
     assert receipt is not raw_receipt
     assert type(receipt) is AuditAppendReceipt
+    assert receipt.event_id == canonical_event.event_id
+
+
+def test_append_audit_event_rejects_forged_exact_event_before_sink_lookup():
+    """forged exact event 或 nested DTO 不合法時，不可 lookup/call sink。"""
+    forged_secret_event = _forged_event(event_id=SINK_MARKER_SECRET)
+    forged_actor_event = _forged_event(
+        actor=_forged_actor("user", SINK_MARKER_SECRET),
+    )
+    secret_event_sink = FakeAuditSink(_make_receipt(), lookup_raises=True)
+    actor_event_sink = FakeAuditSink(_make_receipt())
+
+    _assert_sink_failure(secret_event_sink, forged_secret_event)
+    _assert_sink_failure(actor_event_sink, forged_actor_event)
+
+    assert secret_event_sink.calls == []
+    assert actor_event_sink.calls == []
+    assert secret_event_sink.lookups == 0
+    assert actor_event_sink.lookups == 0
 
 
 def test_append_audit_event_failures_close_with_fixed_error():
     """lookup、call、bad receipt 與不一致提交都必須固定失敗關閉。"""
     event = _make_event()
-    event_subclass = object.__new__(type("FakeEventSubclass", (發布領域模型.AuditEvent,), {}))
+    event_subclass_type = type(
+        "FakeEventSubclass",
+        (發布領域模型.AuditEvent,),
+        {},
+    )
+    event_subclass = object.__new__(event_subclass_type)
     for field in fields(發布領域模型.AuditEvent):
         object.__setattr__(event_subclass, field.name, getattr(event, field.name))
     event_subclass_sink = FakeAuditSink(_make_receipt())
@@ -292,3 +346,4 @@ def test_append_audit_event_failures_close_with_fixed_error():
     assert len({id(error) for error in errors}) == len(errors)
     assert {error.args for error in errors} == {("稽核事件無法確認提交",)}
     assert event_subclass_sink.calls == []
+    assert event_subclass_sink.lookups == 0

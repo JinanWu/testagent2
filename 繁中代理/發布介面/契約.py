@@ -5,8 +5,11 @@ from __future__ import annotations
 from typing import Any
 
 from .協定 import AuditEventSink
+from .領域模型 import AuditActorRef
 from .領域模型 import AuditAppendReceipt
 from .領域模型 import AuditEvent
+from .領域模型 import AuditMetadata
+from .領域模型 import AuditResourceRef
 from .領域模型 import EndpointRef
 from .領域模型 import InvokeEnvelope
 from .領域模型 import InvocationRef
@@ -27,27 +30,55 @@ def 附加稽核事件或失敗關閉(
 
     參數:
         sink: 提供 append_audit_event 的稽核事件 sink。
-        event: 要附加的 AuditEvent，必須是 AuditEvent exact type。
+        event: 要附加的 AuditEvent，必須是 AuditEvent exact type；成功時
+            會先深層重建為 canonical event，再傳給 sink。
     回傳:
-        重新建構且 committed=True、event_id 與 event 相同的
+        重新建構且 committed=True、event_id 與 canonical event 相同的
         AuditAppendReceipt。
     例外:
-        AuditSinkError: event 型別、sink lookup/call、receipt 型別或提交狀態
-        不符合契約。
+        AuditSinkError: event 型別、event canonicalization、sink lookup/call、
+        receipt 型別或提交狀態不符合契約。
     副作用:
-        成功時呼叫 sink 一次；失敗時清除本函式 frame locals，
+        完全 canonicalize 成功後才呼叫 sink 一次，且傳入 canonical event；
+        失敗時清除本函式 frame locals，
         且不保留原始例外鏈。
     """
     失敗 = False
+    raw_event = event
+    canonical_actor = None
+    canonical_resource = None
+    canonical_metadata = None
+    canonical_event = None
     append_audit_event = None
     raw_receipt = None
     canonical_receipt = None
     try:
-        if type(event) is not AuditEvent:
+        if type(raw_event) is not AuditEvent:
             失敗 = True
         else:
+            canonical_actor = AuditActorRef(
+                raw_event.actor.actor_type,
+                raw_event.actor.actor_id,
+            )
+            canonical_resource = AuditResourceRef(
+                raw_event.resource.resource_type,
+                raw_event.resource.resource_id,
+            )
+            canonical_metadata = AuditMetadata(raw_event.metadata.to_json())
+            canonical_event = AuditEvent(
+                event_id=raw_event.event_id,
+                occurred_at=raw_event.occurred_at,
+                action=raw_event.action,
+                outcome=raw_event.outcome,
+                actor=canonical_actor,
+                resource=canonical_resource,
+                request_id=raw_event.request_id,
+                endpoint_id=raw_event.endpoint_id,
+                invocation_id=raw_event.invocation_id,
+                metadata=canonical_metadata,
+            )
             append_audit_event = sink.append_audit_event
-            raw_receipt = append_audit_event(event)
+            raw_receipt = append_audit_event(canonical_event)
             if type(raw_receipt) is not AuditAppendReceipt:
                 失敗 = True
             else:
@@ -58,17 +89,21 @@ def 附加稽核事件或失敗關閉(
                 )
                 if not canonical_receipt.committed:
                     失敗 = True
-                elif canonical_receipt.event_id != event.event_id:
+                elif canonical_receipt.event_id != canonical_event.event_id:
                     失敗 = True
     except Exception:
         失敗 = True
 
     if 失敗 or type(canonical_receipt) is not AuditAppendReceipt:
-        sink = event = append_audit_event = raw_receipt = canonical_receipt = None
+        sink = event = raw_event = canonical_actor = canonical_resource = None
+        canonical_metadata = canonical_event = append_audit_event = None
+        raw_receipt = canonical_receipt = None
         raise AuditSinkError("稽核事件無法確認提交")
 
     result = canonical_receipt
-    sink = event = append_audit_event = raw_receipt = canonical_receipt = None
+    sink = event = raw_event = canonical_actor = canonical_resource = None
+    canonical_metadata = canonical_event = append_audit_event = None
+    raw_receipt = canonical_receipt = None
     assert type(result) is AuditAppendReceipt
     return result
 
