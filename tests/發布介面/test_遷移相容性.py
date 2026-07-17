@@ -40,6 +40,23 @@ def _quote_ident(名稱: str) -> str:
     return '"' + 名稱.replace('"', '""') + '"'
 
 
+def _existing_legacy_tables(db: Path) -> tuple[str, ...]:
+    """從遷移前sqlite_master動態列出既有非sqlite_% legacy表，包含FTS virtual與shadow表。"""
+    return tuple(
+        name
+        for (name,) in _q(
+            db,
+            """
+            SELECT name
+            FROM sqlite_master
+            WHERE type='table'
+              AND name NOT LIKE 'sqlite_%'
+            ORDER BY name
+            """,
+        )
+    )
+
+
 def _legacy_table_snapshot(db: Path, 表名清單: tuple[str, ...]) -> dict[str, object]:
     """快照指定legacy表的欄位、rows、sqlite_master SQL與schema_version存在和值。"""
     with sqlite3.connect(db) as 連線:
@@ -53,7 +70,7 @@ def _legacy_table_snapshot(db: Path, 表名清單: tuple[str, ...]) -> dict[str,
             if exists is None:
                 tables[表名] = {"present": False, "columns": (), "rows": ()}
                 continue
-            columns = tuple(tuple(row) for row in 連線.execute(f"PRAGMA table_info({_quote_ident(表名)})"))
+            columns = tuple(tuple(row) for row in 連線.execute(f"PRAGMA table_xinfo({_quote_ident(表名)})"))
             欄位名稱 = [str(row[1]) for row in columns]
             order_by = ", ".join(_quote_ident(欄位) for 欄位 in 欄位名稱) or "rowid"
             rows = tuple(
@@ -124,7 +141,8 @@ def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
     """users/auth-only舊DB套用發布遷移後，使用者legacy表與schema_version absence完全不變。"""
     db = tmp_path / "users-auth.sqlite3"
     _建立使用者與登入(db)
-    legacy_tables = ("users", "user_settings", "auth_sessions")
+    legacy_tables = _existing_legacy_tables(db)
+    assert {"users", "user_settings", "auth_sessions"} <= set(legacy_tables)
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"] == {"present": False, "rows": None}
 
@@ -141,7 +159,9 @@ def test_sessions_messages_only_db_發布遷移不改legacy_session_tables(tmp_p
     """sessions/messages-only舊DB套用發布遷移後，schema_version、sessions與messages完整不變。"""
     db = tmp_path / "sessions-messages.sqlite3"
     _建立工作階段與訊息(db)
-    legacy_tables = ("schema_version", "sessions", "messages")
+    legacy_tables = _existing_legacy_tables(db)
+    assert {"schema_version", "sessions", "messages", "state_meta", "compression_locks"} <= set(legacy_tables)
+    assert any(表名.startswith("messages_fts") for 表名 in legacy_tables)
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
@@ -158,7 +178,18 @@ def test_shared_users_and_sessions_db_發布遷移不改任一legacy_table(tmp_p
     db = tmp_path / "shared.sqlite3"
     user_id = _建立使用者與登入(db)
     _建立工作階段與訊息(db, user_id=user_id)
-    legacy_tables = ("users", "user_settings", "auth_sessions", "schema_version", "sessions", "messages")
+    legacy_tables = _existing_legacy_tables(db)
+    assert {
+        "users",
+        "user_settings",
+        "auth_sessions",
+        "schema_version",
+        "sessions",
+        "messages",
+        "state_meta",
+        "compression_locks",
+    } <= set(legacy_tables)
+    assert any(表名.startswith("messages_fts") for 表名 in legacy_tables)
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
