@@ -14,6 +14,7 @@ from 繁中代理.發布介面.遷移執行器 import 拆分遷移SQL, 執行遷
 PRODUCTION_MODULE = "繁中代理.發布介面.遷移執行器"
 核心遷移檔 = Path("繁中代理/發布介面/遷移/0001_建立發布端點核心.sql")
 憑證稽核遷移檔 = Path("繁中代理/發布介面/遷移/0002_建立憑證與稽核.sql")
+呼叫事件遷移檔 = Path("繁中代理/發布介面/遷移/0003_建立呼叫事件與工具紀錄.sql")
 快照欄位 = (
     "original_requirement_text",
     "system_prompt",
@@ -76,6 +77,21 @@ def _套用憑證稽核遷移(db):
     assert 執行遷移(db, 遷移) == (1, 2)
     assert 執行遷移(db, 遷移) == ()
     assert _查詢(db, "SELECT version,name FROM published_api_schema_migrations ORDER BY version") == [(1, 核心遷移檔.name), (2, 憑證稽核遷移檔.name)]
+
+
+def _套用呼叫事件遷移(db):
+    遷移 = []
+    for 版本, 檔案 in ((1, 核心遷移檔), (2, 憑證稽核遷移檔), (3, 呼叫事件遷移檔)):
+        sql = 檔案.read_text(encoding="utf-8")
+        assert all(禁用 not in sql.upper() for 禁用 in ("COMMIT", "PRAGMA", "ATTACH"))
+        遷移.append(遷移項目(版本, 檔案.name, sql))
+    assert 執行遷移(db, 遷移) == (1, 2, 3)
+    assert 執行遷移(db, 遷移) == ()
+    assert _查詢(db, "SELECT version,name FROM published_api_schema_migrations ORDER BY version") == [
+        (1, 核心遷移檔.name),
+        (2, 憑證稽核遷移檔.name),
+        (3, 呼叫事件遷移檔.name),
+    ]
 
 
 def _欄位(db, table):
@@ -146,6 +162,145 @@ def _新增憑證(連線, **覆寫):
         f"INSERT INTO endpoint_credentials({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
         tuple(值.values()),
     )
+
+
+def _寫入呼叫事件fixture(db):
+    _寫入服務帳號端點版本(db)
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        values = {
+            "id": "v3",
+            "endpoint_id": "ep2",
+            "version_number": 1,
+            "input_schema_json": None,
+            "schema_changed": 0,
+            "created_by_user_id": "u2",
+            "created_at": 2.0,
+            **{欄: f"{欄}:snapshot" for 欄 in 快照欄位},
+        }
+        cols = tuple(values)
+        連線.execute(f"INSERT INTO published_endpoint_versions({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(values.values()))
+        _新增憑證(連線, id="c1", endpoint_id="ep1", verification_hash=b"c1")
+        _新增憑證(連線, id="c2", endpoint_id="ep2", verification_hash=b"c2")
+
+
+def _新增呼叫(連線, **覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "inv1"),
+        "endpoint_id": "ep1",
+        "endpoint_version_id": "v1",
+        "credential_id": "c1",
+        "request_id": 覆寫.pop("request_id", "req1"),
+        "status": "succeeded",
+        "input_json": '{"input":1}',
+        "created_at": 3,
+        "completed_at": 4,
+    }
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO endpoint_invocations({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def _新增執行事件(連線, **覆寫):
+    值 = {"id": 覆寫.pop("id", "ev1"), "invocation_id": "inv1", "sequence_number": 1, "event_type": "start", "payload_json": '{"ok":true}', "created_at": 3}
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO run_events({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def _新增工具呼叫(連線, **覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "tc1"),
+        "invocation_id": "inv1",
+        "run_event_id": "ev1",
+        "sequence_number": 1,
+        "tool_name": "lookup",
+        "arguments_json": '{"q":"x"}',
+        "outcome": "success",
+        "result_json": '{"answer":1}',
+        "latency_ms": 1,
+        "created_at": 3,
+    }
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO endpoint_tool_calls({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def test_呼叫事件遷移建立表欄位索引且無明文欄(tmp_path):
+    db = tmp_path / "invocation_schema.db"
+    _套用呼叫事件遷移(db)
+    _寫入呼叫事件fixture(db)
+
+    assert {"endpoint_invocations", "run_events", "endpoint_tool_calls"} <= set(name for (name,) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'"))
+    assert {"metadata_sha256", "pricing_version", "usage_json", "error_json"} <= set(_欄位(db, "endpoint_invocations"))
+    for table in ("endpoint_invocations", "run_events", "endpoint_tool_calls"):
+        assert not any(禁 in 欄.lower() for 欄 in _欄位(db, table) for 禁 in ("raw_api_key", "plaintext", "password", "secret"))
+    索引 = set(_查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND name NOT LIKE 'sqlite_autoindex_%'"))
+    assert {
+        ("uq_endpoint_credentials_id_endpoint",),
+        ("idx_endpoint_invocations_endpoint_created",),
+        ("idx_endpoint_invocations_status_created",),
+        ("idx_endpoint_invocations_credential_created",),
+        ("idx_endpoint_tool_calls_invocation_created",),
+    } <= 索引
+    assert ("idx_run_events_invocation_order",) not in 索引
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增呼叫(連線)
+        _新增執行事件(連線)
+        _新增工具呼叫(連線)
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_呼叫事件invocation核心約束與ownership(tmp_path):
+    db = tmp_path / "invocation_constraints.db"
+    _套用呼叫事件遷移(db)
+    _寫入呼叫事件fixture(db)
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增呼叫(連線, id="external", request_id="external", credential_id=None, session_id=None, message_id=None)
+        _新增呼叫(連線, id="ok", request_id="ok", metadata_json='{"m":1}', output_json='[]', error_json='{"e":1}', usage_json='{"u":1}', metadata_size_bytes=0, latency_ms=0)
+        for 覆寫 in (
+            {"id": "cross_version", "request_id": "bad1", "endpoint_id": "ep2", "endpoint_version_id": "v1", "credential_id": "c2"},
+            {"id": "cross_credential", "request_id": "bad2", "credential_id": "c2"},
+            {"id": "dupe_request", "request_id": "ok"},
+            {"id": "bad_status", "request_id": "bad3", "status": "paused"},
+            {"id": "bad_input", "request_id": "bad4", "input_json": "{bad"},
+            {"id": "bad_latency", "request_id": "bad5", "latency_ms": -1},
+            {"id": "bad_completed", "request_id": "bad6", "completed_at": 2},
+            {"id": "bad_size", "request_id": "bad7", "metadata_size_bytes": 1.5},
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                _新增呼叫(連線, **覆寫)
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_呼叫事件run_events與tool_calls順序JSON與同invocation約束(tmp_path):
+    db = tmp_path / "events_tools.db"
+    _套用呼叫事件遷移(db)
+    _寫入呼叫事件fixture(db)
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增呼叫(連線, id="inv1", request_id="r1")
+        _新增呼叫(連線, id="inv2", request_id="r2")
+        _新增執行事件(連線, id="ev1", invocation_id="inv1", sequence_number=1)
+        _新增執行事件(連線, id="ev2", invocation_id="inv2", sequence_number=1)
+        _新增工具呼叫(連線, id="tc1", invocation_id="inv1", run_event_id="ev1", sequence_number=1)
+        _新增工具呼叫(連線, id="tc2", invocation_id="inv1", run_event_id=None, sequence_number=2, outcome="error", result_json=None, error_json='{"message":"boom"}', retry_of_tool_call_id="tc1")
+        for fn, 覆寫 in (
+            (_新增執行事件, {"id": "bad_seq", "sequence_number": 0}),
+            (_新增執行事件, {"id": "bad_payload", "payload_json": "[]"}),
+            (_新增執行事件, {"id": "dupe_event_seq", "sequence_number": 1}),
+            (_新增工具呼叫, {"id": "bad_event_owner", "run_event_id": "ev2", "sequence_number": 3}),
+            (_新增工具呼叫, {"id": "bad_retry_owner", "retry_of_tool_call_id": "tc1", "invocation_id": "inv2", "run_event_id": "ev2"}),
+            (_新增工具呼叫, {"id": "bad_success", "sequence_number": 4, "result_json": None}),
+            (_新增工具呼叫, {"id": "bad_error", "sequence_number": 5, "outcome": "error", "error_json": None}),
+            (_新增工具呼叫, {"id": "bad_args", "sequence_number": 6, "arguments_json": "[]"}),
+            (_新增工具呼叫, {"id": "dupe_tool_seq", "sequence_number": 1}),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                fn(連線, **覆寫)
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def _新增稽核事件(連線, **覆寫):
