@@ -8,9 +8,12 @@ import traceback
 
 import pytest
 
+import 繁中代理.發布介面 as 發布介面套件
 from 繁中代理.發布介面 import (
     嚴格JSON錯誤,
+    建立失敗信封,
     建立正規JSON,
+    建立成功信封,
     解析嚴格JSON,
     計算正規JSON雜湊,
 )
@@ -21,8 +24,6 @@ from 繁中代理.發布介面.領域模型 import PublishedError
 from 繁中代理.發布介面.領域模型 import PublishedUsage
 from 繁中代理.發布介面.領域模型 import PublishedWarning
 from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
-from 繁中代理.發布介面.契約 import 建立失敗信封
-from 繁中代理.發布介面.契約 import 建立成功信封
 
 
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
@@ -97,6 +98,14 @@ def _契約模組錯誤狀態不含marker(錯誤, marker):
     for frame, _ in traceback.walk_tb(錯誤.__traceback__):
         if frame.f_globals.get("__name__") == "繁中代理.發布介面.契約":
             assert marker not in repr(frame.f_locals)
+
+
+def test_package_root_exports_factory_constructors():
+    """factory constructors 必須從 package root 成為公開 API。"""
+    assert "建立成功信封" in 發布介面套件.__all__
+    assert "建立失敗信封" in 發布介面套件.__all__
+    assert 發布介面套件.建立成功信封 is 建立成功信封
+    assert 發布介面套件.建立失敗信封 is 建立失敗信封
 
 
 def test_解析嚴格JSON接受一般JSON值並保留陣列順序():
