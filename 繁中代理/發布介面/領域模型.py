@@ -23,9 +23,9 @@ _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
         "password",
         "api_key",
         "cipher",
-        "master_key",
-        "private_key",
-        "filesystem_path",
+        "master",
+        "private",
+        "filesystem",
         "full_hash",
         "schema_path",
     }

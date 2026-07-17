@@ -143,12 +143,38 @@ def test_audit_metadata_accepts_exact_scalar_boundaries(value):
 
 @pytest.mark.parametrize(
     "key",
-    ["", "A", "_bad", "bad-", "1bad", "a" * 65, "raw_value", "schema_path", "token_count"],
+    ["", "A", "_bad", "bad-", "1bad", "a" * 65],
 )
-def test_audit_metadata_rejects_bad_and_sensitive_keys(key):
-    """metadata key 必須符合白名單格式，且不可含敏感片段。"""
+def test_audit_metadata_rejects_bad_key_formats(key):
+    """metadata key 必須符合白名單格式。"""
     with pytest.raises(AuditMetadataError):
         AuditMetadata({key: True})
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "master",
+        "private",
+        "filesystem",
+        "master_version",
+        "private_ref",
+        "filesystem_root",
+        "raw_value",
+        "schema_path",
+        "token_count",
+    ],
+)
+def test_audit_metadata_rejects_sensitive_keys(key):
+    """metadata key 不可含敏感片段。"""
+    with pytest.raises(AuditMetadataError):
+        AuditMetadata({key: True})
+
+
+@pytest.mark.parametrize("key", ["a", "a1_b2", "endpoint_version", "schema_version", "path_id"])
+def test_audit_metadata_accepts_safe_key_formats(key):
+    """合法格式且不含敏感片段的 metadata key 不可被誤拒。"""
+    assert AuditMetadata({key: True}).to_json() == {key: True}
 
 
 @pytest.mark.parametrize(
