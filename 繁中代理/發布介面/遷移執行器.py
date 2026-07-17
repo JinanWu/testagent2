@@ -2,7 +2,24 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
 import sqlite3
+import time
+from collections.abc import Sequence
+
+
+@dataclass(frozen=True)
+class 遷移項目:
+    """單一發布介面資料庫遷移項目。"""
+
+    版本: int
+    名稱: str
+    SQL: str
+
+
+class 遷移執行錯誤(RuntimeError):
+    """代表遷移 runner 拒絕執行或偵測到 ledger 衝突。"""
 
 
 class 遷移SQL錯誤(ValueError):
@@ -97,6 +114,120 @@ def 驗證遷移SQL(
                 raise 遷移SQL錯誤(錯誤訊息)
     finally:
         連線.close()
+
+
+def 執行遷移(資料庫路徑: str | Path, 遷移清單: Sequence[遷移項目]) -> tuple[int, ...]:
+    """以獨立 ledger 與每筆交易原子套用發布介面 schema 遷移。"""
+    已驗證清單 = _驗證遷移清單(遷移清單)
+    if not 已驗證清單:
+        return ()
+
+    連線 = sqlite3.connect(str(資料庫路徑), timeout=30.0, isolation_level=None)
+    已套用: list[int] = []
+    try:
+        _啟用並確認外鍵(連線)
+        for 項目 in 已驗證清單:
+            if _套用單一遷移(連線, 項目):
+                已套用.append(項目.版本)
+    finally:
+        連線.set_authorizer(None)
+        連線.close()
+    return tuple(已套用)
+
+
+def _驗證遷移清單(遷移清單: Sequence[遷移項目]) -> tuple[遷移項目, ...]:
+    版本集合: set[int] = set()
+    已驗證: list[遷移項目] = []
+    for 項目 in 遷移清單:
+        版本 = 項目.版本
+        名稱 = 項目.名稱
+        SQL = 項目.SQL
+        if not isinstance(版本, int) or isinstance(版本, bool) or 版本 <= 0:
+            raise 遷移執行錯誤("遷移項目不符合契約")
+        if 版本 in 版本集合:
+            raise 遷移執行錯誤("遷移項目不符合契約")
+        if not isinstance(名稱, str) or 名稱.strip() == "":
+            raise 遷移執行錯誤("遷移項目不符合契約")
+        if not isinstance(SQL, str):
+            SQL = None
+            raise 遷移執行錯誤("遷移項目不符合契約")
+        版本集合.add(版本)
+        已驗證.append(遷移項目(版本, 名稱.strip(), SQL))
+    return tuple(sorted(已驗證, key=lambda item: item.版本))
+
+
+def _啟用並確認外鍵(連線: sqlite3.Connection) -> None:
+    連線.execute("PRAGMA foreign_keys = ON")
+    if 連線.execute("PRAGMA foreign_keys").fetchone() != (1,):
+        raise 遷移執行錯誤("資料庫連線不符合遷移契約")
+
+
+def _套用單一遷移(連線: sqlite3.Connection, 項目: 遷移項目) -> bool:
+    授權狀態: 遷移授權狀態 | None = None
+    禁止操作 = False
+    try:
+        連線.execute("BEGIN IMMEDIATE")
+        _建立ledger(連線)
+        既有 = 連線.execute(
+            "SELECT name FROM published_api_schema_migrations WHERE version = ?",
+            (項目.版本,),
+        ).fetchone()
+        if 既有 is not None:
+            連線.execute("ROLLBACK")
+            if 既有[0] == 項目.名稱:
+                return False
+            raise 遷移執行錯誤(f"遷移版本 {項目.版本} 名稱衝突: {既有[0]} != {項目.名稱}")
+
+        陳述清單 = 拆分遷移SQL(項目.SQL)
+        授權狀態 = 遷移授權狀態()
+        驗證遷移SQL(陳述清單, 授權狀態=授權狀態)
+        授權狀態 = 遷移授權狀態()
+        連線.set_authorizer(授權狀態)
+        for 陳述 in 陳述清單:
+            授權狀態.拒絕類型 = None
+            連線.execute(陳述)
+        連線.set_authorizer(None)
+        連線.execute(
+            "INSERT INTO published_api_schema_migrations(version, name, applied_at) VALUES (?, ?, ?)",
+            (項目.版本, 項目.名稱, time.time()),
+        )
+        連線.execute("COMMIT")
+        return True
+    except sqlite3.DatabaseError:
+        _rollback並清理authorizer(連線)
+        if 授權狀態 is not None and 授權狀態.拒絕類型 is not None:
+            禁止操作 = True
+        else:
+            raise
+    except 遷移SQL錯誤 as 錯誤:
+        _rollback並清理authorizer(連線)
+        if str(錯誤) == "遷移 SQL 包含禁止操作":
+            禁止操作 = True
+        else:
+            raise
+    except Exception:
+        _rollback並清理authorizer(連線)
+        raise
+    if 禁止操作:
+        raise 遷移執行錯誤("遷移 SQL 包含禁止操作")
+    return False
+
+
+def _建立ledger(連線: sqlite3.Connection) -> None:
+    連線.execute(
+        "CREATE TABLE IF NOT EXISTS published_api_schema_migrations("
+        "version INTEGER PRIMARY KEY CHECK(typeof(version)='integer' AND version>0),"
+        "name TEXT NOT NULL CHECK(trim(name)<>''),"
+        "applied_at REAL NOT NULL)"
+    )
+
+
+def _rollback並清理authorizer(連線: sqlite3.Connection) -> None:
+    連線.set_authorizer(None)
+    try:
+        連線.execute("ROLLBACK")
+    except sqlite3.DatabaseError:
+        pass
 
 
 def _只含空白或註解(文字: str) -> tuple[bool, bool]:

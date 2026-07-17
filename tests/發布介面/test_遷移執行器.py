@@ -1,8 +1,12 @@
 """發布介面遷移 SQL splitter 與 authorizer primitive 測試。"""
 
+import concurrent.futures
+import sqlite3
+import threading
+
 import pytest
 
-from 繁中代理.發布介面.遷移執行器 import 拆分遷移SQL, 遷移SQL錯誤, 遷移授權狀態, 驗證遷移SQL
+from 繁中代理.發布介面.遷移執行器 import 拆分遷移SQL, 執行遷移, 遷移SQL錯誤, 遷移執行錯誤, 遷移授權狀態, 遷移項目, 驗證遷移SQL
 
 
 秘密標記 = "唯一SQL_SECRET_MARKER_不可外洩"
@@ -32,6 +36,11 @@ def _production_traceback_locals不含SQL標記(錯誤):
 def _assert_sanitized_exception(錯誤):
     _錯誤不含SQL標記(錯誤)
     _production_traceback_locals不含SQL標記(錯誤)
+
+
+def _查詢(db, sql):
+    with sqlite3.connect(db) as 連線:
+        return 連線.execute(sql).fetchall()
 
 
 def test_拆分遷移SQL切分基本多陳述並strip():
@@ -179,3 +188,110 @@ def test_驗證遷移SQL非字串陳述traceback_locals不保留raw_sql():
 
     _assert_sanitized_exception(錯誤.value)
     驗證遷移SQL(["SELECT 1;"])
+
+
+def test_執行遷移依版本排序_ledger_fields_回傳_applied_且同名重跑先skip(tmp_path):
+    db = tmp_path / "app.db"
+    清單 = [
+        遷移項目(2, "second", "INSERT INTO t VALUES(2);"),
+        遷移項目(1, "first", "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES(1);"),
+    ]
+
+    assert 執行遷移(db, 清單) == (1, 2)
+    assert _查詢(db, "SELECT id FROM t ORDER BY id") == [(1,), (2,)]
+    ledger = _查詢(db, "SELECT version,name,typeof(applied_at) FROM published_api_schema_migrations ORDER BY version")
+    assert ledger == [(1, "first", "real"), (2, "second", "real")]
+    assert 執行遷移(db, [遷移項目(1, "first", f"CREATE TABLE broken_{秘密標記}(")]) == ()
+
+
+@pytest.mark.parametrize(
+    "清單",
+    [
+        [遷移項目(1, "a", "CREATE TABLE a(id);"), 遷移項目(1, "b", "CREATE TABLE b(id);")],
+        [遷移項目(0, "a", "CREATE TABLE a(id);")],
+        [遷移項目(True, "a", "CREATE TABLE a(id);")],
+        [遷移項目(1, "  ", "CREATE TABLE a(id);")],
+        [遷移項目(1, "a", b"CREATE TABLE a(id);")],
+    ],
+)
+def test_執行遷移拒絕不合法輸入且不套用任何schema(tmp_path, 清單):
+    db = tmp_path / "bad.db"
+
+    with pytest.raises(遷移執行錯誤):
+        執行遷移(db, 清單)
+
+    assert not db.exists() or _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
+
+
+def test_執行遷移一般sqlite錯誤整筆rollback且保留原錯誤型別(tmp_path):
+    db = tmp_path / "rollback.db"
+    sql = "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES(1); INSERT INTO missing VALUES(1);"
+
+    with pytest.raises(sqlite3.OperationalError):
+        執行遷移(db, [遷移項目(1, "bad", sql)])
+
+    assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
+
+
+@pytest.mark.parametrize("陳述", ["COMMIT;", "END;", "ROLLBACK;", "BEGIN;", "SAVEPOINT s;", "RELEASE s;"])
+def test_執行遷移交易控制由authorizer固定錯誤且無schema_ledger殘留(tmp_path, 陳述):
+    db = tmp_path / "forbidden.db"
+
+    with pytest.raises(遷移執行錯誤) as 錯誤:
+        執行遷移(db, [遷移項目(1, "bad", f"CREATE TABLE a(id); {陳述} SELECT '{秘密標記}';")])
+
+    assert str(錯誤.value) == "遷移 SQL 包含禁止操作"
+    _錯誤不含SQL標記(錯誤.value)
+    assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'") == []
+
+
+def test_執行遷移外鍵違反rollback且成功後新連線foreign_key_check_empty(tmp_path):
+    db = tmp_path / "fk.db"
+    建表 = "CREATE TABLE p(id INTEGER PRIMARY KEY); CREATE TABLE c(pid INTEGER REFERENCES p(id));"
+    assert 執行遷移(db, [遷移項目(1, "schema", 建表)]) == (1,)
+
+    with pytest.raises(sqlite3.IntegrityError):
+        執行遷移(db, [遷移項目(2, "bad_fk", "INSERT INTO c VALUES(9);")])
+
+    assert _查詢(db, "SELECT * FROM c") == []
+    assert _查詢(db, "SELECT version FROM published_api_schema_migrations ORDER BY version") == [(1,)]
+    assert 執行遷移(db, [遷移項目(2, "ok_fk", "INSERT INTO p VALUES(9); INSERT INTO c VALUES(9);")]) == (2,)
+    assert _查詢(db, "PRAGMA foreign_key_check") == []
+
+
+def test_執行遷移同版本不同名稱rollback且診斷不含SQL(tmp_path):
+    db = tmp_path / "rename.db"
+    執行遷移(db, [遷移項目(1, "old", "CREATE TABLE t(id);")])
+
+    with pytest.raises(遷移執行錯誤) as 錯誤:
+        執行遷移(db, [遷移項目(1, "new", f"CREATE TABLE leak_{秘密標記}(id);")])
+
+    assert "1" in str(錯誤.value) and "old" in str(錯誤.value) and "new" in str(錯誤.value)
+    _錯誤不含SQL標記(錯誤.value)
+    assert _查詢(db, "SELECT name FROM sqlite_master WHERE type='table' AND name='t'") == [("t",)]
+
+
+def test_執行遷移同版本多thread只套用一次且不hang(tmp_path):
+    db = tmp_path / "race.db"
+    barrier = threading.Barrier(6)
+    項目 = 遷移項目(1, "race", "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t VALUES(1);")
+
+    def run_one():
+        barrier.wait(timeout=5)
+        return 執行遷移(db, [項目])
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(run_one) for _ in range(6)]
+        results = [f.result(timeout=10) for f in futures]
+
+    assert sorted(results) == [(), (), (), (), (), (1,)]
+    assert _查詢(db, "SELECT COUNT(*) FROM t") == [(1,)]
+    assert _查詢(db, "SELECT COUNT(*) FROM published_api_schema_migrations WHERE version=1") == [(1,)]
+
+
+def test_執行遷移authorizer_cleanup後續正常migration可成功(tmp_path):
+    db = tmp_path / "cleanup.db"
+    with pytest.raises(遷移執行錯誤):
+        執行遷移(db, [遷移項目(1, "bad", "SAVEPOINT s;")])
+
+    assert 執行遷移(db, [遷移項目(1, "ok", "CREATE TABLE ok(id);")]) == (1,)
