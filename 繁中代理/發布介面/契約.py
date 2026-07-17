@@ -4,12 +4,73 @@ from __future__ import annotations
 
 from typing import Any
 
+from .協定 import AuditEventSink
+from .領域模型 import AuditAppendReceipt
+from .領域模型 import AuditEvent
 from .領域模型 import EndpointRef
 from .領域模型 import InvokeEnvelope
 from .領域模型 import InvocationRef
 from .領域模型 import PublishedError
 from .領域模型 import PublishedUsage
 from .領域模型 import PublishedWarning
+
+
+class AuditSinkError(RuntimeError):
+    """稽核 sink 無法確認提交時使用的固定錯誤型別。"""
+
+
+def 附加稽核事件或失敗關閉(
+    sink: AuditEventSink,
+    event: AuditEvent,
+) -> AuditAppendReceipt:
+    """附加稽核事件，無法確認提交時固定失敗關閉。
+
+    參數:
+        sink: 提供 append_audit_event 的稽核事件 sink。
+        event: 要附加的 AuditEvent，必須是 AuditEvent exact type。
+    回傳:
+        重新建構且 committed=True、event_id 與 event 相同的
+        AuditAppendReceipt。
+    例外:
+        AuditSinkError: event 型別、sink lookup/call、receipt 型別或提交狀態
+        不符合契約。
+    副作用:
+        成功時呼叫 sink 一次；失敗時清除本函式 frame locals，
+        且不保留原始例外鏈。
+    """
+    失敗 = False
+    append_audit_event = None
+    raw_receipt = None
+    canonical_receipt = None
+    try:
+        if type(event) is not AuditEvent:
+            失敗 = True
+        else:
+            append_audit_event = sink.append_audit_event
+            raw_receipt = append_audit_event(event)
+            if type(raw_receipt) is not AuditAppendReceipt:
+                失敗 = True
+            else:
+                canonical_receipt = AuditAppendReceipt(
+                    raw_receipt.event_id,
+                    raw_receipt.committed,
+                    raw_receipt.sequence,
+                )
+                if not canonical_receipt.committed:
+                    失敗 = True
+                elif canonical_receipt.event_id != event.event_id:
+                    失敗 = True
+    except Exception:
+        失敗 = True
+
+    if 失敗 or type(canonical_receipt) is not AuditAppendReceipt:
+        sink = event = append_audit_event = raw_receipt = canonical_receipt = None
+        raise AuditSinkError("稽核事件無法確認提交")
+
+    result = canonical_receipt
+    sink = event = append_audit_event = raw_receipt = canonical_receipt = None
+    assert type(result) is AuditAppendReceipt
+    return result
 
 
 def 建立成功信封(
