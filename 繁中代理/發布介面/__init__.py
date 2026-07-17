@@ -4,6 +4,8 @@ from .契約 import 建立失敗信封, 建立成功信封
 from .嚴格JSON import 嚴格JSON錯誤, 建立正規JSON, 解析嚴格JSON, 計算正規JSON雜湊
 from .領域模型 import (
     AuditActorRef,
+    AuditEvent,
+    AuditEventError,
     AuditMetadata,
     AuditMetadataError,
     AuditReferenceError,
@@ -12,6 +14,8 @@ from .領域模型 import (
 
 __all__ = [
     "AuditActorRef",
+    "AuditEvent",
+    "AuditEventError",
     "AuditMetadata",
     "AuditMetadataError",
     "AuditReferenceError",

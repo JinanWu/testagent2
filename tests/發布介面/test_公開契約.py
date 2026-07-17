@@ -12,6 +12,8 @@ import pytest
 import 繁中代理.發布介面 as 發布介面套件
 from 繁中代理.發布介面 import (
     AuditActorRef,
+    AuditEvent,
+    AuditEventError,
     AuditMetadata,
     AuditMetadataError,
     AuditReferenceError,
@@ -197,12 +199,16 @@ def test_package_root_exports_audit_metadata_contract():
 
 def test_package_root_exports_audit_reference_contract():
     """稽核參照 DTO 必須從 package root 穩定匯出且保留類別 identity。"""
-    for name in ("AuditActorRef", "AuditReferenceError", "AuditResourceRef"):
+    for name in ("AuditActorRef", "AuditEvent", "AuditEventError", "AuditReferenceError", "AuditResourceRef"):
         assert name in 發布介面套件.__all__
     assert 發布介面套件.AuditActorRef is AuditActorRef
+    assert 發布介面套件.AuditEvent is AuditEvent
+    assert 發布介面套件.AuditEventError is AuditEventError
     assert 發布介面套件.AuditReferenceError is AuditReferenceError
     assert 發布介面套件.AuditResourceRef is AuditResourceRef
     assert AuditActorRef is 發布領域模型.AuditActorRef
+    assert AuditEvent is 發布領域模型.AuditEvent
+    assert AuditEventError is 發布領域模型.AuditEventError
     assert AuditReferenceError is 發布領域模型.AuditReferenceError
     assert AuditResourceRef is 發布領域模型.AuditResourceRef
 
@@ -563,6 +569,90 @@ def test_audit_metadata_is_frozen():
 
     with pytest.raises(FrozenInstanceError):
         metadata._資料 = {}
+
+
+def _建立合法稽核事件(**覆寫):
+    """建立測試用合法 AuditEvent，讓各案例只覆寫被測欄位。"""
+    參數 = dict(
+        event_id="evt_1",
+        occurred_at=123.5,
+        action="endpoint.invoke",
+        outcome="success",
+        actor=AuditActorRef("user", "user_1"),
+        resource=AuditResourceRef("endpoint.version", "ver_1"),
+        request_id="req_1",
+        endpoint_id="ep_1",
+        invocation_id="inv_1",
+        metadata=AuditMetadata({"count": 1}),
+    ) | 覆寫
+    return AuditEvent(**參數)
+
+
+def test_audit_event_valid_full_optional_none_order_types_nested_json_and_new_dict():
+    """AuditEvent 完整值與 optional None 都輸出固定順序、型別與新 dict。"""
+    event = _建立合法稽核事件()
+    output = event.to_json()
+    expected = {
+        "event_id": "evt_1",
+        "occurred_at": 123.5,
+        "action": "endpoint.invoke",
+        "outcome": "success",
+        "actor": {"actor_type": "user", "actor_id": "user_1"},
+        "resource": {"resource_type": "endpoint.version", "resource_id": "ver_1"},
+        "request_id": "req_1",
+        "endpoint_id": "ep_1",
+        "invocation_id": "inv_1",
+        "metadata": {"count": 1},
+    }
+
+    assert list(output) == list(expected)
+    assert output == expected
+    second_output = event.to_json()
+    for key in ("actor", "resource", "metadata"):
+        assert type(output[key]) is dict
+        assert output[key] is not second_output[key]
+    output["metadata"]["count"] = 2
+    assert event.to_json()["metadata"] == {"count": 1}
+
+    nullable = _建立合法稽核事件(
+        request_id=None,
+        endpoint_id=None,
+        invocation_id=None,
+        metadata=AuditMetadata(),
+    ).to_json()
+    assert [nullable[key] for key in ("request_id", "endpoint_id", "invocation_id")] == [None] * 3
+    assert nullable["metadata"] == {}
+
+
+def test_audit_event_integer_timestamp_normalized_to_float():
+    """occurred_at 可接受 exact int，成功後一律 snapshot 成 float。"""
+    event = _建立合法稽核事件(occurred_at=7)
+
+    assert event.occurred_at == 7.0 and type(event.occurred_at) is float
+
+
+@pytest.mark.parametrize(
+    ("欄位", "值"),
+    [
+        ("occurred_at", True),
+        ("occurred_at", -0.01),
+        ("action", "Endpoint.invoke"),
+        ("outcome", "blocked"),
+        ("event_id", "svc.pk_live_123"),
+        ("request_id", "/Users/example/token"),
+        ("actor", object()),
+    ],
+)
+def test_audit_event_rejects_core_invalid_values(欄位, 值):
+    """B1d1 core invalid：時間、code、identifier 與 exact DTO 都必須 fail closed。"""
+    with pytest.raises(AuditEventError):
+        _建立合法稽核事件(**{欄位: 值})
+
+
+def test_audit_event_is_frozen():
+    """AuditEvent 本身為 frozen dataclass。"""
+    with pytest.raises(FrozenInstanceError):
+        _建立合法稽核事件().event_id = "evt_2"
 
 
 def test_解析嚴格JSON接受一般JSON值並保留陣列順序():

@@ -48,6 +48,10 @@ class AuditReferenceError(ValueError):
     """稽核參照不符合公開安全契約時使用的固定錯誤型別。"""
 
 
+class AuditEventError(ValueError):
+    """AuditEvent 不符合公開安全契約時使用的固定錯誤型別。"""
+
+
 class _公開DTO:
     """提供公開 DTO 共用的 JSON 輸出行為。"""
 
@@ -225,6 +229,149 @@ class AuditResourceRef:
     def to_json(self) -> JsonObject:
         """回傳固定鍵序 resource JSON，且每次都是 ordinary new dict。"""
         return {"resource_type": self.resource_type, "resource_id": self.resource_id}
+
+
+@dataclass(frozen=True, init=False)
+class AuditEvent:
+    """公開稽核事件的安全不可變快照。
+
+    所有識別值都使用稽核安全 identifier 規則；occurred_at 只接受 exact int/float
+    且建構時正規化為 float。actor、resource 與 metadata 必須是 exact DTO 型別，
+    避免 subclass 追加欄位後透過公開 JSON 外洩。
+    """
+
+    event_id: str
+    occurred_at: float
+    action: str
+    outcome: str
+    actor: AuditActorRef
+    resource: AuditResourceRef
+    request_id: str | None
+    endpoint_id: str | None
+    invocation_id: str | None
+    metadata: AuditMetadata
+
+    def __init__(
+        self,
+        *,
+        event_id: str,
+        occurred_at: int | float,
+        action: str,
+        outcome: str,
+        actor: AuditActorRef,
+        resource: AuditResourceRef,
+        request_id: str | None = None,
+        endpoint_id: str | None = None,
+        invocation_id: str | None = None,
+        metadata: AuditMetadata,
+    ) -> None:
+        """驗證稽核事件並建立 frozen DTO。
+
+        任一 validation failure 都轉成固定 AuditEventError。錯誤路徑會先清除本
+        frame 的輸入與暫存安全值，再於 except 區塊外丟出，避免 production
+        traceback locals 留下 marker、secret、digest 或 path。
+        """
+        錯誤 = False
+        安全event_id: str | None = None
+        安全occurred_at: float = 0.0
+        安全action: str | None = None
+        安全outcome: str | None = None
+        安全actor: AuditActorRef | None = None
+        安全resource: AuditResourceRef | None = None
+        安全request_id: str | None = None
+        安全endpoint_id: str | None = None
+        安全invocation_id: str | None = None
+        安全metadata: AuditMetadata | None = None
+        for 欄位, 值 in (
+            ("event_id", None),
+            ("occurred_at", 0.0),
+            ("action", None),
+            ("outcome", None),
+            ("actor", None),
+            ("resource", None),
+            ("request_id", None),
+            ("endpoint_id", None),
+            ("invocation_id", None),
+            ("metadata", None),
+        ):
+            object.__setattr__(self, 欄位, 值)
+        try:
+            if not _稽核安全識別值合法(event_id):
+                錯誤 = True
+            elif type(occurred_at) not in (int, float):
+                錯誤 = True
+            elif not math.isfinite(occurred_at) or occurred_at < 0:
+                錯誤 = True
+            elif not _稽核資源型別合法(action):
+                錯誤 = True
+            elif type(outcome) is not str or outcome not in ("success", "denied", "failed"):
+                錯誤 = True
+            elif type(actor) is not AuditActorRef:
+                錯誤 = True
+            elif type(resource) is not AuditResourceRef:
+                錯誤 = True
+            elif not _稽核可空安全識別值合法(request_id):
+                錯誤 = True
+            elif not _稽核可空安全識別值合法(endpoint_id):
+                錯誤 = True
+            elif not _稽核可空安全識別值合法(invocation_id):
+                錯誤 = True
+            elif type(metadata) is not AuditMetadata:
+                錯誤 = True
+            else:
+                安全event_id = event_id
+                安全occurred_at = float(occurred_at)
+                安全action = action
+                安全outcome = outcome
+                安全actor = actor
+                安全resource = resource
+                安全request_id = request_id
+                安全endpoint_id = endpoint_id
+                安全invocation_id = invocation_id
+                安全metadata = metadata
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            event_id = occurred_at = action = outcome = actor = resource = None
+            request_id = endpoint_id = invocation_id = metadata = None
+            安全occurred_at = None
+            安全event_id = 安全action = 安全outcome = 安全actor = 安全resource = None
+            安全request_id = 安全endpoint_id = 安全invocation_id = 安全metadata = None
+            欄位 = 值 = None
+            raise AuditEventError("AuditEvent 不符合公開契約") from None
+
+        for 欄位, 值 in (
+            ("event_id", 安全event_id),
+            ("occurred_at", 安全occurred_at),
+            ("action", 安全action),
+            ("outcome", 安全outcome),
+            ("actor", 安全actor),
+            ("resource", 安全resource),
+            ("request_id", 安全request_id),
+            ("endpoint_id", 安全endpoint_id),
+            ("invocation_id", 安全invocation_id),
+            ("metadata", 安全metadata),
+        ):
+            object.__setattr__(self, 欄位, 值)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定欄位順序與 ordinary nested dict 的稽核事件 JSON。"""
+        assert self.actor is not None
+        assert self.resource is not None
+        assert self.metadata is not None
+        return {
+            "event_id": self.event_id,
+            "occurred_at": self.occurred_at,
+            "action": self.action,
+            "outcome": self.outcome,
+            "actor": self.actor.to_json(),
+            "resource": self.resource.to_json(),
+            "request_id": self.request_id,
+            "endpoint_id": self.endpoint_id,
+            "invocation_id": self.invocation_id,
+            "metadata": self.metadata.to_json(),
+        }
 
 
 @dataclass(frozen=True)
@@ -422,6 +569,13 @@ def _稽核安全識別值合法(值: Any) -> bool:
     if _AUDIT_SAFE_IDENTIFIER_PATTERN.fullmatch(值) is None:
         return False
     return not _稽核參照字串含不安全內容(值)
+
+
+def _稽核可空安全識別值合法(值: Any) -> bool:
+    """檢查 optional 稽核 identifier；None 表示未綁定，其他值沿用安全規則。"""
+    if 值 is None:
+        return True
+    return _稽核安全識別值合法(值)
 
 
 def _稽核資源型別合法(值: Any) -> bool:
