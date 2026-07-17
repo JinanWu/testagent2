@@ -718,6 +718,7 @@ def test_audit_event_rejects_huge_timestamp_without_traceback_marker_leak():
     "action",
     [
         b"endpoint.invoke",
+        EvilStr("endpoint.invoke"),
         "Endpoint.invoke",
         "endpoint-invoke",
         f"endpoint.{稽核事件動作唯一SECRET_MARKER}",
