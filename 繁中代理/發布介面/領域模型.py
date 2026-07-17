@@ -98,15 +98,16 @@ class InvokeEnvelope:
                 (usage, PublishedUsage),
                 (error, PublishedError),
             ):
-                if 值 is not None and not isinstance(值, 型別):
+                if 值 is not None and type(值) is not 型別:
                     raise ValueError("InvokeEnvelope DTO 不符合公開契約")
 
             if warnings is None:
                 frozen_warnings = ()
             else:
                 frozen_warnings = tuple(warnings)
-                if not all(isinstance(warning, PublishedWarning) for warning in frozen_warnings):
-                    raise ValueError("InvokeEnvelope 警告不符合公開契約")
+                for warning in frozen_warnings:
+                    if type(warning) is not PublishedWarning:
+                        raise ValueError("InvokeEnvelope 警告不符合公開契約")
             if ok:
                 if endpoint is None or invocation is None or error is not None:
                     raise ValueError("InvokeEnvelope 成功狀態不符合公開契約")
@@ -138,7 +139,7 @@ class InvokeEnvelope:
             ):
                 object.__setattr__(self, 欄位, 值)
             ok = endpoint = invocation = data = usage = warnings = error = None
-            frozen_warnings = frozen_data = 欄位 = 值 = 型別 = None
+            frozen_warnings = frozen_data = 欄位 = 值 = 型別 = warning = None
             raise
 
     def to_json(self) -> JsonObject:

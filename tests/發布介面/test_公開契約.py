@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import FrozenInstanceError
+from dataclasses import dataclass
 import math
 import traceback
 
@@ -25,6 +26,41 @@ from 繁中代理.發布介面.領域模型 import ServiceAccountSnapshotRef
 解析錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_解析_不外洩"
 深層錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_深層_不外洩"
 信封錯誤唯一SECRET_MARKER = "唯一SECRET_MARKER_信封_不外洩"
+
+
+@dataclass(frozen=True)
+class EvilEndpointRef(EndpointRef):
+    """測試用惡意端點參照，模擬 subclass 偷加公開欄位。"""
+
+    secret: str = "endpoint-secret"
+
+
+@dataclass(frozen=True)
+class EvilInvocationRef(InvocationRef):
+    """測試用惡意呼叫參照，模擬 subclass 偷加公開欄位。"""
+
+    secret: str = "invocation-secret"
+
+
+@dataclass(frozen=True)
+class EvilPublishedUsage(PublishedUsage):
+    """測試用惡意用量摘要，模擬 subclass 偷加公開欄位。"""
+
+    secret: str = "usage-secret"
+
+
+@dataclass(frozen=True)
+class EvilPublishedWarning(PublishedWarning):
+    """測試用惡意警告摘要，模擬 subclass 偷加公開欄位。"""
+
+    secret: str = "warning-secret"
+
+
+@dataclass(frozen=True)
+class EvilPublishedError(PublishedError):
+    """測試用惡意錯誤摘要，模擬 subclass 偷加公開欄位。"""
+
+    secret: str = "error-secret"
 
 
 def _錯誤狀態不含marker(錯誤, marker):
@@ -365,6 +401,64 @@ def test_invoke_envelope_rejects_inconsistent_combinations_and_wrong_dto_types(k
         InvokeEnvelope(**kwargs)
 
 
+@pytest.mark.parametrize(
+    "欄位, kwargs",
+    [
+        (
+            "endpoint",
+            {
+                "ok": True,
+                "endpoint": EvilEndpointRef("e", "s", 1),
+                "invocation": InvocationRef("i", "r"),
+                "data": None,
+            },
+        ),
+        (
+            "invocation",
+            {
+                "ok": True,
+                "endpoint": EndpointRef("e", "s", 1),
+                "invocation": EvilInvocationRef("i", "r"),
+                "data": None,
+            },
+        ),
+        (
+            "usage",
+            {
+                "ok": True,
+                "endpoint": EndpointRef("e", "s", 1),
+                "invocation": InvocationRef("i", "r"),
+                "data": None,
+                "usage": EvilPublishedUsage(7),
+            },
+        ),
+        (
+            "warnings",
+            {
+                "ok": True,
+                "endpoint": EndpointRef("e", "s", 1),
+                "invocation": InvocationRef("i", "r"),
+                "data": None,
+                "warnings": [EvilPublishedWarning("notice", "metadata omitted")],
+            },
+        ),
+        (
+            "error",
+            {
+                "ok": False,
+                "endpoint": None,
+                "invocation": None,
+                "error": EvilPublishedError("endpoint_not_found", "not found"),
+            },
+        ),
+    ],
+)
+def test_invoke_envelope_boundary_rejects_nested_dto_subclasses(欄位, kwargs):
+    """信封邊界只收公開 DTO exact type，避免 subclass 額外欄位被 to_json 洩出。"""
+    with pytest.raises(ValueError):
+        InvokeEnvelope(**kwargs)
+
+
 def test_invoke_envelope_data_uses_defensive_deep_immutable_snapshot():
     """data 建構時深層快照，呼叫端與 to_json 輸出 mutation 都不影響內部。"""
     data = {"items": [{"name": "old"}]}
@@ -389,6 +483,7 @@ def test_invoke_envelope_error_clears_marker_from_all_production_frames():
     cases = [
         {"endpoint": EndpointRef("e", "s", 1), "data": {"bad": object(), "marker": marker}},
         {"endpoint": marker, "data": None},
+        {"endpoint": EvilEndpointRef("e", "s", 1, secret=marker), "data": None},
     ]
     for kwargs in cases:
         with pytest.raises(Exception) as 錯誤:
