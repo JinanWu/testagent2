@@ -42,9 +42,6 @@ CREATE TABLE published_endpoint_versions (
 CREATE INDEX idx_published_endpoints_owner_status
   ON published_endpoints(owner_user_id, status);
 
-CREATE INDEX idx_published_endpoint_versions_endpoint_order
-  ON published_endpoint_versions(endpoint_id, version_number DESC);
-
 CREATE TRIGGER published_endpoint_versions_no_update
 BEFORE UPDATE ON published_endpoint_versions
 BEGIN

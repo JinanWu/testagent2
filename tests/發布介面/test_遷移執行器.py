@@ -114,7 +114,8 @@ def test_核心遷移建立表欄位索引且服務帳號不含認證秘密欄(t
     assert "current_version_id" in _欄位(db, "published_endpoints")
     assert set(快照欄位) <= set(_欄位(db, "published_endpoint_versions"))
     索引 = _查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('published_endpoints','published_endpoint_versions')")
-    assert {("idx_published_endpoints_owner_status",), ("idx_published_endpoint_versions_endpoint_order",)} <= set(索引)
+    assert ("idx_published_endpoints_owner_status",) in 索引
+    assert ("idx_published_endpoint_versions_endpoint_order",) not in 索引
 
 
 def test_核心遷移版本資料與約束及目前版本指標(tmp_path):
