@@ -384,9 +384,9 @@ def _稽核參照字串含不安全內容(值: str) -> bool:
         return True
     if "/" in 值 or "\\" in 值 or 值.startswith("~"):
         return True
-    if _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN.match(值) is not None:
+    if _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN.search(值) is not None:
         return True
-    return _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN.fullmatch(值) is not None
+    return _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN.search(值) is not None
 
 
 def _凍結JSON值(值: Any) -> Any:

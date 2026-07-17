@@ -245,9 +245,13 @@ def test_audit_actor_ref_rejects_enum_and_system_rule(actor_type, actor_id):
         "_bad",
         "bad space",
         "pk_live_123",
+        "svc.pk_live_123",
         "sk-prod-123",
+        "user:sk-prod-123",
         "BearerToken",
+        "id:BearerToken",
         "a" * 64,
+        "user:" + "a" * 64,
         "/Users/example/token",
         r"C:\Users\secret",
         "~/secret",
@@ -268,7 +272,6 @@ def test_audit_actor_ref_rejects_bad_identifiers_raw_prefixes_digest_path_and_ma
         "550e8400-e29b-41d4-a716-446655440000",
         "req_ab12",
         "A:1.b-2",
-        "id_bearer",
     ],
 )
 def test_audit_actor_ref_accepts_uuid_request_id_and_safe_ascii_identifier(identifier):
