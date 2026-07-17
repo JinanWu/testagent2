@@ -13,6 +13,7 @@ from 繁中代理.發布介面.遷移執行器 import 拆分遷移SQL, 執行遷
 秘密標記 = "唯一SQL_SECRET_MARKER_不可外洩"
 PRODUCTION_MODULE = "繁中代理.發布介面.遷移執行器"
 核心遷移檔 = Path("繁中代理/發布介面/遷移/0001_建立發布端點核心.sql")
+憑證稽核遷移檔 = Path("繁中代理/發布介面/遷移/0002_建立憑證與稽核.sql")
 快照欄位 = (
     "original_requirement_text",
     "system_prompt",
@@ -66,6 +67,17 @@ def _套用核心遷移(db):
     assert _查詢(db, "SELECT version,name FROM published_api_schema_migrations") == [(1, 核心遷移檔.name)]
 
 
+def _套用憑證稽核遷移(db):
+    遷移 = []
+    for 版本, 檔案 in ((1, 核心遷移檔), (2, 憑證稽核遷移檔)):
+        sql = 檔案.read_text(encoding="utf-8")
+        assert all(禁用 not in sql.upper() for 禁用 in ("COMMIT", "PRAGMA", "ATTACH"))
+        遷移.append(遷移項目(版本, 檔案.name, sql))
+    assert 執行遷移(db, 遷移) == (1, 2)
+    assert 執行遷移(db, 遷移) == ()
+    assert _查詢(db, "SELECT version,name FROM published_api_schema_migrations ORDER BY version") == [(1, 核心遷移檔.name), (2, 憑證稽核遷移檔.name)]
+
+
 def _欄位(db, table):
     return [row[1] for row in _查詢(db, f"SELECT * FROM pragma_table_info('{table}')")]
 
@@ -100,6 +112,164 @@ def _寫入服務帳號端點版本(db):
             f"INSERT INTO published_endpoint_versions({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
             tuple(values.values()),
         )
+
+
+def _有效憑證(**覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "cred"),
+        "endpoint_id": "ep1",
+        "name": "prod key",
+        "purpose": "server to server",
+        "secret_ciphertext": b"cipher",
+        "encryption_key_id": "kms-key",
+        "verification_hash": 覆寫.pop("verification_hash", b"vh"),
+        "key_prefix": "pk_live",
+        "key_last4": "1234",
+        "expires_at": 10,
+        "last_used_at": None,
+        "revoked_at": None,
+        "inactive_disabled_at": None,
+        "ip_allowlist_json": "[]",
+        "rate_limit_requests": 5,
+        "rate_limit_window_seconds": 60,
+        "created_by_user_id": "u1",
+        "created_at": 2,
+    }
+    值.update(覆寫)
+    return 值
+
+
+def _新增憑證(連線, **覆寫):
+    值 = _有效憑證(**覆寫)
+    cols = tuple(值)
+    連線.execute(
+        f"INSERT INTO endpoint_credentials({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+        tuple(值.values()),
+    )
+
+
+def _新增稽核事件(連線, **覆寫):
+    值 = {
+        "id": 覆寫.pop("id", "audit"),
+        "actor_type": "user",
+        "actor_id": "u1",
+        "action": "credential.view",
+        "target_type": "endpoint_credential",
+        "target_id": "cred",
+        "endpoint_id": "ep1",
+        "request_id": "req1",
+        "metadata_json": '{"ok":true}',
+        "created_at": 3,
+    }
+    值.update(覆寫)
+    cols = tuple(值)
+    連線.execute(f"INSERT INTO audit_events({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})", tuple(值.values()))
+
+
+def test_憑證稽核遷移建立表欄位索引且無明文或scope欄(tmp_path):
+    db = tmp_path / "credential_audit.db"
+    _套用憑證稽核遷移(db)
+    _寫入服務帳號端點版本(db)
+
+    assert {"endpoint_credentials", "audit_events"} <= set(name for (name,) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='table'"))
+    assert {"rate_limit_requests", "rate_limit_window_seconds"} <= set(_欄位(db, "published_endpoints"))
+    for table in ("endpoint_credentials", "audit_events"):
+        assert not any(禁 in 欄.lower() for 欄 in _欄位(db, table) for 禁 in ("raw_key", "plaintext", "password", "scope", "payload"))
+
+    索引 = set(_查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('endpoint_credentials','audit_events')"))
+    assert {("idx_endpoint_credentials_endpoint_list",), ("idx_audit_events_target_time",), ("idx_audit_events_endpoint_time",)} <= 索引
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增憑證(連線, id="c1", verification_hash=b"one")
+        _新增憑證(連線, id="c2", verification_hash=b"two")
+        _新增憑證(連線, id="c3", endpoint_id="ep2", verification_hash=b"one")
+        with pytest.raises(sqlite3.IntegrityError):
+            _新增憑證(連線, id="c4", verification_hash=b"one")
+        with pytest.raises(sqlite3.IntegrityError):
+            _新增憑證(連線, id="missing", endpoint_id="missing", verification_hash=b"missing")
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_憑證欄位約束與端點層rate_limit預設相容既有資料(tmp_path):
+    db = tmp_path / "credential_constraints.db"
+    _套用核心遷移(db)
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _寫入服務帳號端點版本(db)
+        連線.execute("UPDATE published_endpoints SET current_version_id='v1' WHERE id='ep1'")
+    端點原列 = _查詢(db, "SELECT id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at FROM published_endpoints ORDER BY id")
+    版本原列 = _查詢(db, "SELECT * FROM published_endpoint_versions ORDER BY id")
+    assert 執行遷移(db, [遷移項目(2, 憑證稽核遷移檔.name, 憑證稽核遷移檔.read_text(encoding="utf-8"))]) == (2,)
+    assert _查詢(db, "SELECT id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at FROM published_endpoints ORDER BY id") == 端點原列
+    assert _查詢(db, "SELECT * FROM published_endpoint_versions ORDER BY id") == 版本原列
+    assert _查詢(db, "SELECT current_version_id FROM published_endpoints WHERE id='ep1'") == [("v1",)]
+    assert _查詢(db, "SELECT rate_limit_requests,rate_limit_window_seconds FROM published_endpoints ORDER BY id") == [(60, 60), (60, 60)]
+    assert ("idx_published_endpoints_owner_status",) in _查詢(db, "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='published_endpoints'")
+    assert {("published_endpoint_versions_no_update",), ("published_endpoint_versions_no_delete",), ("published_endpoints_rate_limit_positive_before_insert",), ("published_endpoints_rate_limit_positive_before_update",)} <= set(_查詢(db, "SELECT name FROM sqlite_master WHERE type='trigger'"))
+
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增憑證(連線, id="ok")
+        for i, 覆寫 in enumerate(
+            [
+                {"name": " "},
+                {"name": "x" * 121},
+                {"purpose": ""},
+                {"purpose": "x" * 1001},
+                {"secret_ciphertext": b""},
+                {"encryption_key_id": " "},
+                {"verification_hash": b""},
+                {"key_prefix": ""},
+                {"key_prefix": "x" * 33},
+                {"key_last4": "123"},
+                {"expires_at": -1},
+                {"last_used_at": -1},
+                {"ip_allowlist_json": "{}"},
+                {"rate_limit_requests": 1.5},
+                {"rate_limit_window_seconds": 0},
+            ],
+            start=1,
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                值 = {"id": f"bad{i}", "verification_hash": f"bad{i}".encode(), **覆寫}
+                _新增憑證(連線, **值)
+        with pytest.raises(sqlite3.IntegrityError):
+            連線.execute("UPDATE published_endpoints SET rate_limit_requests=0 WHERE id='ep1'")
+        with pytest.raises(sqlite3.IntegrityError):
+            連線.execute("UPDATE published_endpoints SET rate_limit_window_seconds=1.2 WHERE id='ep1'")
+        with pytest.raises(sqlite3.DatabaseError):
+            連線.execute("UPDATE published_endpoint_versions SET system_prompt='changed' WHERE id='v1'")
+        with pytest.raises(sqlite3.DatabaseError):
+            連線.execute("DELETE FROM published_endpoint_versions WHERE id='v1'")
+        連線.executemany("INSERT INTO service_accounts(id,created_at) VALUES (?,?)", [("sa3", 1.0), ("sa4", 1.0)])
+        with pytest.raises(sqlite3.IntegrityError, match="published endpoint rate limits must be positive integers"):
+            連線.execute("INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at,rate_limit_requests) VALUES (?,?,?,?,?,?,?,?)", ("bad_zero", "u3", "sa3", "bad-zero", "active", 1.0, 1.0, 0))
+        with pytest.raises(sqlite3.IntegrityError, match="published endpoint rate limits must be positive integers"):
+            連線.execute("INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at,rate_limit_window_seconds) VALUES (?,?,?,?,?,?,?,?)", ("bad_float", "u4", "sa4", "bad-float", "active", 1.0, 1.0, 1.5))
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
+def test_稽核事件object_metadata_actor規則與append_only(tmp_path):
+    db = tmp_path / "audit.db"
+    _套用憑證稽核遷移(db)
+    _寫入服務帳號端點版本(db)
+
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _新增稽核事件(連線, id="a1")
+        _新增稽核事件(連線, id="a2", actor_type="system", actor_id=None, endpoint_id=None, metadata_json='{"reason":"timer"}')
+        assert 連線.execute("SELECT actor_type,actor_id,metadata_json FROM audit_events ORDER BY id").fetchall() == [
+            ("user", "u1", '{"ok":true}'),
+            ("system", None, '{"reason":"timer"}'),
+        ]
+        for 覆寫 in ({"id": "bad_actor", "actor_id": None}, {"id": "bad_meta", "metadata_json": "[]"}, {"id": "bad_time", "created_at": -1}):
+            with pytest.raises(sqlite3.IntegrityError):
+                _新增稽核事件(連線, **覆寫)
+        with pytest.raises(sqlite3.DatabaseError):
+            連線.execute("UPDATE audit_events SET action='changed' WHERE id='a1'")
+        with pytest.raises(sqlite3.DatabaseError):
+            連線.execute("DELETE FROM audit_events WHERE id='a1'")
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_核心遷移建立表欄位索引且服務帳號不含認證秘密欄(tmp_path):
