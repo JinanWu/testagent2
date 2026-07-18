@@ -11,6 +11,9 @@ import pytest
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務, 不可逆遮蔽錯誤
+from 繁中代理.發布介面.治理.查詢投影 import SQLite呼叫查詢投影, 查詢投影錯誤
+from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
+from 繁中代理.發布介面.治理.查詢投影 import 管理員原始資料稽核閘門
 
 
 目標 = {
@@ -161,6 +164,110 @@ def test_DB觸發器禁止還原payload以及更新或刪除墓碑(資料庫):
                 "UPDATE endpoint_redactions SET reason='x'", "DELETE FROM endpoint_redactions"):
         with closing(sqlite3.connect(資料庫)) as 連線, pytest.raises(sqlite3.IntegrityError), 連線:
             連線.execute(sql)
+
+
+@pytest.mark.parametrize("類型", ("run_event", "tool_arguments", "tool_result", "tool_error"))
+def test_已遮蔽child禁止刪除與身分重用且帳本稽核不變(資料庫, 類型):
+    表格, 欄位, 列ID = 目標[類型]
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數(類型, ""))
+    before = (_查詢(資料庫, "SELECT * FROM endpoint_redactions"),
+              _查詢(資料庫, "SELECT * FROM audit_events"))
+    with closing(sqlite3.connect(資料庫)) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        with pytest.raises(sqlite3.IntegrityError), 連線:
+            連線.execute(f"DELETE FROM {表格} WHERE id=?", (列ID,))
+        with pytest.raises(sqlite3.IntegrityError), 連線:
+            連線.execute(f"UPDATE {表格} SET {欄位}='{{}}' WHERE id=?", (列ID,))
+        with pytest.raises(sqlite3.IntegrityError), 連線:
+            if 表格 == "run_events":
+                連線.execute("INSERT INTO run_events VALUES(?,?,?,?,?,?)",
+                           (列ID, "inv", 99, "reuse", "{}", 9))
+            else:
+                連線.execute("INSERT INTO endpoint_tool_calls(id,invocation_id,sequence_number,"
+                           "tool_name,arguments_json,outcome,created_at) VALUES(?,?,?,?,?,?,?)",
+                           (列ID, "inv", 99, "reuse", "{}", "success", 9))
+    assert (_查詢(資料庫, "SELECT * FROM endpoint_redactions"),
+            _查詢(資料庫, "SELECT * FROM audit_events")) == before
+
+
+def _投影payload(結果, 類型):
+    if 類型 == "invocation_input": return 結果["input"]
+    if 類型 == "metadata": return 結果["metadata"]
+    if 類型 == "output": return 結果["output"]
+    if 類型 == "error": return 結果["error"]
+    if 類型 == "run_event": return 結果["run_events"][0]["payload"]
+    工具 = next(項 for 項 in 結果["tool_calls"] if 項["id"] == 目標[類型][2])
+    return 工具[{"tool_arguments": "arguments", "tool_result": "result", "tool_error": "error"}[類型]]
+
+
+@pytest.mark.parametrize("類型", tuple(目標))
+@pytest.mark.parametrize("路徑", ("", "/secret/value"))
+def test_遮蔽後管理員raw只回傳權威墓碑且無原文(資料庫, 類型, 路徑):
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數(類型, 路徑))
+    結果 = SQLite呼叫查詢投影(str(資料庫)).查詢管理員原始資料(True, "ep", "inv")
+    payload = _投影payload(結果, 類型)
+    tombstone = {"$tombstone": {"redaction_id": "red-1", "redacted_at": 123.5}}
+    assert payload == tombstone if 路徑 == "" else payload["secret"]["value"] == tombstone
+    assert "RAW_G04" not in json.dumps(payload)
+
+
+def _暫停防護並竄改(資料庫, trigger, sql, params=()):
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        trigger_sql = 連線.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (trigger,)
+        ).fetchone()[0]
+        連線.execute(f'DROP TRIGGER "{trigger}"')
+        連線.execute(sql, params)
+        連線.execute(trigger_sql)
+
+
+def test_恢復exact觸發器後raw已還原仍使投影與稽核閘門固定失敗(資料庫):
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
+    _暫停防護並竄改(資料庫, "redacted_invocation_payload_no_update",
+                 "UPDATE endpoint_invocations SET input_json=? WHERE id='inv'", (原文,))
+    投影 = SQLite呼叫查詢投影(str(資料庫))
+    with pytest.raises(查詢投影錯誤):
+        投影.查詢管理員原始資料(True, "ep", "inv")
+    callback輸出 = []
+    def detail(endpoint_id, invocation_id):
+        結果 = 投影.查詢管理員原始資料(True, endpoint_id, invocation_id)
+        callback輸出.append(結果)
+        return 結果
+    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(資料庫)), detail)
+    with pytest.raises(查詢投影錯誤):
+        閘門.查詢管理員原始資料(True, "admin", "request-view", "audit-view", 200,
+                           "ep", "inv")
+    assert callback輸出 == []
+
+
+def test_墓碑仍在但ledger遭刪除並恢復exact觸發器時投影失敗關閉(資料庫):
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
+    _暫停防護並竄改(資料庫, "endpoint_redactions_no_delete",
+                 "DELETE FROM endpoint_redactions")
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(資料庫)).查詢管理員原始資料(True, "ep", "inv")
+
+
+@pytest.mark.parametrize("欄位,值", [
+    ("json_path", "/forged"), ("id", "forged-redaction"), ("redacted_at", 999.0),
+])
+def test_恢復exact帳本觸發器後偽造路徑身分時間仍失敗關閉(資料庫, 欄位, 值):
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
+    _暫停防護並竄改(資料庫, "endpoint_redactions_no_update",
+                 f"UPDATE endpoint_redactions SET {欄位}=?", (值,))
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(資料庫)).查詢管理員原始資料(True, "ep", "inv")
+
+
+@pytest.mark.parametrize("改動", [
+    "DROP TRIGGER redacted_run_event_no_delete",
+    "DROP INDEX idx_endpoint_redactions_audit",
+])
+def test_管理員raw遇遮蔽觸發器或索引缺失皆失敗關閉(資料庫, 改動):
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        連線.execute(改動)
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(資料庫)).查詢管理員原始資料(True, "ep", "inv")
 
 
 def test_並行相同請求只建立一份audit與墓碑(資料庫):
