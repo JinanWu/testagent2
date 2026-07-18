@@ -254,8 +254,10 @@ class _清理連線代理:
     def __init__(self, 連線, *, 主要=None, 回滾=None, 關閉=None):
         self.連線, self.主要, self.回滾, self.關閉 = 連線, 主要, 回滾, 關閉
         self.順序 = []
+        self.語句 = []
 
     def execute(self, sql, *args):
+        self.語句.append(sql)
         if self.主要 is not None and sql.startswith("SELECT version,name"):
             raise self.主要
         return self.連線.execute(sql, *args)
@@ -387,3 +389,38 @@ def test_管理員跨多列聚合JSON預算超限會失敗並關閉真實資源(
     assert 代理列[0].順序 == ["rollback", "close"]
     with pytest.raises(sqlite3.ProgrammingError):
         代理列[0].連線.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("目標", ["invocation", "run_event"])
+def test_單一超大有效JSON只取長度且不執行任何payload查詢(
+    monkeypatch, 呼叫資料庫, 目標,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        if 目標 == "invocation":
+            連線.execute(
+                "UPDATE endpoint_invocations SET input_json="
+                "'{\"huge\":\"' || printf('%.*c',1100000,'x') || '\"}' WHERE id='inv-1'"
+            )
+        else:
+            連線.execute(
+                "UPDATE run_events SET payload_json="
+                "'{\"huge\":\"' || printf('%.*c',1100000,'x') || '\"}' WHERE id='run-1'"
+            )
+    真建立 = 查詢投影._建立連線
+    代理列 = []
+
+    def 建立代理(*引數, **關鍵字):
+        代理 = _清理連線代理(真建立(*引數, **關鍵字))
+        代理列.append(代理)
+        return 代理
+
+    monkeypatch.setattr(查詢投影, "_建立連線", 建立代理)
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+            True, "ep-1", "inv-1"
+        )
+    assert len(代理列) == 1
+    assert not any(語句.startswith("SELECT input_json") for 語句 in 代理列[0].語句)
+    assert not any(語句.startswith("SELECT payload_json") for 語句 in 代理列[0].語句)
