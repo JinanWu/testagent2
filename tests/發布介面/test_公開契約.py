@@ -1160,11 +1160,41 @@ def test_published_error_rejects_cycle_depth_key_string_and_canonical_size_bound
         {f"k{i}": i for i in range(129)},
         {"value": "x" * 4097},
         {f"k{i}": "界" * 4096 for i in range(3)},
+        {"items": [None] * 1025},
     ]
 
     for details in cases:
         with pytest.raises(ValueError, match="^PublishedError 不符合公開契約$"):
             PublishedError("invalid_request", "bad", details)
+
+
+def test_failure_envelope重建forged_error且不執行instance_shadowed_serializer():
+    """exact forged PublishedError不得以instance serializer注入信封。"""
+    calls = []
+    error = PublishedError("endpoint_not_found", "not found", {"safe": True})
+    object.__setattr__(error, "to_json", lambda: calls.append(True))
+
+    envelope = 建立失敗信封(error)
+
+    assert calls == []
+    assert envelope.error is not error
+    assert envelope.to_json()["error"] == {
+        "code": "endpoint_not_found",
+        "message": "not found",
+        "details": {"safe": True},
+    }
+
+
+def test_failure_envelope拒絕forged_error內部canonical_json():
+    """偽造欄位必須經strict JSON與PublishedError constructor重驗。"""
+    error = object.__new__(PublishedError)
+    object.__setattr__(error, "code", "endpoint_not_found")
+    object.__setattr__(error, "message", "not found")
+    object.__setattr__(error, "details", {})
+    object.__setattr__(error, "_細節正規JSON", "[]")
+
+    with pytest.raises(ValueError, match="^PublishedError 不符合公開契約$"):
+        建立失敗信封(error)
 
 
 def test_published_error_validation_clears_sensitive_inputs_from_production_frames():

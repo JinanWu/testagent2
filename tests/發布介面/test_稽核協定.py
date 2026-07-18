@@ -28,6 +28,39 @@ class EvilInt(int):
     """測試用 int subclass，避免 exact int 檢查被放寬。"""
 
 
+class HostileBaseException(BaseException):
+    """測試ordinary BaseException必須固定化。"""
+
+
+class ChildKeyboardInterrupt(KeyboardInterrupt):
+    """控制流程subclass測試。"""
+
+
+class ChildSystemExit(SystemExit):
+    """控制流程subclass測試。"""
+
+
+class ChildGeneratorExit(GeneratorExit):
+    """控制流程subclass測試。"""
+
+
+class RaisingAuditSink:
+    """在lookup或call階段拋出指定例外物件。"""
+
+    def __init__(self, stage, error):
+        self.stage = stage
+        self.error = error
+
+    @property
+    def append_audit_event(self):
+        if self.stage == "lookup":
+            raise self.error
+        return self._call
+
+    def _call(self, _event):
+        raise self.error
+
+
 class FakeAuditSink:
     """測試用sink，可模擬lookup、call與receipt結果。"""
 
@@ -85,10 +118,11 @@ class FakeReprMarker:
         return SINK_MARKER_SECRET
 
 
-def _assert_error_sanitized(error, marker):
+def _assert_error_sanitized(error, marker, *, 保留參數=False):
     """確認公開錯誤、例外鏈與發布介面 production frame locals 不含 marker。"""
-    assert marker not in str(error)
-    assert marker not in repr(error)
+    if not 保留參數:
+        assert marker not in str(error)
+        assert marker not in repr(error)
     assert error.__cause__ is None
     assert error.__context__ is None
     for frame, _ in traceback.walk_tb(error.__traceback__):
@@ -165,14 +199,15 @@ def _forged_event(**overrides):
     return event
 
 
-def _assert_sink_failure(sink, event, marker=SINK_MARKER_SECRET):
+def _assert_sink_failure(sink, event, marker=None):
     """確認 helper 固定失敗關閉，且錯誤與 traceback 不保留 marker。"""
     with pytest.raises(AuditSinkError) as error:
         附加稽核事件或失敗關閉(sink, event)
 
     assert type(error.value) is AuditSinkError
     assert error.value.args == ("稽核事件無法確認提交",)
-    _assert_error_sanitized(error.value, marker)
+    if marker is not None:
+        _assert_error_sanitized(error.value, marker)
     return error.value
 
 
@@ -415,3 +450,43 @@ def test_append_audit_event_failures_close_with_fixed_error():
     assert {error.args for error in errors} == {("稽核事件無法確認提交",)}
     assert event_subclass_sink.calls == []
     assert event_subclass_sink.lookups == 0
+
+
+@pytest.mark.parametrize("stage", ["lookup", "call"])
+def test_audit_sink_custom_base_exception固定化且marker不留production_frame(stage):
+    """非控制流程BaseException必須變成固定AuditSinkError。"""
+    marker = f"{SINK_MARKER_SECRET}_{stage}_base"
+    original = HostileBaseException(marker)
+    error = _assert_sink_failure(RaisingAuditSink(stage, original), _make_event(), marker)
+    assert type(error) is AuditSinkError
+
+
+@pytest.mark.parametrize("stage", ["lookup", "call"])
+@pytest.mark.parametrize(
+    "error_type",
+    [KeyboardInterrupt, SystemExit, GeneratorExit, ChildKeyboardInterrupt, ChildSystemExit, ChildGeneratorExit],
+)
+def test_audit_sink控制流程保留exact_identity且清除production_frame(stage, error_type):
+    """K/I/S/G及其既有型別在清理敏感locals後原樣重拋。"""
+    marker = f"{SINK_MARKER_SECRET}_{stage}_{error_type.__name__}"
+    original = error_type(marker)
+    with pytest.raises(error_type) as captured:
+        附加稽核事件或失敗關閉(RaisingAuditSink(stage, original), _make_event())  # type: ignore[arg-type]
+    assert captured.value is original
+    assert captured.value.args == (marker,)
+    _assert_error_sanitized(captured.value, marker, 保留參數=True)
+
+
+def test_audit_metadata_instance_shadowed_serializer不會執行():
+    """exact DTO仍須使用trusted class dispatch重建。"""
+    metadata = 發布領域模型.AuditMetadata({"count": 1})
+    calls = []
+    object.__setattr__(metadata, "to_json", lambda: calls.append(True))
+    event = _make_event(metadata=metadata)
+    sink = FakeAuditSink(_make_receipt())
+
+    receipt = 附加稽核事件或失敗關閉(sink, event)  # type: ignore[arg-type]
+
+    assert receipt.committed is True
+    assert calls == []
+    assert sink.calls[0].metadata.to_json() == {"count": 1}
