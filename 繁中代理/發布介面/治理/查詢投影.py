@@ -245,9 +245,9 @@ class SQLite呼叫查詢投影:
 def _讀取管理員原始資料(
     路徑: str, 端點識別碼: str, 呼叫識別碼: str
 ) -> dict[str, Any]:
-    """在單一 read transaction 以明確欄位取得 invocation 與 child payload。"""
-    連線 = 游標 = 列 = 項 = 事件 = 工具 = 結果 = None
-    輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 工具JSON = None
+    """同一 read transaction 先核算全部 JSON 長度，再按權威鍵取 payload。"""
+    連線 = 游標 = 列 = 項 = 內容列 = 事件列 = 工具列 = 結果 = None
+    輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 事件 = 工具 = None
     已開始 = 失敗 = False
     控制 = None
     預算 = [0, 0]
@@ -259,70 +259,100 @@ def _讀取管理員原始資料(
         _驗證路徑與結構(連線, 路徑)
         游標 = 連線.execute(
             "SELECT id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,"
-            "message_id,status,input_json,metadata_json,output_json,error_json,usage_json,"
-            "metadata_size_bytes,metadata_sha256,latency_ms,pricing_version,created_at,completed_at "
+            "message_id,status,metadata_size_bytes,metadata_sha256,latency_ms,pricing_version,"
+            "created_at,completed_at,typeof(input_json),length(CAST(input_json AS BLOB)),"
+            "typeof(metadata_json),length(CAST(metadata_json AS BLOB)),"
+            "typeof(output_json),length(CAST(output_json AS BLOB)),"
+            "typeof(error_json),length(CAST(error_json AS BLOB)),"
+            "typeof(usage_json),length(CAST(usage_json AS BLOB)) "
             "FROM endpoint_invocations WHERE endpoint_id=? AND id=?",
             (端點識別碼, 呼叫識別碼),
         )
         列 = 游標.fetchone()
-        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 19:
+        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 24:
             raise ValueError
-        _驗證管理員呼叫列(列)
-        輸入 = _解析可空JSON(列[8], 預算)
-        中繼資料 = _解析可空JSON(列[9], 預算)
-        輸出 = _解析可空JSON(列[10], 預算)
-        錯誤 = _解析可空JSON(列[11], 預算)
-        用量 = _解析可空JSON(列[12], 預算)
+        _驗證管理員呼叫列(列, 預算)
         游標.close()
-        游標 = None
-        事件 = []
+        事件列 = []
         游標 = 連線.execute(
-            "SELECT id,sequence_number,event_type,payload_json,created_at FROM run_events "
+            "SELECT id,sequence_number,event_type,created_at,typeof(payload_json),"
+            "length(CAST(payload_json AS BLOB)) FROM run_events "
             "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
         )
         項 = 游標.fetchone()
         while 項 is not None:
             子列數 += 1
-            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 5:
+            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 6:
                 raise ValueError
             if not (_安全識別碼(項[0]) and _安全正整數(項[1])
-                    and _安全文字(項[2], 256) and type(項[3]) is str
-                    and _安全時間(項[4])):
+                    and _安全文字(項[2], 256) and _安全時間(項[3])):
                 raise ValueError
-            事件.append({
-                "id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
-                "payload": _解析可空JSON(項[3], 預算), "created_at": 項[4],
-            })
+            _扣除JSON長度(項[4], 項[5], 預算, True)
+            事件列.append(項)
             項 = 游標.fetchone()
         游標.close()
-        游標 = None
-        工具 = []
+        工具列 = []
         游標 = 連線.execute(
-            "SELECT id,run_event_id,sequence_number,tool_name,arguments_json,outcome,result_json,"
-            "error_json,latency_ms,retry_of_tool_call_id,created_at FROM endpoint_tool_calls "
+            "SELECT id,run_event_id,sequence_number,tool_name,outcome,latency_ms,"
+            "retry_of_tool_call_id,created_at,typeof(arguments_json),"
+            "length(CAST(arguments_json AS BLOB)),typeof(result_json),"
+            "length(CAST(result_json AS BLOB)),typeof(error_json),"
+            "length(CAST(error_json AS BLOB)) FROM endpoint_tool_calls "
             "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
         )
         項 = 游標.fetchone()
         while 項 is not None:
             子列數 += 1
-            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 11:
+            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 14:
                 raise ValueError
-            工具JSON = _驗證工具列(項, 預算)
-            工具.append({
-                "id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
-                "tool_name": 項[3], "arguments": 工具JSON[0], "outcome": 項[5],
-                "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[8],
-                "retry_of_tool_call_id": 項[9], "created_at": 項[10],
-            })
+            _驗證工具長度列(項, 預算)
+            工具列.append(項)
             項 = 游標.fetchone()
+        游標.close()
+        游標 = 連線.execute(
+            "SELECT input_json,metadata_json,output_json,error_json,usage_json "
+            "FROM endpoint_invocations WHERE endpoint_id=? AND id=?",
+            (端點識別碼, 呼叫識別碼),
+        )
+        內容列 = 游標.fetchone()
+        if 游標.fetchone() is not None or type(內容列) is not tuple or len(內容列) != 5:
+            raise ValueError
+        輸入, 中繼資料, 輸出, 錯誤, 用量 = (
+            _解析可空JSON(值, 預算, False) for 值 in 內容列
+        )
+        事件 = []
+        for 項 in 事件列:
+            內容列 = 連線.execute(
+                "SELECT payload_json FROM run_events "
+                "WHERE invocation_id=? AND id=? AND sequence_number=?",
+                (呼叫識別碼, 項[0], 項[1]),
+            ).fetchone()
+            if type(內容列) is not tuple or len(內容列) != 1:
+                raise ValueError
+            事件.append({"id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
+                         "payload": _解析可空JSON(內容列[0], 預算, False), "created_at": 項[3]})
+        工具 = []
+        for 項 in 工具列:
+            內容列 = 連線.execute(
+                "SELECT arguments_json,result_json,error_json FROM endpoint_tool_calls "
+                "WHERE invocation_id=? AND id=? AND sequence_number=?",
+                (呼叫識別碼, 項[0], 項[2]),
+            ).fetchone()
+            if type(內容列) is not tuple or len(內容列) != 3:
+                raise ValueError
+            工具JSON = tuple(_解析可空JSON(值, 預算, False) for 值 in 內容列)
+            工具.append({"id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
+                          "tool_name": 項[3], "arguments": 工具JSON[0], "outcome": 項[4],
+                          "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[5],
+                          "retry_of_tool_call_id": 項[6], "created_at": 項[7]})
         結果 = {
             "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
             "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
             "message_id": 列[6], "status": 列[7], "input": 輸入,
             "metadata": 中繼資料, "output": 輸出, "error": 錯誤, "usage": 用量,
-            "metadata_size_bytes": 列[13], "metadata_sha256": 列[14],
-            "latency_ms": 列[15], "pricing_version": 列[16], "created_at": 列[17],
-            "completed_at": 列[18], "run_events": 事件, "tool_calls": 工具,
+            "metadata_size_bytes": 列[8], "metadata_sha256": 列[9],
+            "latency_ms": 列[10], "pricing_version": 列[11], "created_at": 列[12],
+            "completed_at": 列[13], "run_events": 事件, "tool_calls": 工具,
         }
         連線.commit()
         已開始 = False
@@ -344,9 +374,9 @@ def _讀取管理員原始資料(
         清理控制 = _清理資源操作(連線, "close")
         if 控制 is None and 清理控制:
             控制 = 清理控制.pop()
-    路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = None
-    事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 工具JSON = None
-    預算 = 清理控制 = None
+    路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = 內容列 = None
+    事件列 = 工具列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
+    預算 = 清理控制 = 工具JSON = None
     if 控制 is not None:
         控制盒 = [控制]
         控制 = 結果 = None
@@ -421,7 +451,9 @@ def _解析可空物件(文字: Any) -> dict[str, Any]:
     return 值
 
 
-def _解析可空JSON(文字: Any, 預算: list[int] | None = None) -> Any:
+def _解析可空JSON(
+    文字: Any, 預算: list[int] | None = None, 計算位元組: bool = True
+) -> Any:
     """解析 SQLite exact str/NULL，共用 raw UTF-8 與 parsed-node 聚合預算。"""
     if 文字 is None:
         return None
@@ -429,7 +461,8 @@ def _解析可空JSON(文字: Any, 預算: list[int] | None = None) -> Any:
         raise ValueError
     if 預算 is None:
         預算 = [0, 0]
-    _累計原始JSON位元組(文字, 預算)
+    if 計算位元組:
+        _累計原始JSON位元組(文字, 預算)
     值 = json.loads(
         文字,
         parse_constant=_拒絕JSON常數,
@@ -438,6 +471,17 @@ def _解析可空JSON(文字: Any, 預算: list[int] | None = None) -> Any:
     if not _JSON樹為精確內建型別(值, 0, 預算):
         raise ValueError
     return 值
+
+
+def _扣除JSON長度(儲存類型: Any, 長度: Any, 預算: list[int], 必填: bool = False) -> None:
+    """只接受 SQLite text/NULL 長度 metadata，先扣共用原始位元組預算。"""
+    if 儲存類型 == "null" and 長度 is None and not 必填:
+        return
+    if 儲存類型 != "text" or type(儲存類型) is not str:
+        raise ValueError
+    if type(長度) is not int or 長度 < 0 or 預算[0] + 長度 > _最大JSON位元組:
+        raise ValueError
+    預算[0] += 長度
 
 
 def _累計原始JSON位元組(文字: str, 預算: list[int]) -> None:
@@ -536,44 +580,36 @@ def _驗證擁有者列(列: tuple[Any, ...]) -> None:
         raise ValueError
 
 
-def _驗證管理員呼叫列(列: tuple[Any, ...]) -> None:
-    """驗證 authoritative invocation 的全部 dynamic SQLite storage classes。"""
+def _驗證管理員呼叫列(列: tuple[Any, ...], 預算: list[int]) -> None:
+    """驗證 authoritative invocation 安全純量與 JSON 長度 metadata。"""
     for 索引 in (0, 1, 2, 4, 7):
         if not _安全文字(列[索引]):
             raise ValueError
-    for 索引 in (3, 5, 6, 14, 16):
+    for 索引 in (3, 5, 6, 9, 11):
         if not _安全文字(列[索引], 256, True):
             raise ValueError
-    if type(列[8]) is not str:
+    if 列[8] is not None and (type(列[8]) is not int or 列[8] < 0):
         raise ValueError
-    for 索引 in (9, 10, 11, 12):
-        if 列[索引] is not None and type(列[索引]) is not str:
+    for 索引 in (10, 12, 13):
+        if not _安全時間(列[索引], 索引 in (10, 13)):
             raise ValueError
-    if 列[13] is not None and (type(列[13]) is not int or 列[13] < 0):
-        raise ValueError
-    for 索引 in (15, 17, 18):
-        if not _安全時間(列[索引], 索引 in (15, 18)):
-            raise ValueError
+    for 索引 in range(14, 24, 2):
+        _扣除JSON長度(列[索引], 列[索引 + 1], 預算, 索引 == 14)
 
 
-def _驗證工具列(列: tuple[Any, ...], 預算: list[int]) -> tuple[Any, Any, Any]:
-    """驗證 tool row 的 scalar/storage class 並以共用預算解析三個 JSON。"""
+def _驗證工具長度列(列: tuple[Any, ...], 預算: list[int]) -> None:
+    """驗證 tool 安全純量與三個 JSON 的 length-first metadata。"""
     if not (_安全識別碼(列[0]) and _安全文字(列[1], 可空=True)
             and _安全正整數(列[2]) and _安全文字(列[3], 256)
-            and type(列[4]) is str and 列[5] in ("success", "error")
-            and _安全文字(列[9], 可空=True)
-            and _安全時間(列[8], True) and _安全時間(列[10])):
+            and 列[4] in ("success", "error") and type(列[4]) is str
+            and _安全時間(列[5], True) and _安全文字(列[6], 可空=True)
+            and _安全時間(列[7])):
         raise ValueError
-    if (列[5] == "success") != (列[6] is not None and 列[7] is None):
+    if (列[4] == "success") != (列[10] == "text" and 列[12] == "null"):
         raise ValueError
-    for 索引 in (4, 6, 7):
-        if 列[索引] is not None and type(列[索引]) is not str:
-            raise ValueError
-    return (
-        _解析可空JSON(列[4], 預算),
-        _解析可空JSON(列[6], 預算),
-        _解析可空JSON(列[7], 預算),
-    )
+    _扣除JSON長度(列[8], 列[9], 預算, True)
+    _扣除JSON長度(列[10], 列[11], 預算)
+    _扣除JSON長度(列[12], 列[13], 預算)
 
 
 def _安全識別碼(值: Any) -> bool:
