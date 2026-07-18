@@ -1069,11 +1069,111 @@ def test_published_warning_to_json_exact_fields():
 
 
 def test_published_error_to_json_exact_fields():
-    """PublishedError 輸出固定欄位與順序。"""
+    """PublishedError 保留雙參數相容性，details 預設 ordinary 空物件。"""
     輸出 = PublishedError("endpoint_not_found", "not found").to_json()
 
-    assert list(輸出) == ["code", "message"]
-    assert 輸出 == {"code": "endpoint_not_found", "message": "not found"}
+    assert list(輸出) == ["code", "message", "details"]
+    assert 輸出 == {"code": "endpoint_not_found", "message": "not found", "details": {}}
+    assert type(輸出["details"]) is dict
+
+
+def test_published_error_details_rate_payload_and_mutation_isolation():
+    """R90 rate detail 原樣輸出，來源與回傳 mutation 都不影響 frozen snapshot。"""
+    details = {"retry_after_seconds": 60, "limits": [{"window": "minute"}]}
+    error = PublishedError("rate_limited", "try later", details)
+
+    details["retry_after_seconds"] = 0
+    details["limits"][0]["window"] = "changed"
+    output = error.to_json()["details"]
+    output["retry_after_seconds"] = 1
+    output["limits"][0]["window"] = "again"
+
+    assert error.to_json() == {
+        "code": "rate_limited",
+        "message": "try later",
+        "details": {"retry_after_seconds": 60, "limits": [{"window": "minute"}]},
+    }
+    assert error.to_json()["details"] is not error.to_json()["details"]
+    assert PublishedError(code="x", message="y", details={"ok": True}).to_json()["details"] == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    ("code", "message"),
+    [
+        ("", "message"),
+        ("x" * 129, "message"),
+        (EvilStr("code"), "message"),
+        ("code\n", "message"),
+        ("code", ""),
+        ("code", "x" * 513),
+        ("code", EvilStr("message")),
+        ("code", "bad\u0085message"),
+    ],
+)
+def test_published_error_rejects_malformed_code_and_message(code, message):
+    """code/message 只接受 bounded exact str，且不可含控制字元。"""
+    with pytest.raises(ValueError, match="^PublishedError 不符合公開契約$"):
+        PublishedError(code, message)
+
+
+class EvilDetailsDict(dict):
+    """測試 details 頂層只接受 ordinary exact dict。"""
+
+
+class EvilDetailsList(list):
+    """測試 details nested container 只接受 ordinary exact list。"""
+
+
+@pytest.mark.parametrize(
+    "details",
+    [
+        [],
+        EvilDetailsDict(ok=True),
+        {"nested": EvilDetailsList([1])},
+        {"nested": EvilDetailsDict(ok=True)},
+        {"value": EvilStr("x")},
+        {"value": EvilInt(1)},
+        {"value": EvilFloat(1.0)},
+        {"value": math.nan},
+        {"value": math.inf},
+        {1: "bad key"},
+    ],
+)
+def test_published_error_rejects_nonordinary_or_nonjson_details(details):
+    """details 與全部 nested JSON 值必須是 exact builtins 且 finite。"""
+    with pytest.raises(ValueError, match="^PublishedError 不符合公開契約$"):
+        PublishedError("invalid_request", "bad", details)
+
+
+def test_published_error_rejects_cycle_depth_key_string_and_canonical_size_bounds():
+    """details 拒絕 cycle、depth>8、超過 128 keys、4096 字元與 32768 bytes。"""
+    cycle = {}
+    cycle["self"] = cycle
+    too_deep = {}
+    cursor = too_deep
+    for _ in range(9):
+        cursor["child"] = {}
+        cursor = cursor["child"]
+    cases = [
+        cycle,
+        too_deep,
+        {f"k{i}": i for i in range(129)},
+        {"value": "x" * 4097},
+        {f"k{i}": "界" * 4096 for i in range(3)},
+    ]
+
+    for details in cases:
+        with pytest.raises(ValueError, match="^PublishedError 不符合公開契約$"):
+            PublishedError("invalid_request", "bad", details)
+
+
+def test_published_error_validation_clears_sensitive_inputs_from_production_frames():
+    """固定 validation error 不含輸入、例外鏈或 production frame local。"""
+    marker = "唯一SECRET_MARKER_published_error_details_不外洩"
+    with pytest.raises(ValueError) as 錯誤:
+        PublishedError("invalid_request", "bad", {"value": marker * 200})
+
+    _領域模型錯誤狀態不含marker(錯誤.value, marker)
 
 
 def test_service_account_snapshot_ref_to_json_exact_fields且不帶runtime_context():
@@ -1150,7 +1250,7 @@ def test_invoke_envelope_success_failure_exact_keys_and_json_dumpable():
         "data": None,
         "usage": None,
         "warnings": [],
-        "error": {"code": "endpoint_not_found", "message": "not found"},
+        "error": {"code": "endpoint_not_found", "message": "not found", "details": {}},
     }
     assert json.loads(json.dumps([success, failure], ensure_ascii=False)) == [success, failure]
 
@@ -1315,7 +1415,7 @@ def test_factory_建立失敗信封_endpoint_not_found_null_refs_only():
         "data": None,
         "usage": None,
         "warnings": [],
-        "error": {"code": "endpoint_not_found", "message": "not found"},
+        "error": {"code": "endpoint_not_found", "message": "not found", "details": {}},
     }
 
 
@@ -1339,7 +1439,7 @@ def test_factory_建立失敗信封_non_not_found_requires_and_outputs_refs(code
         "data": None,
         "usage": None,
         "warnings": [{"code": "notice", "message": "metadata omitted"}],
-        "error": {"code": code, "message": "failed"},
+        "error": {"code": code, "message": "failed", "details": {}},
     }
 
 
