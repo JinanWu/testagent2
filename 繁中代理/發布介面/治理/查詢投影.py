@@ -19,35 +19,90 @@ _建立連線 = sqlite3.connect
 _最大JSON位元組 = 1_048_576
 _最大JSON節點 = 4096
 _最大子列 = 4096
-_必要索引 = {
-    "published_endpoints": frozenset(("idx_published_endpoints_owner_status",)),
-    "endpoint_invocations": frozenset((
-        "idx_endpoint_invocations_endpoint_created",
-        "idx_endpoint_invocations_status_created",
-        "idx_endpoint_invocations_credential_created",
-    )),
-    "endpoint_tool_calls": frozenset(("idx_endpoint_tool_calls_invocation_created",)),
-}
-_資料表欄位 = {
+_欄位指紋 = {
     "published_endpoints": (
-        "id", "owner_user_id", "service_account_id", "slug", "status",
-        "current_version_id", "created_at", "updated_at", "rate_limit_requests",
-        "rate_limit_window_seconds",
+        ("id", "TEXT", 0, None, 1), ("owner_user_id", "TEXT", 1, None, 0),
+        ("service_account_id", "TEXT", 1, None, 0), ("slug", "TEXT", 1, None, 0),
+        ("status", "TEXT", 1, None, 0), ("current_version_id", "TEXT", 0, None, 0),
+        ("created_at", "REAL", 1, None, 0), ("updated_at", "REAL", 1, None, 0),
+        ("rate_limit_requests", "INTEGER", 1, "60", 0),
+        ("rate_limit_window_seconds", "INTEGER", 1, "60", 0),
     ),
     "endpoint_invocations": (
-        "id", "endpoint_id", "endpoint_version_id", "credential_id", "request_id",
-        "session_id", "message_id", "status", "input_json", "metadata_json",
-        "output_json", "error_json", "usage_json", "metadata_size_bytes",
-        "metadata_sha256", "latency_ms", "pricing_version", "created_at", "completed_at",
-    ),
-    "endpoint_tool_calls": (
-        "id", "invocation_id", "run_event_id", "sequence_number", "tool_name",
-        "arguments_json", "outcome", "result_json", "error_json", "latency_ms",
-        "retry_of_tool_call_id", "created_at",
+        ("id", "TEXT", 0, None, 1), ("endpoint_id", "TEXT", 1, None, 0),
+        ("endpoint_version_id", "TEXT", 1, None, 0), ("credential_id", "TEXT", 0, None, 0),
+        ("request_id", "TEXT", 1, None, 0), ("session_id", "TEXT", 0, None, 0),
+        ("message_id", "TEXT", 0, None, 0), ("status", "TEXT", 1, None, 0),
+        ("input_json", "TEXT", 1, None, 0), ("metadata_json", "TEXT", 0, None, 0),
+        ("output_json", "TEXT", 0, None, 0), ("error_json", "TEXT", 0, None, 0),
+        ("usage_json", "TEXT", 0, None, 0), ("metadata_size_bytes", "INTEGER", 0, None, 0),
+        ("metadata_sha256", "TEXT", 0, None, 0), ("latency_ms", "REAL", 0, None, 0),
+        ("pricing_version", "TEXT", 0, None, 0), ("created_at", "REAL", 1, None, 0),
+        ("completed_at", "REAL", 0, None, 0),
     ),
     "run_events": (
-        "id", "invocation_id", "sequence_number", "event_type", "payload_json", "created_at",
+        ("id", "TEXT", 0, None, 1), ("invocation_id", "TEXT", 1, None, 0),
+        ("sequence_number", "INTEGER", 1, None, 0), ("event_type", "TEXT", 1, None, 0),
+        ("payload_json", "TEXT", 1, None, 0), ("created_at", "REAL", 1, None, 0),
     ),
+    "endpoint_tool_calls": (
+        ("id", "TEXT", 0, None, 1), ("invocation_id", "TEXT", 1, None, 0),
+        ("run_event_id", "TEXT", 0, None, 0), ("sequence_number", "INTEGER", 1, None, 0),
+        ("tool_name", "TEXT", 1, None, 0), ("arguments_json", "TEXT", 1, None, 0),
+        ("outcome", "TEXT", 1, None, 0), ("result_json", "TEXT", 0, None, 0),
+        ("error_json", "TEXT", 0, None, 0), ("latency_ms", "REAL", 0, None, 0),
+        ("retry_of_tool_call_id", "TEXT", 0, None, 0), ("created_at", "REAL", 1, None, 0),
+    ),
+}
+_外鍵指紋 = {
+    "published_endpoints": (
+        (0, 0, "published_endpoint_versions", "current_version_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+        (0, 1, "published_endpoint_versions", "id", "endpoint_id", "NO ACTION", "NO ACTION", "NONE"),
+        (1, 0, "service_accounts", "service_account_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+    ),
+    "endpoint_invocations": (
+        (0, 0, "endpoint_credentials", "credential_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+        (0, 1, "endpoint_credentials", "endpoint_id", "endpoint_id", "NO ACTION", "NO ACTION", "NONE"),
+        (1, 0, "published_endpoint_versions", "endpoint_version_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+        (1, 1, "published_endpoint_versions", "endpoint_id", "endpoint_id", "NO ACTION", "NO ACTION", "NONE"),
+        (2, 0, "published_endpoints", "endpoint_id", "id", "NO ACTION", "RESTRICT", "NONE"),
+    ),
+    "run_events": (
+        (0, 0, "endpoint_invocations", "invocation_id", "id", "NO ACTION", "RESTRICT", "NONE"),
+    ),
+    "endpoint_tool_calls": (
+        (0, 0, "endpoint_tool_calls", "retry_of_tool_call_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+        (0, 1, "endpoint_tool_calls", "invocation_id", "invocation_id", "NO ACTION", "NO ACTION", "NONE"),
+        (1, 0, "run_events", "run_event_id", "id", "NO ACTION", "NO ACTION", "NONE"),
+        (1, 1, "run_events", "invocation_id", "invocation_id", "NO ACTION", "NO ACTION", "NONE"),
+        (2, 0, "endpoint_invocations", "invocation_id", "id", "NO ACTION", "RESTRICT", "NONE"),
+    ),
+}
+_索引指紋 = {
+    "published_endpoints": {
+        "idx_published_endpoints_owner_status": (0, "c", 0, ((1, "owner_user_id"), (4, "status"))),
+        "sqlite_autoindex_published_endpoints_3": (1, "u", 0, ((3, "slug"),)),
+        "sqlite_autoindex_published_endpoints_2": (1, "u", 0, ((2, "service_account_id"),)),
+        "sqlite_autoindex_published_endpoints_1": (1, "pk", 0, ((0, "id"),)),
+    },
+    "endpoint_invocations": {
+        "idx_endpoint_invocations_credential_created": (0, "c", 0, ((3, "credential_id"), (17, "created_at"))),
+        "idx_endpoint_invocations_status_created": (0, "c", 0, ((7, "status"), (17, "created_at"))),
+        "idx_endpoint_invocations_endpoint_created": (0, "c", 0, ((1, "endpoint_id"), (17, "created_at"))),
+        "sqlite_autoindex_endpoint_invocations_2": (1, "u", 0, ((4, "request_id"),)),
+        "sqlite_autoindex_endpoint_invocations_1": (1, "pk", 0, ((0, "id"),)),
+    },
+    "run_events": {
+        "sqlite_autoindex_run_events_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
+        "sqlite_autoindex_run_events_2": (1, "u", 0, ((1, "invocation_id"), (2, "sequence_number"))),
+        "sqlite_autoindex_run_events_1": (1, "pk", 0, ((0, "id"),)),
+    },
+    "endpoint_tool_calls": {
+        "idx_endpoint_tool_calls_invocation_created": (0, "c", 0, ((1, "invocation_id"), (11, "created_at"))),
+        "sqlite_autoindex_endpoint_tool_calls_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
+        "sqlite_autoindex_endpoint_tool_calls_2": (1, "u", 0, ((1, "invocation_id"), (3, "sequence_number"))),
+        "sqlite_autoindex_endpoint_tool_calls_1": (1, "pk", 0, ((0, "id"),)),
+    },
 }
 
 
@@ -318,18 +373,26 @@ def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
     ))
     if 遷移帳本 != _LEDGER:
         raise ValueError
-    for 資料表, 欄位 in _資料表欄位.items():
+    for 資料表, 規格 in _欄位指紋.items():
+        預期欄位 = tuple((序號, *欄位) for 序號, 欄位 in enumerate(規格))
         欄位列 = tuple(連線.execute(f'PRAGMA table_info("{資料表}")'))
-        if any(type(列) is not tuple or len(列) != 6 for 列 in 欄位列):
+        if 欄位列 != 預期欄位:
             raise ValueError
-        實際欄位 = tuple(列[1] for 列 in 欄位列)
-        if 實際欄位 != 欄位:
+        外鍵列 = tuple(連線.execute(f'PRAGMA foreign_key_list("{資料表}")'))
+        if 外鍵列 != _外鍵指紋[資料表]:
             raise ValueError
-    for 資料表, 必要 in _必要索引.items():
         索引列 = tuple(連線.execute(f'PRAGMA index_list("{資料表}")'))
-        if any(type(列) is not tuple or len(列) < 2 or type(列[1]) is not str for 列 in 索引列):
+        if any(type(列) is not tuple or len(列) != 5 or type(列[1]) is not str for 列 in 索引列):
             raise ValueError
-        if not 必要.issubset({列[1] for 列 in 索引列}):
+        實際索引 = {}
+        for 索引 in 索引列:
+            索引欄位 = tuple(連線.execute(f'PRAGMA index_info("{索引[1]}")'))
+            if any(type(項) is not tuple or len(項) != 3 for 項 in 索引欄位):
+                raise ValueError
+            實際索引[索引[1]] = (
+                索引[2], 索引[3], 索引[4], tuple((項[1], 項[2]) for 項 in 索引欄位)
+            )
+        if 實際索引 != _索引指紋[資料表]:
             raise ValueError
 
 
