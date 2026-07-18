@@ -158,17 +158,18 @@ def test_同名欄位與索引但缺少全域呼叫主鍵時兩種投影皆在pa
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='endpoint_invocations'"
         ).fetchone()[0]
         with 連線:
-            連線.execute("DROP TABLE endpoint_tool_calls")
-            連線.execute("DROP TABLE run_events")
-            連線.execute("ALTER TABLE endpoint_invocations RENAME TO genuine_invocations")
+            偽造語句 = 建表語句.replace(
+                "CREATE TABLE endpoint_invocations", "CREATE TABLE counterfeit_invocations", 1
+            ).replace("id TEXT PRIMARY KEY", "id TEXT", 1)
+            連線.execute(偽造語句)
             欄位 = ",".join(列[1] for 列 in 連線.execute(
-                "PRAGMA table_info(genuine_invocations)"
+                "PRAGMA table_info(endpoint_invocations)"
             ))
-            連線.execute(建表語句.replace("id TEXT PRIMARY KEY", "id TEXT", 1))
             連線.execute(
-                f"INSERT INTO endpoint_invocations({欄位}) SELECT {欄位} FROM genuine_invocations"
+                f"INSERT INTO counterfeit_invocations({欄位}) SELECT {欄位} FROM endpoint_invocations"
             )
-            連線.execute("DROP TABLE genuine_invocations")
+            連線.execute("DROP TABLE endpoint_invocations")
+            連線.execute("ALTER TABLE counterfeit_invocations RENAME TO endpoint_invocations")
             連線.execute("CREATE INDEX idx_endpoint_invocations_endpoint_created ON endpoint_invocations(endpoint_id,created_at)")
             連線.execute("CREATE INDEX idx_endpoint_invocations_status_created ON endpoint_invocations(status,created_at)")
             連線.execute("CREATE INDEX idx_endpoint_invocations_credential_created ON endpoint_invocations(credential_id,created_at)")
