@@ -6,7 +6,7 @@ import traceback
 
 import pytest
 
-from 繁中代理.發布介面.治理.查詢投影 import ProjectionAccessError, SQLite呼叫查詢投影
+from 繁中代理.發布介面.治理.查詢投影 import 查詢投影錯誤, SQLite呼叫查詢投影
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 
@@ -79,11 +79,11 @@ def test_擁有者診斷只回固定安全欄位與摘要(呼叫資料庫):
 def test_擁有者外來與缺少直接識別碼統一失敗關閉(
     呼叫資料庫, owner_id, endpoint_id, invocation_id
 ):
-    with pytest.raises(ProjectionAccessError) as error:
+    with pytest.raises(查詢投影錯誤) as error:
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢擁有者診斷(
             owner_id, endpoint_id, invocation_id
         )
-    assert type(error.value) is ProjectionAccessError
+    assert type(error.value) is 查詢投影錯誤
     assert error.value.args == ("呼叫紀錄不可取得",)
     assert error.value.__cause__ is error.value.__context__ is None
 
@@ -121,7 +121,7 @@ def test_管理員原始投影保留權威payload且transport_neutral(呼叫資�
 def test_非精確管理員授權與缺少或錯誤範圍統一失敗關閉(
     呼叫資料庫, authorized, endpoint_id, invocation_id
 ):
-    with pytest.raises(ProjectionAccessError) as error:
+    with pytest.raises(查詢投影錯誤) as error:
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
             authorized, endpoint_id, invocation_id
         )
@@ -135,7 +135,7 @@ def test_缺少空檔symlink與schema漂移都失敗關閉(tmp_path, 呼叫資�
     link = tmp_path / "link.sqlite"
     link.symlink_to(呼叫資料庫)
     for path in (tmp_path / "missing.sqlite", empty, link):
-        with pytest.raises(ProjectionAccessError):
+        with pytest.raises(查詢投影錯誤):
             SQLite呼叫查詢投影(str(path)).查詢擁有者診斷("owner-1", "ep-1", "inv-1")
     with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
         連線.execute("DROP INDEX idx_endpoint_invocations_status_created")
@@ -143,7 +143,7 @@ def test_缺少空檔symlink與schema漂移都失敗關閉(tmp_path, 呼叫資�
         lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢擁有者診斷("owner-1", "ep-1", "inv-1"),
         lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1"),
     ):
-        with pytest.raises(ProjectionAccessError):
+        with pytest.raises(查詢投影錯誤):
             呼叫()
 
 
@@ -152,7 +152,7 @@ def test_非管理員在任何資料庫callback前拒絕(monkeypatch, 呼叫資�
 
     calls = []
     monkeypatch.setattr(查詢投影, "_建立連線", lambda *a, **k: calls.append(1))
-    with pytest.raises(ProjectionAccessError):
+    with pytest.raises(查詢投影錯誤):
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(False, "ep-1", "inv-1")
     assert calls == []
 
@@ -176,7 +176,7 @@ def test_敵對自訂base固定失敗且控制流程保留identity(monkeypatch, 
         monkeypatch.setattr(查詢投影, "_建立連線", connect)
 
     丟出(敵對Base("PRIVATE_MARKER"))
-    with pytest.raises(ProjectionAccessError) as fixed:
+    with pytest.raises(查詢投影錯誤) as fixed:
         執行()
     assert fixed.value.args == ("呼叫紀錄不可取得",)
     assert fixed.value.__cause__ is fixed.value.__context__ is None
@@ -194,7 +194,7 @@ def test_擁有者動態儲存類型失敗而不輸出blob(呼叫資料庫):
     with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
         連線.execute("PRAGMA ignore_check_constraints=ON")
         連線.execute("UPDATE endpoint_invocations SET status=x'534543524554' WHERE id='inv-1'")
-    with pytest.raises(ProjectionAccessError):
+    with pytest.raises(查詢投影錯誤):
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢擁有者診斷("owner-1", "ep-1", "inv-1")
 
 
@@ -251,7 +251,7 @@ def test_主要自訂base仍依序rollback與close(monkeypatch, 呼叫資料庫,
     )
     monkeypatch.setattr(查詢投影, "_建立連線", lambda *_a, **_k: 代理)
     服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
-    with pytest.raises(ProjectionAccessError):
+    with pytest.raises(查詢投影錯誤):
         (服務.查詢擁有者診斷("owner-1", "ep-1", "inv-1") if method == "owner"
          else 服務.查詢管理員原始資料(True, "ep-1", "inv-1"))
     assert 代理.順序 == ["rollback", "close"]
@@ -285,7 +285,7 @@ def test_管理員原始JSON拒絕非有限與重複鍵(呼叫資料庫, payload
     with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
         連線.execute("PRAGMA ignore_check_constraints=ON")
         連線.execute("UPDATE endpoint_invocations SET input_json=?", (payload,))
-    with pytest.raises(ProjectionAccessError):
+    with pytest.raises(查詢投影錯誤):
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1")
 
 
@@ -295,7 +295,7 @@ def test_管理員全部動態欄位與child列數都失敗關閉(monkeypatch, �
     with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
         連線.execute("PRAGMA ignore_check_constraints=ON")
         連線.execute("UPDATE endpoint_invocations SET message_id=x'534543524554'")
-    with pytest.raises(ProjectionAccessError):
+    with pytest.raises(查詢投影錯誤):
         SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1")
     with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
         連線.execute("UPDATE endpoint_invocations SET message_id='message-1'")
@@ -304,5 +304,5 @@ def test_管理員全部動態欄位與child列數都失敗關閉(monkeypatch, �
         lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢擁有者診斷("owner-1", "ep-1", "inv-1"),
         lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1"),
     ):
-        with pytest.raises(ProjectionAccessError):
+        with pytest.raises(查詢投影錯誤):
             呼叫()

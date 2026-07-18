@@ -51,7 +51,7 @@ _資料表欄位 = {
 }
 
 
-class ProjectionAccessError(RuntimeError):
+class 查詢投影錯誤(RuntimeError):
     """查詢投影無法安全授權或驗證資料庫時的固定錯誤。"""
 
 
@@ -64,7 +64,7 @@ class SQLite呼叫查詢投影:
         """捕捉 exact absolute-like database path，不在建構時開啟檔案。"""
         if type(資料庫路徑) is not str or not 資料庫路徑 or 資料庫路徑.startswith("~"):
             資料庫路徑 = None  # type: ignore[assignment]
-            raise ProjectionAccessError(_固定錯誤) from None
+            raise 查詢投影錯誤(_固定錯誤) from None
         self._path = 資料庫路徑
 
     def 查詢擁有者診斷(
@@ -108,19 +108,19 @@ class SQLite呼叫查詢投影:
                     raise ValueError
             錯誤資料 = _解析可空物件(資料列[5])
             用量資料 = _解析可空物件(資料列[7])
-            error_code = _安全可空字串(錯誤資料.get("code"))
-            schema_path = _安全可空字串(錯誤資料.get("schema_path"))
-            total_tokens = 用量資料.get("total_tokens")
-            if total_tokens is not None and (type(total_tokens) is not int or total_tokens < 0):
+            錯誤碼 = _安全可空字串(錯誤資料.get("code"))
+            綱要路徑 = _安全可空字串(錯誤資料.get("schema_path"))
+            總權杖數 = 用量資料.get("total_tokens")
+            if 總權杖數 is not None and (type(總權杖數) is not int or 總權杖數 < 0):
                 raise ValueError
             參照 = InvocationRef(資料列[0], 資料列[1], 資料列[2]).to_json()
-            用量 = PublishedUsage(total_tokens).to_json()
+            用量 = PublishedUsage(總權杖數).to_json()
             結果 = {
                 "invocation": 參照,
                 "endpoint_version_id": 資料列[3],
                 "status": 資料列[4],
-                "error_code": error_code,
-                "schema_path": schema_path,
+                "error_code": 錯誤碼,
+                "schema_path": 綱要路徑,
                 "latency_ms": 資料列[6],
                 "usage": 用量,
                 "tool_names": [列[0] for 列 in 工具列],
@@ -147,14 +147,14 @@ class SQLite呼叫查詢投影:
                 控制 = 清理控制.pop()
         self = 擁有者識別碼 = 端點識別碼 = 呼叫識別碼 = 路徑 = None
         連線 = 游標 = 資料列 = 工具列 = 錯誤資料 = 用量資料 = 清理控制 = None
-        error_code = schema_path = total_tokens = 參照 = 用量 = 列 = None
+        錯誤碼 = 綱要路徑 = 總權杖數 = 參照 = 用量 = 列 = None
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
         if 失敗 or type(結果) is not dict:
             結果 = None
-            raise ProjectionAccessError(_固定錯誤) from None
+            raise 查詢投影錯誤(_固定錯誤) from None
         return 結果
 
     def 查詢管理員原始資料(
@@ -183,7 +183,7 @@ class SQLite呼叫查詢投影:
             _重拋控制(控制盒.pop())
         if 失敗 or type(結果) is not dict:
             結果 = None
-            raise ProjectionAccessError(_固定錯誤) from None
+            raise 查詢投影錯誤(_固定錯誤) from None
         return 結果
 
 
@@ -305,7 +305,7 @@ def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
 
 
 def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
-    """在 read transaction 內重驗 inode、完整 ledger 與投影資料表欄位。"""
+    """在 read transaction 內重驗 inode、完整 遷移帳本 與投影資料表欄位。"""
     可見 = os.lstat(路徑)
     資料庫列 = 連線.execute("PRAGMA database_list").fetchone()
     if type(資料庫列) is not tuple or len(資料庫列) != 3 or type(資料庫列[2]) is not str:
@@ -313,10 +313,10 @@ def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
     實際 = os.stat(os.path.realpath(資料庫列[2]))
     if (可見.st_dev, 可見.st_ino) != (實際.st_dev, 實際.st_ino):
         raise ValueError
-    ledger = tuple(連線.execute(
+    遷移帳本 = tuple(連線.execute(
         "SELECT version,name FROM published_api_schema_migrations ORDER BY version"
     ))
-    if ledger != _LEDGER:
+    if 遷移帳本 != _LEDGER:
         raise ValueError
     for 資料表, 欄位 in _資料表欄位.items():
         欄位列 = tuple(連線.execute(f'PRAGMA table_info("{資料表}")'))
@@ -354,12 +354,12 @@ def _解析可空JSON(文字: Any) -> Any:
         parse_constant=_拒絕JSON常數,
         object_pairs_hook=_建立無重複物件,
     )
-    if not _exact_json(值, 0, [0]):
+    if not _JSON樹為精確內建型別(值, 0, [0]):
         raise ValueError
     return 值
 
 
-def _exact_json(值: Any, 深度: int, 計數: list[int]) -> bool:
+def _JSON樹為精確內建型別(值: Any, 深度: int, 計數: list[int]) -> bool:
     """遞迴拒絕超深、過多或非 exact/finite built-in JSON 值。"""
     計數[0] += 1
     if 計數[0] > _最大JSON節點 or 深度 > 16:
@@ -371,11 +371,11 @@ def _exact_json(值: Any, 深度: int, 計數: list[int]) -> bool:
     if type(值) is str:
         return len(值.encode("utf-8")) <= _最大JSON位元組
     if type(值) is list:
-        return all(_exact_json(項目, 深度 + 1, 計數) for 項目 in 值)
+        return all(_JSON樹為精確內建型別(項目, 深度 + 1, 計數) for 項目 in 值)
     if type(值) is dict:
         return all(
             type(鍵) is str and len(鍵.encode("utf-8")) <= 4096
-            and _exact_json(項目, 深度 + 1, 計數)
+            and _JSON樹為精確內建型別(項目, 深度 + 1, 計數)
             for 鍵, 項目 in 值.items()
         )
     return False
@@ -417,6 +417,7 @@ def _安全時間(值: Any, 可空: bool = False) -> bool:
 
 
 def _安全正整數(值: Any) -> bool:
+    """判斷SQLite投影純量是否為正exact int。"""
     return type(值) is int and 值 > 0
 
 
