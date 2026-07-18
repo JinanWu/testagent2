@@ -7,6 +7,7 @@ import math
 import re
 from types import MappingProxyType
 from typing import Any, Mapping
+import unicodedata
 
 from .嚴格JSON import 建立正規JSON, 解析嚴格JSON
 
@@ -479,12 +480,74 @@ class PublishedWarning(_公開DTO):
     message: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class PublishedError(_公開DTO):
-    """公開回應中的錯誤摘要。"""
+    """公開回應中的 frozen 錯誤摘要與 bounded structured details。"""
 
-    code: str
-    message: str
+    __annotations__ = {"code": str, "message": str, "details": Any}
+    locals()["details"] = None
+
+    def __init__(self, *位置參數: Any, **命名參數: Any) -> None:
+        """驗證固定字串欄位，並建立 details 的深層不可變 JSON 快照。"""
+        錯誤 = False
+        未提供 = object()
+        代碼: Any = 未提供
+        訊息: Any = 未提供
+        細節: Any = None
+        原始細節: Any = None
+        正規文字: str | None = None
+        快照: Any = MappingProxyType({})
+        計數 = [0]
+        object.__setattr__(self, "code", "")
+        object.__setattr__(self, "message", "")
+        object.__setattr__(self, "details", MappingProxyType({}))
+        try:
+            if len(位置參數) > 3 or not set(命名參數).issubset({"code", "message", "details"}):
+                錯誤 = True
+            elif any(索引 < len(位置參數) and 名稱 in 命名參數 for 索引, 名稱 in enumerate(("code", "message", "details"))):
+                錯誤 = True
+            else:
+                代碼 = 位置參數[0] if len(位置參數) > 0 else 命名參數.get("code", 未提供)
+                訊息 = 位置參數[1] if len(位置參數) > 1 else 命名參數.get("message", 未提供)
+                細節 = 位置參數[2] if len(位置參數) > 2 else 命名參數.get("details")
+                原始細節 = {} if 細節 is None else 細節
+            if 錯誤:
+                pass
+            elif not _PublishedError文字合法(代碼, 128):
+                錯誤 = True
+            elif not _PublishedError文字合法(訊息, 512):
+                錯誤 = True
+            elif type(原始細節) is not dict:
+                錯誤 = True
+            elif not _PublishedError細節合法(原始細節, 0, set(), 計數):
+                錯誤 = True
+            else:
+                正規文字 = 建立正規JSON(原始細節)
+                if len(正規文字.encode("utf-8")) > 32768:
+                    錯誤 = True
+                else:
+                    快照 = _建立不可變JSON快照(原始細節)
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            位置參數 = ()
+            命名參數 = {}
+            未提供 = 代碼 = 訊息 = 細節 = 原始細節 = 正規文字 = 快照 = 計數 = None
+            索引 = 名稱 = None
+            raise ValueError("PublishedError 不符合公開契約") from None
+
+        object.__setattr__(self, "code", 代碼)
+        object.__setattr__(self, "message", 訊息)
+        object.__setattr__(self, "details", 快照)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序與 fresh ordinary details containers。"""
+        return {
+            "code": self.code,
+            "message": self.message,
+            "details": _解凍JSON值(self.details),
+        }
 
 
 @dataclass(frozen=True, init=False)
@@ -597,6 +660,49 @@ def _建立不可變JSON快照(資料: Any) -> Any:
     except Exception:
         資料 = 正規文字 = 解析結果 = None
         raise
+
+
+def _PublishedError文字合法(值: Any, 最大長度: int) -> bool:
+    """確認 PublishedError 固定字串欄位為 bounded exact str 且無控制字元。"""
+    return (
+        type(值) is str
+        and 0 < len(值) <= 最大長度
+        and not any(unicodedata.category(字元) == "Cc" for 字元 in 值)
+    )
+
+
+def _PublishedError細節合法(
+    值: Any,
+    深度: int,
+    路徑: set[int],
+    計數: list[int],
+) -> bool:
+    """遞迴確認 details 僅含 bounded exact JSON builtins，並拒絕 cycle。"""
+    值型別 = type(值)
+    if 值 is None or 值型別 is bool or 值型別 is int:
+        return True
+    if 值型別 is float:
+        return math.isfinite(值)
+    if 值型別 is str:
+        return len(值) <= 4096
+    if 值型別 not in (dict, list) or 深度 > 8:
+        return False
+    容器id = id(值)
+    if 容器id in 路徑:
+        return False
+    路徑.add(容器id)
+    try:
+        if 值型別 is list:
+            return all(_PublishedError細節合法(項目, 深度 + 1, 路徑, 計數) for 項目 in 值)
+        for 鍵, 項目 in 值.items():
+            計數[0] += 1
+            if type(鍵) is not str or len(鍵) > 4096 or 計數[0] > 128:
+                return False
+            if not _PublishedError細節合法(項目, 深度 + 1, 路徑, 計數):
+                return False
+        return True
+    finally:
+        路徑.remove(容器id)
 
 
 def _稽核Metadata鍵合法(鍵: Any) -> bool:
