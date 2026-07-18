@@ -7,9 +7,13 @@ import math
 import os
 import sqlite3
 import stat
+from types import BuiltinFunctionType, FunctionType
 from urllib.parse import quote
 from typing import Any
 
+from ..契約 import 附加稽核事件或失敗關閉
+from ..協定 import AuditEventSink
+from ..領域模型 import AuditActorRef, AuditEvent, AuditMetadata, AuditResourceRef
 from ..領域模型 import InvocationRef, PublishedUsage
 from .稽核結構 import _LEDGER
 
@@ -108,6 +112,76 @@ _索引指紋 = {
 
 class 查詢投影錯誤(RuntimeError):
     """查詢投影無法安全授權或驗證資料庫時的固定錯誤。"""
+
+
+class 管理員原始資料稽核閘門:
+    """在任何管理員 raw detail callback 前持久提交 canonical 安全稽核。"""
+
+    __slots__ = ("_sink", "_detail")
+
+    def __init__(self, 稽核接收器: AuditEventSink, 原始資料detail: FunctionType | BuiltinFunctionType) -> None:
+        """注入 AuditEventSink 與只接受 endpoint/invocation 識別碼的 exact function。"""
+        if type(原始資料detail) not in (FunctionType, BuiltinFunctionType):
+            稽核接收器 = 原始資料detail = None  # type: ignore[assignment]
+            raise 查詢投影錯誤(_固定錯誤) from None
+        self._sink = 稽核接收器
+        self._detail = 原始資料detail
+
+    def 查詢管理員原始資料(
+        self,
+        管理員授權: bool,
+        管理員識別碼: str,
+        請求識別碼: str,
+        稽核事件識別碼: str,
+        發生時間: int | float,
+        端點識別碼: str,
+        呼叫識別碼: str,
+        /,
+    ) -> dict[str, Any]:
+        """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
+        失敗 = False
+        控制 = 結果 = 事件 = None
+        接收器 = self._sink
+        原始查詢 = self._detail
+        try:
+            已授權 = type(管理員授權) is bool and 管理員授權 is True
+            事件 = AuditEvent(
+                event_id=稽核事件識別碼,
+                occurred_at=發生時間,
+                action="audit.detail.view",
+                outcome="success" if 已授權 else "denied",
+                actor=AuditActorRef("user", 管理員識別碼),
+                resource=AuditResourceRef("endpoint.invocation", 呼叫識別碼),
+                request_id=請求識別碼,
+                endpoint_id=端點識別碼,
+                invocation_id=呼叫識別碼,
+                metadata=AuditMetadata(),
+            )
+            附加稽核事件或失敗關閉(接收器, 事件)
+            事件 = 接收器 = None
+            if not 已授權:
+                失敗 = True
+            else:
+                結果 = 原始查詢(端點識別碼, 呼叫識別碼)
+                if type(結果) is not dict:
+                    失敗 = True
+        except _控制流程 as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            控制 = 捕捉控制
+            捕捉控制 = None
+        except BaseException:
+            失敗 = True
+        self = 管理員授權 = 管理員識別碼 = 請求識別碼 = 稽核事件識別碼 = None
+        發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = None
+        已授權 = False
+        if 控制 is not None:
+            控制盒 = [控制]
+            控制 = 結果 = None
+            _重拋控制(控制盒.pop())
+        if 失敗 or type(結果) is not dict:
+            結果 = None
+            raise 查詢投影錯誤(_固定錯誤) from None
+        return 結果
 
 
 class SQLite呼叫查詢投影:
