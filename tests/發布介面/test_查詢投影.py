@@ -147,6 +147,50 @@ def test_缺少空檔symlink與schema漂移都失敗關閉(tmp_path, 呼叫資�
             呼叫()
 
 
+def test_同名欄位與索引但缺少全域呼叫主鍵時兩種投影皆在payload前失敗(
+    monkeypatch, 呼叫資料庫,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        連線.execute("PRAGMA foreign_keys=OFF")
+        建表語句 = 連線.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='endpoint_invocations'"
+        ).fetchone()[0]
+        with 連線:
+            連線.execute("DROP TABLE endpoint_tool_calls")
+            連線.execute("DROP TABLE run_events")
+            連線.execute("ALTER TABLE endpoint_invocations RENAME TO genuine_invocations")
+            欄位 = ",".join(列[1] for 列 in 連線.execute(
+                "PRAGMA table_info(genuine_invocations)"
+            ))
+            連線.execute(建表語句.replace("id TEXT PRIMARY KEY", "id TEXT", 1))
+            連線.execute(
+                f"INSERT INTO endpoint_invocations({欄位}) SELECT {欄位} FROM genuine_invocations"
+            )
+            連線.execute("DROP TABLE genuine_invocations")
+            連線.execute("CREATE INDEX idx_endpoint_invocations_endpoint_created ON endpoint_invocations(endpoint_id,created_at)")
+            連線.execute("CREATE INDEX idx_endpoint_invocations_status_created ON endpoint_invocations(status,created_at)")
+            連線.execute("CREATE INDEX idx_endpoint_invocations_credential_created ON endpoint_invocations(credential_id,created_at)")
+    解析次數 = []
+    原解析 = 查詢投影._解析可空JSON
+
+    def 記錄解析(*引數, **關鍵字):
+        解析次數.append(1)
+        return 原解析(*引數, **關鍵字)
+
+    monkeypatch.setattr(查詢投影, "_解析可空JSON", 記錄解析)
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    for 呼叫 in (
+        lambda: 服務.查詢擁有者診斷("owner-1", "ep-1", "inv-1"),
+        lambda: 服務.查詢管理員原始資料(True, "ep-1", "inv-1"),
+    ):
+        with pytest.raises(查詢投影錯誤) as 錯誤:
+            呼叫()
+        assert 錯誤.value.args == ("呼叫紀錄不可取得",)
+    assert 解析次數 == []
+
+
 def test_非管理員在任何資料庫callback前拒絕(monkeypatch, 呼叫資料庫):
     from 繁中代理.發布介面.治理 import 查詢投影
 
@@ -306,3 +350,39 @@ def test_管理員全部動態欄位與child列數都失敗關閉(monkeypatch, �
     ):
         with pytest.raises(查詢投影錯誤):
             呼叫()
+
+
+@pytest.mark.parametrize(("預算名稱", "預算值"), [("_最大JSON位元組", 120), ("_最大JSON節點", 12)])
+def test_管理員跨多列聚合JSON預算超限會失敗並關閉真實資源(
+    monkeypatch, 呼叫資料庫, 預算名稱, 預算值,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute("DELETE FROM endpoint_tool_calls")
+        連線.execute("DELETE FROM run_events")
+        連線.execute(
+            "UPDATE endpoint_invocations SET input_json='{}',metadata_json=NULL,output_json=NULL,"
+            "error_json=NULL,usage_json=NULL"
+        )
+        for 順序 in range(1, 10):
+            連線.execute(
+                "INSERT INTO run_events VALUES(?,?,?,?,?,?)",
+                (f"run-{順序}", "inv-1", 順序, "chunk", '{"chunk":"abcdefghij"}', 20 + 順序),
+            )
+    真建立 = 查詢投影._建立連線
+    代理列 = []
+
+    def 建立代理(*引數, **關鍵字):
+        代理 = _清理連線代理(真建立(*引數, **關鍵字))
+        代理列.append(代理)
+        return 代理
+
+    monkeypatch.setattr(查詢投影, 預算名稱, 預算值)
+    monkeypatch.setattr(查詢投影, "_建立連線", 建立代理)
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1")
+    assert len(代理列) == 1
+    assert 代理列[0].順序 == ["rollback", "close"]
+    with pytest.raises(sqlite3.ProgrammingError):
+        代理列[0].連線.execute("SELECT 1")
