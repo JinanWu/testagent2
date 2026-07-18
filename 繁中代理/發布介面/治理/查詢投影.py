@@ -134,37 +134,20 @@ class SQLite呼叫查詢投影:
         except BaseException:
             失敗 = True
         if 游標 is not None:
-            try:
-                游標.close()
-            except _控制流程 as 捕捉控制:
-                if 控制 is None:
-                    _清理控制鏈(捕捉控制)
-                    控制 = 捕捉控制
-                捕捉控制 = None
-            except BaseException:
-                失敗 = True
+            清理控制 = _清理資源操作(游標, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
         if 連線 is not None and 已開始:
-            try:
-                連線.rollback()
-            except _控制流程 as 捕捉控制:
-                if 控制 is None:
-                    _清理控制鏈(捕捉控制)
-                    控制 = 捕捉控制
-                捕捉控制 = None
-            except BaseException:
-                失敗 = True
+            清理控制 = _清理資源操作(連線, "rollback")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
         if 連線 is not None:
-            try:
-                連線.close()
-            except _控制流程 as 捕捉控制:
-                if 控制 is None:
-                    _清理控制鏈(捕捉控制)
-                    控制 = 捕捉控制
-                捕捉控制 = None
-            except BaseException:
-                失敗 = True
+            清理控制 = _清理資源操作(連線, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
         self = 擁有者識別碼 = 端點識別碼 = 呼叫識別碼 = 路徑 = None
-        連線 = 游標 = 資料列 = 工具列 = 錯誤資料 = 用量資料 = None
+        連線 = 游標 = 資料列 = 工具列 = 錯誤資料 = 用量資料 = 清理控制 = None
+        error_code = schema_path = total_tokens = 參照 = 用量 = 列 = None
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
@@ -208,8 +191,9 @@ def _讀取管理員原始資料(
     路徑: str, 端點識別碼: str, 呼叫識別碼: str
 ) -> dict[str, Any]:
     """在單一 read transaction 以明確欄位取得 invocation 與 child payload。"""
-    連線 = 游標 = None
-    已開始 = False
+    連線 = 游標 = 列 = 執行事件列 = 工具列 = 事件 = 工具 = 結果 = None
+    已開始 = 失敗 = False
+    控制 = None
     try:
         連線 = _開啟唯讀快照(路徑)
         連線.execute("BEGIN")
@@ -273,14 +257,34 @@ def _讀取管理員原始資料(
         }
         連線.commit()
         已開始 = False
-        return 結果
-    finally:
-        if 游標 is not None:
-            游標.close()
-        if 連線 is not None and 已開始:
-            連線.rollback()
-        if 連線 is not None:
-            連線.close()
+    except _控制流程 as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        控制 = 捕捉控制
+        捕捉控制 = None
+    except BaseException:
+        失敗 = True
+    if 游標 is not None:
+        清理控制 = _清理資源操作(游標, "close")
+        if 控制 is None and 清理控制:
+            控制 = 清理控制.pop()
+    if 連線 is not None and 已開始:
+        清理控制 = _清理資源操作(連線, "rollback")
+        if 控制 is None and 清理控制:
+            控制 = 清理控制.pop()
+    if 連線 is not None:
+        清理控制 = _清理資源操作(連線, "close")
+        if 控制 is None and 清理控制:
+            控制 = 清理控制.pop()
+    路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = None
+    執行事件列 = 工具列 = 事件 = 工具 = 項 = 清理控制 = None
+    if 控制 is not None:
+        控制盒 = [控制]
+        控制 = 結果 = None
+        _重拋控制(控制盒.pop())
+    if 失敗 or type(結果) is not dict:
+        結果 = None
+        raise ValueError("invalid raw projection") from None
+    return 結果
 
 
 def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
@@ -474,6 +478,22 @@ def _安全可空字串(值: Any) -> str | None:
     if type(值) is not str or len(值) > 512:
         raise ValueError
     return 值
+
+
+def _清理資源操作(資源: Any, 操作: str) -> list[BaseException]:
+    """best-effort close/rollback；ordinary與自訂Base不阻止後續cleanup。"""
+    控制盒: list[BaseException] = []
+    try:
+        getattr(資源, 操作)()
+    except _控制流程 as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        BaseException.__setattr__(捕捉控制, "__traceback__", None)
+        控制盒.append(捕捉控制)
+        捕捉控制 = None
+    except BaseException:
+        pass
+    資源 = 操作 = None
+    return 控制盒
 
 
 def _清理控制鏈(控制: BaseException) -> None:

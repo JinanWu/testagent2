@@ -2,6 +2,7 @@
 
 import sqlite3
 from contextlib import closing
+import traceback
 
 import pytest
 
@@ -202,3 +203,106 @@ def test_投影原始碼不得使用select星號():
     from 繁中代理.發布介面.治理 import 查詢投影
 
     assert "SELECT *" not in inspect.getsource(查詢投影).upper()
+
+
+class _清理連線代理:
+    def __init__(self, 連線, *, 主要=None, 回滾=None, 關閉=None):
+        self.連線, self.主要, self.回滾, self.關閉 = 連線, 主要, 回滾, 關閉
+        self.順序 = []
+
+    def execute(self, sql, *args):
+        if self.主要 is not None and sql.startswith("SELECT version,name"):
+            raise self.主要
+        return self.連線.execute(sql, *args)
+
+    def commit(self):
+        return self.連線.commit()
+
+    def rollback(self):
+        self.順序.append("rollback")
+        if self.回滾 is not None:
+            raise self.回滾
+        return self.連線.rollback()
+
+    def close(self):
+        self.順序.append("close")
+        self.連線.close()
+        if self.關閉 is not None:
+            raise self.關閉
+
+
+def _assert投影框架無標記(error, marker):
+    for frame, _ in traceback.walk_tb(error.__traceback__):
+        if frame.f_globals.get("__name__") == "繁中代理.發布介面.治理.查詢投影":
+            assert marker not in repr(tuple(frame.f_locals.values()))
+
+
+@pytest.mark.parametrize("method", ["owner", "admin"])
+def test_主要自訂base仍依序rollback與close(monkeypatch, 呼叫資料庫, method):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    class 敵對Base(BaseException):
+        pass
+
+    真實 = sqlite3.connect(呼叫資料庫, isolation_level=None)
+    代理 = _清理連線代理(
+        真實, 主要=敵對Base("PRIMARY_PRIVATE"),
+        回滾=敵對Base("ROLLBACK_PRIVATE"), 關閉=敵對Base("CLOSE_PRIVATE"),
+    )
+    monkeypatch.setattr(查詢投影, "_建立連線", lambda *_a, **_k: 代理)
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    with pytest.raises(ProjectionAccessError):
+        (服務.查詢擁有者診斷("owner-1", "ep-1", "inv-1") if method == "owner"
+         else 服務.查詢管理員原始資料(True, "ep-1", "inv-1"))
+    assert 代理.順序 == ["rollback", "close"]
+
+
+@pytest.mark.parametrize("method", ["owner", "admin"])
+def test_postcommit_close控制保留identity且清空helper敏感locals(
+    monkeypatch, 呼叫資料庫, method,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    marker = "OWNER_PRIVATE_MARKER" if method == "owner" else "INPUT_SECRET"
+    if method == "owner":
+        with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+            連線.execute("UPDATE published_endpoints SET owner_user_id=?", (marker,))
+    control = KeyboardInterrupt(marker)
+    代理 = _清理連線代理(sqlite3.connect(呼叫資料庫, isolation_level=None), 關閉=control)
+    monkeypatch.setattr(查詢投影, "_建立連線", lambda *_a, **_k: 代理)
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    with pytest.raises(KeyboardInterrupt) as caught:
+        (服務.查詢擁有者診斷(marker, "ep-1", "inv-1") if method == "owner"
+         else 服務.查詢管理員原始資料(True, "ep-1", "inv-1"))
+    assert caught.value is control
+    assert caught.value.__cause__ is caught.value.__context__ is None
+    assert 代理.順序 == ["close"]
+    _assert投影框架無標記(caught.value, marker)
+
+
+@pytest.mark.parametrize("payload", ['{"x":NaN}', '{"x":1e999}', '{"x":1,"x":2}'])
+def test_管理員原始JSON拒絕非有限與重複鍵(呼叫資料庫, payload):
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute("PRAGMA ignore_check_constraints=ON")
+        連線.execute("UPDATE endpoint_invocations SET input_json=?", (payload,))
+    with pytest.raises(ProjectionAccessError):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1")
+
+
+def test_管理員全部動態欄位與child列數都失敗關閉(monkeypatch, 呼叫資料庫):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute("PRAGMA ignore_check_constraints=ON")
+        連線.execute("UPDATE endpoint_invocations SET message_id=x'534543524554'")
+    with pytest.raises(ProjectionAccessError):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1")
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute("UPDATE endpoint_invocations SET message_id='message-1'")
+    monkeypatch.setattr(查詢投影, "_最大子列", 0)
+    for 呼叫 in (
+        lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢擁有者診斷("owner-1", "ep-1", "inv-1"),
+        lambda: SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(True, "ep-1", "inv-1"),
+    ):
+        with pytest.raises(ProjectionAccessError):
+            呼叫()
