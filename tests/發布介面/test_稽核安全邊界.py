@@ -56,6 +56,9 @@ def test_clock_callback_BaseException政策與exact_once(資料庫, error_type):
         assert captured.value.args == (marker,)
         assert captured.value.__cause__ is captured.value.__context__ is None
     assert calls == [1]
+    for frame, _ in traceback.walk_tb(captured.value.__traceback__):
+        if frame.f_globals.get("__name__", "").startswith("繁中代理.發布介面.治理.稽核"):
+            assert marker not in repr(frame.f_locals)
 
 
 @pytest.mark.parametrize("value", [True, -1, math.inf, math.nan, 253402300800])
@@ -93,7 +96,7 @@ def test_post_connect驗證失敗由acquirer_exact_once_close且清除marker(資
 
     assert 連線.closed == 1
     for frame, _ in traceback.walk_tb(captured.value.__traceback__):
-        if frame.f_globals.get("__name__") == "繁中代理.發布介面.治理.稽核":
+        if frame.f_globals.get("__name__", "").startswith("繁中代理.發布介面.治理.稽核"):
             assert marker not in repr(frame.f_locals)
 
 
