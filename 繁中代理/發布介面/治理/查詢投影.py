@@ -32,6 +32,9 @@ _資料表欄位 = {
         "arguments_json", "outcome", "result_json", "error_json", "latency_ms",
         "retry_of_tool_call_id", "created_at",
     ),
+    "run_events": (
+        "id", "invocation_id", "sequence_number", "event_type", "payload_json", "created_at",
+    ),
 }
 
 
@@ -155,6 +158,103 @@ class SQLite呼叫查詢投影:
             raise ProjectionAccessError(_固定錯誤) from None
         return 結果
 
+    def 查詢管理員原始資料(
+        self, 管理員授權: bool, 端點識別碼: str, 呼叫識別碼: str, /
+    ) -> dict[str, Any]:
+        """僅在 exact admin boundary 回傳 endpoint-scoped authoritative raw payload。"""
+        失敗 = False
+        控制 = 結果 = None
+        路徑 = self._path
+        try:
+            if 管理員授權 is not True or type(管理員授權) is not bool:
+                raise ValueError
+            if not _安全識別碼(端點識別碼) or not _安全識別碼(呼叫識別碼):
+                raise ValueError
+            結果 = _讀取管理員原始資料(路徑, 端點識別碼, 呼叫識別碼)
+        except _控制流程 as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            控制 = 捕捉控制
+            捕捉控制 = None
+        except BaseException:
+            失敗 = True
+        self = 管理員授權 = 端點識別碼 = 呼叫識別碼 = 路徑 = None
+        if 控制 is not None:
+            控制盒 = [控制]
+            控制 = 結果 = None
+            _重拋控制(控制盒.pop())
+        if 失敗 or type(結果) is not dict:
+            結果 = None
+            raise ProjectionAccessError(_固定錯誤) from None
+        return 結果
+
+
+def _讀取管理員原始資料(
+    路徑: str, 端點識別碼: str, 呼叫識別碼: str
+) -> dict[str, Any]:
+    """在單一 read transaction 以明確欄位取得 invocation 與 child payload。"""
+    連線 = 游標 = None
+    已開始 = False
+    try:
+        連線 = _開啟唯讀快照(路徑)
+        連線.execute("BEGIN")
+        已開始 = True
+        _驗證路徑與結構(連線, 路徑)
+        游標 = 連線.execute(
+            "SELECT id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,"
+            "message_id,status,input_json,metadata_json,output_json,error_json,usage_json,"
+            "metadata_size_bytes,metadata_sha256,latency_ms,pricing_version,created_at,completed_at "
+            "FROM endpoint_invocations WHERE endpoint_id=? AND id=?",
+            (端點識別碼, 呼叫識別碼),
+        )
+        列 = 游標.fetchone()
+        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 19:
+            raise ValueError
+        游標.close()
+        游標 = 連線.execute(
+            "SELECT id,sequence_number,event_type,payload_json,created_at FROM run_events "
+            "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
+        )
+        執行事件列 = tuple(游標.fetchall())
+        游標.close()
+        游標 = 連線.execute(
+            "SELECT id,run_event_id,sequence_number,tool_name,arguments_json,outcome,result_json,"
+            "error_json,latency_ms,retry_of_tool_call_id,created_at FROM endpoint_tool_calls "
+            "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
+        )
+        工具列 = tuple(游標.fetchall())
+        事件 = [
+            {"id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
+             "payload": _解析可空JSON(項[3]), "created_at": 項[4]}
+            for 項 in 執行事件列
+        ]
+        工具 = [
+            {"id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
+             "tool_name": 項[3], "arguments": _解析可空JSON(項[4]), "outcome": 項[5],
+             "result": _解析可空JSON(項[6]), "error": _解析可空JSON(項[7]),
+             "latency_ms": 項[8], "retry_of_tool_call_id": 項[9], "created_at": 項[10]}
+            for 項 in 工具列
+        ]
+        結果 = {
+            "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
+            "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
+            "message_id": 列[6], "status": 列[7], "input": _解析可空JSON(列[8]),
+            "metadata": _解析可空JSON(列[9]), "output": _解析可空JSON(列[10]),
+            "error": _解析可空JSON(列[11]), "usage": _解析可空JSON(列[12]),
+            "metadata_size_bytes": 列[13], "metadata_sha256": 列[14],
+            "latency_ms": 列[15], "pricing_version": 列[16], "created_at": 列[17],
+            "completed_at": 列[18], "run_events": 事件, "tool_calls": 工具,
+        }
+        連線.commit()
+        已開始 = False
+        return 結果
+    finally:
+        if 游標 is not None:
+            游標.close()
+        if 連線 is not None and 已開始:
+            連線.rollback()
+        if 連線 is not None:
+            連線.close()
+
 
 def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
     """只開啟既有、非空、regular、non-symlink SQLite 檔案。"""
@@ -193,12 +293,22 @@ def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
 
 def _解析可空物件(文字: Any) -> dict[str, Any]:
     """只把 SQLite exact str/NULL 解析為 exact built-in JSON object。"""
-    if 文字 is None:
+    值 = _解析可空JSON(文字)
+    if 值 is None:
         return {}
+    if type(值) is not dict:
+        raise ValueError
+    return 值
+
+
+def _解析可空JSON(文字: Any) -> Any:
+    """解析 SQLite exact str/NULL，並拒絕非 exact built-in JSON tree。"""
+    if 文字 is None:
+        return None
     if type(文字) is not str:
         raise ValueError
     值 = json.loads(文字)
-    if type(值) is not dict or not _exact_json(值):
+    if not _exact_json(值):
         raise ValueError
     return 值
 
