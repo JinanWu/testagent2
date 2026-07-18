@@ -31,7 +31,8 @@ _必要觸發器 = frozenset({
     "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
     "endpoint_redactions_no_update", "endpoint_redactions_no_delete",
     "redacted_invocation_payload_no_update", "redacted_run_event_no_update",
-    "redacted_tool_call_no_update",
+    "redacted_tool_call_no_update", "redacted_run_event_no_delete",
+    "redacted_tool_call_no_delete",
 })
 _遮蔽物件摘要 = (
     ("table", "endpoint_redactions", "ead15701fb385c3c2652214c8bab6a3214ad056a10ede486b76a376092b91eec"),
@@ -40,7 +41,9 @@ _遮蔽物件摘要 = (
     ("trigger", "endpoint_redactions_require_tombstone", "3291bfa7c97745815307300e13ffa1abbae39898a571dcb113b630d9b4292174"),
     ("trigger", "endpoint_redactions_target_before_insert", "e886992ff4eb4ec6d190962ed935ea4b564b7608081efe92370a29a5cc20949d"),
     ("trigger", "redacted_invocation_payload_no_update", "13db663832200be54f42de56e2f4b676dc71283d3d55b24b4cefec8b9c006b99"),
+    ("trigger", "redacted_run_event_no_delete", "ea8c587b4c4873f84e7649ba3ab418649ef65d92d739683f257fb8ace909992d"),
     ("trigger", "redacted_run_event_no_update", "36493fb5742d49740e2a8e6d9a7939e7b05e46b0831897bf89b41d852ad02181"),
+    ("trigger", "redacted_tool_call_no_delete", "532779cd5095eb3ea00ee7812b6fb5dc6a8f2fdcdbb1b9012c91f2950803c440"),
     ("trigger", "redacted_tool_call_no_update", "61497db9ab276bdd977c08e87ce975d2a9d75f2c6360088d658c1d30caa2febb"),
 )
 
@@ -369,7 +372,8 @@ def _驗證遮蔽schema(連線: sqlite3.Connection) -> None:
         "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND "
         "(tbl_name='endpoint_redactions' OR name IN "
         "('redacted_invocation_payload_no_update','redacted_run_event_no_update',"
-        "'redacted_tool_call_no_update')) AND type IN ('table','trigger') ORDER BY type,name"
+        "'redacted_tool_call_no_update','redacted_run_event_no_delete',"
+        "'redacted_tool_call_no_delete')) AND type IN ('table','trigger') ORDER BY type,name"
     ))
     if (欄位 != ((0,"id","TEXT",0,None,1),(1,"invocation_id","TEXT",1,None,0),
         (2,"target_type","TEXT",1,None,0),(3,"target_row_id","TEXT",1,None,0),

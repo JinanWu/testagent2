@@ -87,3 +87,24 @@ WHEN
 BEGIN
   SELECT RAISE(ABORT, 'redacted tool payload is immutable');
 END;
+
+CREATE TRIGGER redacted_run_event_no_delete
+BEFORE DELETE ON run_events
+WHEN EXISTS (
+  SELECT 1 FROM endpoint_redactions
+  WHERE target_type='run_event' AND target_row_id=OLD.id
+)
+BEGIN
+  SELECT RAISE(ABORT, 'redacted run event identity is retained');
+END;
+
+CREATE TRIGGER redacted_tool_call_no_delete
+BEFORE DELETE ON endpoint_tool_calls
+WHEN EXISTS (
+  SELECT 1 FROM endpoint_redactions
+  WHERE target_row_id=OLD.id
+    AND target_type IN ('tool_arguments','tool_result','tool_error')
+)
+BEGIN
+  SELECT RAISE(ABORT, 'redacted tool identity is retained');
+END;

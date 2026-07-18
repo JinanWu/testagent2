@@ -16,6 +16,7 @@ from ..協定 import AuditEventSink
 from ..領域模型 import AuditActorRef, AuditEvent, AuditMetadata, AuditResourceRef
 from ..領域模型 import InvocationRef, PublishedUsage
 from .稽核結構 import _LEDGER
+from .遮蔽 import _確認墓碑, _解析路徑, _驗證遮蔽schema
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _固定錯誤 = "呼叫紀錄不可取得"
@@ -321,6 +322,7 @@ def _讀取管理員原始資料(
 ) -> dict[str, Any]:
     """同一 read transaction 先核算全部 JSON 長度，再按權威鍵取 payload。"""
     連線 = 游標 = 列 = 項 = 內容列 = 事件列 = 工具列 = 結果 = None
+    遮蔽列 = None
     輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 事件 = 工具 = None
     已開始 = 失敗 = False
     控制 = None
@@ -331,6 +333,7 @@ def _讀取管理員原始資料(
         連線.execute("BEGIN")
         已開始 = True
         _驗證路徑與結構(連線, 路徑)
+        _驗證遮蔽schema(連線)
         游標 = 連線.execute(
             "SELECT id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,"
             "message_id,status,metadata_size_bytes,metadata_sha256,latency_ms,pricing_version,"
@@ -347,6 +350,7 @@ def _讀取管理員原始資料(
             raise ValueError
         _驗證管理員呼叫列(列, 預算)
         游標.close()
+        遮蔽列 = _讀取驗證遮蔽列(連線, 呼叫識別碼, 端點識別碼, 預算)
         事件列 = []
         游標 = 連線.execute(
             "SELECT id,sequence_number,event_type,created_at,typeof(payload_json),"
@@ -424,6 +428,7 @@ def _讀取管理員原始資料(
                           "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[5],
                           "retry_of_tool_call_id": 項[6], "created_at": 項[7]})
             游標.close()
+        _核對投影墓碑(遮蔽列, 輸入, 中繼資料, 輸出, 錯誤, 事件, 工具)
         結果 = {
             "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
             "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
@@ -454,7 +459,7 @@ def _讀取管理員原始資料(
         if 控制 is None and 清理控制:
             控制 = 清理控制.pop()
     路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = 內容列 = None
-    事件列 = 工具列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
+    事件列 = 工具列 = 遮蔽列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
     預算 = 清理控制 = 工具JSON = None
     if 控制 is not None:
         控制盒 = [控制]
@@ -481,6 +486,148 @@ def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
         uri=True, isolation_level=None, timeout=30.0,
     )
     return 連線
+
+
+def _讀取驗證遮蔽列(
+    連線: sqlite3.Connection, 呼叫識別碼: str, 端點識別碼: str, 預算: list[int]
+) -> tuple[tuple[Any, ...], ...]:
+    """先以 SQLite metadata gate 有界遮蔽列，再驗證 ledger、audit 與 target ownership。"""
+    文字欄 = ("id", "invocation_id", "target_type", "target_row_id", "json_path",
+            "original_sha256", "reason", "actor_type", "actor_id", "audit_event_id")
+    選取 = ["rowid"]
+    for 欄位 in 文字欄:
+        選取.extend((f"typeof({欄位})", f"length(CAST({欄位} AS BLOB))"))
+    選取.extend(("typeof(is_tombstone)", "is_tombstone", "typeof(redacted_at)", "redacted_at"))
+    游標 = 連線.execute(
+        f"SELECT {','.join(選取)} FROM endpoint_redactions WHERE invocation_id=? "
+        "ORDER BY rowid LIMIT 9", (呼叫識別碼,),
+    )
+    中繼列 = []
+    項 = 游標.fetchone()
+    while 項 is not None:
+        if len(中繼列) >= 8 or type(項) is not tuple or len(項) != 25 or type(項[0]) is not int:
+            raise ValueError
+        for 索引 in range(1, 21, 2):
+            _扣除JSON長度(項[索引], 項[索引 + 1], 預算, True)
+        if 項[21:25] != ("integer", 1, "real", 項[24]) or not _安全時間(項[24]):
+            raise ValueError
+        中繼列.append(項[0])
+        項 = 游標.fetchone()
+    游標.close()
+    結果 = []
+    已見 = set()
+    for 列序號 in 中繼列:
+        列 = 連線.execute(
+            "SELECT r.id,r.invocation_id,r.target_type,r.target_row_id,r.json_path,"
+            "r.original_sha256,r.reason,r.actor_type,r.actor_id,r.audit_event_id,"
+            "r.is_tombstone,r.redacted_at,a.id,a.event_id,a.occurred_at,a.action,a.outcome,"
+            "a.actor_type,a.actor_id,a.resource_type,a.resource_id,a.request_id,a.endpoint_id,"
+            "a.invocation_id,a.metadata_json,a.created_at FROM endpoint_redactions r "
+            "JOIN audit_events a ON a.id=r.audit_event_id WHERE r.rowid=? AND r.invocation_id=?",
+            (列序號, 呼叫識別碼),
+        ).fetchall()
+        if len(列) != 1:
+            raise ValueError
+        項 = 列[0]
+        if type(項) is not tuple or len(項) != 26:
+            raise ValueError
+        _驗證遮蔽語意(連線, 項, 呼叫識別碼, 端點識別碼, 已見)
+        結果.append(項[:12])
+    return tuple(結果)
+
+
+def _驗證遮蔽語意(
+    連線: sqlite3.Connection, 列: tuple[Any, ...], 呼叫ID: str, 端點ID: str, 已見: set[Any]
+) -> None:
+    """驗證完整 redaction/audit tuple 與子列權威歸屬。"""
+    類型, 列ID, 路徑 = 列[2], 列[3], 列[4]
+    if not all(_安全識別碼(列[索引]) for 索引 in (0, 1, 3, 8, 9)):
+        raise ValueError
+    if (列[1] != 呼叫ID or 類型 not in ("invocation_input", "metadata", "output", "error",
+            "run_event", "tool_arguments", "tool_result", "tool_error")
+            or type(類型) is not str or type(路徑) is not str or type(列[5]) is not str
+            or len(列[5]) != 64 or any(字 not in "0123456789abcdef" for 字 in 列[5])
+            or not _安全文字(列[6], 1000) or 列[7] != "admin" or 列[10] != 1
+            or not _安全時間(列[11])):
+        raise ValueError
+    _解析路徑(路徑)
+    鍵 = (類型, 列ID, 路徑)
+    if 鍵 in 已見:
+        raise ValueError
+    已見.add(鍵)
+    if 類型 in ("invocation_input", "metadata", "output", "error"):
+        if 列ID != 呼叫ID:
+            raise ValueError
+    else:
+        表格 = "run_events" if 類型 == "run_event" else "endpoint_tool_calls"
+        if 連線.execute(f"SELECT count(*) FROM {表格} WHERE id=? AND invocation_id=?",
+                     (列ID, 呼叫ID)).fetchone() != (1,):
+            raise ValueError
+    if (列[12:14] != (列[9], 列[9]) or 列[14:21] != (列[11], "audit.payload.redact",
+            "success", "user", 列[8], "endpoint.redaction", 列[0])
+            or not _安全識別碼(列[21]) or 列[22:26] !=
+            (端點ID, 呼叫ID, '{"is_tombstone":true}', 列[11])):
+        raise ValueError
+
+
+def _核對投影墓碑(
+    遮蔽列: tuple[tuple[Any, ...], ...], 輸入: Any, 中繼: Any, 輸出: Any, 錯誤: Any,
+    事件: list[dict[str, Any]], 工具: list[dict[str, Any]],
+) -> None:
+    """逐列確認 payload 的 exact target/path 仍是 ledger 指定 canonical tombstone。"""
+    呼叫payload = {"invocation_input": 輸入, "metadata": 中繼, "output": 輸出, "error": 錯誤}
+    目標payload = [(類型, "", payload) for 類型, payload in 呼叫payload.items()]
+    目標payload.extend(("run_event", 項["id"], 項["payload"]) for 項 in 事件)
+    for 項 in 工具:
+        目標payload.extend((("tool_arguments", 項["id"], 項["arguments"]),
+                          ("tool_result", 項["id"], 項["result"]),
+                          ("tool_error", 項["id"], 項["error"])))
+    發現 = set()
+    for 類型, 列ID, payload in 目標payload:
+        _收集payload墓碑(payload, "", 類型, 列ID, 發現)
+    預期 = {(列[2], "" if 列[2] in 呼叫payload else 列[3], 列[4], 列[0], 列[11])
+          for 列 in 遮蔽列}
+    if 發現 != 預期:
+        raise ValueError
+    for 列 in 遮蔽列:
+        類型, 列ID, 路徑 = 列[2], 列[3], 列[4]
+        if 類型 in 呼叫payload:
+            payload = 呼叫payload[類型]
+        elif 類型 == "run_event":
+            匹配 = [項 for 項 in 事件 if 項["id"] == 列ID]
+            if len(匹配) != 1:
+                raise ValueError
+            payload = 匹配[0]["payload"]
+        else:
+            匹配 = [項 for 項 in 工具 if 項["id"] == 列ID]
+            if len(匹配) != 1:
+                raise ValueError
+            payload = 匹配[0][{"tool_arguments": "arguments", "tool_result": "result",
+                              "tool_error": "error"}[類型]]
+        _確認墓碑(payload, 路徑, 列[0], 列[11])
+
+
+def _收集payload墓碑(
+    值: Any, 路徑: str, 類型: str, 列ID: str, 結果: set[Any]
+) -> None:
+    """在既有 JSON 節點預算內收集 canonical tombstone，拒絕無 ledger 的墓碑。"""
+    if type(值) is dict and "$tombstone" in 值:
+        if set(值) != {"$tombstone"} or type(值["$tombstone"]) is not dict:
+            raise ValueError
+        墓碑 = 值["$tombstone"]
+        if (set(墓碑) != {"redaction_id", "redacted_at"}
+                or not _安全識別碼(墓碑.get("redaction_id"))
+                or not _安全時間(墓碑.get("redacted_at"))):
+            raise ValueError
+        結果.add((類型, 列ID, 路徑, 墓碑["redaction_id"], 墓碑["redacted_at"]))
+        return
+    if type(值) is dict:
+        for 鍵, 項 in 值.items():
+            片段 = 鍵.replace("~", "~0").replace("/", "~1")
+            _收集payload墓碑(項, 路徑 + "/" + 片段, 類型, 列ID, 結果)
+    elif type(值) is list:
+        for 索引, 項 in enumerate(值):
+            _收集payload墓碑(項, 路徑 + "/" + str(索引), 類型, 列ID, 結果)
 
 
 def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
