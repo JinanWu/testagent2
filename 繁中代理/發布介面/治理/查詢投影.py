@@ -320,31 +320,36 @@ def _讀取管理員原始資料(
         輸入, 中繼資料, 輸出, 錯誤, 用量 = (
             _解析可空JSON(值, 預算, False) for 值 in 內容列
         )
+        游標.close()
         事件 = []
         for 項 in 事件列:
-            內容列 = 連線.execute(
+            游標 = 連線.execute(
                 "SELECT payload_json FROM run_events "
                 "WHERE invocation_id=? AND id=? AND sequence_number=?",
                 (呼叫識別碼, 項[0], 項[1]),
-            ).fetchone()
-            if type(內容列) is not tuple or len(內容列) != 1:
+            )
+            內容列 = 游標.fetchone()
+            if 游標.fetchone() is not None or type(內容列) is not tuple or len(內容列) != 1:
                 raise ValueError
             事件.append({"id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
                          "payload": _解析可空JSON(內容列[0], 預算, False), "created_at": 項[3]})
+            游標.close()
         工具 = []
         for 項 in 工具列:
-            內容列 = 連線.execute(
+            游標 = 連線.execute(
                 "SELECT arguments_json,result_json,error_json FROM endpoint_tool_calls "
                 "WHERE invocation_id=? AND id=? AND sequence_number=?",
                 (呼叫識別碼, 項[0], 項[2]),
-            ).fetchone()
-            if type(內容列) is not tuple or len(內容列) != 3:
+            )
+            內容列 = 游標.fetchone()
+            if 游標.fetchone() is not None or type(內容列) is not tuple or len(內容列) != 3:
                 raise ValueError
             工具JSON = tuple(_解析可空JSON(值, 預算, False) for 值 in 內容列)
             工具.append({"id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
                           "tool_name": 項[3], "arguments": 工具JSON[0], "outcome": 項[4],
                           "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[5],
                           "retry_of_tool_call_id": 項[6], "created_at": 項[7]})
+            游標.close()
         結果 = {
             "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
             "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
@@ -475,9 +480,11 @@ def _解析可空JSON(
 
 def _扣除JSON長度(儲存類型: Any, 長度: Any, 預算: list[int], 必填: bool = False) -> None:
     """只接受 SQLite text/NULL 長度 metadata，先扣共用原始位元組預算。"""
+    if type(儲存類型) is not str:
+        raise ValueError
     if 儲存類型 == "null" and 長度 is None and not 必填:
         return
-    if 儲存類型 != "text" or type(儲存類型) is not str:
+    if 儲存類型 != "text":
         raise ValueError
     if type(長度) is not int or 長度 < 0 or 預算[0] + 長度 > _最大JSON位元組:
         raise ValueError
