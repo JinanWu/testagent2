@@ -1,9 +1,12 @@
 """GOV G01 append-only、無損、去敏 SQLite 稽核服務測試。"""
 
 import sqlite3
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import fields
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -35,6 +38,11 @@ def 資料庫(tmp_path):
     return path
 
 
+def _查詢(資料庫, SQL):
+    with closing(sqlite3.connect(資料庫)) as 連線:
+        return 連線.execute(SQL).fetchall()
+
+
 @pytest.mark.parametrize("action", ["audit.detail.view", "credential.sensitive.reveal", "custom.audit"])
 def test_管理動作無損附加完整欄位且clock不同於occurred_at(資料庫, action):
     calls = []
@@ -46,7 +54,7 @@ def test_管理動作無損附加完整欄位且clock不同於occurred_at(資料
     receipt = SQLite稽核服務(str(資料庫), 時鐘=時鐘).append_audit_event(
         _事件(action, metadata={"allowed": True, "count": 2})
     )
-    with sqlite3.connect(資料庫) as connection:
+    with closing(sqlite3.connect(資料庫)) as connection, connection:
         row = connection.execute(
             "SELECT id,event_id,occurred_at,action,outcome,actor_type,actor_id,"
             "resource_type,resource_id,request_id,endpoint_id,invocation_id,"
@@ -69,6 +77,35 @@ def test_有效去敏事件不把來源raw_marker寫入資料庫bytes(資料庫)
     assert marker.encode() not in 資料庫.read_bytes()
 
 
+def test_偽造mappingproxy_backing不觸發callback且只保存canonical_tuple(資料庫):
+    class 敵對Mapping(Mapping):
+        def __init__(self):
+            self.calls = 0
+
+        def __getitem__(self, _key):
+            self.calls += 1
+            raise AssertionError("不得讀取敵對backing")
+
+        def __iter__(self):
+            self.calls += 1
+            raise AssertionError("不得迭代敵對backing")
+
+        def __len__(self):
+            self.calls += 1
+            raise AssertionError("不得量測敵對backing")
+
+    metadata = AuditMetadata({"allowed": True})
+    backing = 敵對Mapping()
+    object.__setattr__(metadata, "_資料", MappingProxyType(backing))
+    event = _事件(metadata={"allowed": True})
+    object.__setattr__(event, "metadata", metadata)
+
+    SQLite稽核服務(str(資料庫), 時鐘=lambda: 456.0).append_audit_event(event)
+
+    assert backing.calls == 0
+    assert _查詢(資料庫, "SELECT metadata_json FROM audit_events") == [('{"allowed":true}',)]
+
+
 @pytest.mark.parametrize("metadata", [
     {"secret": 1}, {"path": 1}, {"raw": 1}, {"nested": {"x": 1}},
     {"many": float("inf")}, {"value": "raw text"},
@@ -76,7 +113,7 @@ def test_有效去敏事件不把來源raw_marker寫入資料庫bytes(資料庫)
 def test_metadata秘密巢狀非有限與文字由DTO拒絕(資料庫, metadata):
     with pytest.raises(Exception):
         _事件(metadata=metadata)
-    assert sqlite3.connect(資料庫).execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+    assert _查詢(資料庫, "SELECT count(*) FROM audit_events") == [(0,)]
 
 
 def test_偽造event欄位或metadata固定公開失敗且不寫入(資料庫):
@@ -95,7 +132,7 @@ def test_偽造event欄位或metadata固定公開失敗且不寫入(資料庫):
         assert type(error.value) is AuditSinkError
         assert error.value.args == ("稽核事件無法確認提交",)
         assert error.value.__cause__ is error.value.__context__ is None
-    assert sqlite3.connect(資料庫).execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+    assert _查詢(資料庫, "SELECT count(*) FROM audit_events") == [(0,)]
 
 
 def test_duplicate_id固定失敗且原列不變(資料庫):
@@ -103,7 +140,7 @@ def test_duplicate_id固定失敗且原列不變(資料庫):
     sink.append_audit_event(_事件())
     with pytest.raises(AuditSinkError):
         sink.append_audit_event(_事件(action="custom.audit"))
-    assert sqlite3.connect(資料庫).execute("SELECT action FROM audit_events").fetchall() == [("audit.detail.view",)]
+    assert _查詢(資料庫, "SELECT action FROM audit_events") == [("audit.detail.view",)]
 
 
 @pytest.mark.parametrize("sql", [
@@ -113,17 +150,17 @@ def test_duplicate_id固定失敗且原列不變(資料庫):
     "ALTER TABLE audit_events ADD COLUMN extra TEXT",
 ])
 def test_v6_schema_ledger_table_index_trigger漂移全部失敗關閉(資料庫, sql):
-    with sqlite3.connect(資料庫) as connection:
+    with closing(sqlite3.connect(資料庫)) as connection, connection:
         connection.execute(sql)
     with pytest.raises(AuditSinkError):
         SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
-    assert sqlite3.connect(資料庫).execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+    assert _查詢(資料庫, "SELECT count(*) FROM audit_events") == [(0,)]
 
 
 def test_append_only_triggers拒絕直接更新與刪除(資料庫):
     SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
     for sql in ("UPDATE audit_events SET action='other'", "DELETE FROM audit_events"):
-        with sqlite3.connect(資料庫) as connection:
+        with closing(sqlite3.connect(資料庫)) as connection, connection:
             with pytest.raises(sqlite3.IntegrityError, match="append only"):
                 connection.execute(sql)
 
