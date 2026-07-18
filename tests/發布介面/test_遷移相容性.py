@@ -151,6 +151,32 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
             "id,actor_type,actor_id,action,target_type,target_id,endpoint_id,request_id,metadata_json,created_at"
             ") VALUES('evt_legacy','system',NULL,'legacy.action','endpoint','ep_1',NULL,'req_1','{}',12.5)"
         )
+        連線.execute("INSERT INTO service_accounts VALUES('sa_1',1,NULL)")
+        連線.execute(
+            "INSERT INTO published_endpoints("
+            "id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at"
+            ") VALUES('ep_1','owner_1','sa_1','legacy-endpoint','active',NULL,1,1)"
+        )
+        連線.execute(
+            "INSERT INTO published_endpoint_versions VALUES("
+            "'ver_1','ep_1',1,'requirement','prompt','[]','[]','{}','runtime','{}','{}','{}',"
+            "NULL,'{}',0,'owner_1',1)"
+        )
+        連線.execute("UPDATE published_endpoints SET current_version_id='ver_1' WHERE id='ep_1'")
+        連線.execute(
+            "INSERT INTO endpoint_invocations("
+            "id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,"
+            "status,input_json,created_at) VALUES("
+            "'inv_1','ep_1','ver_1',NULL,'req_inv',NULL,NULL,'succeeded','{}',2)"
+        )
+        連線.execute(
+            "INSERT INTO endpoint_redactions("
+            "id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+            "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at) VALUES("
+            "'red_1','inv_1','metadata','inv_1','$.secret',"
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+            "'legacy cleanup','system',NULL,'evt_legacy',0,3)"
+        )
 
     assert 初始化發布介面資料庫(db) == (6,)
     assert _q(
@@ -158,6 +184,15 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
         "SELECT event_id,resource_type,resource_id,occurred_at,outcome,invocation_id,created_at "
         "FROM audit_events",
     ) == [("evt_legacy", "endpoint", "ep_1", 12.5, "legacy_unknown", None, 12.5)]
+    assert _q(
+        db,
+        "SELECT id,invocation_id,audit_event_id,target_type,target_row_id,json_path,redacted_at "
+        "FROM endpoint_redactions",
+    ) == [("red_1", "inv_1", "evt_legacy", "metadata", "inv_1", "$.secret", 3.0)]
+    assert _q(db, "PRAGMA foreign_key_check") == []
+    assert _q(db, "PRAGMA foreign_key_list(endpoint_redactions)")[0][2:5] == (
+        "audit_events", "audit_event_id", "id"
+    )
     with sqlite3.connect(db) as 連線:
         with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):
             連線.execute("UPDATE audit_events SET outcome='success' WHERE event_id='evt_legacy'")
