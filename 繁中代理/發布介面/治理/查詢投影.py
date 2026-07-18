@@ -246,9 +246,12 @@ def _讀取管理員原始資料(
     路徑: str, 端點識別碼: str, 呼叫識別碼: str
 ) -> dict[str, Any]:
     """在單一 read transaction 以明確欄位取得 invocation 與 child payload。"""
-    連線 = 游標 = 列 = 執行事件列 = 工具列 = 事件 = 工具 = 結果 = None
+    連線 = 游標 = 列 = 項 = 事件 = 工具 = 結果 = None
+    輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 工具JSON = None
     已開始 = 失敗 = False
     控制 = None
+    預算 = [0, 0]
+    子列數 = 0
     try:
         連線 = _開啟唯讀快照(路徑)
         連線.execute("BEGIN")
@@ -265,47 +268,58 @@ def _讀取管理員原始資料(
         if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 19:
             raise ValueError
         _驗證管理員呼叫列(列)
+        輸入 = _解析可空JSON(列[8], 預算)
+        中繼資料 = _解析可空JSON(列[9], 預算)
+        輸出 = _解析可空JSON(列[10], 預算)
+        錯誤 = _解析可空JSON(列[11], 預算)
+        用量 = _解析可空JSON(列[12], 預算)
         游標.close()
         游標 = None
+        事件 = []
         游標 = 連線.execute(
             "SELECT id,sequence_number,event_type,payload_json,created_at FROM run_events "
             "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
         )
-        執行事件列 = _讀取有限列(游標, 5)
-        for 項 in 執行事件列:
+        項 = 游標.fetchone()
+        while 項 is not None:
+            子列數 += 1
+            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 5:
+                raise ValueError
             if not (_安全識別碼(項[0]) and _安全正整數(項[1])
-                    and _安全文字(項[2], 256) and _安全文字(項[3], _最大JSON位元組)
+                    and _安全文字(項[2], 256) and type(項[3]) is str
                     and _安全時間(項[4])):
                 raise ValueError
-            _解析可空JSON(項[3])
+            事件.append({
+                "id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
+                "payload": _解析可空JSON(項[3], 預算), "created_at": 項[4],
+            })
+            項 = 游標.fetchone()
         游標.close()
         游標 = None
+        工具 = []
         游標 = 連線.execute(
             "SELECT id,run_event_id,sequence_number,tool_name,arguments_json,outcome,result_json,"
             "error_json,latency_ms,retry_of_tool_call_id,created_at FROM endpoint_tool_calls "
             "WHERE invocation_id=? ORDER BY sequence_number", (呼叫識別碼,),
         )
-        工具列 = _讀取有限列(游標, 11)
-        for 項 in 工具列:
-            _驗證工具列(項)
-        事件 = [
-            {"id": 項[0], "sequence_number": 項[1], "event_type": 項[2],
-             "payload": _解析可空JSON(項[3]), "created_at": 項[4]}
-            for 項 in 執行事件列
-        ]
-        工具 = [
-            {"id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
-             "tool_name": 項[3], "arguments": _解析可空JSON(項[4]), "outcome": 項[5],
-             "result": _解析可空JSON(項[6]), "error": _解析可空JSON(項[7]),
-             "latency_ms": 項[8], "retry_of_tool_call_id": 項[9], "created_at": 項[10]}
-            for 項 in 工具列
-        ]
+        項 = 游標.fetchone()
+        while 項 is not None:
+            子列數 += 1
+            if 子列數 > _最大子列 or type(項) is not tuple or len(項) != 11:
+                raise ValueError
+            工具JSON = _驗證工具列(項, 預算)
+            工具.append({
+                "id": 項[0], "run_event_id": 項[1], "sequence_number": 項[2],
+                "tool_name": 項[3], "arguments": 工具JSON[0], "outcome": 項[5],
+                "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[8],
+                "retry_of_tool_call_id": 項[9], "created_at": 項[10],
+            })
+            項 = 游標.fetchone()
         結果 = {
             "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
             "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
-            "message_id": 列[6], "status": 列[7], "input": _解析可空JSON(列[8]),
-            "metadata": _解析可空JSON(列[9]), "output": _解析可空JSON(列[10]),
-            "error": _解析可空JSON(列[11]), "usage": _解析可空JSON(列[12]),
+            "message_id": 列[6], "status": 列[7], "input": 輸入,
+            "metadata": 中繼資料, "output": 輸出, "error": 錯誤, "usage": 用量,
             "metadata_size_bytes": 列[13], "metadata_sha256": 列[14],
             "latency_ms": 列[15], "pricing_version": 列[16], "created_at": 列[17],
             "completed_at": 列[18], "run_events": 事件, "tool_calls": 工具,
@@ -330,8 +344,9 @@ def _讀取管理員原始資料(
         清理控制 = _清理資源操作(連線, "close")
         if 控制 is None and 清理控制:
             控制 = 清理控制.pop()
-    路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = None
-    執行事件列 = 工具列 = 事件 = 工具 = 項 = 清理控制 = None
+    路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = None
+    事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 工具JSON = None
+    預算 = 清理控制 = None
     if 控制 is not None:
         控制盒 = [控制]
         控制 = 結果 = None
@@ -406,26 +421,49 @@ def _解析可空物件(文字: Any) -> dict[str, Any]:
     return 值
 
 
-def _解析可空JSON(文字: Any) -> Any:
-    """解析 bounded SQLite exact str/NULL，拒絕重複鍵與非有限 JSON tree。"""
+def _解析可空JSON(文字: Any, 預算: list[int] | None = None) -> Any:
+    """解析 SQLite exact str/NULL，共用 raw UTF-8 與 parsed-node 聚合預算。"""
     if 文字 is None:
         return None
-    if type(文字) is not str or len(文字.encode("utf-8")) > _最大JSON位元組:
+    if type(文字) is not str:
         raise ValueError
+    if 預算 is None:
+        預算 = [0, 0]
+    _累計原始JSON位元組(文字, 預算)
     值 = json.loads(
         文字,
         parse_constant=_拒絕JSON常數,
         object_pairs_hook=_建立無重複物件,
     )
-    if not _JSON樹為精確內建型別(值, 0, [0]):
+    if not _JSON樹為精確內建型別(值, 0, 預算):
         raise ValueError
     return 值
 
 
-def _JSON樹為精確內建型別(值: Any, 深度: int, 計數: list[int]) -> bool:
-    """遞迴拒絕超深、過多或非 exact/finite built-in JSON 值。"""
-    計數[0] += 1
-    if 計數[0] > _最大JSON節點 or 深度 > 16:
+def _累計原始JSON位元組(文字: str, 預算: list[int]) -> None:
+    """不建立完整 bytes 副本即精確累計 UTF-8 大小並拒絕 surrogate。"""
+    總數 = 預算[0]
+    for 字元 in 文字:
+        碼點 = ord(字元)
+        if 碼點 <= 0x7F:
+            總數 += 1
+        elif 碼點 <= 0x7FF:
+            總數 += 2
+        elif 0xD800 <= 碼點 <= 0xDFFF:
+            raise ValueError
+        elif 碼點 <= 0xFFFF:
+            總數 += 3
+        else:
+            總數 += 4
+        if 總數 > _最大JSON位元組:
+            raise ValueError
+    預算[0] = 總數
+
+
+def _JSON樹為精確內建型別(值: Any, 深度: int, 預算: list[int]) -> bool:
+    """遞迴拒絕超深、聚合過多或非 exact/finite built-in JSON 值。"""
+    預算[1] += 1
+    if 預算[1] > _最大JSON節點 or 深度 > 16:
         return False
     if 值 is None or type(值) in (bool, int):
         return True
@@ -434,11 +472,11 @@ def _JSON樹為精確內建型別(值: Any, 深度: int, 計數: list[int]) -> b
     if type(值) is str:
         return len(值.encode("utf-8")) <= _最大JSON位元組
     if type(值) is list:
-        return all(_JSON樹為精確內建型別(項目, 深度 + 1, 計數) for 項目 in 值)
+        return all(_JSON樹為精確內建型別(項目, 深度 + 1, 預算) for 項目 in 值)
     if type(值) is dict:
         return all(
             type(鍵) is str and len(鍵.encode("utf-8")) <= 4096
-            and _JSON樹為精確內建型別(項目, 深度 + 1, 計數)
+            and _JSON樹為精確內建型別(項目, 深度 + 1, 預算)
             for 鍵, 項目 in 值.items()
         )
     return False
@@ -460,11 +498,15 @@ def _拒絕JSON常數(_值: str) -> None:
 
 
 def _讀取有限列(游標: sqlite3.Cursor, 欄寬: int) -> tuple[tuple[Any, ...], ...]:
-    """以固定上限讀取 child rows，避免查詢投影無界配置記憶體。"""
-    列 = tuple(游標.fetchmany(_最大子列 + 1))
-    if len(列) > _最大子列 or any(type(項) is not tuple or len(項) != 欄寬 for 項 in 列):
-        raise ValueError
-    return 列
+    """逐列讀取 bounded child rows，避免一次配置最多 4097 個敵對值。"""
+    結果 = []
+    項 = 游標.fetchone()
+    while 項 is not None:
+        if len(結果) >= _最大子列 or type(項) is not tuple or len(項) != 欄寬:
+            raise ValueError
+        結果.append(項)
+        項 = 游標.fetchone()
+    return tuple(結果)
 
 
 def _安全文字(值: Any, 上限: int = 128, 可空: bool = False) -> bool:
@@ -514,11 +556,11 @@ def _驗證管理員呼叫列(列: tuple[Any, ...]) -> None:
             raise ValueError
 
 
-def _驗證工具列(列: tuple[Any, ...]) -> None:
-    """驗證 authoritative tool row 的 shape、scalar 與 JSON storage classes。"""
+def _驗證工具列(列: tuple[Any, ...], 預算: list[int]) -> tuple[Any, Any, Any]:
+    """驗證 tool row 的 scalar/storage class 並以共用預算解析三個 JSON。"""
     if not (_安全識別碼(列[0]) and _安全文字(列[1], 可空=True)
             and _安全正整數(列[2]) and _安全文字(列[3], 256)
-            and _安全文字(列[4], _最大JSON位元組) and 列[5] in ("success", "error")
+            and type(列[4]) is str and 列[5] in ("success", "error")
             and _安全文字(列[9], 可空=True)
             and _安全時間(列[8], True) and _安全時間(列[10])):
         raise ValueError
@@ -527,7 +569,11 @@ def _驗證工具列(列: tuple[Any, ...]) -> None:
     for 索引 in (4, 6, 7):
         if 列[索引] is not None and type(列[索引]) is not str:
             raise ValueError
-        _解析可空JSON(列[索引])
+    return (
+        _解析可空JSON(列[4], 預算),
+        _解析可空JSON(列[6], 預算),
+        _解析可空JSON(列[7], 預算),
+    )
 
 
 def _安全識別碼(值: Any) -> bool:
