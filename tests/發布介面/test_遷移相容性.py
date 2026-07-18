@@ -186,13 +186,36 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
     ) == [("evt_legacy", "endpoint", "ep_1", 12.5, "legacy_unknown", None, 12.5)]
     assert _q(
         db,
-        "SELECT id,invocation_id,audit_event_id,target_type,target_row_id,json_path,redacted_at "
+        "SELECT id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+        "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at "
         "FROM endpoint_redactions",
-    ) == [("red_1", "inv_1", "evt_legacy", "metadata", "inv_1", "$.secret", 3.0)]
+    ) == [(
+        "red_1", "inv_1", "metadata", "inv_1", "$.secret",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "legacy cleanup", "system", None, "evt_legacy", 0, 3.0,
+    )]
     assert _q(db, "PRAGMA foreign_key_check") == []
     assert _q(db, "PRAGMA foreign_key_list(endpoint_redactions)")[0][2:5] == (
         "audit_events", "audit_event_id", "id"
     )
+    索引列 = _q(db, "PRAGMA index_list(endpoint_redactions)")
+    assert {列[1] for 列 in 索引列 if 列[3] == "c"} == {
+        "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_audit"
+    }
+    unique名稱 = next(列[1] for 列 in 索引列 if 列[2] == 1 and 列[3] == "u")
+    assert [列[2] for 列 in _q(db, f'PRAGMA index_info("{unique名稱}")')] == [
+        "target_type", "target_row_id", "json_path"
+    ]
+    with sqlite3.connect(db) as 連線:
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            連線.execute(
+                "INSERT INTO endpoint_redactions("
+                "id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+                "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at) "
+                "SELECT 'red_duplicate',invocation_id,target_type,target_row_id,json_path,"
+                "original_sha256,reason,actor_type,actor_id,audit_event_id,is_tombstone,redacted_at "
+                "FROM endpoint_redactions WHERE id='red_1'"
+            )
     with sqlite3.connect(db) as 連線:
         with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):
             連線.execute("UPDATE audit_events SET outcome='success' WHERE event_id='evt_legacy'")

@@ -57,6 +57,8 @@ class 連線代理:
         self.cleanup順序 = []
 
     def execute(self, SQL, *參數):
+        if self._階段 == "begin" and SQL == "BEGIN IMMEDIATE":
+            raise self._主要錯誤
         if SQL == "PRAGMA database_list":
             self.database_list次數 += 1
             if self._階段 == "acquire" and self.database_list次數 == 1:
@@ -98,13 +100,41 @@ def _注入連線(monkeypatch, 資料庫, 階段, 主要錯誤, **清理錯誤):
     return 代理
 
 
-def _assert控制乾淨(捕捉, 原始, marker):
+def _值含標記(值, marker, 已看=None):
+    """遞迴檢查test-owned aggregate，避免default repr隱藏proxy attributes。"""
+    if 已看 is None:
+        已看 = set()
+    if id(值) in 已看:
+        return False
+    已看.add(id(值))
+    if type(值) is str:
+        return marker in 值
+    if isinstance(值, BaseException):
+        return any(_值含標記(項, marker, 已看) for 項 in 值.args) or any(
+            _值含標記(項, marker, 已看) for 項 in (值.__cause__, 值.__context__)
+            if 項 is not None
+        )
+    if type(值) is dict:
+        return any(_值含標記(項, marker, 已看) for 配對 in 值.items() for 項 in 配對)
+    if type(值) in (tuple, list, set, frozenset):
+        return any(_值含標記(項, marker, 已看) for 項 in 值)
+    try:
+        屬性 = object.__getattribute__(值, "__dict__")
+    except (AttributeError, TypeError):
+        return False
+    return type(屬性) is dict and _值含標記(屬性, marker, 已看)
+
+
+def _assert控制乾淨(捕捉, 原始, marker, *失敗者標記):
     assert 捕捉.value is 原始
     assert 捕捉.value.args == (marker,)
     assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    for 失敗者 in 失敗者標記:
+        assert not _值含標記(捕捉.value, 失敗者)
     for 框架, _ in traceback.walk_tb(捕捉.value.__traceback__):
         if 框架.f_globals.get("__name__", "").startswith("繁中代理.發布介面.治理.稽核"):
-            assert marker not in repr(框架.f_locals)
+            for 禁止 in (marker, *失敗者標記):
+                assert not any(_值含標記(值, 禁止) for 值 in 框架.f_locals.values())
 
 
 def test_connect控制流程保持identity且不產生cleanup_owner(資料庫, monkeypatch):
@@ -121,7 +151,7 @@ def test_connect控制流程保持identity且不產生cleanup_owner(資料庫, m
 
 
 @pytest.mark.parametrize(
-    "階段", ["acquire", "path", "schema", "insert", "lastrowid", "cursor_close", "commit"],
+    "階段", ["acquire", "begin", "path", "schema", "insert", "lastrowid", "cursor_close", "commit"],
 )
 def test_各DB階段控制流程保持identity並依序cleanup(資料庫, monkeypatch, 階段):
     marker = f"PRIVATE_{階段}_MARKER"
@@ -132,7 +162,7 @@ def test_各DB階段控制流程保持identity並依序cleanup(資料庫, monkey
         SQLite稽核服務(str(資料庫), 時鐘=lambda: 2.0).append_audit_event(_事件())
 
     _assert控制乾淨(捕捉, 原始, marker)
-    if 階段 == "acquire":
+    if 階段 in ("acquire", "begin"):
         assert 代理.cleanup順序 == ["close"]
     else:
         assert 代理.cleanup順序 == ["rollback", "close"]
@@ -149,7 +179,7 @@ def test_primary控制優先於rollback與close控制(資料庫, monkeypatch):
     with pytest.raises(KeyboardInterrupt) as 捕捉:
         SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
 
-    assert 捕捉.value is 主要
+    _assert控制乾淨(捕捉, 主要, "PRIMARY_MARKER", "ROLLBACK_MARKER", "CLOSE_MARKER")
     assert 代理.cleanup順序 == ["rollback", "close"]
 
 
@@ -168,7 +198,10 @@ def test_ordinary_primary時cleanup控制winner與rollback_before_close(
     with pytest.raises(預期) as 捕捉:
         SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
 
-    assert 捕捉.value is (回滾 if rollback_control else 關閉)
+    winner = 回滾 if rollback_control else 關閉
+    winner_marker = "ROLLBACK_WINNER" if rollback_control else "CLOSE_WINNER"
+    loser_marker = "CLOSE_WINNER" if rollback_control else "ROLLBACK_WINNER"
+    _assert控制乾淨(捕捉, winner, winner_marker, "ordinary primary", loser_marker)
     assert 代理.cleanup順序 == ["rollback", "close"]
 
 
@@ -181,7 +214,7 @@ def test_postcommit_close政策不誤報ordinary但傳遞控制(資料庫, monke
     if 控制關閉:
         with pytest.raises(KeyboardInterrupt) as 捕捉:
             SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
-        assert 捕捉.value is 關閉錯誤
+        _assert控制乾淨(捕捉, 關閉錯誤, "POST_COMMIT_CLOSE")
     else:
         receipt = SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
         assert receipt.committed is True
