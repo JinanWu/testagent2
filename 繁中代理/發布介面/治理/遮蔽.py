@@ -55,6 +55,7 @@ class SQLite不可逆遮蔽服務:
     __slots__ = ("_path",)
 
     def __init__(self, 資料庫路徑: str) -> None:
+        """驗證並保存既有SQLite資料庫路徑。"""
         if type(資料庫路徑) is not str or not 資料庫路徑 or 資料庫路徑.startswith("~"):
             raise 不可逆遮蔽錯誤(_固定錯誤) from None
         self._path = 資料庫路徑
@@ -121,15 +122,15 @@ class SQLite不可逆遮蔽服務:
                     raise ValueError
                 墓碑 = {"$tombstone": {"redaction_id": 遮蔽識別碼, "redacted_at": float(發生時間)}}
                 if JSON路徑 == "":
-                    摘要來源 = _canonical(payload).encode("utf-8")
+                    摘要來源 = _建立正規JSON(payload).encode("utf-8")
                     payload = 墓碑
                 else:
                     容器, 鍵 = _尋找JSON位置(payload, JSON路徑)
                     舊值 = 容器[鍵]
-                    摘要來源 = _canonical(舊值).encode("utf-8")
+                    摘要來源 = _建立正規JSON(舊值).encode("utf-8")
                     容器[鍵] = 墓碑
                 摘要 = hashlib.sha256(摘要來源).hexdigest()
-                新文字 = _canonical(payload)
+                新文字 = _建立正規JSON(payload)
                 事件 = AuditEvent(
                     event_id=稽核事件識別碼, occurred_at=發生時間,
                     action="audit.payload.redact", outcome="success",
@@ -200,6 +201,7 @@ setattr(SQLite不可逆遮蔽服務, "redact", SQLite不可逆遮蔽服務.遮�
 
 
 def _驗證請求(*值: Any) -> None:
+    """驗證exact管理授權、識別、路徑、原因與時間。"""
     授權, *文字, 時間 = 值
     if type(授權) is not bool or 授權 is not True or type(時間) not in (int, float):
         raise ValueError
@@ -217,10 +219,12 @@ def _驗證請求(*值: Any) -> None:
 
 
 def _安全識別碼(值: Any) -> bool:
+    """判斷值是否為有界且無空白的exact識別字串。"""
     return type(值) is str and 0 < len(值) <= 128 and not any(字元.isspace() for 字元 in 值)
 
 
 def _解析路徑(路徑: str) -> tuple[str, ...]:
+    """解析有界RFC 6901路徑並拒絕非法跳脫。"""
     if 路徑 == "":
         return ()
     if type(路徑) is not str or not 路徑.startswith("/") or len(路徑) > 4096:
@@ -234,6 +238,7 @@ def _解析路徑(路徑: str) -> tuple[str, ...]:
 
 
 def _尋找JSON位置(payload: Any, 路徑: str) -> tuple[Any, Any]:
+    """在exact JSON tree定位待遮蔽值的容器與鍵。"""
     片段列 = _解析路徑(路徑)
     現在 = payload
     for 片段 in 片段列[:-1]:
@@ -246,10 +251,12 @@ def _尋找JSON位置(payload: Any, 路徑: str) -> tuple[Any, Any]:
 
 
 def _下一層(現在: Any, 片段: str) -> Any:
+    """以已驗證片段讀取下一層exact JSON節點。"""
     return 現在[_索引(現在, 片段)]
 
 
 def _索引(現在: Any, 片段: str) -> Any:
+    """把路徑片段轉為exact dict鍵或有界list索引。"""
     if type(現在) is dict:
         return 片段
     if type(現在) is list and 片段.isascii() and 片段.isdigit() and (片段 == "0" or not 片段.startswith("0")):
@@ -260,6 +267,7 @@ def _索引(現在: Any, 片段: str) -> Any:
 
 
 def _解析JSON(文字: str) -> Any:
+    """解析並驗證有界、無重複鍵且finite的JSON。"""
     值 = json.loads(文字, parse_constant=_拒絕JSON常數, object_pairs_hook=_無重複物件)
     預算 = [0]
     if not _合法JSON(值, 0, 預算):
@@ -268,10 +276,12 @@ def _解析JSON(文字: str) -> Any:
 
 
 def _拒絕JSON常數(_值: str) -> None:
+    """拒絕JSON非有限常數。"""
     raise ValueError
 
 
 def _無重複物件(項目: list[tuple[str, Any]]) -> dict[str, Any]:
+    """建立無重複exact字串鍵的JSON物件。"""
     結果: dict[str, Any] = {}
     for 鍵, 值 in 項目:
         if 鍵 in 結果:
@@ -281,6 +291,7 @@ def _無重複物件(項目: list[tuple[str, Any]]) -> dict[str, Any]:
 
 
 def _合法JSON(值: Any, 深度: int, 預算: list[int]) -> bool:
+    """以共享節點與深度預算驗證exact JSON tree。"""
     預算[0] += 1
     if 預算[0] > 4096 or 深度 > 16:
         return False
@@ -295,17 +306,19 @@ def _合法JSON(值: Any, 深度: int, 預算: list[int]) -> bool:
     return False
 
 
-def _canonical(值: Any) -> str:
+def _建立正規JSON(值: Any) -> str:
+    """以固定排序與分隔符建立canonical JSON文字。"""
     return json.dumps(值, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _讀取payload(連線: sqlite3.Connection, 表格: str, 欄位: str,
                範圍: str, 參數: tuple[str, ...]) -> tuple[Any, str]:
-    metadata = 連線.execute(
+    """先在SQLite內檢查型別與位元組長度，再實體化payload。"""
+    中繼列 = 連線.execute(
         f"SELECT typeof({欄位}),length(CAST({欄位} AS BLOB)) FROM {表格} WHERE {範圍}", 參數,
     ).fetchall()
-    if (len(metadata) != 1 or metadata[0][0] != "text" or type(metadata[0][1]) is not int
-            or not 0 <= metadata[0][1] <= _最大JSON位元組):
+    if (len(中繼列) != 1 or 中繼列[0][0] != "text" or type(中繼列[0][1]) is not int
+            or not 0 <= 中繼列[0][1] <= _最大JSON位元組):
         raise ValueError
     列 = 連線.execute(f"SELECT {欄位} FROM {表格} WHERE {範圍}", 參數).fetchall()
     if len(列) != 1 or type(列[0][0]) is not str:
@@ -314,6 +327,7 @@ def _讀取payload(連線: sqlite3.Connection, 表格: str, 欄位: str,
 
 
 def _確認墓碑(payload: Any, 路徑: str, 遮蔽ID: str, 時間: int | float) -> None:
+    """確認既有payload仍保存指定不可逆墓碑。"""
     值 = payload if 路徑 == "" else _尋找JSON位置(payload, 路徑)[0][
         _尋找JSON位置(payload, 路徑)[1]
     ]
@@ -323,6 +337,7 @@ def _確認墓碑(payload: Any, 路徑: str, 遮蔽ID: str, 時間: int | float)
 
 def _相同重試(列: tuple[Any, ...], 遮蔽ID: str, 事件ID: str, 原因: str,
           操作者: str, 請求ID: str, 呼叫ID: str, 時間: int | float) -> bool:
+    """確認所有ledger與audit語意完全匹配同一冪等請求。"""
     return (type(列) is tuple and len(列) == 24 and 列[0] == 遮蔽ID
             and 列[3] == 原因.strip() and 列[4] == 操作者 and 列[5] == 事件ID
             and 列[6] == 1 and 列[7] == float(時間) and 列[8:11] == ("admin", 呼叫ID, 事件ID)
@@ -333,6 +348,7 @@ def _相同重試(列: tuple[Any, ...], 遮蔽ID: str, 事件ID: str, 原因: st
 
 
 def _結果(列: tuple[Any, ...], 類型: str, 列ID: str) -> dict[str, Any]:
+    """由可信ledger tuple建立fresh受控墓碑結果。"""
     return {"redaction_id": 列[0], "target_type": 類型, "target_row_id": 列ID,
             "json_path": 列[1], "original_sha256": 列[2], "reason": 列[3],
             "actor_id": 列[4], "audit_event_id": 列[5], "is_tombstone": True,
@@ -340,6 +356,7 @@ def _結果(列: tuple[Any, ...], 類型: str, 列ID: str) -> dict[str, Any]:
 
 
 def _驗證遮蔽schema(連線: sqlite3.Connection) -> None:
+    """在同一寫交易snapshot驗證完整遮蔽schema語意。"""
     if tuple(連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version")) != _LEDGER:
         raise ValueError
     欄位 = tuple(連線.execute("PRAGMA table_info(endpoint_redactions)"))
