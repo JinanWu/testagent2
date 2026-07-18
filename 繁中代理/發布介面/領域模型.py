@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import math
 import re
 from types import MappingProxyType
@@ -482,10 +482,17 @@ class PublishedWarning(_公開DTO):
 
 @dataclass(frozen=True, init=False)
 class PublishedError(_公開DTO):
-    """公開回應中的 frozen 錯誤摘要與 bounded structured details。"""
+    """公開回應中的frozen錯誤摘要。
 
-    __annotations__ = {"code": str, "message": str, "details": Any}
-    locals()["details"] = None
+    ``to_json``是唯一公開serialization API；內部不可變快照不支援
+    ``dataclasses.asdict``或``dataclasses.replace``。
+    """
+
+    code: str
+    message: str
+    __annotations__["details"] = Any
+    locals()["details"] = field(default=None, repr=False)
+    _細節正規JSON: str = field(default="{}", repr=False)
 
     def __init__(self, *位置參數: Any, **命名參數: Any) -> None:
         """驗證固定字串欄位，並建立 details 的深層不可變 JSON 快照。"""
@@ -497,10 +504,11 @@ class PublishedError(_公開DTO):
         原始細節: Any = None
         正規文字: str | None = None
         快照: Any = MappingProxyType({})
-        計數 = [0]
+        計數 = [0, 0, 0]
         object.__setattr__(self, "code", "")
         object.__setattr__(self, "message", "")
         object.__setattr__(self, "details", MappingProxyType({}))
+        object.__setattr__(self, "_細節正規JSON", "{}")
         try:
             if len(位置參數) > 3 or not set(命名參數).issubset({"code", "message", "details"}):
                 錯誤 = True
@@ -540,13 +548,18 @@ class PublishedError(_公開DTO):
         object.__setattr__(self, "code", 代碼)
         object.__setattr__(self, "message", 訊息)
         object.__setattr__(self, "details", 快照)
+        assert 正規文字 is not None
+        object.__setattr__(self, "_細節正規JSON", 正規文字)
 
     def to_json(self) -> JsonObject:
         """回傳固定鍵序與 fresh ordinary details containers。"""
+        細節 = 解析嚴格JSON(self._細節正規JSON)
+        if type(細節) is not dict:
+            raise ValueError("PublishedError 不符合公開契約")
         return {
             "code": self.code,
             "message": self.message,
-            "details": _解凍JSON值(self.details),
+            "details": 細節,
         }
 
 
@@ -593,6 +606,7 @@ class InvokeEnvelope:
                 for warning in frozen_warnings:
                     if type(warning) is not PublishedWarning:
                         raise ValueError("InvokeEnvelope 警告不符合公開契約")
+            正規錯誤 = None if error is None else _重建PublishedError(error)
             if ok:
                 if endpoint is None or invocation is None or error is not None:
                     raise ValueError("InvokeEnvelope 成功狀態不符合公開契約")
@@ -609,7 +623,7 @@ class InvokeEnvelope:
                 ("data", frozen_data),
                 ("usage", usage),
                 ("warnings", frozen_warnings),
-                ("error", error),
+                ("error", 正規錯誤),
             ):
                 object.__setattr__(self, 欄位, 值)
         except Exception:
@@ -624,7 +638,7 @@ class InvokeEnvelope:
             ):
                 object.__setattr__(self, 欄位, 值)
             ok = endpoint = invocation = data = usage = warnings = error = None
-            frozen_warnings = frozen_data = 欄位 = 值 = 型別 = warning = None
+            frozen_warnings = frozen_data = 正規錯誤 = 欄位 = 值 = 型別 = warning = None
             raise
 
     def to_json(self) -> JsonObject:
@@ -636,7 +650,7 @@ class InvokeEnvelope:
             "data": _解凍JSON值(self.data),
             "usage": None if self.usage is None else self.usage.to_json(),
             "warnings": [warning.to_json() for warning in self.warnings],
-            "error": None if self.error is None else self.error.to_json(),
+            "error": None if self.error is None else PublishedError.to_json(self.error),
         }
 
 
@@ -677,14 +691,20 @@ def _PublishedError細節合法(
     路徑: set[int],
     計數: list[int],
 ) -> bool:
-    """遞迴確認 details 僅含 bounded exact JSON builtins，並拒絕 cycle。"""
+    """遞迴確認bounded exact JSON，並在serialize前限制節點與估計bytes。"""
     值型別 = type(值)
+    計數[1] += 1
+    if 計數[1] > 1024:
+        return False
     if 值 is None or 值型別 is bool or 值型別 is int:
-        return True
+        計數[2] += 4 if 值 is None else len(str(值))
+        return 計數[2] <= 32768
     if 值型別 is float:
-        return math.isfinite(值)
+        計數[2] += len(repr(值))
+        return math.isfinite(值) and 計數[2] <= 32768
     if 值型別 is str:
-        return len(值) <= 4096
+        計數[2] += len(值.encode("utf-8")) + 2
+        return len(值) <= 4096 and 計數[2] <= 32768
     if 值型別 not in (dict, list) or 深度 > 8:
         return False
     容器id = id(值)
@@ -692,17 +712,42 @@ def _PublishedError細節合法(
         return False
     路徑.add(容器id)
     try:
+        計數[2] += 2
+        if 計數[2] > 32768:
+            return False
         if 值型別 is list:
             return all(_PublishedError細節合法(項目, 深度 + 1, 路徑, 計數) for 項目 in 值)
         for 鍵, 項目 in 值.items():
             計數[0] += 1
             if type(鍵) is not str or len(鍵) > 4096 or 計數[0] > 128:
                 return False
+            計數[2] += len(鍵.encode("utf-8")) + 3
+            if 計數[2] > 32768:
+                return False
             if not _PublishedError細節合法(項目, 深度 + 1, 路徑, 計數):
                 return False
         return True
     finally:
         路徑.remove(容器id)
+
+
+def _重建PublishedError(原始錯誤: Any) -> PublishedError:
+    """只從exact scalar與canonical JSON文字重建可信公開錯誤。"""
+    try:
+        if type(原始錯誤) is not PublishedError:
+            raise ValueError
+        代碼 = 原始錯誤.code
+        訊息 = 原始錯誤.message
+        正規文字 = 原始錯誤._細節正規JSON
+        if type(正規文字) is not str:
+            raise ValueError
+        細節 = 解析嚴格JSON(正規文字)
+        if type(細節) is not dict:
+            raise ValueError
+        return PublishedError(代碼, 訊息, 細節)
+    except Exception:
+        原始錯誤 = 代碼 = 訊息 = 正規文字 = 細節 = None
+        raise ValueError("PublishedError 不符合公開契約") from None
 
 
 def _稽核Metadata鍵合法(鍵: Any) -> bool:
