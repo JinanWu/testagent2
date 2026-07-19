@@ -19,9 +19,6 @@ from .領域模型 import PublishedWarning
 from .領域模型 import _重建PublishedError
 
 
-_控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
-
-
 class AuditSinkError(RuntimeError):
     """稽核 sink 無法確認提交時使用的固定錯誤型別。"""
 
@@ -59,7 +56,6 @@ def 附加稽核事件或失敗關閉(
     append_audit_event = None
     raw_receipt = None
     canonical_receipt = None
-    控制流程 = None
     try:
         if type(raw_event) is not AuditEvent:
             失敗 = True
@@ -113,22 +109,20 @@ def 附加稽核事件或失敗關閉(
                     失敗 = True
                 elif canonical_receipt.event_id != canonical_event.event_id:
                     失敗 = True
-    except _控制流程 as 捕捉控制:
-        控制流程 = 捕捉控制
-        控制流程.__cause__ = 控制流程.__context__ = None
-        控制流程.__suppress_context__ = True
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del sink, event, raw_event, canonical_actor, canonical_resource
+        del raw_actor, raw_resource, raw_metadata
+        del canonical_metadata, canonical_event, append_audit_event
+        del raw_receipt, canonical_receipt
+        raise
     except BaseException:
         失敗 = True
 
-    if 控制流程 is not None or 失敗 or type(canonical_receipt) is not AuditAppendReceipt:
+    if 失敗 or type(canonical_receipt) is not AuditAppendReceipt:
         sink = event = raw_event = canonical_actor = canonical_resource = None
         raw_actor = raw_resource = raw_metadata = None
         canonical_metadata = canonical_event = append_audit_event = None
         raw_receipt = canonical_receipt = None
-        if 控制流程 is not None:
-            控制盒 = [控制流程]
-            控制流程 = 捕捉控制 = None
-            _重拋稽核控制(控制盒.pop())
         raise AuditSinkError("稽核事件無法確認提交") from None
 
     result = canonical_receipt
@@ -138,16 +132,6 @@ def 附加稽核事件或失敗關閉(
     raw_receipt = canonical_receipt = None
     assert type(result) is AuditAppendReceipt
     return result
-
-
-def _重拋稽核控制(控制: BaseException) -> None:
-    """清除舊traceback後保留cleanup控制流程exact identity與args。"""
-    try:
-        控制.__traceback__ = None
-        raise 控制
-    except _控制流程:
-        控制 = None  # type: ignore[assignment]
-        raise
 
 
 def 建立成功信封(
