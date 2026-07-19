@@ -91,6 +91,7 @@ _索引指紋 = {
         "sqlite_autoindex_published_endpoints_1": (1, "pk", 0, ((0, "id"),)),
     },
     "endpoint_invocations": {
+        "idx_endpoint_invocations_retention_candidates": (0, "c", 0, ((17, "created_at"), (0, "id"))),
         "idx_endpoint_invocations_credential_created": (0, "c", 0, ((3, "credential_id"), (17, "created_at"))),
         "idx_endpoint_invocations_status_created": (0, "c", 0, ((7, "status"), (17, "created_at"))),
         "idx_endpoint_invocations_endpoint_created": (0, "c", 0, ((1, "endpoint_id"), (17, "created_at"))),
