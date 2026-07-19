@@ -277,18 +277,36 @@ _CSRF相依項清單.add(_登出CSRF標記)
 
 
 def 建立網頁認證路由器(
-    服務: 網頁工作階段服務, 驗證器: 帳密驗證器, *, 設定: 網頁安全設定,
+    服務: 網頁工作階段服務,
+    驗證器: 帳密驗證器,
+    *,
+    設定: 網頁安全設定,
+    目前工作階段相依項=None,
 ) -> APIRouter:
-    """建立明確 injected、無 global app 的 exact `/api/auth` router。"""
+    """建立明確injected、無global app的exact ``/api/auth`` router。
+
+    參數:
+        服務: authoritative Web工作階段服務。
+        驗證器: 將帳密轉為Web使用者的驗證函式。
+        設定: 與服務TTL一致的Web安全設定。
+        目前工作階段相依項: 可選的canonical current-session dependency；省略時建立新實例。
+    返回:
+        含login、me/session與logout操作的FastAPI APIRouter。
+    例外:
+        ValueError: 服務、驗證器、設定或注入相依不符合Web認證契約。
+    副作用:
+        建立路由並以弱參照登錄其authoritative TTL；不建立global app或資料庫連線。
+    """
     if (
         type(服務) is not 網頁工作階段服務
         or type(設定) is not 網頁安全設定
         or 網頁工作階段服務.讀取有效秒數(服務) != 設定.工作階段有效秒數
         or not callable(驗證器)
+        or (目前工作階段相依項 is not None and not callable(目前工作階段相依項))
     ):
         raise ValueError("Web認證設定無效")
     路由器 = APIRouter(prefix="/api/auth", tags=["web-auth"])
-    目前工作階段相依 = 建立目前工作階段相依項(服務, 設定)
+    目前工作階段相依 = 目前工作階段相依項 or 建立目前工作階段相依項(服務, 設定)
     @路由器.post(
         "/login", operation_id="登入網頁認證工作階段_api_auth_login_post",
         response_model=認證工作階段回應模型,
@@ -312,6 +330,15 @@ def 建立網頁認證路由器(
         _設定cookie(回應, 網頁工作階段Cookie名稱, 結果.工作階段權杖 or "", 結果, 設定)
         _設定cookie(回應, 網頁CSRFCookie名稱, 結果.CSRF權杖 or "", 結果, 設定)
         return _建立DTO(結果)
+    @路由器.get(
+        "/me", operation_id="取得目前網頁認證使用者_api_auth_me_get",
+        response_model=認證工作階段回應模型,
+        responses={200: {"headers": _SUCCESSOR文件}, 401: {}, 503: {}},
+        openapi_extra={"parameters": [
+            _COOKIE參數(網頁工作階段Cookie名稱, True),
+            _COOKIE參數(網頁CSRFCookie名稱, False),
+        ]},
+    )
     @路由器.get(
         "/session", operation_id="取得網頁認證工作階段_api_auth_session_get",
         response_model=認證工作階段回應模型,
