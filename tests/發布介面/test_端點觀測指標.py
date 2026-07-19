@@ -96,3 +96,28 @@ def test_畸形persisted_usage與動態欄位是operational_failure(指標資料
         )
     assert 捕捉.value.args == ("端點觀測不可取得",)
     assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+
+
+def test_兩筆18位成本同版本形成19位canonical總和(指標資料庫):
+    with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
+        for 序號, (版本, 成本) in enumerate((
+            ("price-carry", "999999999999999999"),
+            ("price-carry", "999999999999999999"),
+            ("price-other", "0.9999999999999999999999999999"),
+            ("price-carry", "0.0000000000000000000000000001"),
+        )):
+            用量 = ('{"input_tokens":0,"output_tokens":0,"total_tokens":0,'
+                  f'"estimated_cost_usd":"{成本}"}}')
+            連線.execute(
+                "INSERT INTO endpoint_invocations(id,endpoint_id,endpoint_version_id,request_id,status,"
+                "input_json,usage_json,pricing_version,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                (f"carry-{序號}", "ep-1", "ver-1", f"req-carry-{序號}", "succeeded",
+                 "{}", 用量, 版本, 99.0),
+            )
+    指標 = _服務(指標資料庫).讀取端點指標(
+        擁有者使用者識別碼="owner-1", 是否管理者=False, 端點識別碼="ep-1", 視窗秒數=50,
+    ).指標
+    分項 = {項.pricing_version: 項.estimated_cost_usd for 項 in 指標.cost_by_pricing_version}
+    assert 分項["price-carry"] == "1999999999999999998.0000000000000000000000000001"
+    assert 分項["price-other"] == "0.9999999999999999999999999999"
+    assert 指標.estimated_cost_usd == "1999999999999999999.003"

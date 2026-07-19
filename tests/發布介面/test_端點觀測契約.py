@@ -75,3 +75,38 @@ def test_結果聯集與協定固定方法():
     }
     assert get_type_hints(端點觀測查詢服務.讀取端點指標)["return"] == 指標查詢結果
     assert get_type_hints(端點觀測查詢服務.列出端點診斷)["return"] == 診斷查詢結果
+
+
+def test_聚合成本接受數學上界並拒絕溢位與非canonical():
+    上界 = "9223372036854775806999999999999999999.9999999990776627963145224193"
+    assert 定價版本成本("v", 上界).estimated_cost_usd == 上界
+    for 壞值 in (
+        "9223372036854775806999999999999999999.9999999990776627963145224194",
+        "10000000000000000000000000000000000000", "1e2", "01", "1.0", "-1",
+    ):
+        with pytest.raises(ValueError):
+            定價版本成本("v", 壞值)
+
+
+def test_成功outcome拒絕任意物件與DTO子類且零callback():
+    呼叫 = []
+    class 敵對:
+        def __getattribute__(self, 名稱):
+            呼叫.append(名稱)
+            raise AssertionError
+    with pytest.raises(TypeError):
+        指標查詢成功(敵對())
+    with pytest.raises(TypeError):
+        診斷查詢成功(敵對())
+    assert 呼叫 == []
+
+    class 子指標(端點指標):
+        pass
+    class 子頁(診斷頁):
+        pass
+    指標 = 子指標("ep", 觀測視窗(1.0, 2.0), 0, 0, 0, 0.0,
+              延遲摘要(0, None, None, None, None), 用量摘要(0, 0, 0, 0), "0", ())
+    with pytest.raises(TypeError):
+        指標查詢成功(指標)
+    with pytest.raises(TypeError):
+        診斷查詢成功(子頁((), None))
