@@ -515,10 +515,10 @@ def _遮蔽中繼選取() -> tuple[str, tuple[str, ...], tuple[str, ...]]:
 def _預檢遮蔽中繼(
     連線: sqlite3.Connection, 呼叫識別碼: str, 預算: list[int]
 ) -> tuple[tuple[Any, ...], ...]:
-    """只取得全數 ledger/audit typeof、BLOB 長度與安全純量並扣共享預算。"""
+    """保留每筆 ledger，先驗 metadata，再核對 audit 身分鏈結。"""
     選取, _, _ = _遮蔽中繼選取()
     游標 = 連線.execute(
-        f"SELECT {選取} FROM endpoint_redactions r JOIN audit_events a "
+        f"SELECT {選取} FROM endpoint_redactions r LEFT JOIN audit_events a "
         "ON a.id=r.audit_event_id WHERE r.invocation_id=? ORDER BY r.rowid LIMIT 9",
         (呼叫識別碼,),
     )
@@ -528,6 +528,7 @@ def _預檢遮蔽中繼(
         游標.close()
     if len(中繼列) > 8:
         raise ValueError
+    結果 = []
     for 項 in 中繼列:
         if type(項[0]) is not int:
             raise ValueError
@@ -537,7 +538,38 @@ def _預檢遮蔽中繼(
                 or 項[49] not in ("real", "integer") or 項[51] not in ("real", "integer")
                 or not all(_安全時間(項[索引]) for 索引 in (48, 50, 52))):
             raise ValueError
-    return 中繼列
+        身分 = _讀取遮蔽身分中繼(連線, 項[0], 呼叫識別碼)
+        規格 = ((1, 2), (3, 4), (19, 20), (21, 22), (23, 24), (41, 42))
+        if 身分[0] != 項[0]:
+            raise ValueError
+        for 值, (類型索引, 長度索引) in zip(身分[1:], 規格):
+            if (type(值) is not str or 項[類型索引] != "text"
+                    or len(值.encode("utf-8")) != 項[長度索引]):
+                raise ValueError
+        if (not all(_安全識別碼(值) for 值 in 身分[1:])
+                or 身分[2] != 呼叫識別碼 or 身分[3] != 身分[4]
+                or 身分[4] != 身分[5] or 身分[6] != 呼叫識別碼):
+            raise ValueError
+        結果.append((*項, *身分[1:]))
+    return tuple(結果)
+
+
+def _讀取遮蔽身分中繼(
+    連線: sqlite3.Connection, 資料列識別碼: int, 呼叫識別碼: str
+) -> tuple[Any, ...]:
+    """長度 gate 通過後取得 bounded redaction/audit IDs，不讀 JSON payload。"""
+    游標 = 連線.execute(
+        "SELECT r.rowid,r.id,r.invocation_id,r.audit_event_id,a.id,a.event_id,a.invocation_id "
+        "FROM endpoint_redactions r LEFT JOIN audit_events a ON a.id=r.audit_event_id "
+        "WHERE r.rowid=? AND r.invocation_id=?", (資料列識別碼, 呼叫識別碼),
+    )
+    try:
+        列 = 游標.fetchone()
+        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 7:
+            raise ValueError
+        return 列
+    finally:
+        游標.close()
 
 
 def _讀取驗證遮蔽列(
@@ -568,7 +600,7 @@ def _讀取驗證遮蔽列(
                 raise ValueError
         finally:
             游標.close()
-        if 列[:53] != 中繼:
+        if 列[:53] != 中繼[:53]:
             raise ValueError
         項 = 列[53:]
         _驗證遮蔽語意(連線, 項, 呼叫識別碼, 端點識別碼, 已見)

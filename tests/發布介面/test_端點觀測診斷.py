@@ -387,7 +387,7 @@ def _記錄payload存取(monkeypatch):
         return any(標記 in SQL for 標記 in (
             "error_json,usage_json,input_json,metadata_json,output_json ",
             "payload_json FROM run_events", "arguments_json,result_json,error_json ",
-            ",r.id,r.invocation_id",
+            "a.metadata_json,a.created_at",
         ))
     class 記錄游標:
         def __init__(self, 游標, payload): self._游標, self._payload = 游標, payload
@@ -455,5 +455,36 @@ def test_超大或腐敗遮蔽稽核metadata在完整limit加一頁payload前固
         連線.execute(trigger)
     payload查詢, payload讀取 = _記錄payload存取(monkeypatch)
     error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=2))
+    assert error.args == ("端點觀測不可取得",)
+    assert payload查詢 == payload讀取 == []
+
+
+@pytest.mark.parametrize("破壞", ("missing", "invocation", "event-id"))
+def test_懸空或錯鏈遮蔽稽核在所有payload讀取前固定失敗(
+    monkeypatch, 診斷資料庫, 破壞,
+):
+    if 破壞 == "missing":
+        with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+            連線.execute("PRAGMA foreign_keys=OFF")
+            連線.execute(
+                "INSERT INTO endpoint_redactions VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("red-dangling", "inv-c", "error", "inv-c", "", "a" * 64,
+                 "privacy", "admin", "admin", "audit-missing", 1, 123.0),
+            )
+    else:
+        _遮蔽錯誤欄位("", redaction="red-link", audit="audit-link", at=123.0,
+                 database=診斷資料庫)
+        with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+            trigger = 連線.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+            ).fetchone()[0]
+            連線.execute("DROP TRIGGER audit_events_no_update")
+            if 破壞 == "invocation":
+                連線.execute("UPDATE audit_events SET invocation_id='inv-a' WHERE id='audit-link'")
+            else:
+                連線.execute("UPDATE audit_events SET event_id='audit-other' WHERE id='audit-link'")
+            連線.execute(trigger)
+    payload查詢, payload讀取 = _記錄payload存取(monkeypatch)
+    error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
     assert error.args == ("端點觀測不可取得",)
     assert payload查詢 == payload讀取 == []
