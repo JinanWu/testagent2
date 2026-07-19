@@ -12,13 +12,17 @@ from typing import Any
 from urllib.parse import quote
 
 from .稽核結構 import _LEDGER
+from .稽核資料庫 import _清理控制鏈, _重拋控制
 
 _固定錯誤 = "五年保存候選無法規劃"
 _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _物件摘要 = (
+    ("index", "idx_audit_events_invocation_time", "03a537a0c35a067d670de5847e0430307be75a64327e2f20ef46a7a5a5e48795"),
     ("index", "idx_endpoint_invocations_retention_candidates", "2def7fde0fe646c07680c43625af0d54b6bae57f3f38e43ad9e6d33bdef64ba2"),
+    ("index", "idx_endpoint_redactions_invocation_time", "cac4ac46491563e2f2816acc8410386b9bde19c29c26784a189b6cca33d21a93"),
+    ("index", "idx_endpoint_tool_calls_invocation_created", "382d81f8bc5279ea532f62edc1f9f636c440468ec9c089085062b54358e04b6d"),
     ("table", "audit_events", "f70689d15850c48388d80779c6f0749669a376df51c46010ca6dab9b3c63c35f"),
     ("table", "endpoint_invocations", "22062cd8cb9a0b17d70cd20c46f3fd2bb9b72f157101f3465eee43453ea7ebc2"),
     ("table", "endpoint_redactions", "ead15701fb385c3c2652214c8bab6a3214ad056a10ede486b76a376092b91eec"),
@@ -114,8 +118,11 @@ class SQLite保存候選規劃器:
         self, 現在epoch秒: int | float, /, *, 候選上限: int = 100, 相依上限: int = 4096,
     ) -> tuple[保存候選計畫, ...]:
         """依根 created_at/id 排序回傳有界候選；不讀取任何 payload、雜湊或原因。"""
-        連線 = 路徑 = 根列 = 結果 = None
-        已開始 = False
+        連線 = 路徑 = 根列 = 結果列 = 列 = 期限 = 結果 = None
+        已開始 = 已提交 = 失敗 = False
+        主要控制盒: list[BaseException] = []
+        回滾控制盒: list[BaseException] = []
+        關閉控制盒: list[BaseException] = []
         try:
             _UTC時間(現在epoch秒, False)
             if type(候選上限) is not int or not 1 <= 候選上限 <= _最大候選:
@@ -147,22 +154,34 @@ class SQLite保存候選規劃器:
             結果 = tuple(結果列)
             連線.execute("COMMIT")
             已開始 = False
-        except (KeyboardInterrupt, SystemExit, GeneratorExit):
-            raise
+            已提交 = True
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            主要控制盒.append(捕捉控制)
+            捕捉控制 = None
         except BaseException:
-            結果 = None
+            失敗 = True
         if 連線 is not None and 已開始:
-            try:
-                連線.execute("ROLLBACK")
-            except BaseException:
-                結果 = None
+            回滾控制盒 = _回滾並取得控制(連線)
+            已開始 = False
         if 連線 is not None:
-            try:
-                連線.close()
-            except BaseException:
-                結果 = None
-        self = 現在epoch秒 = 候選上限 = 相依上限 = 連線 = 路徑 = 根列 = None
-        if type(結果) is not tuple:
+            關閉控制盒, 關閉失敗 = _關閉並取得控制(連線)
+            失敗 = 失敗 or 關閉失敗
+            連線 = None
+        self = 現在epoch秒 = 候選上限 = 相依上限 = 路徑 = None
+        根列 = 結果列 = 列 = 期限 = None
+        if 主要控制盒 or 回滾控制盒 or 關閉控制盒:
+            結果 = None
+        if 主要控制盒:
+            回滾控制盒.clear()
+            關閉控制盒.clear()
+            _重拋控制(主要控制盒.pop())
+        if 回滾控制盒:
+            關閉控制盒.clear()
+            _重拋控制(回滾控制盒.pop())
+        if 關閉控制盒:
+            _重拋控制(關閉控制盒.pop())
+        if 失敗 or not 已提交 or type(結果) is not tuple:
             結果 = None
             raise 保存候選規劃錯誤(_固定錯誤) from None
         return 結果
@@ -213,14 +232,76 @@ def _讀遮蔽(連線: sqlite3.Connection, 呼叫ID: str, 剩餘: list[int]) -> 
 
 def _開啟唯讀資料庫(路徑: str) -> sqlite3.Connection:
     """以 mode=ro 開啟既有、非空、regular、non-symlink SQLite 檔案。"""
-    檔案 = os.lstat(路徑)
-    實路徑 = os.path.realpath(路徑)
-    if not stat.S_ISREG(檔案.st_mode) or 檔案.st_size <= 0 or 實路徑 != 路徑:
-        raise ValueError
-    連線 = _建立連線("file:" + quote(實路徑, safe="/") + "?mode=ro", uri=True,
-                 isolation_level=None, timeout=30.0)
-    連線.execute("PRAGMA query_only=ON")
+    連線 = 游標 = 檔案 = 實路徑 = 查詢唯讀 = None
+    主要控制盒: list[BaseException] = []
+    關閉控制盒: list[BaseException] = []
+    失敗 = False
+    try:
+        檔案 = os.lstat(路徑)
+        實路徑 = os.path.realpath(路徑)
+        if not stat.S_ISREG(檔案.st_mode) or 檔案.st_size <= 0 or 實路徑 != 路徑:
+            raise ValueError
+        連線 = _建立連線("file:" + quote(實路徑, safe="/") + "?mode=ro", uri=True,
+                     isolation_level=None, timeout=30.0)
+        連線.execute("PRAGMA query_only=ON")
+        游標 = 連線.execute("PRAGMA query_only")
+        查詢唯讀 = 游標.fetchone()
+        if 查詢唯讀 != (1,) or 游標.fetchone() is not None:
+            raise ValueError
+        游標.close()
+        游標 = None
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        主要控制盒.append(捕捉控制)
+        捕捉控制 = None
+    except BaseException:
+        失敗 = True
+    路徑 = 游標 = 檔案 = 實路徑 = 查詢唯讀 = None
+    if (失敗 or 主要控制盒) and 連線 is not None:
+        關閉控制盒, 關閉失敗 = _關閉並取得控制(連線)
+        失敗 = 失敗 or 關閉失敗
+        連線 = None
+    if 主要控制盒:
+        關閉控制盒.clear()
+        _重拋控制(主要控制盒.pop())
+    if 關閉控制盒:
+        _重拋控制(關閉控制盒.pop())
+    if 失敗 or 連線 is None:
+        raise ValueError from None
     return 連線
+
+
+def _回滾並取得控制(連線: sqlite3.Connection) -> list[BaseException]:
+    """exact-once rollback；ordinary失敗固定化，控制流程留待precedence選擇。"""
+    控制盒: list[BaseException] = []
+    try:
+        連線.rollback()
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        BaseException.__setattr__(捕捉控制, "__traceback__", None)
+        控制盒.append(捕捉控制)
+        捕捉控制 = None
+    except BaseException:
+        pass
+    連線 = None  # type: ignore[assignment]
+    return 控制盒
+
+
+def _關閉並取得控制(連線: sqlite3.Connection) -> tuple[list[BaseException], bool]:
+    """exact-once close，分離控制流程與ordinary失敗。"""
+    控制盒: list[BaseException] = []
+    失敗 = False
+    try:
+        連線.close()
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        BaseException.__setattr__(捕捉控制, "__traceback__", None)
+        控制盒.append(捕捉控制)
+        捕捉控制 = None
+    except BaseException:
+        失敗 = True
+    連線 = None  # type: ignore[assignment]
+    return 控制盒, 失敗
 
 def _驗證路徑(連線: sqlite3.Connection, 路徑: str) -> None:
     """在 read transaction 內確認可見路徑與連線仍為同一 inode。"""
@@ -234,7 +315,10 @@ def _驗證路徑(連線: sqlite3.Connection, 路徑: str) -> None:
 
 def _驗證結構(連線: sqlite3.Connection) -> None:
     """在候選相同 read transaction 驗證完整 ledger 與相關 table/index/guard SQL。"""
-    if tuple(連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version")) != _LEDGER:
+    if tuple(連線.execute(
+        "SELECT version,name FROM published_api_schema_migrations ORDER BY version LIMIT ?",
+        (len(_LEDGER) + 1,),
+    )) != _LEDGER:
         raise ValueError
     參數 = ",".join("?" for _ in _物件名稱)
     物件 = tuple((類型, 名稱, hashlib.sha256(SQL.encode()).hexdigest())
@@ -243,6 +327,10 @@ def _驗證結構(連線: sqlite3.Connection) -> None:
         _物件名稱,
     ))
     if 物件 != _物件摘要:
+        raise ValueError
+    游標 = 連線.execute("PRAGMA index_info(sqlite_autoindex_run_events_2)")
+    執行索引 = tuple(游標.fetchmany(3))
+    if 執行索引 != ((0, 1, "invocation_id"), (1, 2, "sequence_number")):
         raise ValueError
 
 def _安全識別碼(值: Any) -> bool:
