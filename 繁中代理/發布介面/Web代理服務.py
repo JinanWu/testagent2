@@ -146,6 +146,59 @@ class 技能詳情:
     內容: str
 
 
+@dataclass(slots=True)
+class _技能走訪預算:
+    """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
+
+    剩餘項目數量: int
+
+
+def _走訪有界技能索引檔案(
+    技能根目錄: Path,
+    檔名: str,
+    候選上限: int,
+    走訪預算: _技能走訪預算 | None = None,
+) -> Iterator[Path]:
+    """有界掃描每個 entry；僅完整讀完的 bounded directory batch 才排序。"""
+    if 候選上限 <= 0:
+        return
+    if 走訪預算 is None:
+        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
+    已產出 = 0
+
+    def 走訪目錄(目錄: Path) -> Iterator[Path]:
+        """依名稱走訪完整小批次，目錄、候選與其他 entry 均消耗共享預算。"""
+        nonlocal 已產出
+        if 已產出 >= 候選上限:
+            return
+        try:
+            with os.scandir(目錄) as 掃描器:
+                項目清單 = []
+                for 項目 in 掃描器:
+                    項目清單.append(項目)
+                    if len(項目清單) > 走訪預算.剩餘項目數量:
+                        走訪預算.剩餘項目數量 = 0
+                        raise ValueError("技能目錄走訪超過上限")
+        except FileNotFoundError:
+            return
+        走訪預算.剩餘項目數量 -= len(項目清單)
+        項目清單.sort(key=lambda 項目: 項目.name)
+        for 項目 in 項目清單:
+            if 已產出 >= 候選上限:
+                return
+            if 項目.name.startswith("."):
+                continue
+            路徑 = 目錄 / 項目.name
+            if 項目.name == 檔名:
+                已產出 += 1
+                yield 路徑
+                continue
+            if 項目.is_dir(follow_symlinks=False):
+                yield from 走訪目錄(路徑)
+
+    yield from 走訪目錄(技能根目錄)
+
+
 def 序列化聊天回應(回應: 聊天回應) -> dict[str, object]:
     """將自有 DTO 序列化為 frozen Chat JSON allowlist；不讀取其他屬性。"""
     if type(回應) is not 聊天回應:
