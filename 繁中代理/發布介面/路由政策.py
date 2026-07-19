@@ -178,9 +178,10 @@ def _相依樹相同(左, 右) -> bool:
     return all(_相依樹相同(甲, 乙) for 甲, 乙 in zip(左[8], 右[8]))
 
 
-def 擷取路由器政策(路由器: APIRouter):
+def 擷取路由器政策(路由器: APIRouter, *, 檢查生命週期: bool = True):
     """擷取 router/route Depends、Dependant tree 與完整回應序列化政策。"""
-    驗證預設生命週期(路由器)
+    if 檢查生命週期:
+        驗證預設生命週期(路由器)
     路由器值 = _字典(路由器)
     前綴 = dict.get(路由器值, "prefix")
     if type(前綴) is not str:
@@ -273,9 +274,9 @@ def 建立安全路由器(擷取):
     return 安全
 
 
-def 驗證政策(路由器: APIRouter, 預期, *, 要求路由身份: bool) -> None:
+def 驗證政策(路由器: APIRouter, 預期, *, 要求路由身份: bool, 檢查生命週期: bool = True) -> None:
     """重播來源或驗證 sanitized/final router 的政策與依賴樹。"""
-    目前 = 擷取路由器政策(路由器)
+    目前 = 擷取路由器政策(路由器, 檢查生命週期=檢查生命週期)
     if 目前[0] != 預期[0] or len(目前[2]) != len(預期[2]) or len(目前[1]) != len(預期[1]):
         _失敗()
     for 現宣告, 預宣告 in zip(目前[1], 預期[1]):
