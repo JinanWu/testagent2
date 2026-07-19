@@ -1,4 +1,4 @@
-import { API_ROUTES, ApiResponseError, apiRequest } from './client'
+import { API_ROUTES, ApiResponseError, apiRequest, exactObject } from './client'
 
 const MAX_USERNAME_LENGTH = 128
 const MAX_PASSWORD_LENGTH = 256
@@ -27,40 +27,13 @@ export class AuthError extends Error {
   }
 }
 
-function exactDataValues(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
-  try {
-    if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) {
-      return null
-    }
-    const descriptors = Object.getOwnPropertyDescriptors(value)
-    const ownKeys = Reflect.ownKeys(descriptors)
-    if (ownKeys.length !== keys.length || !keys.every((key) => ownKeys.includes(key))) {
-      return null
-    }
-    const values: Record<string, unknown> = {}
-    for (const key of keys) {
-      const descriptor = descriptors[key]
-      if (
-        descriptor === undefined || !('value' in descriptor) ||
-        descriptor.enumerable !== true || descriptor.configurable !== true || descriptor.writable !== true
-      ) {
-        return null
-      }
-      values[key] = descriptor.value
-    }
-    return values
-  } catch {
-    return null
-  }
-}
-
 function isBoundedString(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maximum
 }
 
 export function parseAuthSession(value: unknown): AuthSession {
-  const outer = exactDataValues(value, ['user', 'csrf_token'])
-  const user = outer === null ? null : exactDataValues(outer.user, ['id', 'username', 'role'])
+  const outer = exactObject(value, ['user', 'csrf_token'])
+  const user = outer === null ? null : exactObject(outer.user, ['id', 'username', 'role'])
   if (outer === null || user === null) {
     throw new AuthError()
   }
