@@ -79,10 +79,13 @@ def 建立生命週期(相依項: 發布介面相依項):
     async def 生命週期(應用程式: FastAPI) -> AsyncIterator[None]:
         """依序啟動資源，失敗即反向清理；正常結束亦反向 exact-once 關閉。"""
         已啟動資源: list[發布介面資源] = []
+        啟動錯誤: BaseException | None = None
         try:
             for 工廠 in 相依項.資源工廠清單:
                 已啟動資源.append(await 工廠())
-        except BaseException as 啟動錯誤:
+        except BaseException as 原始啟動錯誤:
+            啟動錯誤 = 原始啟動錯誤
+        if 啟動錯誤 is not None:
             清理錯誤 = await _反向關閉資源(已啟動資源)
             if isinstance(啟動錯誤, _控制流程錯誤):
                 _拋出控制流程(啟動錯誤)
