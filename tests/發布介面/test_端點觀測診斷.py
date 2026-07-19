@@ -173,6 +173,18 @@ def test_cursor拒絕正確簽章但非canonical_JSON且canonical_roundtrip成�
     _固定失敗(lambda: _列出(服務, cursor=非canonical, limit=1))
 
 
+@pytest.mark.parametrize(("payload", "window"), (
+    ([1, "ep-1", 50.0, 50.0, 100.0, 95.0, "inv-c"], 50),
+    ([1, "ep-1", True, 99.0, 100.0, 95.0, "inv-c"], 1),
+    ([1.0, "ep-1", 50, 50.0, 100.0, 95.0, "inv-c"], 50),
+    ([True, "ep-1", 50, 50.0, 100.0, 95.0, "inv-c"], 50),
+    ([1, "ep-1", 50, 50.0, 100.0, 95, "inv-c"], 50),
+))
+def test_cursor拒絕正確簽章JSON的數值與bool純量別名(診斷資料庫, payload, window):
+    壞游標 = _簽署(payload)
+    _固定失敗(lambda: _列出(_服務(診斷資料庫), cursor=壞游標, limit=1, window=window))
+
+
 @pytest.mark.parametrize("破壞", ("tamper", "wrong-key", "bad-base64", "oversize", "endpoint", "window", "position"))
 def test_cursor完整scope簽章格式與大小驗證皆固定失敗且無raw(診斷資料庫, 破壞):
     服務 = _服務(診斷資料庫)

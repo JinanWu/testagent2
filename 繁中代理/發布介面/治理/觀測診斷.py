@@ -292,12 +292,18 @@ def _解碼游標(金鑰: bytes, 游標: str, 端點: str, 秒數: int) -> tuple
     if len(原始) <= 32 or not hmac.compare_digest(原始[-32:], hmac.new(金鑰, 原始[:-32], hashlib.sha256).digest()):
         raise ValueError
     值 = json.loads(原始[:-32], parse_constant=lambda _值: (_ for _ in ()).throw(ValueError()))
-    if (type(值) is not list or len(值) != 7 or 值[:3] != [1, 端點, 秒數]
-            or not all(type(項) in (int, float) and math.isfinite(項) and 項 >= 0 for 項 in 值[3:6])
-            or float(值[3]) + 秒數 != float(值[4]) or not _安全識別碼(值[6])):
+    if (type(值) is not list or len(值) != 7
+            or type(值[0]) is not int or int.__eq__(值[0], 1) is not True
+            or type(值[1]) is not str or not _安全識別碼(值[1])
+            or str.__eq__(值[1], 端點) is not True
+            or type(值[2]) is not int or not 1 <= 值[2] <= 2_592_000
+            or int.__eq__(值[2], 秒數) is not True
+            or not all(type(項) is float and math.isfinite(項) and 項 >= 0 for 項 in 值[3:6])
+            or 值[3] + 秒數 != 值[4]
+            or type(值[6]) is not str or not _安全識別碼(值[6])):
         raise ValueError
     if not hmac.compare_digest(
-        _編碼游標內容(值[1], 值[2], 值[3], 值[4], 值[5], 值[6]), 原始[:-32]
+        _編碼游標內容(端點, 秒數, 值[3], 值[4], 值[5], 值[6]), 原始[:-32]
     ):
         raise ValueError
-    return float(值[3]), float(值[4]), float(值[5]), 值[6]
+    return 值[3], 值[4], 值[5], 值[6]
