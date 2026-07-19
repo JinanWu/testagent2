@@ -316,3 +316,36 @@ def test_late_KISG時raw_payload亦自建立項目traceback清除(monkeypatch, �
     for marker in ("RAW_INPUT", "RAW_METADATA", "RAW_OUTPUT", "RAW_ERROR", "RAW_EVENT",
                    "RAW_ARG", "RAW_RESULT", "RAW_TOOL_ERROR"):
         _assert框架locals無標記(捕捉.value, marker)
+
+
+@pytest.mark.parametrize("位置", ("invocation", "child"))
+def test_超大JSON在任何payload_SELECT與fetchone前固定失敗(monkeypatch, 診斷資料庫, 位置):
+    from 繁中代理.發布介面.治理 import 查詢投影
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        if 位置 == "invocation":
+            連線.execute("UPDATE endpoint_invocations SET error_json="
+                       "'{\"x\":\"' || printf('%.*c',1048576,'x') || '\"}' WHERE id='inv-c'")
+        else:
+            連線.execute("UPDATE run_events SET payload_json="
+                       "'{\"x\":\"' || printf('%.*c',1048576,'x') || '\"}' WHERE id='run-inv-c'")
+    原始 = 查詢投影._建立連線
+    payload查詢 = []
+    payload讀取 = []
+    class 記錄游標:
+        def __init__(self, 游標, 是payload): self._游標, self._是payload = 游標, 是payload
+        def fetchone(self):
+            if self._是payload: payload讀取.append(1)
+            return self._游標.fetchone()
+        def __getattr__(self, 名稱): return getattr(self._游標, 名稱)
+    class 記錄連線:
+        def __init__(self, 連線): self._連線 = 連線
+        def execute(self, SQL, *參數):
+            是payload = (")),error_json,usage_json" in SQL
+                       or ")),payload_json FROM run_events" in SQL)
+            if 是payload: payload查詢.append(SQL)
+            return 記錄游標(self._連線.execute(SQL, *參數), 是payload)
+        def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
+    monkeypatch.setattr(查詢投影, "_建立連線", lambda *參數, **關鍵字: 記錄連線(原始(*參數, **關鍵字)))
+    error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+    assert error.args == ("端點觀測不可取得",)
+    assert payload查詢 == payload讀取 == []

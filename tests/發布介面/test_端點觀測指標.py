@@ -121,3 +121,34 @@ def test_兩筆18位成本同版本形成19位canonical總和(指標資料庫):
     assert 分項["price-carry"] == "1999999999999999998.0000000000000000000000000001"
     assert 分項["price-other"] == "0.9999999999999999999999999999"
     assert 指標.estimated_cost_usd == "1999999999999999999.003"
+
+
+def test_超大usage在任何payload_SELECT與fetchone前固定失敗(monkeypatch, 指標資料庫):
+    from 繁中代理.發布介面.治理 import 查詢投影
+    with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
+        連線.execute(
+            "UPDATE endpoint_invocations SET usage_json="
+            "'{\"x\":\"' || printf('%.*c',1048576,'x') || '\"}' WHERE id='i2'"
+        )
+    原始 = 查詢投影._建立連線
+    payload查詢 = []
+    payload讀取 = []
+    class 記錄游標:
+        def __init__(self, 游標, 是payload): self._游標, self._是payload = 游標, 是payload
+        def fetchone(self):
+            if self._是payload: payload讀取.append(1)
+            return self._游標.fetchone()
+        def __getattr__(self, 名稱): return getattr(self._游標, 名稱)
+    class 記錄連線:
+        def __init__(self, 連線): self._連線 = 連線
+        def execute(self, SQL, *參數):
+            是payload = ",usage_json FROM endpoint_invocations" in SQL
+            if 是payload: payload查詢.append(SQL)
+            return 記錄游標(self._連線.execute(SQL, *參數), 是payload)
+        def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
+    monkeypatch.setattr(查詢投影, "_建立連線", lambda *參數, **關鍵字: 記錄連線(原始(*參數, **關鍵字)))
+    with pytest.raises(端點觀測查詢錯誤) as 捕捉:
+        _服務(指標資料庫).讀取端點指標(
+            擁有者使用者識別碼="owner-1", 是否管理者=False, 端點識別碼="ep-1", 視窗秒數=50)
+    assert 捕捉.value.args == ("端點觀測不可取得",)
+    assert payload查詢 == payload讀取 == []
