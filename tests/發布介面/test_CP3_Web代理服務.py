@@ -194,3 +194,190 @@ def test_工作階段詳情限制訊息筆數與aggregate_bytes(monkeypatch):
     monkeypatch.setattr(模組, "_最大工作階段總位元組", 3)
     with pytest.raises(Web服務不可用):
         服務.讀取工作階段("user-1", "root-1")
+
+
+def _建立技能(根, 分類, 名稱, 描述="說明"):
+    """建立最小真實 SKILL.md fixture。"""
+    路徑 = 根 / 分類 / 名稱 / "SKILL.md"
+    路徑.parent.mkdir(parents=True)
+    路徑.write_text(f"---\nname: {名稱}\ndescription: {描述}\n---\n\n# 完整內容\n", encoding="utf-8")
+    return 路徑
+
+
+def test_技能列表與詳情只使用授權roots且不洩漏path(tmp_path, monkeypatch):
+    """CP3-WEB-SKILL-01：enabled filter、allowlist 與完整 bounded 內容。"""
+    根 = tmp_path / "skills"
+    路徑 = _建立技能(根, "docs", "writer")
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(
+        假工作階段庫(), 假使用者庫(skill_roots=[根], enabled_skills={"writer"}),
+        lambda **kwargs: None,
+    )
+
+    列表 = 序列化技能列表(服務.列出技能("user-1"))
+    詳情 = 序列化技能詳情(服務.讀取技能("user-1", "writer"))
+
+    assert 列表 == {"skills": [{"id": "writer", "name": "writer", "category": "docs", "description": "說明"}]}
+    assert "path" not in str(列表) and 詳情["content"] == 路徑.read_text(encoding="utf-8")
+
+
+def test_技能重複與symlink皆fail_closed(tmp_path, monkeypatch):
+    """CP3-WEB-SKILL-02：duplicate 不任選第一個，symlink detail 統一 404。"""
+    根一, 根二 = tmp_path / "one", tmp_path / "two"
+    _建立技能(根一, "docs", "same")
+    _建立技能(根二, "docs", "same")
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    重複服務 = Web代理服務(
+        假工作階段庫(), 假使用者庫(skill_roots=[根一, 根二]), lambda **kwargs: None,
+    )
+    with pytest.raises(Web服務不可用):
+        重複服務.列出技能("user-1")
+    with pytest.raises(Web資源不存在):
+        重複服務.讀取技能("user-1", "same")
+
+    真檔 = _建立技能(tmp_path / "target", "docs", "linked")
+    連結根 = tmp_path / "links"
+    連結 = 連結根 / "docs" / "linked" / "SKILL.md"
+    連結.parent.mkdir(parents=True)
+    連結.symlink_to(真檔)
+    連結服務 = Web代理服務(
+        假工作階段庫(), 假使用者庫(skill_roots=[連結根]), lambda **kwargs: None,
+    )
+    with pytest.raises(Web資源不存在):
+        連結服務.讀取技能("user-1", "linked")
+
+
+def test_技能列表在解析前排除外部symlink與超大檔案(tmp_path, monkeypatch):
+    """CP3-WEB-SKILL-03：unsafe candidates 不得被 metadata parser 讀取或洩漏。"""
+    外部標記, 超大標記 = "OUTSIDE_LIST_SECRET", "OVERSIZED_LIST_SECRET"
+    外部檔 = _建立技能(tmp_path / "outside", "docs", "linked", 外部標記)
+    根 = tmp_path / "skills"
+    連結 = 根 / "docs" / "linked" / "SKILL.md"
+    連結.parent.mkdir(parents=True)
+    連結.symlink_to(外部檔)
+    超大檔 = _建立技能(根, "docs", "huge", 超大標記)
+    超大檔.write_bytes(超大檔.read_bytes() + b"x" * (256 * 1024))
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(
+        假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None,
+    )
+
+    回應文字 = str(序列化技能列表(服務.列出技能("user-1")))
+
+    assert 回應文字 == "{'skills': []}"
+    assert 外部標記 not in 回應文字 and 超大標記 not in 回應文字
+
+
+def test_技能合法與不安全同ID不得讓合法候選勝出(tmp_path, monkeypatch):
+    """Quality P1：valid + unsafe duplicate 在 list/detail 都必須 fail closed。"""
+    根 = tmp_path / "skills"
+    _建立技能(根, "docs", "same")
+    外部檔 = _建立技能(tmp_path / "outside", "docs", "same")
+    連結 = 根 / "tools" / "same" / "SKILL.md"
+    連結.parent.mkdir(parents=True)
+    連結.symlink_to(外部檔)
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+    with pytest.raises(Web服務不可用):
+        服務.列出技能("user-1")
+    with pytest.raises(Web資源不存在):
+        服務.讀取技能("user-1", "same")
+
+
+def test_技能讀取偵測parent_directory替換競態(tmp_path, monkeypatch):
+    """Quality P1：逐 component descriptor-relative open 後仍須偵測 parent replacement。"""
+    模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
+    根 = tmp_path / "skills"
+    _建立技能(根, "docs", "demo")
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    原始開啟 = os.open
+    已替換 = False
+
+    def 競態開啟(路徑, flags, *args, **kwargs):
+        nonlocal 已替換
+        if 路徑 == "SKILL.md" and kwargs.get("dir_fd") is not None and not 已替換:
+            已替換 = True
+            舊目錄 = 根 / "docs" / "demo-old"
+            (根 / "docs" / "demo").rename(舊目錄)
+            _建立技能(根, "docs", "demo", "替換內容")
+        return 原始開啟(路徑, flags, *args, **kwargs)
+
+    monkeypatch.setattr(模組.os, "open", 競態開啟)
+    服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+    with pytest.raises(Web資源不存在):
+        服務.讀取技能("user-1", "demo")
+    assert 已替換
+
+
+def test_技能索引限制entries與aggregate_bytes(tmp_path, monkeypatch):
+    """Quality P2：大量技能 entry 與內容總量不得無界讀取。"""
+    模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
+    根 = tmp_path / "skills"
+    _建立技能(根, "docs", "one")
+    _建立技能(根, "docs", "two")
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+    monkeypatch.setattr(模組, "_最大技能索引項目數量", 1)
+    with pytest.raises(Web服務不可用):
+        服務.列出技能("user-1")
+    monkeypatch.setattr(模組, "_最大技能索引項目數量", 10)
+    monkeypatch.setattr(模組, "_最大技能索引總位元組", 1)
+    with pytest.raises(Web服務不可用):
+        服務.列出技能("user-1")
+
+
+def test_技能索引巨大root只消耗走訪上限加一項目(tmp_path, monkeypatch):
+    """Quality P2：非候選目錄也消耗 traversal budget，overflow 不得耗盡 root。"""
+    模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
+    根 = tmp_path / "skills"
+    根.mkdir()
+    for 編號 in range(100):
+        (根 / f"junk-{編號:03d}").mkdir()
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    monkeypatch.setattr(模組, "_最大技能走訪項目數量", 2)
+    原始scandir = os.scandir
+    已消耗root項目 = 0
+
+    class 計數掃描器:
+        def __init__(self, 掃描器):
+            self._掃描器 = 掃描器
+
+        def __enter__(self):
+            self._掃描器.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._掃描器.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal 已消耗root項目
+            項目 = next(self._掃描器)
+            已消耗root項目 += 1
+            return 項目
+
+    def 計數scandir(路徑):
+        掃描器 = 原始scandir(路徑)
+        return 計數掃描器(掃描器) if os.fspath(路徑) == os.fspath(根) else 掃描器
+
+    monkeypatch.setattr(模組.os, "scandir", 計數scandir)
+    服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+
+    with pytest.raises(Web服務不可用):
+        服務.列出技能("user-1")
+
+    assert 已消耗root項目 == 3
+
+
+def test_有界技能走訪只在完整小批次後依名稱排序(tmp_path):
+    """Quality P2：合法小 root 的每層完整 bounded batch 維持 deterministic。"""
+    模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
+    根 = tmp_path / "skills"
+    for 分類 in ("c", "a", "b"):
+        _建立技能(根, 分類, f"skill-{分類}")
+
+    路徑清單 = list(模組._走訪有界技能索引檔案(根, "SKILL.md", 10))
+
+    assert [路徑.parent.name for 路徑 in 路徑清單] == ["skill-a", "skill-b", "skill-c"]
