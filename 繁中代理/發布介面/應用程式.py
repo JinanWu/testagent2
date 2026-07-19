@@ -27,6 +27,7 @@ _最大路由器數 = 64
 _最大資源工廠數 = 64
 _最大路由數 = 512
 _最大操作識別碼長度 = 256
+_健康狀態操作識別碼 = "取得健康狀態_healthz_get"
 _路由器清單描述器 = 發布介面相依項.__dict__["路由器清單"]
 _資源工廠清單描述器 = 發布介面相依項.__dict__["資源工廠清單"]
 
@@ -203,11 +204,20 @@ def _重建相依項(相依項: 發布介面相依項) -> 發布介面相依項:
         工廠原值 = None
 
 
+def _讀取端點身份(路由: APIRoute):
+    """直接讀 exact APIRoute instance dict，不執行 endpoint property/descriptor。"""
+    路由字典 = object.__getattribute__(路由, "__dict__")
+    if type(路由字典) is not dict or "endpoint" not in 路由字典:
+        raise ValueError(路由設定錯誤訊息)
+    return dict.__getitem__(路由字典, "endpoint")
+
+
 def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
     """驗證完整 HTTP inventory 並擷取可 replay 的 identity/value 描述。"""
     已見操作: set[tuple[str, str]] = {("GET", "/healthz")}
     已見有效識別碼: set[str] = set()
     描述清單 = []
+    操作描述 = {}
     路由總數 = 0
     for 路由器 in 路由器清單:
         前綴 = 路由器.prefix
@@ -221,6 +231,7 @@ def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
         for 路由 in 路由清單:
             if type(路由) is not APIRoute:
                 raise ValueError(路由設定錯誤訊息)
+            端點 = _讀取端點身份(路由)
             路徑 = 路由.path
             方法集合 = 路由.methods
             明確識別碼 = 路由.operation_id
@@ -246,26 +257,36 @@ def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
                     raise ValueError(路由設定錯誤訊息)
                 已見操作.add((方法, 路徑))
                 方法描述.append(方法)
+                操作描述[(方法, 路徑)] = (端點, 有效識別碼)
             路由描述.append(
                 (id(路由), 路徑, id(方法集合), tuple(sorted(方法描述)), 明確識別碼, 有效識別碼)
             )
         描述清單.append((id(路由器), id(路由清單), tuple(路由描述)))
-    return tuple(描述清單), frozenset(已見操作)
+    return tuple(描述清單), 操作描述
 
 
-def _重播路由描述(路由器清單: tuple[APIRouter, ...], 預期描述) -> None:
-    """拒絕 validation 與 include 間的 router/route/method/path mutation。"""
-    目前描述, _ = _讀取路由描述(路由器清單)
+def _重播路由描述(路由器清單: tuple[APIRouter, ...], 預期描述, 預期操作描述) -> None:
+    """拒絕 source structure、endpoint identity 與 effective ID mutation。"""
+    目前描述, 目前操作描述 = _讀取路由描述(路由器清單)
     if 目前描述 != 預期描述:
         raise ValueError(路由設定錯誤訊息)
+    if set(目前操作描述) != set(預期操作描述):
+        raise ValueError(路由設定錯誤訊息)
+    for 操作, (目前端點, 目前識別碼) in 目前操作描述.items():
+        預期端點, 預期識別碼 = 預期操作描述[操作]
+        if 目前端點 is not 預期端點 or 目前識別碼 != 預期識別碼:
+            raise ValueError(路由設定錯誤訊息)
 
 
-def _驗證應用路由(應用程式: FastAPI, 預期操作: frozenset[tuple[str, str]]) -> None:
-    """include 後重驗 final APIRoute inventory，禁止空 methods fail-open。"""
+def _驗證應用路由(應用程式: FastAPI, 預期操作描述, 健康端點) -> None:
+    """include 後逐 method/path 鎖定 final endpoint identity 與 effective ID。"""
+    完整預期描述 = dict(預期操作描述)
+    完整預期描述[("GET", "/healthz")] = (健康端點, _健康狀態操作識別碼)
     實際操作: set[tuple[str, str]] = set()
     已見有效識別碼: set[str] = set()
     for 路由 in 應用程式.routes:
         if isinstance(路由, APIRoute):
+            端點 = _讀取端點身份(路由)
             方法集合 = 路由.methods
             明確識別碼 = 路由.operation_id
             有效識別碼 = 明確識別碼 if 明確識別碼 is not None else 路由.unique_id
@@ -283,10 +304,14 @@ def _驗證應用路由(應用程式: FastAPI, 預期操作: frozenset[tuple[str
             for 方法 in 方法集合:
                 if type(方法) is not str or 方法 not in _允許方法:
                     raise ValueError(路由設定錯誤訊息)
-                if (方法, 路由.path) in 實際操作:
+                操作 = (方法, 路由.path)
+                if 操作 in 實際操作 or 操作 not in 完整預期描述:
                     raise ValueError(路由設定錯誤訊息)
-                實際操作.add((方法, 路由.path))
-    if 實際操作 != set(預期操作):
+                預期端點, 預期識別碼 = 完整預期描述[操作]
+                if 端點 is not 預期端點 or 有效識別碼 != 預期識別碼:
+                    raise ValueError(路由設定錯誤訊息)
+                實際操作.add(操作)
+    if 實際操作 != set(完整預期描述):
         raise ValueError(路由設定錯誤訊息)
 
 
@@ -391,7 +416,7 @@ def 建立生命週期(相依項: 發布介面相依項):
 def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
     """由 exact reconstructed composition 建立隔離 app。"""
     安全相依項 = _重建相依項(相依項)
-    路由描述, 預期操作 = _讀取路由描述(安全相依項.路由器清單)
+    路由描述, 預期操作描述 = _讀取路由描述(安全相依項.路由器清單)
     應用程式 = FastAPI(
         title=發布介面標題,
         version=發布介面版本,
@@ -402,14 +427,14 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
         lifespan=建立生命週期(安全相依項),
     )
 
-    @應用程式.get("/healthz", status_code=200)
+    @應用程式.get("/healthz", status_code=200, operation_id=_健康狀態操作識別碼)
     def 取得健康狀態() -> dict[str, str]:
         """回傳不接觸任何 injected resource 的固定健康狀態。"""
         return {"status": "ok"}
 
     for 路由器 in 安全相依項.路由器清單:
         應用程式.include_router(路由器)
-    _重播路由描述(安全相依項.路由器清單, 路由描述)
-    _驗證應用路由(應用程式, 預期操作)
+    _重播路由描述(安全相依項.路由器清單, 路由描述, 預期操作描述)
+    _驗證應用路由(應用程式, 預期操作描述, 取得健康狀態)
     del 相依項
     return 應用程式
