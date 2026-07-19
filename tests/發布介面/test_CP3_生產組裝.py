@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 def test_生產設定缺必要DB_origin_provider皆fail_closed(tmp_path):
     """DB、exact origin與provider任一缺少或不合法皆立即拒絕。"""
     資料庫 = tmp_path / "production.sqlite3"
-    有效 = {"資料庫路徑": 資料庫, "允許來源": ("https://web.example",), "模型供應器": "fake"}
+    有效 = {"資料庫路徑": 資料庫, "允許來源": ("https://web.example",), "模型供應器": "fake", "模型名稱": "fake"}
     for 覆寫 in (
         {"資料庫路徑": None},
         {"允許來源": ()},
@@ -34,6 +34,7 @@ def test_生產設定不可變且允許loopback開發cookie(tmp_path):
     設定 = 生產設定(
         tmp_path / "development.sqlite3",
         ("http://localhost:5173",),
+        "fake",
         "fake",
         Cookie安全=False,
         工作階段有效秒數=60,
@@ -80,7 +81,7 @@ def test_生產base組裝auth_health_openapi與生命週期exact_once(tmp_path):
     """base composition不靠global runtime，並由lifespan擁有明確資源。"""
     紀錄 = []
     建構器 = _附加相依建構器(紀錄)
-    設定 = 生產設定(tmp_path / "app.sqlite3", ("https://web.example",), "fake")
+    設定 = 生產設定(tmp_path / "app.sqlite3", ("https://web.example",), "fake", "fake")
     應用 = 建立生產應用程式(設定, 建構器)
     me路由 = next(路由 for 路由 in 應用.routes if getattr(路由, "path", None) == "/api/auth/me")
     assert me路由.dependant.dependencies[0].call is 建構器.目前工作階段相依
@@ -99,7 +100,7 @@ def test_生產組裝拒絕非protocol結果(tmp_path):
             """模擬錯誤建構結果。"""
             return []
 
-    設定 = 生產設定(tmp_path / "bad.sqlite3", ("https://web.example",), "fake")
+    設定 = 生產設定(tmp_path / "bad.sqlite3", ("https://web.example",), "fake", "fake")
     with pytest.raises(ValueError, match="^生產組裝無效$"):
         建立生產應用程式(設定, 錯誤建構器())
 
@@ -115,7 +116,7 @@ def test_生產組裝保留建構器程式錯誤identity與traceback(tmp_path):
             """模擬建構器實作錯誤。"""
             raise 預期錯誤
 
-    設定 = 生產設定(tmp_path / "failure.sqlite3", ("https://web.example",), "fake")
+    設定 = 生產設定(tmp_path / "failure.sqlite3", ("https://web.example",), "fake", "fake")
     with pytest.raises(RuntimeError) as 捕捉:
         建立生產相依項(設定, 故障建構器())
 
