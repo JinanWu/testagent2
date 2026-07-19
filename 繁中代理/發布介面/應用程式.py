@@ -54,6 +54,7 @@ class _生命週期例外鏈清除器:
     _內層: Any
 
     def __init__(self, 內層):
+        """保存單次 lifespan context。"""
         self._內層 = 內層
 
     async def __aenter__(self):
