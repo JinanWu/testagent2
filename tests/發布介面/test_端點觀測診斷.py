@@ -1,5 +1,9 @@
 """GOV SQLite owner-safe diagnostics 的分頁、授權與資料外洩回歸測試。"""
 
+import base64
+import hashlib
+import hmac
+import json
 import sqlite3
 from contextlib import closing
 
@@ -127,3 +131,76 @@ def test_safe_allowlist_usage與tool_names精確(診斷資料庫):
     assert (項.error_code, 項.schema_path, 項.latency_ms, 項.usage.total_tokens) == (
         "safe_code", "$.safe", 12.5, 5)
     assert 項.tool_names == ("a_tool", "z_tool")
+
+
+def _固定失敗(呼叫):
+    with pytest.raises(端點觀測查詢錯誤) as 捕捉:
+        呼叫()
+    assert 捕捉.value.args == ("端點觀測不可取得",)
+    assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    return 捕捉.value
+
+
+def _簽署(payload, key=金鑰):
+    內容 = json.dumps(payload, separators=(",", ":")).encode("ascii")
+    return base64.urlsafe_b64encode(內容 + hmac.new(key, 內容, hashlib.sha256).digest()).rstrip(b"=").decode()
+
+
+@pytest.mark.parametrize("破壞", ("tamper", "wrong-key", "bad-base64", "oversize", "endpoint", "window", "position"))
+def test_cursor完整scope簽章格式與大小驗證皆固定失敗且無raw(診斷資料庫, 破壞):
+    服務 = _服務(診斷資料庫)
+    游標 = _列出(服務, limit=1).頁.next_cursor
+    if 破壞 == "tamper":
+        壞游標 = 游標[:-1] + ("A" if 游標[-1] != "A" else "B")
+    elif 破壞 == "wrong-key":
+        壞游標 = 游標
+        服務 = _服務(診斷資料庫, key=b"wrong-signing-key-exactly-32bytes")
+    elif 破壞 == "bad-base64":
+        壞游標 = "***"
+    elif 破壞 == "oversize":
+        壞游標 = "A" * 1025
+    elif 破壞 == "endpoint":
+        壞游標 = 游標
+        error = _固定失敗(lambda: _列出(服務, endpoint="ep-2", owner="owner-2", cursor=壞游標, limit=1))
+        assert "RAW_" not in repr(error)
+        return
+    elif 破壞 == "window":
+        壞游標 = 游標
+        error = _固定失敗(lambda: _列出(服務, cursor=壞游標, limit=1, window=49))
+        assert "RAW_" not in repr(error)
+        return
+    else:
+        壞游標 = _簽署([1, "ep-1", 50, 50.0, 100.0, -1.0, "inv-c"])
+    error = _固定失敗(lambda: _列出(服務, cursor=壞游標, limit=1))
+    assert "RAW_" not in repr(error)
+
+
+def test_raw來源全部不進DTO_repr_exception或cursor(診斷資料庫):
+    結果 = _列出(_服務(診斷資料庫), limit=1)
+    公開 = repr(結果)
+    assert 結果.頁.next_cursor is not None
+    for marker in ("RAW_INPUT", "RAW_METADATA", "RAW_OUTPUT", "RAW_ERROR", "RAW_EVENT",
+                   "RAW_ARG", "RAW_RESULT", "RAW_TOOL_ERROR"):
+        assert marker not in 公開 and marker not in 結果.頁.next_cursor
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        連線.execute("PRAGMA ignore_check_constraints=ON")
+        連線.execute("UPDATE endpoint_invocations SET latency_ms='RAW_FAILURE' WHERE id='inv-c'")
+    error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+    assert "RAW_FAILURE" not in repr(error)
+
+
+@pytest.mark.parametrize(("sql", "params"), (
+    ("UPDATE endpoint_invocations SET status=x'6661696c6564' WHERE id='inv-c'", ()),
+    ("UPDATE endpoint_invocations SET latency_ms=-1 WHERE id='inv-c'", ()),
+    ("UPDATE endpoint_invocations SET completed_at=? WHERE id='inv-c'", (float("inf"),)),
+    ("UPDATE endpoint_invocations SET usage_json='{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":4,\"estimated_cost_usd\":\"0\"}' WHERE id='inv-c'", ()),
+    ("UPDATE endpoint_invocations SET error_json='[]' WHERE id='inv-c'", ()),
+    ("UPDATE endpoint_invocations SET error_json='{\"code\":7}' WHERE id='inv-c'", ()),
+    ("UPDATE endpoint_tool_calls SET tool_name=x'5241575f544f4f4c' WHERE invocation_id='inv-c'", ()),
+    ("UPDATE run_events SET payload_json='{\"x\":NaN}' WHERE invocation_id='inv-c'", ()),
+))
+def test_malformed_DB_types_nonfinite_negative_usage_custom_rows固定operational(診斷資料庫, sql, params):
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        連線.execute("PRAGMA ignore_check_constraints=ON")
+        連線.execute(sql, params)
+    _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
