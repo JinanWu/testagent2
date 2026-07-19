@@ -34,6 +34,10 @@ _新節點鍵 = frozenset({
     "security_scopes_param_name", "own_oauth_scopes", "parent_oauth_scopes",
     "use_cache", "path", "scope",
 })
+_新衍生鍵 = frozenset({
+    "_is_security_scheme", "_uses_scopes", "computed_scope", "cache_key", "oauth_scopes",
+    "is_async_gen_callable", "is_gen_callable", "is_coroutine_callable",
+})
 _路由欄位 = (
     "response_model", "status_code", "response_model_include", "response_model_exclude",
     "response_model_by_alias", "response_model_exclude_unset",
@@ -73,8 +77,20 @@ def _字典(物件: Any) -> dict:
     return 值
 
 
+def _鍵集合(值: dict) -> frozenset[str]:
+    """只從 exact string keys 建立集合，避免 hostile hash/equality。"""
+    結果 = []
+    for 鍵 in dict.keys(值):
+        if type(鍵) is not str:
+            _失敗()
+        結果.append(鍵)
+    return frozenset(結果)
+
+
 def _判定框架形狀(相依鍵, 安全鍵, 節點鍵) -> str:
     """只接受已審核的 FastAPI 0.115/0.139 exact instance shapes。"""
+    if type(相依鍵) is not frozenset or type(安全鍵) is not frozenset or type(節點鍵) is not frozenset:
+        _失敗()
     if 相依鍵 == _舊Depends鍵 and 安全鍵 == _舊Security鍵 and 節點鍵 == _舊節點鍵:
         return "舊"
     if 相依鍵 == _新Depends鍵 and 安全鍵 == _新Security鍵 and 節點鍵 == _新節點鍵:
@@ -83,7 +99,7 @@ def _判定框架形狀(相依鍵, 安全鍵, 節點鍵) -> str:
 
 
 _框架形狀 = _判定框架形狀(
-    frozenset(_字典(Depends())), frozenset(_字典(Security())), frozenset(_字典(Dependant()))
+    _鍵集合(_字典(Depends())), _鍵集合(_字典(Security())), _鍵集合(_字典(Dependant()))
 )
 
 
@@ -101,6 +117,21 @@ def _範圍(值: Any):
     return tuple(結果)
 
 
+def _快取鍵(值: Any, 呼叫: Any, 新版: bool):
+    """驗證 framework final graph 的 identity/scopes/scope cache metadata。"""
+    長度 = 3 if 新版 else 2
+    if type(值) is not tuple or len(值) != 長度 or 值[0] is not 呼叫 or type(值[1]) is not tuple:
+        _失敗()
+    for 項目 in 值[1]:
+        if type(項目) is not str:
+            _失敗()
+    if 新版:
+        scope = 值[2]
+        if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
+            _失敗()
+    return (tuple(值[1]), 值[2] if 新版 else None)
+
+
 def _相依宣告(值: Any):
     """以 call identity 與 exact scalar 擷取 Depends/Security。"""
     字典 = _字典(值)
@@ -112,13 +143,13 @@ def _相依宣告(值: Any):
         預期鍵 = _新Depends鍵
     elif (_框架形狀, 類別) == ("新", Security):
         預期鍵 = _新Security鍵
-    if 預期鍵 is None or frozenset(dict.keys(字典)) != 預期鍵:
+    if 預期鍵 is None or _鍵集合(字典) != 預期鍵:
         _失敗()
     快取 = dict.__getitem__(字典, "use_cache")
     if type(快取) is not bool:
         _失敗()
     scope = dict.get(字典, "scope")
-    if scope not in (None, "function", "request") or (scope is not None and type(scope) is not str):
+    if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
         _失敗()
     範圍 = _範圍(dict.get(字典, "scopes")) if 類別 is Security else None
     return (類別, dict.__getitem__(字典, "dependency"), 快取, scope, 範圍)
@@ -145,9 +176,27 @@ def _相依樹(節點: Dependant, 計數: list[int]):
     if 計數[0] > _最大節點:
         _失敗()
     值 = _字典(節點)
-    預期鍵 = _舊節點鍵 if _框架形狀 == "舊" else _新節點鍵
-    if frozenset(dict.keys(值)) != 預期鍵:
-        _失敗()
+    實際鍵 = _鍵集合(值)
+    if _框架形狀 == "舊":
+        if 實際鍵 != _舊節點鍵:
+            _失敗()
+        衍生描述 = (_快取鍵(dict.get(值, "cache_key"), dict.get(值, "call"), False),)
+    else:
+        衍生鍵 = 實際鍵 - _新節點鍵
+        if not _新節點鍵.issubset(實際鍵) or not 衍生鍵.issubset(_新衍生鍵):
+            _失敗()
+        布林欄位 = []
+        for 名稱 in ("_is_security_scheme", "_uses_scopes", "is_async_gen_callable", "is_gen_callable", "is_coroutine_callable"):
+            項目 = dict.get(值, 名稱)
+            if 名稱 in 衍生鍵 and type(項目) is not bool:
+                _失敗()
+            布林欄位.append(項目 if 名稱 in 衍生鍵 else None)
+        計算scope = dict.get(值, "computed_scope")
+        if "computed_scope" in 衍生鍵 and (type(計算scope) is not str or 計算scope not in ("function", "request")):
+            _失敗()
+        oauth範圍 = _範圍(dict.get(值, "oauth_scopes")) if "oauth_scopes" in 衍生鍵 else None
+        快取描述 = _快取鍵(dict.get(值, "cache_key"), dict.get(值, "call"), True) if "cache_key" in 衍生鍵 else None
+        衍生描述 = (tuple(sorted(衍生鍵)), tuple(布林欄位), 計算scope, oauth範圍, 快取描述)
     子節點 = dict.get(值, "dependencies")
     if type(子節點) is not list:
         _失敗()
@@ -166,16 +215,16 @@ def _相依樹(節點: Dependant, 計數: list[int]):
         自有範圍 = _範圍(dict.get(值, "own_oauth_scopes"))
         父範圍 = _範圍(dict.get(值, "parent_oauth_scopes"))
         scope = dict.get(值, "scope")
-        if scope not in (None, "function", "request") or (scope is not None and type(scope) is not str):
+        if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
             _失敗()
-    return (dict.get(值, "call"), 快取, *純量, 自有範圍, 父範圍, scope, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
+    return (dict.get(值, "call"), 快取, *純量, 自有範圍, 父範圍, scope, 衍生描述, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
 
 
 def _相依樹相同(左, 右) -> bool:
     """以 call identity 與 exact ordered children 比較樹。"""
-    if 左[0] is not 右[0] or 左[1:8] != 右[1:8] or len(左[8]) != len(右[8]):
+    if 左[0] is not 右[0] or 左[1:9] != 右[1:9] or len(左[9]) != len(右[9]):
         return False
-    return all(_相依樹相同(甲, 乙) for 甲, 乙 in zip(左[8], 右[8]))
+    return all(_相依樹相同(甲, 乙) for 甲, 乙 in zip(左[9], 右[9]))
 
 
 def 擷取路由器政策(路由器: APIRouter, *, 檢查生命週期: bool = True):
@@ -223,7 +272,7 @@ def 擷取路由器政策(路由器: APIRouter, *, 檢查生命週期: bool = Tr
                 _失敗()
         if not _可接受回應模型(政策["response_model"]):
             _失敗()
-        if not isinstance(政策["response_class"], (type, DefaultPlaceholder)):
+        if not isinstance(政策["response_class"], type) and type(政策["response_class"]) is not DefaultPlaceholder:
             _失敗()
         if type(政策["generate_unique_id_function"]) is not DefaultPlaceholder and not callable(政策["generate_unique_id_function"]):
             _失敗()

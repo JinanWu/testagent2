@@ -12,7 +12,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
 from .相依項 import 發布介面相依項, 發布介面資源
-from .路由政策 import 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
+from .路由政策 import _框架形狀, 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
 from .設定 import (
     允許路由前綴,
     啟動錯誤訊息,
@@ -440,9 +440,15 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
 
     擁有生命週期 = 應用程式.router.lifespan_context
     for 安全路由器, 政策 in zip(安全路由器清單, 政策清單):
+        原路由數 = len(應用程式.router.routes)
         應用程式.include_router(安全路由器)
         應用程式.router.lifespan_context = 擁有生命週期
         驗證政策(安全路由器, 政策, 要求路由身份=False)
+        if _框架形狀 == "新":
+            if len(應用程式.router.routes) != 原路由數 + 1:
+                raise ValueError(路由設定錯誤訊息)
+            del 應用程式.router.routes[原路由數:]
+            應用程式.router.routes.extend(安全路由器.routes)
     for 路由器, 政策 in zip(安全相依項.路由器清單, 政策清單):
         驗證政策(路由器, 政策, 要求路由身份=True, 檢查生命週期=False)
     if (
