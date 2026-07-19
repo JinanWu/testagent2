@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 from fastapi import APIRouter, FastAPI
+from fastapi.routing import APIRoute
 from starlette.datastructures import State
 
 from 繁中代理.發布介面.相依項 import 發布介面相依項
@@ -250,6 +251,75 @@ def test_include期間operation_ID突變由source_replay偵測(monkeypatch):
     monkeypatch.setattr(FastAPI, "include_router", include後突變)
     with pytest.raises(ValueError, match=f"^{路由設定錯誤訊息}$"):
         建立應用程式(發布介面相依項((路由器,), ()))
+
+
+def test_include期間替換endpoint再還原仍拒絕且不回傳app(monkeypatch):
+    """final route 必須保留 capture 時的 exact handler identity，而非只重播 source。"""
+    路由器 = _路由器("/probe")
+    來源路由 = 路由器.routes[0]
+    assert isinstance(來源路由, APIRoute)
+    原始端點 = 來源路由.endpoint
+    原始include = FastAPI.include_router
+
+    def 惡意端點():
+        return {"malicious": True}
+
+    def include期間替換(self, supplied_router, *args, **kwargs):
+        替換路由 = supplied_router.routes[0]
+        assert isinstance(替換路由, APIRoute)
+        替換路由.endpoint = 惡意端點
+        try:
+            return 原始include(self, supplied_router, *args, **kwargs)
+        finally:
+            替換路由.endpoint = 原始端點
+
+    monkeypatch.setattr(FastAPI, "include_router", include期間替換)
+    結果 = None
+    with pytest.raises(ValueError, match=f"^{路由設定錯誤訊息}$"):
+        結果 = 建立應用程式(發布介面相依項((路由器,), ()))
+    assert 結果 is None
+    assert 來源路由.endpoint is 原始端點
+
+
+def test_stateful_unique_ID_generator跨include漂移會拒絕():
+    """source effective ID A 即使 final B 仍 unique，也不得 publication。"""
+    呼叫清單 = []
+
+    def 產生識別碼(_):
+        呼叫清單.append(len(呼叫清單) + 1)
+        return "source-A" if len(呼叫清單) == 1 else "final-B"
+
+    路由器 = APIRouter(prefix="/api/auth", generate_unique_id_function=產生識別碼)
+    路由器.add_api_route("/probe", lambda: None, methods=["GET"])
+    assert 呼叫清單 == [1]
+    with pytest.raises(ValueError, match=f"^{路由設定錯誤訊息}$"):
+        建立應用程式(發布介面相依項((路由器,), ()))
+    assert 呼叫清單 == [1, 2]
+
+
+def test_final_route保留callable_object身份與source有效ID():
+    """ordinary deterministic include 保留 non-function handler identity 與 operation ID。"""
+    class 處理器:
+        def __call__(self):
+            return {"ok": True}
+
+        def __eq__(self, other):
+            raise AssertionError("不得比較 endpoint")
+
+        def __hash__(self):
+            raise AssertionError("不得雜湊 endpoint")
+
+    端點 = 處理器()
+    路由器 = APIRouter(prefix="/api/auth")
+    路由器.add_api_route("/probe", 端點, methods=["GET"])
+    來源路由 = 路由器.routes[0]
+    assert isinstance(來源路由, APIRoute)
+    應用程式 = 建立應用程式(發布介面相依項((路由器,), ()))
+    最終路由 = next(
+        路由 for 路由 in 應用程式.routes if isinstance(路由, APIRoute) and 路由.path == "/api/auth/probe"
+    )
+    assert 最終路由.endpoint is 端點
+    assert 最終路由.unique_id == 來源路由.unique_id
 
 
 def test_traceback_marker_scanner_known_leaking_positive_control():
