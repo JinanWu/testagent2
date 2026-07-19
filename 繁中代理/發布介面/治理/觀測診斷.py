@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from .查詢投影 import (
     _控制流程, _安全可空字串, _安全時間, _安全文字, _安全識別碼,
-    _核對投影墓碑, _清理控制鏈, _清理資源操作, _解析可空JSON,
+    _扣除JSON長度, _核對投影墓碑, _清理控制鏈, _清理資源操作, _解析可空JSON,
     _讀取有限列, _讀取驗證遮蔽列, _重拋控制, _開啟唯讀快照,
     _驗證路徑與結構,
 )
@@ -23,6 +23,7 @@ from .觀測契約 import (
 
 _固定錯誤 = "端點觀測不可取得"
 _用量欄位 = frozenset(("input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"))
+_最大子列 = 4096
 
 
 class 診斷查詢錯誤(RuntimeError):
@@ -76,20 +77,35 @@ def 列出安全診斷(
                 端點, 開始, 結束, 位置時間, 位置時間, 位置識別碼,
             )
             查詢游標 = 連線.execute(
-                "SELECT id,request_id,endpoint_version_id,status,error_json,usage_json,latency_ms,"
-                "created_at,completed_at,input_json,metadata_json,output_json FROM endpoint_invocations "
+                "SELECT id,request_id,endpoint_version_id,status,latency_ms,created_at,completed_at,"
+                "typeof(error_json),length(CAST(error_json AS BLOB)),"
+                "typeof(usage_json),length(CAST(usage_json AS BLOB)),"
+                "typeof(input_json),length(CAST(input_json AS BLOB)),"
+                "typeof(metadata_json),length(CAST(metadata_json AS BLOB)),"
+                "typeof(output_json),length(CAST(output_json AS BLOB)) FROM endpoint_invocations "
                 "WHERE endpoint_id=? AND created_at>=? AND created_at<?" + 條件
                 + " ORDER BY created_at DESC,id DESC LIMIT ?", (*參數, 上限 + 1),
             )
-            資料列 = _讀取有限列(查詢游標, 12)
+            資料列 = _讀取有限列(查詢游標, 17)
             查詢游標.close(); 查詢游標 = None
+            預算 = [0, 0]
+            子中繼 = {}
+            子總數 = 0
+            for 列 in 資料列:
+                _驗證呼叫中繼(列, 預算)
+                事件列 = _讀取子中繼(連線, 列[0], True, 預算)
+                工具列 = _讀取子中繼(連線, 列[0], False, 預算)
+                子總數 += len(事件列) + len(工具列)
+                if 子總數 > _最大子列:
+                    raise ValueError
+                子中繼[列[0]] = (事件列, 工具列)
             項目們 = []
             for 列 in 資料列[:上限]:
-                項目們.append(_建立項目(連線, 端點, 列))
+                項目們.append(_建立項目(連線, 端點, 列, 子中繼[列[0]], 預算))
             下一頁 = None
             if len(資料列) > 上限:
                 最後 = 資料列[上限 - 1]
-                下一頁 = _編碼游標(金鑰, 端點, 視窗秒數, 開始, 結束, 最後[7], 最後[0])
+                下一頁 = _編碼游標(金鑰, 端點, 視窗秒數, 開始, 結束, 最後[5], 最後[0])
             結果 = 診斷查詢成功(診斷頁(tuple(項目們), 下一頁))
         連線.commit(); 已開始 = False
     except _控制流程 as 捕捉控制:
@@ -107,6 +123,7 @@ def 列出安全診斷(
         if 控制 is None and 清理控制: 控制 = 清理控制.pop()
     路徑 = 時鐘 = 金鑰 = 擁有者 = 管理者 = 端點 = 視窗秒數 = 上限 = 游標文字 = None
     連線 = 查詢游標 = 列 = 資料列 = 參數 = 條件 = 項目們 = 最後 = 下一頁 = 清理控制 = None
+    預算 = 子中繼 = 事件列 = 工具列 = 子總數 = None
     開始 = 結束 = 位置時間 = 位置識別碼 = None
     if 控制 is not None:
         控制盒 = [控制]; 控制 = 結果 = None; _重拋控制(控制盒.pop())
@@ -116,28 +133,98 @@ def 列出安全診斷(
     return 結果
 
 
-def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...]) -> 診斷項目:
-    """驗證一列與所有 raw/tombstone children，只發布 dedicated safe DTO。"""
-    預算 = [0, 0]
-    if (not all(_安全識別碼(列[i]) for i in (0, 1, 2)) or not _安全文字(列[3])
+def _驗證呼叫中繼(列: tuple[Any, ...], 預算: list[int]) -> None:
+    """驗證 invocation safe scalars 與五個 JSON storage metadata。"""
+    if (not all(_安全識別碼(列[i]) for i in (0, 1, 2)) or type(列[3]) is not str
             or 列[3] not in ("pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key")
-            or not _安全時間(列[6], True) or not _安全時間(列[7]) or not _安全時間(列[8], True)):
+            or not _安全時間(列[4], True) or not _安全時間(列[5])
+            or not _安全時間(列[6], True)):
         raise ValueError
-    輸入, 中繼, 輸出, 錯誤, 用量 = (_解析可空JSON(值, 預算) for 值 in (列[9], 列[10], 列[11], 列[4], 列[5]))
-    事件列 = _有限查詢(連線,
-        "SELECT id,payload_json FROM run_events WHERE invocation_id=? ORDER BY sequence_number", (列[0],), 2)
+    for 索引 in range(7, 17, 2):
+        _扣除JSON長度(列[索引], 列[索引 + 1], 預算, 索引 == 11)
+
+
+def _讀取子中繼(連線: Any, 呼叫: str, 是事件: bool,
+           預算: list[int]) -> tuple[tuple[Any, ...], ...]:
+    """只讀 bounded child safe scalars/type/length，不選取 payload。"""
+    if 是事件:
+        SQL = ("SELECT id,invocation_id,sequence_number,event_type,created_at,typeof(payload_json),"
+               "length(CAST(payload_json AS BLOB)) FROM run_events "
+               "WHERE invocation_id=? ORDER BY sequence_number")
+        欄寬 = 7
+    else:
+        SQL = ("SELECT id,invocation_id,run_event_id,sequence_number,tool_name,outcome,latency_ms,"
+               "retry_of_tool_call_id,created_at,typeof(arguments_json),"
+               "length(CAST(arguments_json AS BLOB)),typeof(result_json),"
+               "length(CAST(result_json AS BLOB)),typeof(error_json),"
+               "length(CAST(error_json AS BLOB)) FROM endpoint_tool_calls "
+               "WHERE invocation_id=? ORDER BY sequence_number")
+        欄寬 = 15
+    游標 = 連線.execute(SQL, (呼叫,))
+    try:
+        資料列 = _讀取有限列(游標, 欄寬)
+    finally:
+        游標.close()
+    for 列 in 資料列:
+        if 是事件:
+            if (not _安全識別碼(列[0]) or 列[1] != 呼叫 or type(列[1]) is not str
+                    or type(列[2]) is not int or 列[2] <= 0 or not _安全文字(列[3], 256)
+                    or not _安全時間(列[4])):
+                raise ValueError
+            _扣除JSON長度(列[5], 列[6], 預算, True)
+        else:
+            if (not _安全識別碼(列[0]) or 列[1] != 呼叫 or type(列[1]) is not str
+                    or not _安全文字(列[2], 可空=True) or type(列[3]) is not int or 列[3] <= 0
+                    or not _安全文字(列[4], 256) or type(列[5]) is not str
+                    or 列[5] not in ("success", "error") or not _安全時間(列[6], True)
+                    or not _安全文字(列[7], 可空=True) or not _安全時間(列[8])):
+                raise ValueError
+            _扣除JSON長度(列[9], 列[10], 預算, True)
+            _扣除JSON長度(列[11], 列[12], 預算)
+            _扣除JSON長度(列[13], 列[14], 預算)
+            if (列[5] == "success") != (列[11] == "text" and 列[13] == "null"):
+                raise ValueError
+    return 資料列
+
+
+def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
+          子中繼: tuple[tuple[tuple[Any, ...], ...], tuple[tuple[Any, ...], ...]],
+          預算: list[int]) -> 診斷項目:
+    """metadata gate 全頁通過後，按 exact authoritative keys 取得並核對 payload。"""
+    主列 = _讀取唯一(連線,
+        "SELECT id,request_id,endpoint_version_id,status,latency_ms,created_at,completed_at,"
+        "typeof(error_json),length(CAST(error_json AS BLOB)),typeof(usage_json),"
+        "length(CAST(usage_json AS BLOB)),typeof(input_json),length(CAST(input_json AS BLOB)),"
+        "typeof(metadata_json),length(CAST(metadata_json AS BLOB)),typeof(output_json),"
+        "length(CAST(output_json AS BLOB)),error_json,usage_json,input_json,metadata_json,output_json "
+        "FROM endpoint_invocations WHERE endpoint_id=? AND id=?", (端點, 列[0]), 22)
+    if 主列[:17] != 列:
+        raise ValueError
+    錯誤, 用量, 輸入, 中繼, 輸出 = (_解析可空JSON(值, 預算, False) for 值 in 主列[17:])
+    事件列, 工具列 = 子中繼
     事件 = []
-    for 事件項 in 事件列:
-        if not _安全識別碼(事件項[0]): raise ValueError
-        事件.append({"id": 事件項[0], "payload": _解析可空JSON(事件項[1], 預算)})
-    工具列 = _有限查詢(連線,
-        "SELECT id,tool_name,arguments_json,result_json,error_json FROM endpoint_tool_calls "
-        "WHERE invocation_id=? ORDER BY sequence_number", (列[0],), 5)
+    for 中繼項 in 事件列:
+        事件項 = _讀取唯一(連線,
+            "SELECT id,invocation_id,sequence_number,event_type,created_at,typeof(payload_json),"
+            "length(CAST(payload_json AS BLOB)),payload_json FROM run_events "
+            "WHERE invocation_id=? AND id=? AND sequence_number=?", (列[0], 中繼項[0], 中繼項[2]), 8)
+        if 事件項[:7] != 中繼項:
+            raise ValueError
+        事件.append({"id": 事件項[0], "payload": _解析可空JSON(事件項[7], 預算, False)})
     工具 = []
-    for 工具項 in 工具列:
-        if not _安全識別碼(工具項[0]) or not _安全文字(工具項[1], 256): raise ValueError
-        工具.append({"id": 工具項[0], "arguments": _解析可空JSON(工具項[2], 預算),
-                   "result": _解析可空JSON(工具項[3], 預算), "error": _解析可空JSON(工具項[4], 預算)})
+    for 中繼項 in 工具列:
+        工具項 = _讀取唯一(連線,
+            "SELECT id,invocation_id,run_event_id,sequence_number,tool_name,outcome,latency_ms,"
+            "retry_of_tool_call_id,created_at,typeof(arguments_json),length(CAST(arguments_json AS BLOB)),"
+            "typeof(result_json),length(CAST(result_json AS BLOB)),typeof(error_json),"
+            "length(CAST(error_json AS BLOB)),arguments_json,result_json,error_json "
+            "FROM endpoint_tool_calls WHERE invocation_id=? AND id=? AND sequence_number=?",
+            (列[0], 中繼項[0], 中繼項[3]), 18)
+        if 工具項[:15] != 中繼項:
+            raise ValueError
+        工具.append({"id": 工具項[0], "arguments": _解析可空JSON(工具項[15], 預算, False),
+                   "result": _解析可空JSON(工具項[16], 預算, False),
+                   "error": _解析可空JSON(工具項[17], 預算, False)})
     遮蔽列 = _讀取驗證遮蔽列(連線, 列[0], 端點, 預算)
     _核對投影墓碑(遮蔽列, 輸入, 中繼, 輸出, 錯誤, 事件, 工具)
     已遮蔽錯誤 = any(項[2] == "error" for 項 in 遮蔽列)
@@ -153,18 +240,21 @@ def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...]) -> 診斷項�
     return 診斷項目(
         列[0], 列[1], 列[2], 列[3], None if 已遮蔽錯誤 else _安全可空字串((錯誤 or {}).get("code")),
         None if 已遮蔽錯誤 else _安全可空字串((錯誤 or {}).get("schema_path")),
-        None if 列[6] is None else float(列[6]), 診斷用量值,
-        tuple(sorted({項[1] for 項 in 工具列})), float(列[7]),
-        None if 列[8] is None else float(列[8]),
+        None if 列[4] is None else float(列[4]), 診斷用量值,
+        tuple(sorted({項[4] for 項 in 工具列})), float(列[5]),
+        None if 列[6] is None else float(列[6]),
         ("error_code", "schema_path") if 已遮蔽錯誤 else (),
     )
 
 
-def _有限查詢(連線: Any, SQL: str, 參數: tuple[Any, ...], 欄寬: int) -> tuple[tuple[Any, ...], ...]:
-    """確定關閉 bounded child query cursor。"""
+def _讀取唯一(連線: Any, SQL: str, 參數: tuple[Any, ...], 欄寬: int) -> tuple[Any, ...]:
+    """按 exact authority scope/key 讀取唯一 payload row 並關閉 cursor。"""
     游標 = 連線.execute(SQL, 參數)
     try:
-        return _讀取有限列(游標, 欄寬)
+        列 = 游標.fetchone()
+        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 欄寬:
+            raise ValueError
+        return 列
     finally:
         游標.close()
 
