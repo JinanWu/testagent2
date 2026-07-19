@@ -424,3 +424,155 @@ def _重驗最終內容(
         raise OSError
 
 
+class 技能套件發布器:
+    """協調技能掃描、暫存寫入與不可變發布。
+
+    參數：由建構器保存發布根與可選失敗點。回傳：建立可重複使用的發布協調器。
+    例外：建構錯誤依建構器契約。副作用：方法執行前不碰觸檔案系統。
+    """
+
+    def __init__(self, 根目錄: str | Path, *, 失敗點: Callable[[str], None] | None = None) -> None:
+        """建立技能套件發布器。
+
+        參數：``根目錄`` 是套件共同父目錄；``失敗點`` 可在耐久步驟注入失敗。回傳：無。
+        例外：路徑轉換失敗時傳出標準例外。副作用：只保存設定，不建立目錄。
+        """
+        self.根目錄 = Path(根目錄)
+        self._失敗點 = 失敗點 or (lambda _名稱: None)
+
+    def _掃描(self, 技能表: Mapping[str, str | Path]) -> tuple[技能掃描, ...]:
+        """掃描排序來源並套用整個 bundle 共享額度。
+
+        參數：``技能表`` 將技能名稱映射至來源根。回傳：已排序釘選的掃描 tuple。
+        例外：名稱、數量、來源或合計額度不合時拋出固定錯誤。副作用：只讀取來源。
+        """
+        if not 技能表 or len(技能表) > 32:
+            raise 套件發布錯誤("技能套件發布失敗")
+        掃描列: list[技能掃描] = []
+        for 名稱 in sorted(技能表, key=lambda 項目: 項目.encode("utf-8")):
+            if _識別碼格式.fullmatch(名稱) is None:
+                raise 套件發布錯誤("技能套件發布失敗")
+            掃描列.append(掃描技能(名稱, 技能表[名稱]))
+        檔案總數 = sum(len(掃描.檔案) for 掃描 in 掃描列)
+        位元組總數 = sum(檔案.位元組數 for 掃描 in 掃描列 for 檔案 in 掃描.檔案)
+        if 檔案總數 > 限制().最大檔案數 or 位元組總數 > 限制().最大總位元組數:
+            raise 套件發布錯誤("技能來源超過限制")
+        return tuple(掃描列)
+
+    def 發布(self, *, 套件識別碼: str, 端點識別碼: str, 端點版本識別碼: str,
+           版本號碼: int, 建立時間: float, 建立者識別碼: str,
+           技能表: Mapping[str, str | Path]) -> 套件發布收據:
+        """建立並耐久發布一個不可變技能套件。
+
+        參數：識別欄位與版本資料描述目標；``技能表`` 提供名稱至來源映射。
+        回傳：新發布或同內容雜湊且身分一致之既有套件收據。
+        例外：一般失敗拋出 ``套件發布錯誤``；父同步失敗拋出 ``套件耐久性未知``；控制例外原樣傳出。
+        副作用：掃描來源、建立同層暫存、唯讀同步，並以 no-replace 原子改名發布。
+        """
+        暫存目錄: Path | None = None
+        try:
+            識別碼列 = (套件識別碼, 端點識別碼, 端點版本識別碼, 建立者識別碼)
+            if any(type(值) is not str or _識別碼格式.fullmatch(值) is None for 值 in 識別碼列):
+                raise ValueError
+            if type(版本號碼) is not int or 版本號碼 <= 0:
+                raise ValueError
+            掃描列 = self._掃描(技能表)
+            清單, 原始資料, 摘要 = 建立清單(
+                套件識別碼=套件識別碼, 端點識別碼=端點識別碼,
+                端點版本識別碼=端點版本識別碼, 版本號碼=版本號碼,
+                建立時間=建立時間, 建立者識別碼=建立者識別碼, 掃描列=掃描列,
+            )
+            _驗證清單結構(清單)
+            self.根目錄.mkdir(parents=True, exist_ok=True)
+            最終目錄 = self.根目錄 / 套件識別碼
+            try:
+                最終目錄.lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                return self._讀取既有收據(最終目錄, 清單)
+            暫存目錄 = Path(tempfile.mkdtemp(prefix=".stage-", dir=self.根目錄))
+            for 掃描 in 掃描列:
+                for 檔案 in 掃描.檔案:
+                    目標 = 暫存目錄 / 掃描.名稱 / 檔案.相對路徑
+                    目標.parent.mkdir(parents=True, exist_ok=True)
+                    資料 = 重驗檔案(掃描, 檔案)
+                    描述元 = os.open(目標, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    try:
+                        _完整寫入(描述元, 資料)
+                        self._失敗點("file_fsync")
+                        os.fsync(描述元)
+                    finally:
+                        os.close(描述元)
+            清單路徑 = 暫存目錄 / "manifest.json"
+            描述元 = os.open(清單路徑, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            try:
+                _完整寫入(描述元, 原始資料)
+                self._失敗點("manifest_fsync")
+                os.fsync(描述元)
+            finally:
+                os.close(描述元)
+            _封存不可變並同步(暫存目錄)
+            self._失敗點("stage_fsync")
+            _同步目錄(暫存目錄)
+            self._失敗點("rename")
+            try:
+                _不可覆寫改名(暫存目錄, 最終目錄)
+            except FileExistsError:
+                _安全清除(暫存目錄)
+                暫存目錄 = None
+                return self._讀取既有收據(最終目錄, 清單)
+            暫存目錄 = None
+            收據 = 套件發布收據(
+                套件識別碼, f"{套件識別碼}/manifest.json", 摘要,
+                清單["bundle_hash"], 清單["total_bytes"], 最終目錄,
+            )
+            try:
+                self._失敗點("parent_fsync")
+                _同步目錄(self.根目錄)
+            except Exception:
+                raise 套件耐久性未知(收據) from None
+            return 收據
+        except 套件耐久性未知:
+            raise
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            _安全清除(暫存目錄)
+            raise
+        except BaseException:
+            _安全清除(暫存目錄)
+            raise 套件發布錯誤("技能套件發布失敗") from None
+
+    def _讀取既有收據(self, 最終目錄: Path, 預期清單: dict[str, Any]) -> 套件發布收據:
+        """重驗同識別碼既有成果並依內容雜湊建立冪等收據。
+
+        參數：``最終目錄`` 是碰撞目標；``預期清單`` 來自本次掃描。回傳：既有 authoritative 收據。
+        例外：身分、內容、種類、模式、摘要或完整集合不同時拋出碰撞錯誤。副作用：只讀取成果。
+        """
+        try:
+            根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+            try:
+                原始資料, 清單資訊 = _讀取有界檔案(根描述元, "manifest.json", 限制().最大總位元組數)
+            finally:
+                os.close(根描述元)
+            if stat.S_IMODE(清單資訊.st_mode) != 0o444:
+                raise ValueError
+            既有清單 = json.loads(原始資料)
+            if 正規JSON(既有清單) != 原始資料:
+                raise ValueError
+            索引 = _驗證清單結構(既有清單)
+            if any(既有清單.get(鍵) != 預期清單.get(鍵) for 鍵 in _身分鍵):
+                raise ValueError
+            if 既有清單["bundle_hash"] != 預期清單["bundle_hash"]:
+                raise ValueError
+            清單摘要 = hashlib.sha256(原始資料).hexdigest()
+            _重驗最終內容(最終目錄, 清單摘要, 索引)
+            套件識別碼 = 既有清單["bundle_id"]
+            return 套件發布收據(
+                套件識別碼, f"{套件識別碼}/manifest.json",
+                清單摘要, 既有清單["bundle_hash"],
+                既有清單["total_bytes"], 最終目錄,
+            )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except BaseException:
+            raise 套件發布錯誤("技能套件碰撞") from None
