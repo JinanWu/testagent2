@@ -259,25 +259,45 @@ def _讀取唯一(連線: Any, SQL: str, 參數: tuple[Any, ...], 欄寬: int) -
         游標.close()
 
 
+def _編碼游標內容(端點: str, 秒數: int, 開始: float, 結束: float,
+            位置: float, 識別碼: str) -> bytes:
+    """依 production 唯一 JSON 規則建立 canonical cursor payload。"""
+    return json.dumps(
+        [1, 端點, 秒數, float(開始), float(結束), float(位置), 識別碼],
+        ensure_ascii=True, separators=(",", ":"), sort_keys=True, allow_nan=False,
+    ).encode("utf-8")
+
+
+def _編碼Base64URL(原始: bytes) -> str:
+    """依 production 唯一規則建立無 padding 的 canonical Base64URL。"""
+    return base64.urlsafe_b64encode(原始).rstrip(b"=").decode("ascii")
+
+
 def _編碼游標(金鑰: bytes, 端點: str, 秒數: int, 開始: float, 結束: float,
           位置: float, 識別碼: str) -> str:
     """以 canonical payload 與 HMAC-SHA256 產生 tamper-resistant opaque cursor。"""
-    內容 = json.dumps([1, 端點, 秒數, 開始, 結束, 位置, 識別碼], ensure_ascii=True,
-                    separators=(",", ":"), allow_nan=False).encode("ascii")
+    內容 = _編碼游標內容(端點, 秒數, 開始, 結束, 位置, 識別碼)
     簽章 = hmac.new(金鑰, 內容, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(內容 + 簽章).rstrip(b"=").decode("ascii")
+    return _編碼Base64URL(內容 + 簽章)
 
 
 def _解碼游標(金鑰: bytes, 游標: str, 端點: str, 秒數: int) -> tuple[float, float, float, str]:
-    """驗證 signature、scope、window 與 keyset position。"""
-    if any(字 not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for 字 in 游標):
+    """驗證 canonical encoding、signature、scope、window 與 keyset position。"""
+    if (type(游標) is not str or not 1 <= len(游標) <= 1024 or not 游標.isascii()
+            or any(字 not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_" for 字 in 游標)):
         raise ValueError
     原始 = base64.b64decode(游標 + "=" * (-len(游標) % 4), altchars=b"-_", validate=True)
+    if not hmac.compare_digest(_編碼Base64URL(原始), 游標):
+        raise ValueError
     if len(原始) <= 32 or not hmac.compare_digest(原始[-32:], hmac.new(金鑰, 原始[:-32], hashlib.sha256).digest()):
         raise ValueError
     值 = json.loads(原始[:-32], parse_constant=lambda _值: (_ for _ in ()).throw(ValueError()))
     if (type(值) is not list or len(值) != 7 or 值[:3] != [1, 端點, 秒數]
             or not all(type(項) in (int, float) and math.isfinite(項) and 項 >= 0 for 項 in 值[3:6])
             or float(值[3]) + 秒數 != float(值[4]) or not _安全識別碼(值[6])):
+        raise ValueError
+    if not hmac.compare_digest(
+        _編碼游標內容(值[1], 值[2], 值[3], 值[4], 值[5], 值[6]), 原始[:-32]
+    ):
         raise ValueError
     return float(值[3]), float(值[4]), float(值[5]), 值[6]

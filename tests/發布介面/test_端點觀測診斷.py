@@ -147,6 +147,32 @@ def _簽署(payload, key=金鑰):
     return base64.urlsafe_b64encode(內容 + hmac.new(key, 內容, hashlib.sha256).digest()).rstrip(b"=").decode()
 
 
+def _簽署原始JSON(內容, key=金鑰):
+    return base64.urlsafe_b64encode(
+        內容 + hmac.new(key, 內容, hashlib.sha256).digest()
+    ).rstrip(b"=").decode("ascii")
+
+
+def test_cursor拒絕相同解碼bytes的非canonical未使用pad_bits別名(診斷資料庫):
+    游標 = _簽署([1, "ep-1", 50, 50.0, 100.0, 95.0, "inv-cx"])
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+    assert len(游標) % 4 == 2
+    別名 = 游標[:-1] + alphabet[alphabet.index(游標[-1]) + 1]
+    補齊 = lambda token: token + "=" * (-len(token) % 4)
+    assert 別名 != 游標
+    assert base64.urlsafe_b64decode(補齊(別名)) == base64.urlsafe_b64decode(補齊(游標))
+    _固定失敗(lambda: _列出(_服務(診斷資料庫), cursor=別名, limit=1))
+
+
+def test_cursor拒絕正確簽章但非canonical_JSON且canonical_roundtrip成功(診斷資料庫):
+    服務 = _服務(診斷資料庫)
+    canonical = _列出(服務, limit=1).頁.next_cursor
+    assert [項.invocation_id for 項 in _列出(服務, cursor=canonical, limit=1).頁.items] == ["inv-b"]
+    非canonical內容 = b'[1, "ep-1", 50, 5e1, 1e2, 9.5e1, "inv-c"]'
+    非canonical = _簽署原始JSON(非canonical內容)
+    _固定失敗(lambda: _列出(服務, cursor=非canonical, limit=1))
+
+
 @pytest.mark.parametrize("破壞", ("tamper", "wrong-key", "bad-base64", "oversize", "endpoint", "window", "position"))
 def test_cursor完整scope簽章格式與大小驗證皆固定失敗且無raw(診斷資料庫, 破壞):
     服務 = _服務(診斷資料庫)
