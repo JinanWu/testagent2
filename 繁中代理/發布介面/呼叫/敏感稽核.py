@@ -1,4 +1,10 @@
-"""把 L06 位置命中逐筆附加至既有 generic audit_events。"""
+"""把 L06 位置命中逐筆附加至既有 generic audit_events。
+
+參數／欄位：不適用；本模組定義敏感命中的稽核附加操作與固定結構契約。
+回傳：不適用；各附加操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義常數與函式，不開啟資料庫或附加稽核事件。
+"""
 
 from __future__ import annotations
 
@@ -12,19 +18,11 @@ import stat
 import time
 from typing import Callable
 
+from ..資料庫結構契約 import 遷移帳本 as _必要遷移
 from .擷取政策 import 敏感偵測擷取結果, 目標敏感命中
 
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _Path具體型別 = type(Path())
-_必要遷移 = (
-    (1, "0001_建立發布端點核心.sql"), (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"), (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"),
-    (6, "0006_擴充稽核事件契約.sql"), (7, "0007_建立不可逆遮蔽墓碑.sql"),
-    (8, "0008_建立五年保存候選索引.sql"), (9, "0009_建立保存相依識別索引.sql"),
-    (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 _稽核結構 = (
     ("index", "idx_audit_events_endpoint_time", "audit_events",
      "CREATE INDEX idx_audit_events_endpoint_time\n  ON audit_events(endpoint_id, occurred_at)"),
