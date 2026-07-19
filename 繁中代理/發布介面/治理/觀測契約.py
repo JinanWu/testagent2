@@ -111,7 +111,8 @@ class 端點指標:
         計數們 = (self.invocation_count, self.terminal_count, self.error_count)
         if not _識別碼(self.endpoint_id) or type(self.window) is not 觀測視窗:
             raise ValueError("端點指標不符合契約")
-        if not all(_計數(值) for 值 in 計數們) or self.error_count > self.terminal_count > self.invocation_count:
+        if (not all(_計數(值) for 值 in 計數們) or self.error_count > self.terminal_count
+                or self.terminal_count > self.invocation_count):
             raise ValueError("端點指標不符合契約")
         預期率 = 0.0 if self.terminal_count == 0 else self.error_count / self.terminal_count
         if type(self.error_rate) is not float or self.error_rate != 預期率:
