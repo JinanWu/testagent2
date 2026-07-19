@@ -11,6 +11,7 @@ import pytest
 
 from 繁中代理.發布介面.治理.觀測供應器 import SQLite端點觀測查詢服務, 端點觀測查詢錯誤
 from 繁中代理.發布介面.治理.觀測契約 import 診斷查詢成功, 端點不可見結果
+from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 金鑰 = b"diagnostics-cursor-key-exact-32b!"
@@ -204,3 +205,114 @@ def test_malformed_DB_types_nonfinite_negative_usage_custom_rows固定operationa
         連線.execute("PRAGMA ignore_check_constraints=ON")
         連線.execute(sql, params)
     _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+
+
+def _遮蔽錯誤欄位(路徑, *, redaction, audit, at, database):
+    return SQLite不可逆遮蔽服務(str(database)).遮蔽(
+        True, redaction, audit, "admin", f"req-{audit}", "inv-c", "error", "inv-c",
+        路徑, "privacy", at,
+    )
+
+
+def test_error墓碑只發布固定redacted_fields且code_path皆空(診斷資料庫):
+    _遮蔽錯誤欄位("", redaction="red-error", audit="audit-error", at=123.0, database=診斷資料庫)
+    項 = _列出(_服務(診斷資料庫), limit=1).頁.items[0]
+    assert (項.error_code, 項.schema_path, 項.redacted_fields) == (
+        None, None, ("error_code", "schema_path"))
+    assert "red-error" not in repr(項) and "privacy" not in repr(項)
+
+
+@pytest.mark.parametrize("破壞", ("missing-ledger", "corrupt-audit"))
+def test_墓碑ledger遺失或腐敗固定operational且不回partial(診斷資料庫, 破壞):
+    _遮蔽錯誤欄位("", redaction="red-error", audit="audit-error", at=123.0, database=診斷資料庫)
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        if 破壞 == "missing-ledger":
+            名稱 = "endpoint_redactions_no_delete"
+            sql = 連線.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (名稱,)).fetchone()[0]
+            連線.execute(f'DROP TRIGGER "{名稱}"')
+            連線.execute("DELETE FROM endpoint_redactions")
+        else:
+            名稱 = "audit_events_no_update"
+            sql = 連線.execute("SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (名稱,)).fetchone()[0]
+            連線.execute(f'DROP TRIGGER "{名稱}"')
+            連線.execute("UPDATE audit_events SET endpoint_id='ep-2'")
+        連線.execute(sql)
+    error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+    assert "ep-2" not in repr(error) and "red-error" not in repr(error)
+
+
+@pytest.mark.parametrize("key", (b"short", bytearray(b"x" * 32), "x" * 32, None))
+def test_游標金鑰只接受至少32個exact_bytes(診斷資料庫, key):
+    _固定失敗(lambda: _服務(診斷資料庫, key=key))
+
+
+def test_游標金鑰未持久化且不在服務repr(診斷資料庫):
+    marker = b"KEY_PRIVATE_EXACT_32_BYTES_MARK!!"
+    服務 = _服務(診斷資料庫, key=marker)
+    _列出(服務, limit=1)
+    assert marker.decode() not in repr(服務)
+    assert marker not in 診斷資料庫.read_bytes()
+
+
+def _assert框架locals無標記(error, marker):
+    見到 = False
+    traceback = error.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_globals.get("__name__") in (
+            "繁中代理.發布介面.治理.觀測供應器", "繁中代理.發布介面.治理.觀測診斷"
+        ):
+            見到 = True
+            assert marker not in repr(tuple(frame.f_locals.values()))
+        traceback = traceback.tb_next
+    assert 見到
+
+
+def test_traceback_scanner_positive_control():
+    class 假錯誤:
+        __traceback__ = None
+    with pytest.raises(AssertionError):
+        _assert框架locals無標記(假錯誤(), "KNOWN_LEAK")
+
+
+class 敵對Base(BaseException):
+    pass
+
+
+@pytest.mark.parametrize("error", (敵對Base("RAW_PROVIDER_FAILURE"), RuntimeError("RAW_PROVIDER_FAILURE")))
+def test_provider普通與custom_Base失敗皆固定且無raw(monkeypatch, 診斷資料庫, error):
+    from 繁中代理.發布介面.治理 import 觀測診斷
+    def 失敗(_path):
+        raise error
+    monkeypatch.setattr(觀測診斷, "_開啟唯讀快照", 失敗)
+    fixed = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+    assert "RAW_PROVIDER_FAILURE" not in repr(fixed)
+
+
+@pytest.mark.parametrize("控制型別", (KeyboardInterrupt, SystemExit, GeneratorExit))
+def test_KISG_exact傳播且金鑰自所有診斷traceback_locals清除(monkeypatch, 診斷資料庫, 控制型別):
+    from 繁中代理.發布介面.治理 import 觀測診斷
+    key = b"KEY_TRACEBACK_PRIVATE_32_BYTES!!"
+    control = 控制型別("CONTROL_EXACT")
+    def 失敗(_path):
+        raise control
+    monkeypatch.setattr(觀測診斷, "_開啟唯讀快照", 失敗)
+    with pytest.raises(控制型別) as 捕捉:
+        _列出(_服務(診斷資料庫, key=key), limit=1)
+    assert 捕捉.value is control and 捕捉.value.args == ("CONTROL_EXACT",)
+    assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    _assert框架locals無標記(捕捉.value, repr(key))
+
+
+def test_late_KISG時raw_payload亦自建立項目traceback清除(monkeypatch, 診斷資料庫):
+    from 繁中代理.發布介面.治理 import 觀測診斷
+    control = KeyboardInterrupt("CONTROL_LATE")
+    def 失敗(*_args):
+        raise control
+    monkeypatch.setattr(觀測診斷, "_核對投影墓碑", 失敗)
+    with pytest.raises(KeyboardInterrupt) as 捕捉:
+        _列出(_服務(診斷資料庫), limit=1)
+    assert 捕捉.value is control
+    for marker in ("RAW_INPUT", "RAW_METADATA", "RAW_OUTPUT", "RAW_ERROR", "RAW_EVENT",
+                   "RAW_ARG", "RAW_RESULT", "RAW_TOOL_ERROR"):
+        _assert框架locals無標記(捕捉.value, marker)
