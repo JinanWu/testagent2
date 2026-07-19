@@ -267,9 +267,9 @@ def test_malformed_DB_types_nonfinite_negative_usage_custom_rows固定operationa
     _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
 
 
-def _遮蔽錯誤欄位(路徑, *, redaction, audit, at, database):
+def _遮蔽錯誤欄位(路徑, *, redaction, audit, at, database, invocation="inv-c"):
     return SQLite不可逆遮蔽服務(str(database)).遮蔽(
-        True, redaction, audit, "admin", f"req-{audit}", "inv-c", "error", "inv-c",
+        True, redaction, audit, "admin", f"req-{audit}", invocation, "error", invocation,
         路徑, "privacy", at,
     )
 
@@ -378,9 +378,40 @@ def test_late_KISG時raw_payload亦自建立項目traceback清除(monkeypatch, �
         _assert框架locals無標記(捕捉.value, marker)
 
 
+def _記錄payload存取(monkeypatch):
+    from 繁中代理.發布介面.治理 import 查詢投影
+    原始 = 查詢投影._建立連線
+    payload查詢 = []
+    payload讀取 = []
+    def 是payload(SQL):
+        return any(標記 in SQL for 標記 in (
+            "error_json,usage_json,input_json,metadata_json,output_json ",
+            "payload_json FROM run_events", "arguments_json,result_json,error_json ",
+            ",r.id,r.invocation_id",
+        ))
+    class 記錄游標:
+        def __init__(self, 游標, payload): self._游標, self._payload = 游標, payload
+        def fetchone(self):
+            if self._payload: payload讀取.append(1)
+            return self._游標.fetchone()
+        def __iter__(self): return iter(self._游標)
+        def __getattr__(self, 名稱): return getattr(self._游標, 名稱)
+    class 記錄連線:
+        def __init__(self, 連線): self._連線 = 連線
+        def execute(self, SQL, *參數):
+            payload = 是payload(SQL)
+            if payload: payload查詢.append(SQL)
+            return 記錄游標(self._連線.execute(SQL, *參數), payload)
+        def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
+    monkeypatch.setattr(
+        查詢投影, "_建立連線",
+        lambda *參數, **關鍵字: 記錄連線(原始(*參數, **關鍵字)),
+    )
+    return payload查詢, payload讀取
+
+
 @pytest.mark.parametrize("位置", ("invocation", "child"))
 def test_超大JSON在任何payload_SELECT與fetchone前固定失敗(monkeypatch, 診斷資料庫, 位置):
-    from 繁中代理.發布介面.治理 import 查詢投影
     with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
         if 位置 == "invocation":
             連線.execute("UPDATE endpoint_invocations SET error_json="
@@ -388,24 +419,41 @@ def test_超大JSON在任何payload_SELECT與fetchone前固定失敗(monkeypatch
         else:
             連線.execute("UPDATE run_events SET payload_json="
                        "'{\"x\":\"' || printf('%.*c',1048576,'x') || '\"}' WHERE id='run-inv-c'")
-    原始 = 查詢投影._建立連線
-    payload查詢 = []
-    payload讀取 = []
-    class 記錄游標:
-        def __init__(self, 游標, 是payload): self._游標, self._是payload = 游標, 是payload
-        def fetchone(self):
-            if self._是payload: payload讀取.append(1)
-            return self._游標.fetchone()
-        def __getattr__(self, 名稱): return getattr(self._游標, 名稱)
-    class 記錄連線:
-        def __init__(self, 連線): self._連線 = 連線
-        def execute(self, SQL, *參數):
-            是payload = (")),error_json,usage_json" in SQL
-                       or ")),payload_json FROM run_events" in SQL)
-            if 是payload: payload查詢.append(SQL)
-            return 記錄游標(self._連線.execute(SQL, *參數), 是payload)
-        def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
-    monkeypatch.setattr(查詢投影, "_建立連線", lambda *參數, **關鍵字: 記錄連線(原始(*參數, **關鍵字)))
+    payload查詢, payload讀取 = _記錄payload存取(monkeypatch)
     error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=1))
+    assert error.args == ("端點觀測不可取得",)
+    assert payload查詢 == payload讀取 == []
+
+
+@pytest.mark.parametrize(("位置", "腐敗"), (
+    ("redaction", False), ("audit", False), ("redaction", True), ("audit", True),
+))
+def test_超大或腐敗遮蔽稽核metadata在完整limit加一頁payload前固定失敗(
+    monkeypatch, 診斷資料庫, 位置, 腐敗,
+):
+    _遮蔽錯誤欄位("", redaction="red-error", audit="audit-error", at=123.0,
+             database=診斷資料庫, invocation="inv-a")
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        連線.execute("PRAGMA ignore_check_constraints=ON")
+        if 位置 == "redaction":
+            名稱, 欄位 = "endpoint_redactions_no_update", "reason"
+            表格 = "endpoint_redactions"
+        else:
+            名稱, 欄位 = "audit_events_no_update", "metadata_json"
+            表格 = "audit_events"
+        trigger = 連線.execute(
+            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (名稱,),
+        ).fetchone()[0]
+        連線.execute(f'DROP TRIGGER "{名稱}"')
+        識別碼 = "red-error" if 位置 == "redaction" else "audit-error"
+        if 腐敗:
+            連線.execute(f"UPDATE {表格} SET {欄位}=? WHERE id=?", (sqlite3.Binary(b"{}"), 識別碼))
+        else:
+            連線.execute(
+                f"UPDATE {表格} SET {欄位}=printf('%.*c',1048576,'x') WHERE id=?", (識別碼,),
+            )
+        連線.execute(trigger)
+    payload查詢, payload讀取 = _記錄payload存取(monkeypatch)
+    error = _固定失敗(lambda: _列出(_服務(診斷資料庫), limit=2))
     assert error.args == ("端點觀測不可取得",)
     assert payload查詢 == payload讀取 == []

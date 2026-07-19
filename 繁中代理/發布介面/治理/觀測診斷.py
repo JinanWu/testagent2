@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .查詢投影 import (
     _控制流程, _安全可空字串, _安全時間, _安全文字, _安全識別碼,
     _扣除JSON長度, _核對投影墓碑, _清理控制鏈, _清理資源操作, _解析可空JSON,
-    _讀取有限列, _讀取驗證遮蔽列, _重拋控制, _開啟唯讀快照,
+    _讀取有限列, _讀取驗證遮蔽列, _重拋控制, _開啟唯讀快照, _預檢遮蔽中繼,
     _驗證路徑與結構,
 )
 from .遮蔽 import _驗證遮蔽schema
@@ -90,15 +90,16 @@ def 列出安全診斷(
             查詢游標.close(); 查詢游標 = None
             預算 = [0, 0]
             子中繼 = {}
-            子總數 = 0
+            子總數 = len(資料列)
             for 列 in 資料列:
                 _驗證呼叫中繼(列, 預算)
                 事件列 = _讀取子中繼(連線, 列[0], True, 預算)
                 工具列 = _讀取子中繼(連線, 列[0], False, 預算)
-                子總數 += len(事件列) + len(工具列)
+                遮蔽中繼 = _預檢遮蔽中繼(連線, 列[0], 預算)
+                子總數 += len(事件列) + len(工具列) + len(遮蔽中繼)
                 if 子總數 > _最大子列:
                     raise ValueError
-                子中繼[列[0]] = (事件列, 工具列)
+                子中繼[列[0]] = (事件列, 工具列, 遮蔽中繼)
             項目們 = []
             for 列 in 資料列[:上限]:
                 項目們.append(_建立項目(連線, 端點, 列, 子中繼[列[0]], 預算))
@@ -188,7 +189,7 @@ def _讀取子中繼(連線: Any, 呼叫: str, 是事件: bool,
 
 
 def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
-          子中繼: tuple[tuple[tuple[Any, ...], ...], tuple[tuple[Any, ...], ...]],
+          子中繼: tuple[tuple[tuple[Any, ...], ...], ...],
           預算: list[int]) -> 診斷項目:
     """metadata gate 全頁通過後，按 exact authoritative keys 取得並核對 payload。"""
     主列 = _讀取唯一(連線,
@@ -201,7 +202,7 @@ def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
     if 主列[:17] != 列:
         raise ValueError
     錯誤, 用量, 輸入, 中繼, 輸出 = (_解析可空JSON(值, 預算, False) for 值 in 主列[17:])
-    事件列, 工具列 = 子中繼
+    事件列, 工具列, 遮蔽中繼 = 子中繼
     事件 = []
     for 中繼項 in 事件列:
         事件項 = _讀取唯一(連線,
@@ -225,7 +226,7 @@ def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
         工具.append({"id": 工具項[0], "arguments": _解析可空JSON(工具項[15], 預算, False),
                    "result": _解析可空JSON(工具項[16], 預算, False),
                    "error": _解析可空JSON(工具項[17], 預算, False)})
-    遮蔽列 = _讀取驗證遮蔽列(連線, 列[0], 端點, 預算)
+    遮蔽列 = _讀取驗證遮蔽列(連線, 列[0], 端點, 遮蔽中繼)
     _核對投影墓碑(遮蔽列, 輸入, 中繼, 輸出, 錯誤, 事件, 工具)
     已遮蔽錯誤 = any(項[2] == "error" for 項 in 遮蔽列)
     if 錯誤 is not None and type(錯誤) is not dict: raise ValueError
