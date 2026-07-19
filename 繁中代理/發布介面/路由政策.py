@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+import types
+from typing import Any, NoReturn
 
 from fastapi import APIRouter
+from fastapi.datastructures import DefaultPlaceholder
 from fastapi.dependencies.models import Dependant
 from fastapi.params import Depends, Security
 from fastapi.routing import APIRoute
@@ -14,6 +16,24 @@ from .設定 import 路由設定錯誤訊息
 from .路由生命週期 import 驗證預設生命週期
 
 _最大節點 = 4096
+_舊Depends鍵 = frozenset({"dependency", "use_cache"})
+_舊Security鍵 = frozenset({"dependency", "use_cache", "scopes"})
+_新Depends鍵 = frozenset({"dependency", "use_cache", "scope"})
+_新Security鍵 = frozenset({"dependency", "use_cache", "scope", "scopes"})
+_舊節點鍵 = frozenset({
+    "path_params", "query_params", "header_params", "cookie_params", "body_params",
+    "dependencies", "security_requirements", "name", "call", "request_param_name",
+    "websocket_param_name", "http_connection_param_name", "response_param_name",
+    "background_tasks_param_name", "security_scopes_param_name", "security_scopes",
+    "use_cache", "path", "cache_key",
+})
+_新節點鍵 = frozenset({
+    "path_params", "query_params", "header_params", "cookie_params", "body_params",
+    "dependencies", "name", "call", "request_param_name", "websocket_param_name",
+    "http_connection_param_name", "response_param_name", "background_tasks_param_name",
+    "security_scopes_param_name", "own_oauth_scopes", "parent_oauth_scopes",
+    "use_cache", "path", "scope",
+})
 _路由欄位 = (
     "response_model", "status_code", "response_model_include", "response_model_exclude",
     "response_model_by_alias", "response_model_exclude_unset",
@@ -24,9 +44,25 @@ _路由欄位 = (
 )
 
 
-def _失敗():
+def _失敗() -> NoReturn:
     """統一拒絕不安全路由政策。"""
     raise ValueError(路由設定錯誤訊息)
+
+
+def _可接受字串(值: Any) -> bool:
+    """驗證可選 bounded exact string，不呼叫 caller 方法。"""
+    return 值 is None or (type(值) is str and len(值.encode("utf-8")) <= 16384)
+
+
+def _可接受回應模型(值: Any) -> bool:
+    """只保留 class 或 built-in list[class] GenericAlias identity。"""
+    if 值 is None or isinstance(值, type):
+        return True
+    if type(值) is types.GenericAlias:
+        原點 = object.__getattribute__(值, "__origin__")
+        引數 = object.__getattribute__(值, "__args__")
+        return 原點 is list and type(引數) is tuple and len(引數) == 1 and isinstance(引數[0], type)
+    return False
 
 
 def _字典(物件: Any) -> dict:
@@ -37,39 +73,68 @@ def _字典(物件: Any) -> dict:
     return 值
 
 
+def _判定框架形狀(相依鍵, 安全鍵, 節點鍵) -> str:
+    """只接受已審核的 FastAPI 0.115/0.139 exact instance shapes。"""
+    if 相依鍵 == _舊Depends鍵 and 安全鍵 == _舊Security鍵 and 節點鍵 == _舊節點鍵:
+        return "舊"
+    if 相依鍵 == _新Depends鍵 and 安全鍵 == _新Security鍵 and 節點鍵 == _新節點鍵:
+        return "新"
+    _失敗()
+
+
+_框架形狀 = _判定框架形狀(
+    frozenset(_字典(Depends())), frozenset(_字典(Security())), frozenset(_字典(Dependant()))
+)
+
+
+def _範圍(值: Any):
+    """將 exact list[str] 安全轉為 module tuple；None 原樣保留。"""
+    if 值 is None:
+        return None
+    if type(值) is not list:
+        _失敗()
+    結果 = []
+    for 項目 in 值:
+        if type(項目) is not str:
+            _失敗()
+        結果.append(項目)
+    return tuple(結果)
+
+
 def _相依宣告(值: Any):
     """以 call identity 與 exact scalar 擷取 Depends/Security。"""
     字典 = _字典(值)
-    if type(值) is Depends:
-        if set(dict.keys(字典)) != {"dependency", "use_cache"}:
-            _失敗()
-        範圍 = None
-    elif type(值) is Security:
-        if set(dict.keys(字典)) != {"dependency", "use_cache", "scopes"}:
-            _失敗()
-        原範圍 = dict.__getitem__(字典, "scopes")
-        if type(原範圍) is not list:
-            _失敗()
-        範圍清單 = []
-        for 項目 in 原範圍:
-            if type(項目) is not str:
-                _失敗()
-            範圍清單.append(項目)
-        範圍 = tuple(範圍清單)
-    else:
+    類別 = type(值)
+    預期鍵 = _舊Depends鍵 if (_框架形狀, 類別) == ("舊", Depends) else None
+    if (_框架形狀, 類別) == ("舊", Security):
+        預期鍵 = _舊Security鍵
+    elif (_框架形狀, 類別) == ("新", Depends):
+        預期鍵 = _新Depends鍵
+    elif (_框架形狀, 類別) == ("新", Security):
+        預期鍵 = _新Security鍵
+    if 預期鍵 is None or frozenset(dict.keys(字典)) != 預期鍵:
         _失敗()
     快取 = dict.__getitem__(字典, "use_cache")
     if type(快取) is not bool:
         _失敗()
-    return (type(值), dict.__getitem__(字典, "dependency"), 快取, 範圍)
+    scope = dict.get(字典, "scope")
+    if scope not in (None, "function", "request") or (scope is not None and type(scope) is not str):
+        _失敗()
+    範圍 = _範圍(dict.get(字典, "scopes")) if 類別 is Security else None
+    return (類別, dict.__getitem__(字典, "dependency"), 快取, scope, 範圍)
 
 
 def _重建相依宣告(描述):
     """建立 module-owned Depends/Security instance。"""
-    類別, 呼叫, 快取, 範圍 = 描述
+    類別, 呼叫, 快取, scope, 範圍 = 描述
     if 類別 is Depends:
-        return Depends(dependency=呼叫, use_cache=快取)
-    return Security(dependency=呼叫, scopes=list(範圍), use_cache=快取)
+        if _框架形狀 == "舊":
+            return Depends(dependency=呼叫, use_cache=快取)
+        return Depends(dependency=呼叫, use_cache=快取, scope=scope)
+    scopes = None if 範圍 is None else list(範圍)
+    if _框架形狀 == "舊":
+        return Security(dependency=呼叫, scopes=scopes, use_cache=快取)
+    return Security(dependency=呼叫, scopes=scopes, use_cache=快取, scope=scope)
 
 
 def _相依樹(節點: Dependant, 計數: list[int]):
@@ -80,6 +145,9 @@ def _相依樹(節點: Dependant, 計數: list[int]):
     if 計數[0] > _最大節點:
         _失敗()
     值 = _字典(節點)
+    預期鍵 = _舊節點鍵 if _框架形狀 == "舊" else _新節點鍵
+    if frozenset(dict.keys(值)) != 預期鍵:
+        _失敗()
     子節點 = dict.get(值, "dependencies")
     if type(子節點) is not list:
         _失敗()
@@ -92,26 +160,22 @@ def _相依樹(節點: Dependant, 計數: list[int]):
     快取 = dict.get(值, "use_cache")
     if type(快取) is not bool:
         _失敗()
-    範圍原值 = dict.get(值, "security_scopes")
-    if 範圍原值 is None:
-        範圍 = None
+    if _框架形狀 == "舊":
+        自有範圍, 父範圍, scope = _範圍(dict.get(值, "security_scopes")), None, None
     else:
-        if type(範圍原值) is not list:
+        自有範圍 = _範圍(dict.get(值, "own_oauth_scopes"))
+        父範圍 = _範圍(dict.get(值, "parent_oauth_scopes"))
+        scope = dict.get(值, "scope")
+        if scope not in (None, "function", "request") or (scope is not None and type(scope) is not str):
             _失敗()
-        範圍清單 = []
-        for 項目 in 範圍原值:
-            if type(項目) is not str:
-                _失敗()
-            範圍清單.append(項目)
-        範圍 = tuple(範圍清單)
-    return (dict.get(值, "call"), 快取, *純量, 範圍, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
+    return (dict.get(值, "call"), 快取, *純量, 自有範圍, 父範圍, scope, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
 
 
 def _相依樹相同(左, 右) -> bool:
     """以 call identity 與 exact ordered children 比較樹。"""
-    if 左[0] is not 右[0] or 左[1:6] != 右[1:6] or len(左[6]) != len(右[6]):
+    if 左[0] is not 右[0] or 左[1:8] != 右[1:8] or len(左[8]) != len(右[8]):
         return False
-    return all(_相依樹相同(甲, 乙) for 甲, 乙 in zip(左[6], 右[6]))
+    return all(_相依樹相同(甲, 乙) for 甲, 乙 in zip(左[8], 右[8]))
 
 
 def 擷取路由器政策(路由器: APIRouter):
@@ -156,8 +220,24 @@ def 擷取路由器政策(路由器: APIRouter):
         for 名稱 in ("response_model_by_alias", "response_model_exclude_unset", "response_model_exclude_defaults", "response_model_exclude_none", "include_in_schema"):
             if type(政策[名稱]) is not bool:
                 _失敗()
-        for 名稱 in ("response_model_include", "response_model_exclude", "responses", "openapi_extra", "tags"):
-            政策[名稱] = 擷取形狀(政策[名稱])
+        if not _可接受回應模型(政策["response_model"]):
+            _失敗()
+        if not isinstance(政策["response_class"], (type, DefaultPlaceholder)):
+            _失敗()
+        if type(政策["generate_unique_id_function"]) is not DefaultPlaceholder and not callable(政策["generate_unique_id_function"]):
+            _失敗()
+        for 名稱 in ("summary", "description", "response_description", "name", "operation_id"):
+            if not _可接受字串(政策[名稱]):
+                _失敗()
+        if 政策["deprecated"] is not None and type(政策["deprecated"]) is not bool:
+            _失敗()
+        模式 = {
+            "response_model_include": "include", "response_model_exclude": "include",
+            "responses": "responses", "openapi_extra": "json", "tags": "tags",
+            "callbacks": "json",
+        }
+        for 名稱, 欄位模式 in 模式.items():
+            政策[名稱] = 擷取形狀(政策[名稱], 欄位模式)
         樹 = _相依樹(dict.get(值, "dependant"), [0])
         結果.append((id(路由), 路徑, tuple(sorted(方法清單)), dict.get(值, "endpoint"), 全宣告[len(路由器宣告):], 樹, 政策))
     return (前綴, 路由器宣告, tuple(結果))
@@ -166,7 +246,7 @@ def 擷取路由器政策(路由器: APIRouter):
 def _政策相同(目前, 預期) -> bool:
     """比較 response policy，identity 欄位永不呼叫 eq/hash。"""
     for 名稱 in _路由欄位:
-        if 名稱 in ("response_model_include", "response_model_exclude", "responses", "openapi_extra", "tags"):
+        if 名稱 in ("response_model_include", "response_model_exclude", "responses", "openapi_extra", "tags", "callbacks"):
             if not 形狀相同(目前[名稱], 預期[名稱]):
                 return False
         elif 名稱 in ("response_model", "response_class", "generate_unique_id_function"):
@@ -184,7 +264,7 @@ def 建立安全路由器(擷取):
     for _, 路徑, 方法, 端點, 路由宣告, _, 政策 in 路由清單:
         相對路徑 = 路徑[len(前綴):]
         參數 = {名稱: 政策[名稱] for 名稱 in _路由欄位}
-        for 名稱 in ("response_model_include", "response_model_exclude", "responses", "openapi_extra", "tags"):
+        for 名稱 in ("response_model_include", "response_model_exclude", "responses", "openapi_extra", "tags", "callbacks"):
             參數[名稱] = 重建形狀(參數[名稱])
         參數["dependencies"] = [_重建相依宣告(值) for 值 in 路由宣告]
         參數["methods"] = list(方法)
