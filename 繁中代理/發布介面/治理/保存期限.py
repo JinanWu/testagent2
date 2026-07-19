@@ -13,12 +13,32 @@ from typing import Any
 from urllib.parse import quote
 
 from .稽核結構 import _LEDGER
-from .稽核資料庫 import _清理控制鏈, _重拋控制
+from .稽核資料庫 import _清理控制鏈, _重拋控制, _開啟既有資料庫, _驗證目前路徑
 
 _固定錯誤 = "五年保存候選無法規劃"
 _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
+_清除固定錯誤 = "五年保存資料無法清除"
+_完整結構數 = 45
+_完整結構雜湊 = "fc8aa9a0e4b01b6b96eb67763d368f21615d3692ae091965aea873786848799f"
+_建立寫入連線 = _開啟既有資料庫
+_保存刪除guard名稱 = (
+    "audit_events_no_delete", "endpoint_redactions_no_delete",
+    "redacted_run_event_no_delete", "redacted_tool_call_no_delete",
+)
+_保存刪除guardDROP = (
+    "DROP TRIGGER audit_events_no_delete",
+    "DROP TRIGGER endpoint_redactions_no_delete",
+    "DROP TRIGGER redacted_run_event_no_delete",
+    "DROP TRIGGER redacted_tool_call_no_delete",
+)
+_保存刪除guardSQL = (
+    "CREATE TRIGGER audit_events_no_delete BEFORE DELETE ON audit_events BEGIN\n  SELECT RAISE(ABORT, 'audit events are append only');\nEND",
+    "CREATE TRIGGER endpoint_redactions_no_delete\nBEFORE DELETE ON endpoint_redactions\nBEGIN\n  SELECT RAISE(ABORT, 'redaction tombstones are append only');\nEND",
+    "CREATE TRIGGER redacted_run_event_no_delete\nBEFORE DELETE ON run_events\nWHEN EXISTS (\n  SELECT 1 FROM endpoint_redactions\n  WHERE target_type='run_event' AND target_row_id=OLD.id\n)\nBEGIN\n  SELECT RAISE(ABORT, 'redacted run event identity is retained');\nEND",
+    "CREATE TRIGGER redacted_tool_call_no_delete\nBEFORE DELETE ON endpoint_tool_calls\nWHEN EXISTS (\n  SELECT 1 FROM endpoint_redactions\n  WHERE target_row_id=OLD.id\n    AND target_type IN ('tool_arguments','tool_result','tool_error')\n)\nBEGIN\n  SELECT RAISE(ABORT, 'redacted tool identity is retained');\nEND",
+)
 _物件摘要 = (
     ("index", "idx_audit_events_retention_invocation_id", "12574b4c27e9eb623e63dcc8369717fd0e48325b78eac9d4e3f58b506e464449"),
     ("index", "idx_endpoint_invocations_retention_candidates", "2def7fde0fe646c07680c43625af0d54b6bae57f3f38e43ad9e6d33bdef64ba2"),
@@ -60,6 +80,19 @@ class 保存候選計畫:
     稽核事件數: int
     刪除順序: tuple[str, ...]
     刪除阻擋器: tuple[str, ...]
+
+@dataclass(frozen=True, slots=True)
+class 保存清除結果:
+    """只揭露本批各資料類型的刪除列數。"""
+
+    呼叫數: int
+    執行事件數: int
+    工具呼叫數: int
+    遮蔽數: int
+    稽核事件數: int
+
+class 保存清除錯誤(RuntimeError):
+    """保存資料未能確認為原子且guard完整地清除。"""
 
 def _UTC時間(epoch秒: Any, 可加五年: bool) -> datetime:
     """把 exact、finite、非負 epoch 秒映射為 UTC datetime。"""
@@ -196,6 +229,165 @@ class SQLite保存候選規劃器:
             結果 = None
             raise 保存候選規劃錯誤(_固定錯誤) from None
         return 結果
+
+
+class SQLite保存清除服務:
+    """自行選取到期根，並在單一 IMMEDIATE 交易內實體清除與復原guards。"""
+
+    __slots__ = ("_path",)
+
+    def __init__(self, 資料庫路徑: str) -> None:
+        if type(資料庫路徑) is not str or not 資料庫路徑 or os.path.abspath(資料庫路徑) != 資料庫路徑:
+            資料庫路徑 = None  # type: ignore[assignment]
+            raise 保存清除錯誤(_清除固定錯誤) from None
+        self._path = 資料庫路徑
+
+    def 清除(self, 現在epoch秒: int | float, /, *, 批次上限: int = 100) -> 保存清除結果:
+        """清除至多批次上限個根及全部相依；不接受caller候選、期限或識別碼。"""
+        連線 = 路徑 = 現在 = 候選 = 呼叫ID = 參數 = 游標 = 結果 = None
+        遮蔽數 = 稽核數 = 工具數 = 執行數 = 呼叫數 = 0
+        已開始 = 已提交 = 失敗 = False
+        主要控制盒: list[BaseException] = []
+        回滾控制盒: list[BaseException] = []
+        關閉控制盒: list[BaseException] = []
+        try:
+            現在 = _UTC時間(現在epoch秒, False)
+            if type(批次上限) is not int or not 1 <= 批次上限 <= _最大候選:
+                raise ValueError
+            路徑 = self._path
+            連線 = _建立寫入連線(路徑)
+            連線.execute("BEGIN IMMEDIATE")
+            已開始 = True
+            _驗證目前路徑(連線, 路徑)
+            _驗證完整結構(連線)
+            候選 = _選取清除根(連線, 現在, 批次上限)
+            if 候選:
+                呼叫ID = tuple(項[1] for 項 in 候選)
+                參數 = ",".join("?" for _ in 呼叫ID)
+                for SQL in _保存刪除guardDROP:
+                    連線.execute(SQL)
+                遮蔽數 = _刪除列數(連線.execute(
+                    f"DELETE FROM endpoint_redactions WHERE invocation_id IN ({參數})", 呼叫ID))
+                稽核數 = _刪除列數(連線.execute(
+                    f"DELETE FROM audit_events WHERE invocation_id IN ({參數})", 呼叫ID))
+                工具數 = _刪除列數(連線.execute(
+                    f"DELETE FROM endpoint_tool_calls WHERE invocation_id IN ({參數})", 呼叫ID))
+                執行數 = _刪除列數(連線.execute(
+                    f"DELETE FROM run_events WHERE invocation_id IN ({參數})", 呼叫ID))
+                游標 = 連線.execute(f"DELETE FROM endpoint_invocations WHERE id IN ({參數})", 呼叫ID)
+                呼叫數 = _刪除列數(游標)
+                if 呼叫數 != len(呼叫ID):
+                    raise ValueError
+                for SQL in _保存刪除guardSQL:
+                    連線.execute(SQL)
+            _驗證完整結構(連線)
+            結果 = 保存清除結果(呼叫數, 執行數, 工具數, 遮蔽數, 稽核數)
+            連線.commit()
+            已開始 = False
+            已提交 = True
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            主要控制盒.append(捕捉控制)
+            捕捉控制 = None
+        except BaseException:
+            失敗 = True
+        if 連線 is not None and 已開始:
+            回滾控制盒 = _回滾並取得控制(連線)
+            已開始 = False
+        if 連線 is not None:
+            關閉控制盒, 關閉失敗 = _關閉並取得控制(連線)
+            if not 已提交:
+                失敗 = 失敗 or 關閉失敗
+            連線 = None
+        self = 現在epoch秒 = 批次上限 = 路徑 = 現在 = 候選 = 呼叫ID = 參數 = 游標 = None
+        遮蔽數 = 稽核數 = 工具數 = 執行數 = 呼叫數 = None
+        if 主要控制盒 or 回滾控制盒 or 關閉控制盒:
+            結果 = None
+        if 主要控制盒:
+            回滾控制盒.clear(); 關閉控制盒.clear()
+            _重拋控制(主要控制盒.pop())
+        if 回滾控制盒:
+            關閉控制盒.clear()
+            _重拋控制(回滾控制盒.pop())
+        if 關閉控制盒:
+            _重拋控制(關閉控制盒.pop())
+        if 失敗 or not 已提交 or type(結果) is not 保存清除結果:
+            結果 = None
+            raise 保存清除錯誤(_清除固定錯誤) from None
+        return 結果
+
+
+def _選取清除根(連線: sqlite3.Connection, 現在: datetime, 上限: int) -> list[tuple[float, str]]:
+    """使用G05兩個有索引範圍，自行驗證並合併實際期限/id。"""
+    候選: list[tuple[float, str]] = []
+    已見: set[str] = set()
+    條件 = 參數 = 列組 = 列 = 期限 = None
+    控制盒: list[BaseException] = []
+    try:
+        現在秒 = 現在.timestamp()
+        for 條件, 參數 in _候選建立時間範圍(現在):
+            列組 = 連線.execute(
+                "SELECT typeof(id),id,typeof(created_at),created_at FROM endpoint_invocations "
+                f"WHERE {條件} ORDER BY created_at,id LIMIT ?", (*參數, 上限 + 1),
+            ).fetchall()
+            for 列 in 列組:
+                if (type(列) is not tuple or len(列) != 4 or 列[0] != "text" or 列[2] not in
+                        ("integer", "real") or not _安全識別碼(列[1])):
+                    raise ValueError
+                期限 = 五年保存期限(列[3])
+                if 期限 > 現在秒:
+                    raise ValueError
+                if 列[1] not in 已見:
+                    已見.add(列[1]); 候選.append((期限, 列[1]))
+        候選.sort()
+        結果 = 候選[:上限]
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        控制盒.append(捕捉控制)
+        捕捉控制 = None
+        結果 = []
+    連線 = 現在 = 上限 = 候選 = 已見 = 條件 = 參數 = 列組 = 列 = 期限 = 現在秒 = None
+    if 控制盒:
+        結果 = []
+        _重拋控制(控制盒.pop())
+    return 結果
+
+
+def _刪除列數(游標: sqlite3.Cursor) -> int:
+    """取得單一DELETE的exact非負rowcount，並清除控制流程frame。"""
+    控制盒: list[BaseException] = []
+    結果 = None
+    try:
+        結果 = 游標.rowcount
+        游標.close()
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        _清理控制鏈(捕捉控制)
+        控制盒.append(捕捉控制)
+        捕捉控制 = None
+    游標 = None
+    if 控制盒:
+        結果 = None
+        _重拋控制(控制盒.pop())
+    if type(結果) is not int or 結果 < 0:
+        raise ValueError
+    return 結果
+
+
+def _驗證完整結構(連線: sqlite3.Connection) -> None:
+    """驗證完整ledger及所有非SQLite內部table/index/trigger的exact SQL fingerprint。"""
+    if tuple(連線.execute(
+        "SELECT version,name FROM published_api_schema_migrations ORDER BY version LIMIT ?",
+        (len(_LEDGER) + 1,),
+    )) != _LEDGER:
+        raise ValueError
+    列組 = tuple(連線.execute(
+        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+    ))
+    if len(列組) != _完整結構數:
+        raise ValueError
+    原文 = "\n".join("\0".join("" if 值 is None else str(值) for 值 in 列) for 列 in 列組)
+    if hashlib.sha256(原文.encode()).hexdigest() != _完整結構雜湊:
+        raise ValueError
 
 
 def _候選建立時間範圍(現在: datetime) -> tuple[tuple[str, tuple[float, ...]], ...]:
