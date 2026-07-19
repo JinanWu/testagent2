@@ -126,8 +126,8 @@ def _快取鍵(值: Any, 呼叫: Any, 新版: bool):
         if type(項目) is not str:
             _失敗()
     if 新版:
-        scope = 值[2]
-        if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
+        執行範圍 = 值[2]
+        if 執行範圍 is not None and (type(執行範圍) is not str or 執行範圍 not in ("function", "request")):
             _失敗()
     return (tuple(值[1]), 值[2] if 新版 else None)
 
@@ -148,24 +148,24 @@ def _相依宣告(值: Any):
     快取 = dict.__getitem__(字典, "use_cache")
     if type(快取) is not bool:
         _失敗()
-    scope = dict.get(字典, "scope")
-    if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
+    執行範圍 = dict.get(字典, "scope")
+    if 執行範圍 is not None and (type(執行範圍) is not str or 執行範圍 not in ("function", "request")):
         _失敗()
     範圍 = _範圍(dict.get(字典, "scopes")) if 類別 is Security else None
-    return (類別, dict.__getitem__(字典, "dependency"), 快取, scope, 範圍)
+    return (類別, dict.__getitem__(字典, "dependency"), 快取, 執行範圍, 範圍)
 
 
 def _重建相依宣告(描述):
     """建立 module-owned Depends/Security instance。"""
-    類別, 呼叫, 快取, scope, 範圍 = 描述
+    類別, 呼叫, 快取, 執行範圍, 範圍 = 描述
     if 類別 is Depends:
         if _框架形狀 == "舊":
             return Depends(dependency=呼叫, use_cache=快取)
-        return Depends(dependency=呼叫, use_cache=快取, scope=scope)
-    scopes = None if 範圍 is None else list(範圍)
+        return Depends(dependency=呼叫, use_cache=快取, scope=執行範圍)
+    OAuth範圍 = None if 範圍 is None else list(範圍)
     if _框架形狀 == "舊":
-        return Security(dependency=呼叫, scopes=scopes, use_cache=快取)
-    return Security(dependency=呼叫, scopes=scopes, use_cache=快取, scope=scope)
+        return Security(dependency=呼叫, scopes=OAuth範圍, use_cache=快取)
+    return Security(dependency=呼叫, scopes=OAuth範圍, use_cache=快取, scope=執行範圍)
 
 
 def _相依樹(節點: Dependant, 計數: list[int]):
@@ -210,14 +210,14 @@ def _相依樹(節點: Dependant, 計數: list[int]):
     if type(快取) is not bool:
         _失敗()
     if _框架形狀 == "舊":
-        自有範圍, 父範圍, scope = _範圍(dict.get(值, "security_scopes")), None, None
+        自有範圍, 父範圍, 執行範圍 = _範圍(dict.get(值, "security_scopes")), None, None
     else:
         自有範圍 = _範圍(dict.get(值, "own_oauth_scopes"))
         父範圍 = _範圍(dict.get(值, "parent_oauth_scopes"))
-        scope = dict.get(值, "scope")
-        if scope is not None and (type(scope) is not str or scope not in ("function", "request")):
+        執行範圍 = dict.get(值, "scope")
+        if 執行範圍 is not None and (type(執行範圍) is not str or 執行範圍 not in ("function", "request")):
             _失敗()
-    return (dict.get(值, "call"), 快取, *純量, 自有範圍, 父範圍, scope, 衍生描述, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
+    return (dict.get(值, "call"), 快取, *純量, 自有範圍, 父範圍, 執行範圍, 衍生描述, tuple(_相依樹(項目, 計數) for 項目 in 子節點))
 
 
 def _相依樹相同(左, 右) -> bool:
