@@ -109,6 +109,88 @@ def test_候選與每根相依均有硬上限且同時間依ID排序(資料庫):
         _規劃(資料庫, _秒(2026, 1, 1), 相依上限=0)
 
 
+def test_二月二十八未到期列不會遮住較晚建立但已到期的閏日根(資料庫):
+    現在 = _秒(2025, 2, 28, 12)
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        _呼叫(連線, "unexpired", _秒(2020, 2, 28, 23))
+        _呼叫(連線, "leap", _秒(2020, 2, 29))
+    assert [項.呼叫識別碼 for 項 in _規劃(資料庫, 現在, 候選上限=1)] == ["leap"]
+
+
+def test_超過候選上限的未到期二月二十八列仍不會耗盡閏日範圍(資料庫):
+    現在 = _秒(2025, 2, 28, 12)
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        for 序號 in range(4):
+            _呼叫(連線, f"unexpired-{序號}", _秒(2020, 2, 28, 13, 序號))
+        _呼叫(連線, "leap-a", _秒(2020, 2, 29, 10))
+        _呼叫(連線, "leap-b", _秒(2020, 2, 29, 11))
+    assert [項.呼叫識別碼 for 項 in _規劃(資料庫, 現在, 候選上限=2)] == ["leap-a", "leap-b"]
+
+
+def test_兩個不重疊範圍依實際期限再依ID合併排序(資料庫):
+    現在 = _秒(2025, 2, 28, 12)
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        _呼叫(連線, "z-normal", _秒(2020, 2, 28, 12))
+        _呼叫(連線, "a-leap", _秒(2020, 2, 29, 12))
+        _呼叫(連線, "m-earlier", _秒(2020, 2, 29, 11, 59, 59, 999999))
+    計畫 = _規劃(資料庫, 現在)
+    assert [(項.保存期限, 項.呼叫識別碼) for 項 in 計畫] == [
+        (_秒(2025, 2, 28, 11, 59, 59, 999999), "m-earlier"),
+        (現在, "a-leap"), (現在, "z-normal"),
+    ]
+
+
+@pytest.mark.parametrize("現在,建立,應選", [
+    ((2025, 2, 28, 12, 0, 0, 123456), (2020, 2, 29, 12, 0, 0, 123455), True),
+    ((2025, 2, 28, 12, 0, 0, 123456), (2020, 2, 29, 12, 0, 0, 123456), True),
+    ((2025, 2, 28, 12, 0, 0, 123456), (2020, 2, 29, 12, 0, 0, 123457), False),
+    ((2100, 2, 28, 12), (2095, 2, 28, 12), True),
+    ((2100, 2, 28, 12), (2095, 2, 28, 12, 0, 0, 1), False),
+    ((2101, 2, 28, 12), (2096, 2, 29, 12), True),
+    ((2101, 2, 28, 12), (2096, 2, 29, 12, 0, 0, 1), False),
+])
+def test_候選精確邊界與2100世紀規則(資料庫, 現在, 建立, 應選):
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        _呼叫(連線, "boundary", _秒(*建立))
+    assert bool(_規劃(資料庫, _秒(*現在))) is 應選
+
+
+def test_現在為閏日時正常範圍涵蓋五年前二月二十八日全日(資料庫):
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        _呼叫(連線, "feb28-last", _秒(2019, 2, 28, 23, 59, 59, 999999))
+        _呼叫(連線, "march1", _秒(2019, 3, 1))
+    assert [項.呼叫識別碼 for 項 in _規劃(資料庫, _秒(2024, 2, 29))] == ["feb28-last"]
+
+
+def test_根與相依查詢計畫使用釘選範圍索引且不另排序(資料庫):
+    查詢 = (
+        ("endpoint_invocations", "idx_endpoint_invocations_retention_candidates",
+         "SELECT typeof(id),id,typeof(created_at),created_at FROM endpoint_invocations "
+         "WHERE created_at<=? ORDER BY created_at,id LIMIT ?", (1, 2)),
+        ("endpoint_invocations", "idx_endpoint_invocations_retention_candidates",
+         "SELECT typeof(id),id,typeof(created_at),created_at FROM endpoint_invocations "
+         "WHERE created_at>=? AND created_at<=? ORDER BY created_at,id LIMIT ?", (1, 2, 3)),
+    )
+    for 表格, 索引, SQL, 參數 in 查詢:
+        with closing(sqlite3.connect(資料庫)) as 連線:
+            細節 = " ".join(列[3] for 列 in 連線.execute("EXPLAIN QUERY PLAN " + SQL, 參數))
+        assert 索引 in 細節 and "TEMP B-TREE" not in 細節
+    相依 = {
+        "run_events": ("typeof(id),id", "idx_run_events_retention_invocation_id"),
+        "endpoint_tool_calls": ("typeof(id),id", "idx_endpoint_tool_calls_retention_invocation_id"),
+        "endpoint_redactions": (
+            "typeof(id),id,typeof(target_type),target_type",
+            "idx_endpoint_redactions_retention_invocation_id",
+        ),
+        "audit_events": ("typeof(id),id", "idx_audit_events_retention_invocation_id"),
+    }
+    with closing(sqlite3.connect(資料庫)) as 連線:
+        for 表格, (欄位, 索引) in 相依.items():
+            SQL = f"SELECT {欄位} FROM {表格} WHERE invocation_id=? ORDER BY id LIMIT ?"
+            細節 = " ".join(列[3] for 列 in 連線.execute("EXPLAIN QUERY PLAN " + SQL, ("x", 2)))
+            assert 索引 in 細節 and "TEMP B-TREE" not in 細節
+
+
 @pytest.mark.parametrize("改動", [
     "DROP INDEX idx_endpoint_invocations_retention_candidates",
     "ALTER TABLE endpoint_invocations ADD COLUMN drift TEXT",
