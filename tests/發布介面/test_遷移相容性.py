@@ -1,5 +1,6 @@
 """發布介面資料庫 manifest discovery 與 fresh 初始化測試。"""
 
+from contextlib import closing
 import os
 import sqlite3
 from pathlib import Path
@@ -10,12 +11,12 @@ from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.發布介面 import 資料庫 as 發布資料庫
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫, 載入發布介面遷移
-from 繁中代理.發布介面.遷移執行器 import 遷移執行錯誤
+from 繁中代理.發布介面.遷移執行器 import 執行遷移, 遷移執行錯誤
 
 
 def _q(db: Path, sql: str):
     """執行唯讀查詢並回傳所有資料列。"""
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         return 連線.execute(sql).fetchall()
 
 
@@ -59,7 +60,7 @@ def _existing_legacy_tables(db: Path) -> tuple[str, ...]:
 
 def _legacy_table_snapshot(db: Path, 表名清單: tuple[str, ...]) -> dict[str, object]:
     """快照指定legacy表的欄位、rows、sqlite_master SQL與schema_version存在和值。"""
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         連線.row_factory = sqlite3.Row
         tables: dict[str, object] = {}
         for 表名 in 表名清單:
@@ -128,13 +129,100 @@ def _建立工作階段與訊息(db: Path, user_id: str | None = None) -> str:
         _安全關閉(庫)
 
 
-def test_fresh_empty_db_apply_0001_to_0005_and_idempotent(tmp_path):
-    """空資料庫應依序套用五版，重跑保持無操作。"""
+def test_fresh_empty_db_apply_0001_to_0009_and_idempotent(tmp_path):
+    """空資料庫應依序套用九版，重跑保持無操作。"""
     db = tmp_path / "fresh.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
     _assert_發布遷移完成(db)
     assert _q(db, "PRAGMA foreign_key_check") == []
+    assert _q(db, "PRAGMA foreign_key_list(endpoint_redactions)")[0][2:5] == (
+        "audit_events", "audit_event_id", "id"
+    )
+
+
+def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
+    """v6須保留舊row，將legacy target/time映射到resource/occurred欄位。"""
+    db = tmp_path / "audit-upgrade.sqlite3"
+    前五版 = 載入發布介面遷移()[:5]
+    assert 執行遷移(db, 前五版) == (1, 2, 3, 4, 5)
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        連線.execute(
+            "INSERT INTO audit_events("
+            "id,actor_type,actor_id,action,target_type,target_id,endpoint_id,request_id,metadata_json,created_at"
+            ") VALUES('evt_legacy','system',NULL,'legacy.action','endpoint','ep_1',NULL,'req_1','{}',12.5)"
+        )
+        連線.execute("INSERT INTO service_accounts VALUES('sa_1',1,NULL)")
+        連線.execute(
+            "INSERT INTO published_endpoints("
+            "id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at"
+            ") VALUES('ep_1','owner_1','sa_1','legacy-endpoint','active',NULL,1,1)"
+        )
+        連線.execute(
+            "INSERT INTO published_endpoint_versions VALUES("
+            "'ver_1','ep_1',1,'requirement','prompt','[]','[]','{}','runtime','{}','{}','{}',"
+            "NULL,'{}',0,'owner_1',1)"
+        )
+        連線.execute("UPDATE published_endpoints SET current_version_id='ver_1' WHERE id='ep_1'")
+        連線.execute(
+            "INSERT INTO endpoint_invocations("
+            "id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,"
+            "status,input_json,created_at) VALUES("
+            "'inv_1','ep_1','ver_1',NULL,'req_inv',NULL,NULL,'succeeded','{}',2)"
+        )
+        連線.execute(
+            "INSERT INTO endpoint_redactions("
+            "id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+            "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at) VALUES("
+            "'red_1','inv_1','metadata','inv_1','$.secret',"
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+            "'legacy cleanup','system',NULL,'evt_legacy',0,3)"
+        )
+
+    assert 初始化發布介面資料庫(db) == (6, 7, 8, 9)
+    assert _q(
+        db,
+        "SELECT event_id,resource_type,resource_id,occurred_at,outcome,invocation_id,created_at "
+        "FROM audit_events",
+    ) == [("evt_legacy", "endpoint", "ep_1", 12.5, "legacy_unknown", None, 12.5)]
+    assert _q(
+        db,
+        "SELECT id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+        "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at "
+        "FROM endpoint_redactions",
+    ) == [(
+        "red_1", "inv_1", "metadata", "inv_1", "$.secret",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "legacy cleanup", "system", None, "evt_legacy", 0, 3.0,
+    )]
+    assert _q(db, "PRAGMA foreign_key_check") == []
+    assert _q(db, "PRAGMA foreign_key_list(endpoint_redactions)")[0][2:5] == (
+        "audit_events", "audit_event_id", "id"
+    )
+    索引列 = _q(db, "PRAGMA index_list(endpoint_redactions)")
+    assert {列[1] for 列 in 索引列 if 列[3] == "c"} == {
+        "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_audit",
+        "idx_endpoint_redactions_retention_invocation_id",
+    }
+    unique名稱 = next(列[1] for 列 in 索引列 if 列[2] == 1 and 列[3] == "u")
+    assert [列[2] for 列 in _q(db, f'PRAGMA index_info("{unique名稱}")')] == [
+        "target_type", "target_row_id", "json_path"
+    ]
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            連線.execute(
+                "INSERT INTO endpoint_redactions("
+                "id,invocation_id,target_type,target_row_id,json_path,original_sha256,reason,"
+                "actor_type,actor_id,audit_event_id,is_tombstone,redacted_at) "
+                "SELECT 'red_duplicate',invocation_id,target_type,target_row_id,json_path,"
+                "original_sha256,reason,actor_type,actor_id,audit_event_id,1,redacted_at "
+                "FROM endpoint_redactions WHERE id='red_1'"
+            )
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):
+            連線.execute("UPDATE audit_events SET outcome='success' WHERE event_id='evt_legacy'")
+        with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):
+            連線.execute("DELETE FROM audit_events WHERE event_id='evt_legacy'")
 
 
 def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
@@ -146,7 +234,7 @@ def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"] == {"present": False, "rows": None}
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -165,7 +253,7 @@ def test_sessions_messages_only_db_發布遷移不改legacy_session_tables(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -193,7 +281,7 @@ def test_shared_users_and_sessions_db_發布遷移不改任一legacy_table(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -251,7 +339,7 @@ def test_manifest_sorting_contiguous_duplicate_unknown_utf8_symlink_and_nonregul
 def test_loader_returns_only_pending_and_does_not_read_applied_sql(tmp_path, monkeypatch):
     """Loader只回傳pending版本，且不再讀取已套用SQL。"""
     db = tmp_path / "done.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     def fail_read(*_args, **_kwargs):
         """若測試期間再次讀取SQL便立即失敗。"""
@@ -267,7 +355,7 @@ def test_loader_missing_db_is_read_only_and_returns_all_pending(tmp_path):
     db = tmp_path / "missing.sqlite3"
     assert not db.exists()
     pending = 載入發布介面遷移(資料庫路徑=db)
-    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5]
+    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert not db.exists()
 
 
