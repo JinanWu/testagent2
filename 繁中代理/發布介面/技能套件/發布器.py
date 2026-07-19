@@ -248,3 +248,179 @@ def _安全清除(路徑: Path | None) -> None:
         shutil.rmtree(路徑, onerror=修復權限)
     except BaseException:
         pass
+
+
+def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
+    """驗證既有清單的固定結構並建立預期檔案索引。
+
+    參數：``清單`` 是 JSON 解碼值。回傳：由相對路徑映射至檔案項目的索引。
+    例外：任何結構、型別、額度或摘要不合契約時拋出 ``ValueError``。
+    副作用：只配置有界容器，不存取檔案系統。
+    """
+    if type(清單) is not dict or set(清單) != _清單鍵:
+        raise ValueError
+    if type(清單["manifest_version"]) is not int or 清單["manifest_version"] != 1:
+        raise ValueError
+    if any(
+        type(清單[鍵]) is not str or _識別碼格式.fullmatch(清單[鍵]) is None
+        for 鍵 in ("bundle_id", "endpoint_id", "endpoint_version_id", "created_by_user_id")
+    ):
+        raise ValueError
+    if type(清單["version_number"]) is not int or 清單["version_number"] <= 0:
+        raise ValueError
+    建立時間 = 清單["created_at"]
+    if type(建立時間) not in (int, float) or not math.isfinite(建立時間) or 建立時間 < 0:
+        raise ValueError
+    來源列 = 清單["source_skills"]
+    if type(來源列) is not list or not 1 <= len(來源列) <= 32:
+        raise ValueError
+    來源索引: dict[str, dict[str, Any]] = {}
+    for 來源 in 來源列:
+        if type(來源) is not dict or set(來源) != _來源技能鍵:
+            raise ValueError
+        名稱, 來源路徑, 來源雜湊 = 來源["name"], 來源["source_path"], 來源["source_hash"]
+        if (
+            type(名稱) is not str or _識別碼格式.fullmatch(名稱) is None
+            or type(來源路徑) is not str or not os.path.isabs(來源路徑)
+            or not 來源路徑 or len(來源路徑.encode("utf-8")) > 限制().最大路徑位元組數
+            or type(來源雜湊) is not str or re.fullmatch(r"[0-9a-f]{64}", 來源雜湊) is None
+            or 名稱 in 來源索引
+        ):
+            raise ValueError
+        來源索引[名稱] = 來源
+    if [來源["name"] for 來源 in 來源列] != sorted(來源索引, key=lambda 值: 值.encode("utf-8")):
+        raise ValueError
+    項目列 = 清單.get("copied_files")
+    if type(項目列) is not list or not 1 <= len(項目列) <= 限制().最大檔案數:
+        raise ValueError
+    索引: dict[str, dict[str, Any]] = {}
+    總數 = 0
+    for 項目 in 項目列:
+        if type(項目) is not dict or set(項目) != _檔案鍵:
+            raise ValueError
+        路徑, 大小, 雜湊 = 項目["path"], 項目["size_bytes"], 項目["sha256"]
+        if type(路徑) is not str or type(大小) is not int or type(雜湊) is not str:
+            raise ValueError
+        部件 = PurePosixPath(路徑).parts
+        if not _合法清單路徑(路徑) or len(部件) < 2 or 部件[0] not in 來源索引:
+            raise ValueError
+        if len(路徑.encode("utf-8")) > 限制().最大路徑位元組數 or not 0 <= 大小 <= 限制().最大檔案位元組數:
+            raise ValueError
+        if re.fullmatch(r"[0-9a-f]{64}", 雜湊) is None or 路徑 in 索引:
+            raise ValueError
+        索引[路徑] = 項目
+        總數 += 大小
+    if [項目["path"] for 項目 in 項目列] != sorted(索引, key=lambda 值: 值.encode("utf-8")):
+        raise ValueError
+    for 名稱, 來源 in 來源索引.items():
+        技能項目 = [
+            ["/".join(PurePosixPath(路徑).parts[1:]), 項目["size_bytes"], 項目["sha256"]]
+            for 路徑, 項目 in 索引.items() if PurePosixPath(路徑).parts[0] == 名稱
+        ]
+        if not 技能項目 or not any(項目[0] == "SKILL.md" for 項目 in 技能項目):
+            raise ValueError
+        if hashlib.sha256(正規JSON(技能項目)).hexdigest() != 來源["source_hash"]:
+            raise ValueError
+    排除列 = 清單["excluded_files"]
+    if type(排除列) is not list or len(排除列) > 限制().最大檔案數:
+        raise ValueError
+    排除路徑列: list[str] = []
+    for 排除 in 排除列:
+        if type(排除) is not dict or set(排除) != _排除鍵:
+            raise ValueError
+        路徑, 原因 = 排除["path"], 排除["reason"]
+        部件 = PurePosixPath(路徑).parts if type(路徑) is str else ()
+        if (
+            not _合法清單路徑(路徑) or len(部件) < 2 or 部件[0] not in 來源索引
+            or type(原因) is not str or 原因 not in _允許排除原因 or 路徑 in 索引
+        ):
+            raise ValueError
+        排除路徑列.append(路徑)
+    if 排除路徑列 != sorted(set(排除路徑列), key=lambda 值: 值.encode("utf-8")):
+        raise ValueError
+    if type(清單["warnings"]) is not list or 清單["warnings"]:
+        raise ValueError
+    if type(清單["total_bytes"]) is not int or 總數 > 限制().最大總位元組數 or 清單["total_bytes"] != 總數:
+        raise ValueError
+    if type(清單["copied_file_hashes"]) is not dict or 清單["copied_file_hashes"] != {路徑: 項目["sha256"] for 路徑, 項目 in 索引.items()}:
+        raise ValueError
+    if type(清單["bundle_hash"]) is not str or re.fullmatch(r"[0-9a-f]{64}", 清單["bundle_hash"]) is None:
+        raise ValueError
+    if 清單["bundle_hash"] != 計算套件雜湊(項目列):
+        raise ValueError
+    return 索引
+
+
+def _重驗最終內容(
+    最終目錄: Path, 清單摘要: str, 索引: dict[str, dict[str, Any]]
+) -> None:
+    """以目錄描述元重驗最終樹的種類、模式、大小、摘要及完整集合。
+
+    參數：``最終目錄`` 是既有成果；``清單摘要`` 與 ``索引`` 描述唯一允許內容。回傳：無。
+    例外：碰撞、競態、額外項目或內容不符時拋出 ``OSError``。副作用：只讀取成果樹。
+    """
+    根開啟前 = 最終目錄.lstat()
+    if not stat.S_ISDIR(根開啟前.st_mode) or stat.S_IMODE(根開啟前.st_mode) != 0o555:
+        raise OSError
+    根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    實際檔案: set[str] = set()
+    實際目錄: set[str] = {""}
+    預期目錄: set[str] = {""}
+    已驗清單 = False
+    for 路徑 in 索引:
+        部件 = PurePosixPath(路徑).parts
+        預期目錄.update("/".join(部件[:索引值]) for 索引值 in range(1, len(部件)))
+
+    def 走訪(目錄描述元: int, 前綴: str) -> None:
+        """遞迴重驗一個已釘選最終目錄。
+
+        參數：``目錄描述元`` 由外層持有；``前綴`` 是相對路徑。回傳：無。
+        例外：種類、模式、內容或競態不符時拋出 ``OSError``。副作用：讀取並關閉自行開啟的描述元。
+        """
+        nonlocal 已驗清單
+        if stat.S_IMODE(os.fstat(目錄描述元).st_mode) != 0o555:
+            raise OSError
+        for 名稱 in os.listdir(目錄描述元):
+            相對路徑 = 名稱 if not 前綴 else f"{前綴}/{名稱}"
+            資訊 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
+            if stat.S_ISDIR(資訊.st_mode):
+                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                try:
+                    釘選 = os.fstat(子描述元)
+                    if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
+                        raise OSError
+                    實際目錄.add(相對路徑)
+                    走訪(子描述元, 相對路徑)
+                finally:
+                    os.close(子描述元)
+            elif stat.S_ISREG(資訊.st_mode):
+                if 相對路徑 == "manifest.json":
+                    if 前綴 or stat.S_IMODE(資訊.st_mode) != 0o444:
+                        raise OSError
+                    資料, _穩定資訊 = _讀取有界檔案(
+                        目錄描述元, 名稱, 限制().最大總位元組數
+                    )
+                    if hashlib.sha256(資料).hexdigest() != 清單摘要:
+                        raise OSError
+                    已驗清單 = True
+                    continue
+                項目 = 索引.get(相對路徑)
+                if 項目 is None or stat.S_IMODE(資訊.st_mode) != 0o444:
+                    raise OSError
+                資料, 穩定資訊 = _讀取有界檔案(目錄描述元, 名稱, 項目["size_bytes"])
+                if 穩定資訊.st_size != 項目["size_bytes"] or hashlib.sha256(資料).hexdigest() != 項目["sha256"]:
+                    raise OSError
+                實際檔案.add(相對路徑)
+            else:
+                raise OSError
+    try:
+        根開啟後 = os.fstat(根描述元)
+        if (根開啟前.st_dev, 根開啟前.st_ino) != (根開啟後.st_dev, 根開啟後.st_ino):
+            raise OSError
+        走訪(根描述元, "")
+    finally:
+        os.close(根描述元)
+    if not 已驗清單 or 實際檔案 != set(索引) or 實際目錄 != 預期目錄:
+        raise OSError
+
+
