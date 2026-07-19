@@ -123,6 +123,51 @@ def test_router掛載與獨立建立的openapi決定性():
     }
 
 
+@pytest.mark.parametrize("路由數", [0, 1, 2])
+def test_sanitized_router精確路由數發布(路由數):
+    """跨版本合法發布空或多路由 router，且每條均可執行並出現在規格。"""
+    路由器 = APIRouter(prefix="/api/auth")
+    for 索引 in range(路由數):
+        路由器.add_api_route(f"/probe-{索引}", lambda 索引=索引: {"index": 索引})
+
+    應用程式 = 建立應用程式(發布介面相依項((路由器,), ()))
+    with TestClient(應用程式) as 客戶端:
+        assert 客戶端.get("/healthz").json() == {"status": "ok"}
+        for 索引 in range(路由數):
+            assert 客戶端.get(f"/api/auth/probe-{索引}").json() == {"index": 索引}
+    assert set(應用程式.openapi()["paths"]) == {
+        "/healthz", *(f"/api/auth/probe-{索引}" for 索引 in range(路由數))
+    }
+    assert all(
+        type(路由) is APIRoute
+        for 路由 in 應用程式.routes
+        if getattr(路由, "path", "").startswith("/api/auth")
+    )
+
+
+@pytest.mark.parametrize("竄改", ["身份", "移除"])
+def test_新版框架拒絕include附加切片身份或數量竄改(monkeypatch, 竄改):
+    """錯誤 router identity 或 count mismatch 的 appended slice 都必須拒絕。"""
+    if 應用程式模組._框架形狀 != "新":
+        pytest.skip("只適用 FastAPI 新版 include container")
+    原include = 應用程式模組.FastAPI.include_router
+
+    def 竄改切片(self, router, *args, **kwargs):
+        原路由數 = len(self.router.routes)
+        原include(self, router, *args, **kwargs)
+        if 竄改 == "身份":
+            self.router.routes[原路由數].__dict__["original_router"] = APIRouter()
+        else:
+            self.router.routes.pop()
+
+    monkeypatch.setattr(應用程式模組.FastAPI, "include_router", 竄改切片)
+    路由器 = APIRouter(prefix="/api/auth")
+    路由器.add_api_route("/one", lambda: {"route": 1})
+    路由器.add_api_route("/two", lambda: {"route": 2})
+    with pytest.raises(ValueError, match="^發布介面路由設定無效$"):
+        建立應用程式(發布介面相依項((路由器,), ()))
+
+
 def test_duplicate_method_path與api_auth_collision在publication前拒絕():
     """FastAPI 不得以 first-handler/OpenAPI overwrite 接受 collision。"""
     第一個 = _探針路由器("/api/auth")
