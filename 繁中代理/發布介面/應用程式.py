@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
@@ -35,10 +36,63 @@ def _拋出固定錯誤(訊息: str) -> NoReturn:
 
 def _拋出盒中控制流程(錯誤盒: list[BaseException]) -> NoReturn:
     """保留控制流程 identity，並在 traceback frame 清除其參照。"""
+    錯誤: BaseException | None = 錯誤盒.pop()
     try:
-        raise 錯誤盒.pop()
+        錯誤.__cause__ = None
+        錯誤.__context__ = None
+        錯誤.__suppress_context__ = False
+        raise 錯誤
     finally:
+        錯誤 = None
         錯誤盒.clear()
+
+
+class _生命週期例外鏈清除器:
+    """讓內層 lifespan 的既定錯誤自然傳出前清除隱含 body context。"""
+
+    __slots__ = ("_內層",)
+    _內層: Any
+
+    def __init__(self, 內層):
+        self._內層 = 內層
+
+    async def __aenter__(self):
+        """委派 startup。"""
+        return await self._內層.__aenter__()
+
+    async def __aexit__(self, 錯誤類型, 錯誤, 追蹤):
+        """不重新捕捉，並確保 body control 有 production rethrow frame。"""
+        內層 = self._內層
+        self._內層 = None
+        當前錯誤 = None
+        選定錯誤 = None
+        try:
+            結果 = await 內層.__aexit__(錯誤類型, 錯誤, 追蹤)
+            if 結果 is False and isinstance(錯誤, _控制流程錯誤):
+                選定錯誤 = 錯誤
+                raise 選定錯誤
+            return 結果
+        finally:
+            當前錯誤 = sys.exception()
+            if 當前錯誤 is not None:
+                當前錯誤.__cause__ = None
+                當前錯誤.__context__ = None
+                當前錯誤.__suppress_context__ = False
+            內層 = None
+            當前錯誤 = None
+            選定錯誤 = None
+            錯誤類型 = None
+            錯誤 = None
+            追蹤 = None
+
+
+@asynccontextmanager
+async def _捕捉主體錯誤(錯誤盒: list[BaseException]) -> AsyncIterator[None]:
+    """在隔離 frame 捕捉 body，讓 lifespan cleanup 不繼承其 exception context。"""
+    try:
+        yield
+    except BaseException as 錯誤:
+        錯誤盒.append(錯誤)
 
 
 async def _反向關閉資源(
@@ -166,22 +220,30 @@ def _驗證應用路由(應用程式: FastAPI, 預期操作: frozenset[tuple[str
 
 def 建立生命週期(相依項: 發布介面相依項):
     """建立只擁有 reconstructed factory tuple products 的 fail-closed lifespan。"""
+    相依項盒 = [相依項]
+    del 相依項
 
     @asynccontextmanager
-    async def 生命週期(應用程式: FastAPI) -> AsyncIterator[None]:
+    async def 內層生命週期(應用程式: FastAPI) -> AsyncIterator[None]:
         """全清理後依 body/control/ordinary 的固定優先序結束。"""
         已啟動資源: list[發布介面資源] = []
         啟動錯誤盒: list[BaseException] = []
+        安全相依項 = 相依項盒[0]
+        工廠清單 = 安全相依項.資源工廠清單
         try:
-            for 工廠 in 相依項.資源工廠清單:
+            for 工廠 in 工廠清單:
                 if not callable(工廠):
                     raise RuntimeError(啟動錯誤訊息)
                 已啟動資源.append(await 工廠())
         except BaseException as 啟動錯誤:
             啟動錯誤盒.append(啟動錯誤)
         工廠 = None
+        工廠清單 = ()
         if 啟動錯誤盒:
             清理控制盒, _ = await _反向關閉資源(已啟動資源)
+            安全相依項 = None
+            相依項盒.clear()
+            del 應用程式
             if isinstance(啟動錯誤盒[0], _控制流程錯誤):
                 清理控制盒.clear()
                 _拋出盒中控制流程(啟動錯誤盒)
@@ -190,28 +252,35 @@ def 建立生命週期(相依項: 發布介面相依項):
                 _拋出盒中控制流程(清理控制盒)
             _拋出固定錯誤(啟動錯誤訊息)
 
-        應用程式.state.發布介面相依項 = 相依項
+        應用程式.state.發布介面相依項 = 安全相依項
         應用程式.state.發布介面資源 = tuple(已啟動資源)
+        安全相依項 = None
         主體錯誤盒: list[BaseException] = []
-        try:
-            try:
-                yield
-            except BaseException as 主體錯誤:
-                主體錯誤盒.append(主體錯誤)
-        finally:
-            del 應用程式.state.發布介面資源
-            del 應用程式.state.發布介面相依項
-            清理控制盒, 有清理一般錯誤 = await _反向關閉資源(已啟動資源)
+        async with _捕捉主體錯誤(主體錯誤盒):
+            yield
+        del 應用程式.state.發布介面資源
+        del 應用程式.state.發布介面相依項
+        清理控制盒, 有清理一般錯誤 = await _反向關閉資源(已啟動資源)
         if 主體錯誤盒 and isinstance(主體錯誤盒[0], _控制流程錯誤):
             清理控制盒.clear()
+            相依項盒.clear()
+            del 應用程式
             _拋出盒中控制流程(主體錯誤盒)
         if 清理控制盒:
             主體錯誤盒.clear()
+            相依項盒.clear()
+            del 應用程式
             _拋出盒中控制流程(清理控制盒)
         有主體一般錯誤 = bool(主體錯誤盒)
         主體錯誤盒.clear()
         if 有主體一般錯誤 or 有清理一般錯誤:
+            相依項盒.clear()
+            del 應用程式
             _拋出固定錯誤(關閉錯誤訊息)
+
+    def 生命週期(應用程式: FastAPI):
+        """為每次 lifespan 呼叫建立會清除最終例外鏈的獨立 context。"""
+        return _生命週期例外鏈清除器(內層生命週期(應用程式))
 
     return 生命週期
 
