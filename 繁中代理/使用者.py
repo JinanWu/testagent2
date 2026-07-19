@@ -18,7 +18,13 @@ import sqlite3
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, NoReturn, Protocol, cast
+
+from .發布介面.嚴格JSON import 解析嚴格JSON
+from .發布介面.連線隔離 import (
+    標記發布連線污染 as _標記權限連線污染,
+    發布連線已污染 as _權限連線已污染,
+)
 
 
 預設使用者識別碼 = "local"
@@ -228,6 +234,163 @@ def 雜湊Token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+class 發布權限協調協定(Protocol):
+    """在呼叫者擁有的 SQLite 交易內協調已發布端點。"""
+
+    def 協調權限變更(
+        self, 連線: sqlite3.Connection, 擁有者識別碼: str, 欄位: str,
+        舊項目: tuple[str, ...], 新項目: tuple[str, ...], 更新時間: float,
+    ) -> None: ...
+
+
+class 權限更新錯誤(RuntimeError):
+    """代表使用者設定與發布端點無法原子更新。"""
+
+
+def _正規化權限清單(項目清單: Any) -> tuple[str, ...]:
+    """建立 deterministic exact tuple；空清單或星號皆表示不限制。"""
+    if type(項目清單) is not list or len(項目清單) > 10_000:
+        raise ValueError("權限清單格式無效")
+    項目集合: set[str] = set()
+    for 項目 in 項目清單:
+        if (type(項目) is not str or not 項目.strip() or 項目 != 項目.strip()
+                or len(項目.encode("utf-8")) > 4096):
+            raise ValueError("權限清單格式無效")
+        項目集合.add(項目)
+    if "*" in 項目集合:
+        return ("*",)
+    return tuple(sorted(項目集合))
+
+
+def _驗證有界權限JSON(原始值: Any) -> str:
+    """在嚴格解析前以 quote/escape-aware 掃描限制 bytes、深度與節點。"""
+    if type(原始值) is not str or len(原始值.encode("utf-8")) > 1024 * 1024:
+        raise ValueError
+    堆疊: list[str] = []
+    索引 = 節點數 = 0
+    期待值 = True
+    while 索引 < len(原始值):
+        字元 = 原始值[索引]
+        if 字元.isspace():
+            索引 += 1
+            continue
+        if 字元 == '"':
+            是值 = 期待值
+            索引 += 1
+            while 索引 < len(原始值):
+                if 原始值[索引] == "\\":
+                    索引 += 2
+                    continue
+                if 原始值[索引] == '"':
+                    索引 += 1
+                    break
+                索引 += 1
+            if 是值:
+                節點數 += 1
+                期待值 = False
+        elif 字元 in "[{":
+            if 期待值:
+                節點數 += 1
+            堆疊.append(字元)
+            if len(堆疊) > 64:
+                raise ValueError
+            期待值 = 字元 == "["
+            索引 += 1
+        elif 字元 in "]}":
+            if 堆疊:
+                堆疊.pop()
+            期待值 = False
+            索引 += 1
+        elif 字元 == ":":
+            期待值 = True
+            索引 += 1
+        elif 字元 == ",":
+            期待值 = bool(堆疊 and 堆疊[-1] == "[")
+            索引 += 1
+        else:
+            if 期待值:
+                節點數 += 1
+                期待值 = False
+            索引 += 1
+            while 索引 < len(原始值) and 原始值[索引] not in " \t\r\n,]}":
+                索引 += 1
+        if 節點數 > 10_000:
+            raise ValueError
+    return 原始值
+
+
+def _解析權限JSON(原始值: Any) -> tuple[str, ...]:
+    """權威舊設定必須是 canonicalizable exact list[str]。"""
+    值 = None
+    try:
+        值 = 解析嚴格JSON(_驗證有界權限JSON(原始值))
+        return _正規化權限清單(值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 原始值, 值
+        raise
+
+
+def _清除權限控制鏈(控制: BaseException) -> None:
+    """移除控制流既有的敏感 cause/context，保留 identity 與 args。"""
+    控制.__cause__ = 控制.__context__ = None
+    控制.__suppress_context__ = True
+
+
+def _回滾權限交易(連線: sqlite3.Connection) -> list[BaseException]:
+    """回滾失敗且交易仍開啟時關閉連線，避免部分修改日後被誤提交。"""
+    結果: list[BaseException] = []
+    try:
+        連線.execute("ROLLBACK")
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除權限控制鏈(控制)
+        控制 = 控制.with_traceback(None)
+        結果.append(控制)
+        del 控制
+    except BaseException:
+        try:
+            if 連線.in_transaction:
+                連線.close()
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+            _清除權限控制鏈(控制)
+            結果.append(控制.with_traceback(None))
+            _標記權限連線污染(連線)
+            del 控制
+        except BaseException:
+            _標記權限連線污染(連線)
+    del 連線
+    return 結果
+
+
+def _拋出權限清理控制(控制: BaseException) -> NoReturn:
+    """以 fresh traceback 與空呼叫端容器拋回 exact cleanup control。"""
+    try:
+        raise 控制.with_traceback(None)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 控制
+        raise
+
+
+def _擷取發布協調目標(協調器: Any) -> Callable[..., None]:
+    """在建構時固定 bound method；控制流穿透、ordinary 固定拒絕。"""
+    目標: Any = None
+    失敗 = False
+    try:
+        目標 = object.__getattribute__(協調器, "協調權限變更")
+        if not callable(目標):
+            raise TypeError
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除權限控制鏈(控制)
+        del 協調器, 目標, 失敗, 控制
+        raise
+    except BaseException:
+        失敗 = True
+    if 失敗 or 目標 is None:
+        del 協調器, 目標, 失敗
+        raise TypeError("發布權限協調器無效") from None
+    del 協調器, 失敗
+    return cast(Callable[..., None], 目標)
+
+
 class 使用者庫:
     """管理 SQLite 中的 users、user_settings 與 auth_sessions。
 
@@ -238,7 +401,10 @@ class 使用者庫:
         可建立、驗證與解析使用者上下文的資料庫物件。
     """
 
-    def __init__(self, 資料庫路徑: str | Path) -> None:
+    def __init__(
+        self, 資料庫路徑: str | Path,
+        發布權限協調器: 發布權限協調協定 | None = None,
+    ) -> None:
         """初始化使用者資料庫。
 
         參數：
@@ -246,6 +412,10 @@ class 使用者庫:
 
         返回值：None。
         """
+        協調目標: Callable[..., None] | None = None
+        if 發布權限協調器 is not None:
+            協調目標 = _擷取發布協調目標(發布權限協調器)
+        self._發布權限協調目標 = 協調目標
         self.資料庫路徑 = Path(資料庫路徑)
         self.資料庫路徑.parent.mkdir(parents=True, exist_ok=True)
         self.連線 = sqlite3.connect(self.資料庫路徑, timeout=1, isolation_level=None, check_same_thread=False)
@@ -398,13 +568,80 @@ class 使用者庫:
 
         返回值：None。
         """
-        使用者 = self.讀取使用者(username=username)
-        if not 使用者:
-            raise ValueError(f"找不到使用者：{username}")
-        if 欄位 not in {"enabled_tools_json", "enabled_skills_json", "skill_roots_json", "allowed_workdirs_json"}:
+        if type(username) is not str or not username.strip():
+            raise ValueError("username 不可為空")
+        if type(欄位) is not str or 欄位 not in {"enabled_tools_json", "enabled_skills_json", "skill_roots_json", "allowed_workdirs_json"}:
             raise ValueError(f"不支援的權限欄位：{欄位}")
-        self.連線.execute(f"UPDATE user_settings SET {欄位}=?, updated_at=? WHERE user_id=?", (json.dumps(項目清單, ensure_ascii=False), time.time(), 使用者["id"]))
-
+        新項目 = _正規化權限清單(項目清單)
+        新JSON = json.dumps(新項目, ensure_ascii=False, separators=(",", ":"))
+        更新時間 = time.time()
+        已開始 = 已提交 = 提交中 = 失敗 = 找不到 = False
+        資料列 = 舊項目 = 結果 = None
+        清理控制: list[BaseException] = []
+        try:
+            if _權限連線已污染(self.連線):
+                raise sqlite3.DatabaseError
+            self.連線.execute("BEGIN IMMEDIATE")
+            已開始 = True
+            資料列 = self.連線.execute(
+                f"SELECT u.id,s.{欄位} FROM users u JOIN user_settings s ON s.user_id=u.id WHERE u.username=?",
+                (username,),
+            ).fetchone()
+            if 資料列 is None:
+                找不到 = True
+            else:
+                舊項目 = _解析權限JSON(資料列[1])
+                結果 = self.連線.execute(
+                    f"UPDATE user_settings SET {欄位}=?,updated_at=? WHERE user_id=?",
+                    (新JSON, 更新時間, 資料列[0]),
+                )
+                if type(結果.rowcount) is not int or 結果.rowcount != 1:
+                    raise sqlite3.DatabaseError
+                if self._發布權限協調目標 is not None and 欄位 != "allowed_workdirs_json":
+                    self._發布權限協調目標(
+                        self.連線, 資料列[0], 欄位, 舊項目, 新項目, 更新時間,
+                    )
+                提交中 = True
+                self.連線.execute("COMMIT")
+                已開始 = False
+                已提交 = True
+                提交中 = False
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+            _清除權限控制鏈(控制)
+            if 已開始:
+                清理控制 = _回滾權限交易(self.連線)
+            清理控制.clear()
+            _清除權限控制鏈(控制)
+            del self, username, 欄位, 項目清單, 新項目, 新JSON, 更新時間
+            del 已開始, 已提交, 提交中, 失敗, 找不到, 資料列, 舊項目, 結果, 清理控制, 控制
+            raise
+        except BaseException:
+            if not 已開始:
+                失敗 = True
+            elif not 提交中 or self.連線.in_transaction:
+                失敗 = True
+            else:
+                已開始 = False
+                已提交 = True
+        if 已開始:
+            清理控制 = _回滾權限交易(self.連線)
+            已開始 = False
+        if 已提交:
+            return
+        if 找不到:
+            del self, username, 欄位, 項目清單, 新項目, 新JSON, 更新時間
+            del 已開始, 已提交, 提交中, 失敗, 找不到, 資料列, 舊項目, 結果
+            if 清理控制:
+                _拋出權限清理控制(清理控制.pop())
+            del 清理控制
+            raise ValueError("找不到使用者") from None
+        if 失敗:
+            del self, username, 欄位, 項目清單, 新項目, 新JSON, 更新時間
+            del 已開始, 已提交, 提交中, 失敗, 找不到, 資料列, 舊項目, 結果
+            if 清理控制:
+                _拋出權限清理控制(清理控制.pop())
+            del 清理控制
+            raise 權限更新錯誤("權限更新失敗") from None
     def 驗證使用者密碼(self, username: str, password: str) -> dict[str, Any]:
         """驗證帳密並回傳使用者資料。
 
