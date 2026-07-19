@@ -18,6 +18,14 @@ function jsonResponse(body: unknown): Response {
   })
 }
 
+interface StrictContract {
+  name: string
+  request: () => Promise<unknown>
+  missing: unknown
+  wrong: unknown
+  extra: unknown
+}
+
 describe('CP3 安全 API clients', () => {
   const fetchMock = vi.fn<typeof fetch>()
 
@@ -52,32 +60,82 @@ describe('CP3 安全 API clients', () => {
     })
   })
 
-  it('拒絕 chat、session 與 skill 回應的多餘或錯誤欄位', async () => {
+  const strictContracts: StrictContract[] = [
+    {
+      name: 'chat', request: () => sendChat('hi', null, 'csrf'),
+      missing: { session_id: 'root' },
+      wrong: { session_id: 1, reply: { role: 'assistant', content: 'ok' } },
+      extra: { session_id: 'root', reply: { role: 'assistant', content: 'ok' }, internal: true },
+    },
+    {
+      name: 'session list', request: () => listSessions(),
+      missing: {}, wrong: { sessions: {} }, extra: { sessions: [], internal: true },
+    },
+    {
+      name: 'session detail', request: () => getSessionDetail('root'),
+      missing: { session: { id: 'root', title: '標題', updated_at: 1 } },
+      wrong: { session: 'root', messages: [] },
+      extra: { session: { id: 'root', title: '標題', updated_at: 1 }, messages: [], internal: true },
+    },
+    {
+      name: 'skill list', request: () => listSkills(),
+      missing: {}, wrong: { skills: {} }, extra: { skills: [], internal: true },
+    },
+    {
+      name: 'skill detail', request: () => getSkill('skill'),
+      missing: { id: 'skill', name: 'Skill', category: 'cat', description: 'desc' },
+      wrong: { id: 'skill', name: 1, category: 'cat', description: 'desc', content: 'body' },
+      extra: { id: 'skill', name: 'Skill', category: 'cat', description: 'desc', content: 'body', internal: true },
+    },
+  ]
+
+  it.each(strictContracts)('$name 拒絕 missing key', async ({ request, missing }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(missing))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it.each(strictContracts)('$name 拒絕 wrong type', async ({ request, wrong }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(wrong))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it.each(strictContracts)('$name 拒絕 extra key', async ({ request, extra }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(extra))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it('拒絕超過 1 MiB transport 上限的回應', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({
-      session_id: 'root', reply: { role: 'assistant', content: 'ok', secret: true },
+      session_id: 'root', reply: { role: 'assistant', content: 'x'.repeat(1024 * 1024) },
     }))
-    await expect(sendChat('hi', null, 'csrf')).rejects.toThrow()
+    await expect(sendChat('hi', null, 'csrf')).rejects.toThrow(ApiFormatError)
+  })
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [{
-      id: 'root', title: '標題', updated_at: 1, message_count: 2, internal: true,
-    }] }))
-    await expect(listSessions()).rejects.toThrow()
-
-    fetchMock.mockResolvedValueOnce(jsonResponse({
+  it.each([
+    ['chat reply', () => sendChat('hi', null, 'csrf'), {
+      session_id: 'root', reply: { role: 'assistant', content: 'x'.repeat(65_537) },
+    }],
+    ['session message', () => getSessionDetail('root'), {
       session: { id: 'root', title: '標題', updated_at: 1 },
-      messages: [{ role: 'tool', content: 'secret' }],
-    }))
-    await expect(getSessionDetail('root')).rejects.toThrow()
+      messages: [{ role: 'assistant', content: 'x'.repeat(65_537) }],
+    }],
+    ['skill content', () => getSkill('skill'), {
+      id: 'skill', name: 'Skill', category: 'cat', description: 'desc', content: '界'.repeat(87_382),
+    }],
+  ] as const)('%s 拒絕 oversized field', async (_name, request, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
 
-    fetchMock.mockResolvedValueOnce(jsonResponse({ skills: [{
-      id: 'skill', name: 'Skill', category: 'cat', description: 'desc', path: '/secret',
-    }] }))
-    await expect(listSkills()).rejects.toThrow()
-
-    fetchMock.mockResolvedValueOnce(jsonResponse({
-      id: 'skill', name: 'Skill', category: 'cat', description: 'desc', content: 3,
-    }))
-    await expect(getSkill('skill')).rejects.toThrow()
+  it.each([
+    ['session list', () => listSessions(), { sessions: Array.from({ length: 51 }) }],
+    ['session messages', () => getSessionDetail('root'), {
+      session: { id: 'root', title: '標題', updated_at: 1 }, messages: Array.from({ length: 10_001 }),
+    }],
+    ['skill list', () => listSkills(), { skills: Array.from({ length: 10_001 }) }],
+  ] as const)('%s 拒絕 oversized collection', async (_name, request, body) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(body))
+    await expect(request()).rejects.toThrow(ApiFormatError)
   })
 })
 
@@ -129,6 +187,54 @@ describe('CP3 真實對話工作流程', () => {
     }))
     await act(async () => renderer.root.findByProps({ children: '新增對話' }).props.onClick())
     expect(JSON.stringify(renderer.toJSON())).not.toContain('新答案')
+  })
+
+  it('工作階段明細載入期間禁止送出到舊工作階段', async () => {
+    await openChat([
+      { id: 'old', title: '舊對話', updated_at: 1, message_count: 1 },
+      { id: 'next', title: '新對話', updated_at: 2, message_count: 1 },
+    ])
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      session: { id: 'old', title: '舊對話', updated_at: 1 },
+      messages: [{ role: 'assistant', content: '舊內容' }],
+    }))
+    await act(async () => renderer.root.findByProps({ children: '舊對話' }).props.onClick())
+
+    let resolveDetail!: (response: Response) => void
+    fetchMock.mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve }))
+    await act(async () => { void renderer.root.findByProps({ children: '新對話' }).props.onClick() })
+    await act(async () => renderer.root.findByType('textarea').props.onChange({ currentTarget: { value: '不可送到舊對話' } }))
+    expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(true)
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+
+    await act(async () => resolveDetail(jsonResponse({
+      session: { id: 'next', title: '新對話', updated_at: 2 },
+      messages: [{ role: 'assistant', content: '新內容' }],
+    })))
+    expect(JSON.stringify(renderer.toJSON())).toContain('新內容')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('你：不可送到舊對話')
+  })
+
+  it('較舊的明細回應不可覆蓋後選工作階段', async () => {
+    await openChat([
+      { id: 'slow', title: '慢對話', updated_at: 1, message_count: 1 },
+      { id: 'fast', title: '快對話', updated_at: 2, message_count: 1 },
+    ])
+    let resolveSlow!: (response: Response) => void
+    fetchMock.mockReturnValueOnce(new Promise((resolve) => { resolveSlow = resolve }))
+    await act(async () => { void renderer.root.findByProps({ children: '慢對話' }).props.onClick() })
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      session: { id: 'fast', title: '快對話', updated_at: 2 },
+      messages: [{ role: 'assistant', content: '最新內容' }],
+    }))
+    await act(async () => renderer.root.findByProps({ children: '快對話' }).props.onClick())
+    await act(async () => resolveSlow(jsonResponse({
+      session: { id: 'slow', title: '慢對話', updated_at: 1 },
+      messages: [{ role: 'assistant', content: '過期內容' }],
+    })))
+    expect(JSON.stringify(renderer.toJSON())).toContain('最新內容')
+    expect(JSON.stringify(renderer.toJSON())).not.toContain('過期內容')
   })
 
   it('傳送失敗時顯示安全錯誤並保留草稿', async () => {
