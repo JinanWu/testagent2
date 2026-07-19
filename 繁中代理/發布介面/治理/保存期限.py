@@ -268,6 +268,7 @@ class SQLite保存清除服務:
     __slots__ = ("_path",)
 
     def __init__(self, 資料庫路徑: str) -> None:
+        """保存exact絕對資料庫路徑；每次清除仍重新釘選檔案與結構。"""
         if type(資料庫路徑) is not str or not 資料庫路徑 or os.path.abspath(資料庫路徑) != 資料庫路徑:
             資料庫路徑 = None  # type: ignore[assignment]
             raise 保存清除錯誤(_清除固定錯誤) from None
