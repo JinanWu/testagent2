@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -212,6 +213,112 @@ class GeminiADC供應商:
         回應 = 客戶端.models.generate_content(model=self.模型名稱, contents=內容清單, config=設定)
         return self.轉成模型回應(回應)
 
+    def 產生發布回應(
+        self, *, model, temperature, max_tokens, timeout_seconds,
+        structured_output, schema_retry_count, messages, tools, response_schema,
+    ):
+        """以釘選參數呼叫 Vertex Gemini，且不讀取 instance 的 live model。"""
+        from google import genai
+        from google.genai import types
+        import httpx
+        from .發布介面.執行期.模型契約 import (
+            供應商逾時, 控制流程, 模型回應快照, 複製JSON,
+        )
+
+        專案 = 位置 = 訊息原值 = 工具原值 = 結構原值 = None
+        訊息 = 工具 = 結構 = 內容 = 工具宣告 = 設定參數 = 設定 = 客戶端 = 回應 = 舊回應 = None
+        文字 = 原因 = 使用量原值 = 呼叫原值 = 使用量 = 呼叫 = 結果 = 錯誤 = None
+        毫秒 = None
+        逾時 = False
+        try:
+            專案 = object.__getattribute__(self, "專案識別碼")
+            位置 = object.__getattribute__(self, "位置")
+            訊息原值 = messages
+            工具原值 = tools
+            結構原值 = response_schema
+            if type(model) is not str or not model or len(model) > 128:
+                raise ValueError
+            if type(temperature) is not float or not math.isfinite(temperature) or not 0 <= temperature <= 2:
+                raise ValueError
+            if type(max_tokens) is not int or not 1 <= max_tokens <= 1_000_000:
+                raise ValueError
+            if type(timeout_seconds) is not float or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 900:
+                raise ValueError
+            if type(structured_output) is not bool or type(schema_retry_count) is not int or schema_retry_count != 1:
+                raise ValueError
+            if type(專案) is not str or type(位置) is not str or not 專案 or not 位置:
+                raise ValueError
+            訊息 = 複製JSON(訊息原值, 1_000_000)
+            工具 = 複製JSON(工具原值, 1_000_000)
+            if type(訊息) is not list or type(工具) is not list:
+                raise ValueError
+            if structured_output:
+                if type(結構原值) is not dict:
+                    raise ValueError
+                結構 = 複製JSON(結構原值, 500_000)
+            elif 結構原值 is not None:
+                raise ValueError
+            內容 = self.轉成Gemini內容(訊息)
+            工具宣告 = self.轉成Gemini工具(工具)
+            設定參數 = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+                "tools": 工具宣告 if 工具宣告 else None,
+            }
+            if structured_output:
+                設定參數["response_mime_type"] = "application/json"
+                設定參數["response_json_schema"] = 結構
+            設定 = types.GenerateContentConfig(**設定參數)
+            毫秒 = math.ceil(timeout_seconds * 1000)
+            if not 1 <= 毫秒 <= 900_000:
+                raise ValueError
+            客戶端 = genai.Client(
+                vertexai=True, project=專案, location=位置,
+                http_options=types.HttpOptions(timeout=毫秒),
+            )
+            try:
+                回應 = 客戶端.models.generate_content(model=model, contents=內容, config=設定)
+            except (TimeoutError, httpx.TimeoutException) as 錯誤:
+                if type(錯誤) is TimeoutError or isinstance(錯誤, httpx.TimeoutException):
+                    逾時 = True
+                else:
+                    raise
+            if 逾時:
+                self = model = temperature = max_tokens = timeout_seconds = structured_output = schema_retry_count = None
+                messages = tools = response_schema = 專案 = 位置 = 訊息原值 = 工具原值 = 結構原值 = None
+                訊息 = 工具 = 結構 = 內容 = 工具宣告 = 設定參數 = 設定 = 客戶端 = 回應 = 舊回應 = None
+                文字 = 原因 = 使用量原值 = 呼叫原值 = 使用量 = 呼叫 = 結果 = 錯誤 = None
+                毫秒 = None
+                raise 供應商逾時("Gemini 供應商逾時") from None
+            舊回應 = self.轉成模型回應(回應)
+            文字 = object.__getattribute__(舊回應, "文字")
+            呼叫原值 = object.__getattribute__(舊回應, "工具呼叫清單")
+            原因 = object.__getattribute__(舊回應, "完成原因")
+            使用量原值 = object.__getattribute__(舊回應, "使用量")
+            if type(文字) is not str or type(原因) is not str:
+                raise ValueError
+            使用量 = 複製JSON(使用量原值, 500_000)
+            呼叫 = 複製JSON(呼叫原值, 1_000_000)
+            if type(使用量) is not dict or type(呼叫) is not list:
+                raise ValueError
+            結果 = 模型回應快照(文字, 原因, 使用量, 呼叫)
+            return 結果
+        except 控制流程 as 錯誤:
+            self = model = temperature = max_tokens = timeout_seconds = structured_output = schema_retry_count = None
+            messages = tools = response_schema = 專案 = 位置 = 訊息原值 = 工具原值 = 結構原值 = None
+            訊息 = 工具 = 結構 = 內容 = 工具宣告 = 設定參數 = 設定 = 客戶端 = 回應 = 舊回應 = None
+            文字 = 原因 = 使用量原值 = 呼叫原值 = 使用量 = 呼叫 = 結果 = 錯誤 = None
+            毫秒 = None
+            raise
+        except BaseException:
+            self = model = temperature = max_tokens = timeout_seconds = structured_output = schema_retry_count = None
+            messages = tools = response_schema = 專案 = 位置 = 訊息原值 = 工具原值 = 結構原值 = None
+            訊息 = 工具 = 結構 = 內容 = 工具宣告 = 設定參數 = 設定 = 客戶端 = 回應 = 舊回應 = None
+            文字 = 原因 = 使用量原值 = 呼叫原值 = 使用量 = 呼叫 = 結果 = 錯誤 = None
+            毫秒 = None
+            raise
+        raise AssertionError
+
     def 轉成Gemini內容(self, 訊息清單: list[dict[str, Any]]) -> list[Any]:
         """把 canonical messages 轉成 Gemini Content 清單。
 
@@ -223,47 +330,57 @@ class GeminiADC供應商:
         """
         from google.genai import types
 
-        內容清單: list[Any] = []
-        # 連續的 tool 回應要合併成「單一個」user Content，函數回應數才會等於前一個
-        # model turn 的 function_call 數（平行工具呼叫時 Gemini 硬性要求）。
-        待沖函數回應: list[Any] = []
-
-        def 沖出函數回應() -> None:
+        內容清單 = 待沖函數回應 = 訊息 = 角色 = 名稱 = 工具結果 = None
+        零件 = 零件清單 = 工具呼叫們 = 工具呼叫 = 函數 = 參數 = 函數回應 = 函數呼叫 = None
+        try:
+            內容清單 = []
+            待沖函數回應 = []
+            for 訊息 in 訊息清單:
+                角色 = 訊息.get("role")
+                if 角色 == "tool":
+                    名稱 = 訊息.get("name") or "tool"
+                    try:
+                        工具結果 = json.loads(str(訊息.get("content", "{}")))
+                    except Exception:
+                        工具結果 = {"content": str(訊息.get("content", ""))}
+                    函數回應 = types.FunctionResponse(name=名稱, response=工具結果)
+                    零件 = types.Part(function_response=函數回應)
+                    待沖函數回應.append(零件)
+                    continue
+                if 待沖函數回應:
+                    零件清單 = list(待沖函數回應)
+                    內容清單.append(types.Content(role="user", parts=零件清單))
+                    待沖函數回應.clear()
+                if 角色 in ("system", "user"):
+                    名稱 = f"[System]\n{訊息.get('content', '')}" if 角色 == "system" else str(訊息.get("content", ""))
+                    零件 = types.Part(text=名稱)
+                    內容清單.append(types.Content(role="user", parts=[零件]))
+                elif 角色 == "assistant":
+                    工具呼叫們 = 訊息.get("tool_calls")
+                    if 工具呼叫們:
+                        零件清單 = []
+                        for 工具呼叫 in 工具呼叫們:
+                            函數 = 工具呼叫.get("function", {})
+                            try:
+                                參數 = json.loads(函數.get("arguments") or "{}")
+                            except Exception:
+                                參數 = {}
+                            函數呼叫 = types.FunctionCall(name=函數.get("name", ""), args=參數)
+                            零件 = types.Part(function_call=函數呼叫)
+                            零件清單.append(零件)
+                        內容清單.append(types.Content(role="model", parts=零件清單))
+                    else:
+                        零件 = types.Part(text=str(訊息.get("content", "")))
+                        內容清單.append(types.Content(role="model", parts=[零件]))
             if 待沖函數回應:
-                內容清單.append(types.Content(role="user", parts=待沖函數回應[:]))
+                零件清單 = list(待沖函數回應)
+                內容清單.append(types.Content(role="user", parts=零件清單))
                 待沖函數回應.clear()
-
-        for 訊息 in 訊息清單:
-            角色 = 訊息.get("role")
-            if 角色 == "tool":
-                名稱 = 訊息.get("name") or "tool"
-                try:
-                    工具結果 = json.loads(str(訊息.get("content", "{}")))
-                except Exception:
-                    工具結果 = {"content": str(訊息.get("content", ""))}
-                待沖函數回應.append(types.Part(function_response=types.FunctionResponse(name=名稱, response=工具結果)))
-                continue
-            # 非 tool 訊息：先把累積的函數回應沖成一個 Content，再處理本則
-            沖出函數回應()
-            if 角色 == "system":
-                內容清單.append(types.Content(role="user", parts=[types.Part(text=f"[System]\n{訊息.get('content', '')}")]))
-            elif 角色 == "user":
-                內容清單.append(types.Content(role="user", parts=[types.Part(text=str(訊息.get("content", "")))]))
-            elif 角色 == "assistant":
-                if 訊息.get("tool_calls"):
-                    零件清單 = []
-                    for 工具呼叫 in 訊息.get("tool_calls", []):
-                        函數 = 工具呼叫.get("function", {})
-                        try:
-                            參數 = json.loads(函數.get("arguments") or "{}")
-                        except Exception:
-                            參數 = {}
-                        零件清單.append(types.Part(function_call=types.FunctionCall(name=函數.get("name", ""), args=參數)))
-                    內容清單.append(types.Content(role="model", parts=零件清單))
-                else:
-                    內容清單.append(types.Content(role="model", parts=[types.Part(text=str(訊息.get("content", "")))]))
-        沖出函數回應()  # 收尾：歷史以 tool 回應結束時也要沖出
-        return 內容清單
+            return 內容清單
+        except BaseException:
+            self = 訊息清單 = types = 內容清單 = 待沖函數回應 = 訊息 = 角色 = 名稱 = 工具結果 = None
+            零件 = 零件清單 = 工具呼叫們 = 工具呼叫 = 函數 = 參數 = 函數回應 = 函數呼叫 = None
+            raise
 
     def 轉成Gemini工具(self, 工具清單: list[dict[str, Any]]) -> list[Any]:
         """把 OpenAI tool schema 轉成 Gemini function declarations。
@@ -274,71 +391,91 @@ class GeminiADC供應商:
         返回值：
             Gemini Tool 清單。
         """
-        if not 工具清單:
-            return []
         from google.genai import types
 
-        可用欄位 = set(types.Schema.model_fields.keys())
-        JSON_SCHEMA鍵對照 = {
-            "additionalProperties": "additional_properties",
-            "anyOf": "any_of",
-            "maxItems": "max_items",
-            "minItems": "min_items",
-            "maxLength": "max_length",
-            "minLength": "min_length",
-            "maxProperties": "max_properties",
-            "minProperties": "min_properties",
-            "propertyOrdering": "property_ordering",
-            "$ref": "ref",
-            "$defs": "defs",
-        }
+        可用欄位 = 鍵對照 = 函數宣告清單 = 工具 = 函數 = 參數結構 = 清理結構 = 宣告 = 結果 = None
 
         def 正規化Schema鍵(鍵: str) -> str | None:
-            if 鍵 in 可用欄位:
-                return 鍵
-            對照鍵 = JSON_SCHEMA鍵對照.get(鍵)
-            if 對照鍵 in 可用欄位:
-                return 對照鍵
-            return None
+            對照鍵 = 結果鍵 = None
+            try:
+                if 鍵 in 可用欄位:
+                    結果鍵 = 鍵
+                else:
+                    對照鍵 = 鍵對照.get(鍵)
+                    if 對照鍵 in 可用欄位:
+                        結果鍵 = 對照鍵
+                return 結果鍵
+            except BaseException:
+                鍵 = 對照鍵 = 結果鍵 = None
+                raise
 
         def 清理Gemini結構(結構: Any) -> Any:
             """把 OpenAI JSON Schema 收斂成 google-genai Schema 支援的欄位。"""
-            if isinstance(結構, list):
-                return [清理Gemini結構(項目) for 項目 in 結構]
-            if not isinstance(結構, dict):
-                return 結構
-            清理後: dict[str, Any] = {}
-            for 鍵, 值 in 結構.items():
-                正規鍵 = 正規化Schema鍵(鍵)
-                if 正規鍵 is None:
-                    continue
-                if 正規鍵 == "properties" and isinstance(值, dict):
-                    清理後[正規鍵] = {str(子鍵): 清理Gemini結構(子值) for 子鍵, 子值 in 值.items()}
-                elif 正規鍵 == "additional_properties" and isinstance(值, dict):
-                    清理後[正規鍵] = 清理Gemini結構(值)
-                elif 正規鍵 in {"items", "any_of"}:
-                    清理後[正規鍵] = 清理Gemini結構(值)
-                else:
-                    清理後[正規鍵] = 值
-            return 清理後
+            清理後 = 項目 = 子結果 = 鍵 = 值 = 正規鍵 = 子鍵 = 子值 = None
+            try:
+                if isinstance(結構, list):
+                    清理後 = []
+                    for 項目 in 結構:
+                        子結果 = 清理Gemini結構(項目)
+                        清理後.append(子結果)
+                    return 清理後
+                if not isinstance(結構, dict):
+                    return 結構
+                清理後 = {}
+                for 鍵, 值 in 結構.items():
+                    正規鍵 = 正規化Schema鍵(鍵)
+                    if 正規鍵 is None:
+                        continue
+                    if 正規鍵 == "properties" and isinstance(值, dict):
+                        子結果 = {}
+                        for 子鍵, 子值 in 值.items():
+                            子結果[str(子鍵)] = 清理Gemini結構(子值)
+                        清理後[正規鍵] = 子結果
+                    elif 正規鍵 == "additional_properties" and isinstance(值, dict):
+                        清理後[正規鍵] = 清理Gemini結構(值)
+                    elif 正規鍵 in {"items", "any_of"}:
+                        清理後[正規鍵] = 清理Gemini結構(值)
+                    else:
+                        清理後[正規鍵] = 值
+                return 清理後
+            except BaseException:
+                結構 = 清理後 = 項目 = 子結果 = 鍵 = 值 = 正規鍵 = 子鍵 = 子值 = None
+                raise
 
-        函數宣告清單 = []
-        for 工具 in 工具清單:
-            函數 = 工具.get("function", {})
-            參數結構 = 函數.get("parameters") or {"type": "object", "properties": {}}
-            if "parameters_json_schema" in types.FunctionDeclaration.model_fields:
-                函數宣告清單.append(types.FunctionDeclaration(
-                    name=函數.get("name"),
-                    description=函數.get("description"),
-                    parameters_json_schema=參數結構,
-                ))
-            else:
-                函數宣告清單.append(types.FunctionDeclaration(
-                    name=函數.get("name"),
-                    description=函數.get("description"),
-                    parameters=types.Schema.model_validate(清理Gemini結構(參數結構)),
-                ))
-        return [types.Tool(function_declarations=函數宣告清單)]
+        try:
+            if not 工具清單:
+                return []
+            可用欄位 = set(types.Schema.model_fields.keys())
+            鍵對照 = {
+                "additionalProperties": "additional_properties", "anyOf": "any_of",
+                "maxItems": "max_items", "minItems": "min_items", "maxLength": "max_length",
+                "minLength": "min_length", "maxProperties": "max_properties",
+                "minProperties": "min_properties", "propertyOrdering": "property_ordering",
+                "$ref": "ref", "$defs": "defs",
+            }
+            函數宣告清單 = []
+            for 工具 in 工具清單:
+                函數 = 工具.get("function", {})
+                參數結構 = 函數.get("parameters") or {"type": "object", "properties": {}}
+                if "parameters_json_schema" in types.FunctionDeclaration.model_fields:
+                    宣告 = types.FunctionDeclaration(
+                        name=函數.get("name"), description=函數.get("description"),
+                        parameters_json_schema=參數結構,
+                    )
+                else:
+                    清理結構 = 清理Gemini結構(參數結構)
+                    宣告 = types.FunctionDeclaration(
+                        name=函數.get("name"), description=函數.get("description"),
+                        parameters=types.Schema.model_validate(清理結構),
+                    )
+                函數宣告清單.append(宣告)
+            結果 = types.Tool(function_declarations=函數宣告清單)
+            return [結果]
+        except BaseException:
+            self = 工具清單 = types = 可用欄位 = 鍵對照 = 函數宣告清單 = None
+            工具 = 函數 = 參數結構 = 清理結構 = 宣告 = 結果 = None
+            正規化Schema鍵 = 清理Gemini結構 = None
+            raise
 
     def 轉成模型回應(self, 回應: Any) -> 模型回應:
         """把 Gemini 回應轉成模型回應。
@@ -349,34 +486,53 @@ class GeminiADC供應商:
         返回值：
             模型回應。
         """
-        文字片段清單: list[str] = []
-        工具呼叫清單: list[dict[str, Any]] = []
-        候選清單 = getattr(回應, "candidates", None) or []
+        文字片段清單 = 工具呼叫清單 = 候選清單 = 候選 = 內容 = 零件們 = 零件 = None
+        函數呼叫 = 函數名稱 = 函數參數 = 呼叫資料 = 文字 = 使用量物件 = 使用量 = 名稱 = 欄位值 = 結果 = None
         完成原因 = "stop"
-        if 候選清單:
-            完成原因 = str(getattr(候選清單[0], "finish_reason", "stop"))
-            內容 = getattr(候選清單[0], "content", None)
-            for 零件 in (getattr(內容, "parts", None) or []):
-                函數呼叫 = getattr(零件, "function_call", None)
-                if 函數呼叫 and getattr(函數呼叫, "name", None):
-                    工具呼叫清單.append({
-                        "id": f"call_{uuid.uuid4().hex[:8]}",
-                        "type": "function",
-                        "function": {
-                            "name": 函數呼叫.name,
-                            "arguments": json.dumps(dict(getattr(函數呼叫, "args", {}) or {}), ensure_ascii=False),
-                        },
-                    })
-                文字 = getattr(零件, "text", None)
-                if 文字:
-                    文字片段清單.append(文字)
-        else:
-            文字片段清單.append(getattr(回應, "text", "") or "")
-        使用量物件 = getattr(回應, "usage_metadata", None)
-        使用量 = {}
-        if 使用量物件:
-            使用量 = {名稱: getattr(使用量物件, 名稱) for 名稱 in ["prompt_token_count", "candidates_token_count", "total_token_count"] if hasattr(使用量物件, 名稱)}
-        return 模型回應(文字="".join(文字片段清單), 工具呼叫清單=工具呼叫清單, 完成原因=完成原因, 使用量=使用量)
+        try:
+            文字片段清單 = []
+            工具呼叫清單 = []
+            候選清單 = getattr(回應, "candidates", None) or []
+            if 候選清單:
+                候選 = 候選清單[0]
+                完成原因 = str(getattr(候選, "finish_reason", "stop"))
+                內容 = getattr(候選, "content", None)
+                零件們 = getattr(內容, "parts", None) or []
+                for 零件 in 零件們:
+                    函數呼叫 = getattr(零件, "function_call", None)
+                    函數名稱 = getattr(函數呼叫, "name", None) if 函數呼叫 else None
+                    if 函數名稱:
+                        函數參數 = dict(getattr(函數呼叫, "args", {}) or {})
+                        呼叫資料 = {
+                            "id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
+                            "function": {"name": 函數名稱, "arguments": json.dumps(函數參數, ensure_ascii=False)},
+                        }
+                        工具呼叫清單.append(呼叫資料)
+                    文字 = getattr(零件, "text", None)
+                    if 文字:
+                        文字片段清單.append(文字)
+            else:
+                文字 = getattr(回應, "text", "") or ""
+                文字片段清單.append(文字)
+            使用量物件 = getattr(回應, "usage_metadata", None)
+            使用量 = {}
+            if 使用量物件:
+                for 名稱 in ("prompt_token_count", "candidates_token_count", "total_token_count"):
+                    try:
+                        欄位值 = getattr(使用量物件, 名稱)
+                    except AttributeError:
+                        continue
+                    使用量[名稱] = 欄位值
+            結果 = 模型回應(
+                文字="".join(文字片段清單), 工具呼叫清單=工具呼叫清單,
+                完成原因=完成原因, 使用量=使用量,
+            )
+            return 結果
+        except BaseException:
+            self = 回應 = 文字片段清單 = 工具呼叫清單 = 候選清單 = 候選 = 內容 = 零件們 = 零件 = None
+            函數呼叫 = 函數名稱 = 函數參數 = 呼叫資料 = 文字 = 使用量物件 = 使用量 = 名稱 = 欄位值 = 結果 = None
+            完成原因 = None
+            raise
 
 
 def 建立模型供應商(模式: str, 模型名稱: str) -> 模型供應商:

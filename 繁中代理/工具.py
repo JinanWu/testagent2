@@ -12,13 +12,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 from .使用者 import 使用者上下文
+from .發布介面.執行期 import 工具結果 as 工具結果契約
 
 
 # 有些模型會用很多不同工具名稱（像是 memory_add、delete_memory 之類），
@@ -167,30 +167,90 @@ class 工具登錄器:
         return [工具.轉成OpenAI工具() for 工具 in self.工具表.values()]
 
     def 呼叫工具(self, 名稱: str, 參數: dict[str, Any]) -> str:
-        """呼叫工具並回傳 JSON 字串。"""
-        名稱, 參數 = 正規化工具別名(名稱, 參數)
-        工具 = self.工具表.get(名稱)
-        if not 工具:
-            if 名稱 in self.已知工具名稱集合:
-                return json.dumps({"success": False, "error": f"使用者無權使用工具：{名稱}", "permission_denied": True}, ensure_ascii=False)
-            return json.dumps({"success": False, "error": f"未知工具：{名稱}"}, ensure_ascii=False)
-        if self.使用者上下文物件 and not self.使用者上下文物件.工具是否允許(名稱):
-            return json.dumps({"success": False, "error": f"使用者無權使用工具：{名稱}", "permission_denied": True}, ensure_ascii=False)
+        """呼叫工具並回傳 canonical 單層 JSON 字串。"""
+        登錄器: Any = self
+        已捕捉名稱: Any = 名稱
+        已捕捉參數: Any = 參數
+        工具 = 處理函數 = 工具參數 = 結果 = 輸出 = None
+        空值: Any = None
         try:
-            工具參數 = dict(參數)
-            工具參數["_runtime_workdir"] = self.工作目錄
-            if self.使用者上下文物件:
-                工具參數["_current_user_id"] = self.使用者上下文物件.user_id
-                工具參數["_enabled_skills"] = sorted(self.使用者上下文物件.enabled_skills) if self.使用者上下文物件.enabled_skills is not None else None
-                工具參數["_skill_roots"] = [str(路徑) for 路徑 in self.使用者上下文物件.skill_roots] if self.使用者上下文物件.skill_roots is not None else None
-                工具參數["_allowed_workdirs"] = [str(路徑) for 路徑 in self.使用者上下文物件.allowed_workdirs] if self.使用者上下文物件.allowed_workdirs is not None else None
-                工具參數["_memory_home"] = str(self.使用者上下文物件.memory_home) if self.使用者上下文物件.memory_home else None
-            結果 = 工具.處理函數(工具參數)
-            return json.dumps({"success": True, "result": 結果}, ensure_ascii=False)
-        except PermissionError as 錯誤:
-            return json.dumps({"success": False, "error": str(錯誤), "permission_denied": True}, ensure_ascii=False)
-        except Exception as 錯誤:
-            return json.dumps({"success": False, "error": str(錯誤)}, ensure_ascii=False)
+            if type(已捕捉名稱) is not str or type(已捕捉參數) is not dict:
+                raise ValueError
+            已捕捉名稱, 已捕捉參數 = 正規化工具別名(已捕捉名稱, 已捕捉參數)
+            self = 名稱 = 參數 = 空值
+            工具 = 登錄器.工具表.get(已捕捉名稱)
+            if 工具 is None:
+                if 已捕捉名稱 in 登錄器.已知工具名稱集合:
+                    結果 = 工具結果契約.建立固定工具失敗(
+                        工具結果契約.工具錯誤代碼.執行失敗,
+                        permission_denied=True,
+                        error_message=工具結果契約.路徑權限錯誤訊息,
+                    )
+                else:
+                    結果 = 工具結果契約.建立固定工具失敗(
+                        工具結果契約.工具錯誤代碼.端點設定錯誤,
+                        error_message=工具結果契約.未知工具訊息,
+                    )
+                已捕捉名稱 = 已捕捉參數 = 登錄器 = 工具 = 空值
+                return 結果.轉成正規JSON()
+            # 所有 executable identity 與 model args 必須在授權 callback 前封存。
+            處理函數 = 工具.處理函數
+            工具參數 = 工具結果契約._複製JSON(已捕捉參數)
+            工作目錄 = 登錄器.工作目錄
+            上下文 = 登錄器.使用者上下文物件
+            使用者識別碼 = 啟用技能 = 技能根目錄 = 允許目錄 = 記憶根目錄 = None
+            if 上下文 is not None:
+                使用者識別碼 = 上下文.user_id
+                啟用技能 = sorted(上下文.enabled_skills) if 上下文.enabled_skills is not None else None
+                if 上下文.skill_roots is not None:
+                    技能根目錄 = []
+                    for 路徑 in 上下文.skill_roots:
+                        技能根目錄.append(str(路徑))
+                if 上下文.allowed_workdirs is not None:
+                    允許目錄 = []
+                    for 路徑 in 上下文.allowed_workdirs:
+                        允許目錄.append(str(路徑))
+                記憶根目錄 = str(上下文.memory_home) if 上下文.memory_home else None
+            if 上下文 is not None and not 上下文.工具是否允許(已捕捉名稱):
+                結果 = 工具結果契約.建立固定工具失敗(
+                    工具結果契約.工具錯誤代碼.執行失敗,
+                    permission_denied=True,
+                    error_message=工具結果契約.路徑權限錯誤訊息,
+                )
+                已捕捉名稱 = 已捕捉參數 = 登錄器 = 工具 = 處理函數 = 工具參數 = 空值
+                上下文 = 工作目錄 = 使用者識別碼 = 啟用技能 = 空值
+                技能根目錄 = 允許目錄 = 記憶根目錄 = 路徑 = 空值
+                return 結果.轉成正規JSON()
+            工具參數["_runtime_workdir"] = 工作目錄
+            if 上下文 is not None:
+                工具參數["_current_user_id"] = 使用者識別碼
+                工具參數["_enabled_skills"] = 啟用技能
+                工具參數["_skill_roots"] = 技能根目錄
+                工具參數["_allowed_workdirs"] = 允許目錄
+                工具參數["_memory_home"] = 記憶根目錄
+            self = 名稱 = 參數 = 已捕捉名稱 = 已捕捉參數 = 登錄器 = 工具 = 上下文 = 空值
+            工作目錄 = 使用者識別碼 = 啟用技能 = 技能根目錄 = 允許目錄 = 記憶根目錄 = 路徑 = 空值
+            結果 = 工具結果契約.呼叫工具處理函數(處理函數, 工具參數)
+            處理函數 = 工具參數 = 空值
+            輸出 = 結果.轉成正規JSON()
+            結果 = 空值
+            return 輸出
+        except BaseException as 錯誤:
+            類別 = type(錯誤)
+            self = 名稱 = 參數 = 登錄器 = 已捕捉名稱 = 已捕捉參數 = 空值
+            工具 = 處理函數 = 工具參數 = 結果 = 輸出 = 上下文 = 空值
+            工作目錄 = 使用者識別碼 = 啟用技能 = 技能根目錄 = 允許目錄 = 記憶根目錄 = 路徑 = 空值
+            if isinstance(錯誤, 工具結果契約.控制流程):
+                類別 = 錯誤 = 空值
+                raise
+            權限 = 類別 is PermissionError
+            類別 = 空值
+            結果 = 工具結果契約.建立固定工具失敗(
+                工具結果契約.工具錯誤代碼.執行失敗 if 權限 else 工具結果契約.工具錯誤代碼.端點設定錯誤,
+                permission_denied=權限,
+                error_message=工具結果契約.路徑權限錯誤訊息 if 權限 else None,
+            )
+            return 結果.轉成正規JSON()
 
 
 def 回報工具未啟用(名稱: str) -> Callable[[dict[str, Any]], dict[str, Any]]:

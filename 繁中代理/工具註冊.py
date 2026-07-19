@@ -117,3 +117,11 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用�
             已實作處理器["administrative_search"],
         ))
     return 登錄器
+
+
+def 建立預設工具版本庫(修訂名稱: str):
+    """U05 提供 detached capability context 前拒絕橋接 legacy 工具。"""
+    from .發布介面.執行期.工具版本庫 import 工具快照錯誤
+
+    del 修訂名稱
+    raise 工具快照錯誤("發布工具快照不可用") from None
