@@ -411,26 +411,26 @@ def _驗證完整結構(連線: sqlite3.Connection) -> None:
         (len(_LEDGER) + 1,),
     )) != _LEDGER:
         raise ValueError
-    metadata = tuple(連線.execute(
+    結構中繼資料 = tuple(連線.execute(
         "SELECT type,name,typeof(sql),length(CAST(sql AS BLOB)) FROM sqlite_master "
         "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name LIMIT ?", (_完整結構數 + 1,),
     ))
-    if len(metadata) != _完整結構數 or any(
+    if len(結構中繼資料) != _完整結構數 or any(
         type(列) is not tuple or len(列) != 4 or type(列[0]) is not str or type(列[1]) is not str
-        or type(列[2]) is not str or type(列[3]) is not int for 列 in metadata
+        or type(列[2]) is not str or type(列[3]) is not int for 列 in 結構中繼資料
     ):
         raise ValueError
-    if tuple((列[0], 列[1]) for 列 in metadata) != _完整結構物件:
+    if tuple((列[0], 列[1]) for 列 in 結構中繼資料) != _完整結構物件:
         raise ValueError
     總位元組 = 0
-    for 列 in metadata:
+    for 列 in 結構中繼資料:
         if 列[2] != "text" or not 0 < 列[3] <= _單一結構SQL最大位元組:
             raise ValueError
         總位元組 += 列[3]
         if 總位元組 > _完整結構SQL總最大位元組:
             raise ValueError
     原文列 = []
-    for (預期類型, 預期名稱), metadata列 in zip(_完整結構物件, metadata, strict=True):
+    for (預期類型, 預期名稱), 中繼資料列 in zip(_完整結構物件, 結構中繼資料, strict=True):
         游標 = 連線.execute(
             "SELECT type,name,tbl_name,typeof(sql),length(CAST(sql AS BLOB)),sql "
             "FROM sqlite_master WHERE name=? LIMIT 2", (預期名稱,),
@@ -442,7 +442,7 @@ def _驗證完整結構(連線: sqlite3.Connection) -> None:
         列 = SQL列[0]
         if (type(列) is not tuple or len(列) != 6 or 列[0] != 預期類型 or 列[1] != 預期名稱
                 or type(列[2]) is not str or 列[3] != "text" or type(列[4]) is not int
-                or 列[4] != metadata列[3] or type(列[5]) is not str
+                or 列[4] != 中繼資料列[3] or type(列[5]) is not str
                 or len(列[5].encode()) != 列[4]):
             raise ValueError
         原文列.append("\0".join((列[0], 列[1], 列[2], 列[5])))
