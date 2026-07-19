@@ -121,3 +121,76 @@ def test_聊天resume只接受logical_root且結果不得跨譜系():
     庫.取得工作階段譜系 = lambda 識別碼: ["root-1"] if 識別碼 == "root-1" else ["other-root", 識別碼]
     with pytest.raises(Web資源不存在):
         服務.聊天("user-1", "你好", "root-1")
+
+
+def test_工作階段列表使用既有篩選並只序列化安全欄位():
+    """CP3-WEB-SESSION-01：列表固定 web/owner/root/active 投影。"""
+    原始 = {
+        "id": "tip-1", "_lineage_root_id": "root-1", "title": "標題",
+        "updated_at": 10.0, "message_count": 3, "system_prompt": "秘密", "cwd": "/secret",
+    }
+    庫 = 假工作階段庫(原始)
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+
+    回應 = 序列化工作階段列表(服務.列出工作階段("user-1", 20))
+
+    assert 庫.列表條件 == {
+        "limit": 20, "include_children": False, "include_archived": False,
+        "source": "web", "user_id": "user-1",
+    }
+    assert 回應 == {"sessions": [{
+        "id": "root-1", "title": "標題", "updated_at": 10.0, "message_count": 3,
+    }]}
+
+
+def test_工作階段詳情解析tip且只保留使用者與助理文字():
+    """CP3-WEB-SESSION-02：detail 排除 system/tool/reasoning/tool_calls。"""
+    庫 = 假工作階段庫({"id": "root-1", "source": "web", "user_id": "user-1"})
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+
+    回應 = 序列化工作階段詳情(服務.讀取工作階段("user-1", "root-1"))
+
+    assert 庫.resume條件 == {"user_id": "user-1", "source": "web"}
+    assert 庫.訊息條件 == {"include_ancestors": True, "user_id": "user-1"}
+    assert 回應 == {
+        "session": {"id": "root-1", "title": "目前標題", "updated_at": 20.0},
+        "messages": [
+            {"role": "user", "content": "問題"},
+            {"role": "assistant", "content": "回答"},
+        ],
+    }
+
+
+def test_工作階段詳情拒絕以compression_child作為公開識別碼():
+    """CP3-WEB-SESSION-03：detail 僅接受 canonical logical root。"""
+    庫 = 假工作階段庫({"id": "child-1", "source": "web", "user_id": "user-1"}, 根="root-1")
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+
+    with pytest.raises(Web資源不存在):
+        服務.讀取工作階段("user-1", "child-1")
+
+    assert not hasattr(庫, "resume條件")
+
+
+@pytest.mark.parametrize("缺少欄位", ["user_id", "source"])
+def test_工作階段詳情拒絕root或tip缺少scope(缺少欄位):
+    """Quality P1：root/tip 都必須 exact owner/source mapping。"""
+    資料 = {"id": "root-1", "user_id": "user-1", "source": "web"}
+    del 資料[缺少欄位]
+    服務 = Web代理服務(假工作階段庫(資料), 假使用者庫(), lambda **kwargs: None)
+    with pytest.raises(Web資源不存在):
+        服務.讀取工作階段("user-1", "root-1")
+
+
+def test_工作階段詳情限制訊息筆數與aggregate_bytes(monkeypatch):
+    """Quality P2：transcript entries 與總 UTF-8 bytes 皆有固定上限。"""
+    模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
+    庫 = 假工作階段庫({"user_id": "user-1", "source": "web"})
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+    monkeypatch.setattr(模組, "_最大工作階段訊息數量", 1)
+    with pytest.raises(Web服務不可用):
+        服務.讀取工作階段("user-1", "root-1")
+    monkeypatch.setattr(模組, "_最大工作階段訊息數量", 10)
+    monkeypatch.setattr(模組, "_最大工作階段總位元組", 3)
+    with pytest.raises(Web服務不可用):
+        服務.讀取工作階段("user-1", "root-1")

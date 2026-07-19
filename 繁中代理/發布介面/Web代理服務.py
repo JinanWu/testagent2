@@ -218,6 +218,107 @@ class Web代理服務:
         except Exception:
             raise Web服務不可用 from None
 
+    def 列出工作階段(self, 使用者識別碼: str, 數量上限: int = 20) -> tuple[工作階段列表項目, ...]:
+        """列出登入 user 的 active Web logical roots，並丟棄所有內部 metadata。
+
+        參數為 current-session user ID 與 1–50 筆上限；返回固定列表 DTO tuple。
+        repository 或資料形狀失敗時拋 Web服務不可用，且不包含原始例外文字。
+        """
+        _驗證識別碼(使用者識別碼)
+        if type(數量上限) is not int or not 1 <= 數量上限 <= 50:
+            raise Web請求無效
+        try:
+            原始清單 = self._工作階段庫.列出工作階段(
+                limit=數量上限, include_children=False, include_archived=False,
+                source=_WEB來源, user_id=使用者識別碼,
+            )
+            if type(原始清單) is not list or len(原始清單) > 數量上限:
+                raise ValueError
+            結果 = []
+            for 原始項目 in 原始清單:
+                if type(原始項目) is not dict:
+                    raise ValueError
+                根識別碼 = 原始項目.get("_lineage_root_id") or 原始項目.get("id")
+                標題 = 原始項目.get("title")
+                更新時間 = 原始項目.get("updated_at")
+                訊息數量 = 原始項目.get("message_count")
+                _驗證識別碼(根識別碼)
+                _驗證文字(標題, 512)
+                _驗證時間(更新時間)
+                if type(訊息數量) is not int or 訊息數量 < 0:
+                    raise ValueError
+                結果.append(工作階段列表項目(根識別碼, 標題, float(更新時間), 訊息數量))
+            return tuple(結果)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Exception:
+            raise Web服務不可用 from None
+
+    def 讀取工作階段(self, 使用者識別碼: str, 根工作階段識別碼: str) -> 工作階段詳情:
+        """驗證 root owner/source、解析 tip，並只投影 user/assistant 純文字。
+
+        參數為 current-session user ID 與 logical root ID；返回安全詳情 DTO。
+        缺少或跨範圍拋 Web資源不存在，I/O/資料形狀錯誤拋 Web服務不可用。
+        """
+        _驗證識別碼(使用者識別碼)
+        _驗證識別碼(根工作階段識別碼)
+        try:
+            根資料 = self._工作階段庫.檢查工作階段存取(
+                根工作階段識別碼, user_id=使用者識別碼, source=_WEB來源
+            )
+            _確認工作階段資料(根資料, 根工作階段識別碼, 使用者識別碼)
+        except PermissionError:
+            raise Web資源不存在 from None
+        except Web資源不存在:
+            raise
+        except Exception:
+            raise Web服務不可用 from None
+        try:
+            canonical根識別碼 = _取得譜系根(
+                self._工作階段庫.取得工作階段譜系(根工作階段識別碼)
+            )
+            if 根工作階段識別碼 != canonical根識別碼:
+                raise Web資源不存在
+            tip識別碼 = self._工作階段庫.解析Resume工作階段(
+                canonical根識別碼, user_id=使用者識別碼, source=_WEB來源
+            )
+            tip資料 = self._工作階段庫.讀取工作階段(tip識別碼)
+            _確認工作階段資料(tip資料, tip識別碼, 使用者識別碼)
+            if type(tip資料) is not dict:
+                raise ValueError
+            原始訊息 = self._工作階段庫.讀取訊息(
+                tip識別碼, include_ancestors=True, user_id=使用者識別碼
+            )
+            if type(原始訊息) is not list or len(原始訊息) > _最大工作階段訊息數量:
+                raise ValueError
+            標題, 更新時間 = tip資料.get("title"), tip資料.get("updated_at")
+            _驗證文字(標題, 512)
+            _驗證時間(更新時間)
+            投影 = []
+            總位元組 = 0
+            for 訊息 in 原始訊息:
+                if type(訊息) is not dict:
+                    raise ValueError
+                內容 = 訊息.get("content")
+                if type(內容) is str:
+                    總位元組 += len(內容.encode("utf-8"))
+                    if 總位元組 > _最大工作階段總位元組:
+                        raise ValueError
+                if 訊息.get("role") not in {"user", "assistant"}:
+                    continue
+                角色 = 訊息.get("role")
+                if type(內容) is not str or len(內容.encode("utf-8")) > 1024 * 1024:
+                    raise ValueError
+                投影.append((角色, 內容))
+            return 工作階段詳情(根工作階段識別碼, 標題, float(更新時間), tuple(投影))
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Web資源不存在:
+            raise
+        except PermissionError:
+            raise Web資源不存在 from None
+        except Exception:
+            raise Web服務不可用 from None
 @dataclass(slots=True)
 class _技能走訪預算:
     """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
