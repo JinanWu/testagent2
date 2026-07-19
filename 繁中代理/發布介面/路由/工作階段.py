@@ -16,6 +16,7 @@ from ..Web代理服務 import (
     序列化工作階段詳情,
 )
 from ..網頁工作階段 import 網頁使用者
+from .回應模型 import 工作階段列表回應, 工作階段詳情回應
 
 
 class 工作階段查詢服務(Protocol):
@@ -34,7 +35,7 @@ def 建立工作階段路由器(服務: 工作階段查詢服務, 目前工作�
     """注入 caller 的 canonical current-session dependency 並建立兩個 GET routes。"""
     路由器 = APIRouter(prefix="/api/sessions")
 
-    @路由器.get("")
+    @路由器.get("", response_model=工作階段列表回應, responses={400: {}, 422: {}, 503: {}})
     def 列出工作階段(
         請求: Request,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
@@ -48,7 +49,7 @@ def 建立工作階段路由器(服務: 工作階段查詢服務, 目前工作�
         except Web服務不可用:
             raise HTTPException(status_code=503, detail={"code": "sessions_unavailable"}) from None
 
-    @路由器.get("/{session_id}")
+    @路由器.get("/{session_id}", response_model=工作階段詳情回應, responses={400: {}, 404: {}, 422: {}, 503: {}})
     def 讀取工作階段(
         工作階段識別碼: Annotated[str, Path(alias="session_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
