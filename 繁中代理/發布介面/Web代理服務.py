@@ -146,6 +146,78 @@ class 技能詳情:
     內容: str
 
 
+class Web代理服務:
+    """協調既有 runtime/repositories，並在 HTTP 前建立安全 DTO。"""
+
+    def __init__(
+        self,
+        工作階段庫物件: Web工作階段庫,
+        使用者庫物件: 使用者上下文供應器,
+        執行階段工廠: Web執行階段工廠,
+    ) -> None:
+        """保存明確依賴；不建立資料庫、runtime 或 module-global mutable state。"""
+        if not callable(執行階段工廠):
+            raise ValueError("Web代理服務設定無效")
+        self._工作階段庫 = 工作階段庫物件
+        self._使用者庫 = 使用者庫物件
+        self._執行階段工廠 = 執行階段工廠
+
+    def 聊天(self, 使用者識別碼: str, 訊息: str, 工作階段識別碼: str | None = None) -> 聊天回應:
+        """以登入 user 的完整上下文執行 Web turn，並只回 logical root 與純文字回答。
+
+        參數：使用者識別碼為 current-session identity；訊息為使用者文字；工作階段
+        識別碼可省略以建立新對話。返回值為固定聊天 DTO。owner/source/缺少會拋
+        Web資源不存在；依賴失敗會拋 Web服務不可用；本方法不回傳工具或推理內容。
+        """
+        _驗證識別碼(使用者識別碼)
+        _驗證訊息(訊息)
+        預期根識別碼 = None
+        if 工作階段識別碼 is not None:
+            _驗證識別碼(工作階段識別碼)
+            try:
+                可見工作階段 = self._工作階段庫.檢查工作階段存取(
+                    工作階段識別碼, user_id=使用者識別碼, source=_WEB來源
+                )
+                _確認工作階段資料(可見工作階段, 工作階段識別碼, 使用者識別碼)
+                預期根識別碼 = _取得譜系根(
+                    self._工作階段庫.取得工作階段譜系(工作階段識別碼)
+                )
+            except PermissionError:
+                raise Web資源不存在 from None
+            except Web資源不存在:
+                raise
+            except Exception:
+                raise Web服務不可用 from None
+            if 預期根識別碼 != 工作階段識別碼:
+                raise Web資源不存在
+        try:
+            使用者 = self._使用者庫.建立使用者上下文(user_id=使用者識別碼)
+            if type(使用者) is not 使用者上下文 or 使用者.user_id != 使用者識別碼:
+                raise ValueError
+            執行階段 = self._執行階段工廠(使用者上下文物件=使用者, source=_WEB來源)
+            結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼)
+            回覆 = object.__getattribute__(結果, "最終回答")
+            作用中識別碼 = object.__getattribute__(結果, "工作階段識別碼")
+            _驗證識別碼(作用中識別碼)
+            if type(回覆) is not str:
+                raise ValueError
+            結果資料 = self._工作階段庫.檢查工作階段存取(
+                作用中識別碼, user_id=使用者識別碼, source=_WEB來源
+            )
+            _確認工作階段資料(結果資料, 作用中識別碼, 使用者識別碼)
+            根識別碼 = _取得譜系根(self._工作階段庫.取得工作階段譜系(作用中識別碼))
+            if 預期根識別碼 is not None and 根識別碼 != 預期根識別碼:
+                raise Web資源不存在
+            return 聊天回應(根識別碼, 回覆)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Web資源不存在:
+            raise
+        except PermissionError:
+            raise Web資源不存在 from None
+        except Exception:
+            raise Web服務不可用 from None
+
 @dataclass(slots=True)
 class _技能走訪預算:
     """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
