@@ -158,6 +158,8 @@ async def _移除公開狀態(應用程式: FastAPI) -> tuple[list[BaseException
                 有一般錯誤 = True
         finally:
             錯誤 = None
+    名稱 = None
+    del 應用程式
     return 控制流程盒, 有一般錯誤
 
 
