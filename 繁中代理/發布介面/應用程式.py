@@ -204,6 +204,7 @@ def _重建相依項(相依項: 發布介面相依項) -> 發布介面相依項:
 def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
     """驗證完整 HTTP inventory 並擷取可 replay 的 identity/value 描述。"""
     已見操作: set[tuple[str, str]] = {("GET", "/healthz")}
+    已見有效識別碼: set[str] = set()
     描述清單 = []
     路由總數 = 0
     for 路由器 in 路由器清單:
@@ -227,8 +228,10 @@ def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
                 or type(有效識別碼) is not str
                 or not 有效識別碼
                 or len(有效識別碼) > _最大操作識別碼長度
+                or 有效識別碼 in 已見有效識別碼
             ):
                 raise ValueError(路由設定錯誤訊息)
+            已見有效識別碼.add(有效識別碼)
             if type(路徑) is not str or (路徑 != 前綴 and not 路徑.startswith(前綴 + "/")):
                 raise ValueError(路由設定錯誤訊息)
             if type(方法集合) not in (set, frozenset) or not 方法集合 or len(方法集合) > len(_允許方法):
