@@ -206,3 +206,22 @@ def 驗證政策(路由器: APIRouter, 預期, *, 要求路由身份: bool) -> N
             _失敗()
         if 現[1:3] != 預[1:3] or 現[3] is not 預[3] or not _相依樹相同(現[5], 預[5]) or not _政策相同(現[6], 預[6]):
             _失敗()
+
+
+def 驗證最終政策(應用路由清單: list, 預期清單) -> None:
+    """將 final APIRoutes 映回各 snapshot，驗完整 dependency/response parity。"""
+    for 預期 in 預期清單:
+        前綴, 路由器宣告, 路由描述 = 預期
+        操作清單 = tuple((描述[1], 描述[2]) for 描述 in 路由描述)
+        最終路由 = []
+        for 路由 in 應用路由清單:
+            if type(路由) is APIRoute:
+                路由字典 = _字典(路由)
+                方法 = dict.get(路由字典, "methods")
+                if type(方法) in (set, frozenset) and (
+                    dict.get(路由字典, "path"), tuple(sorted(方法))
+                ) in 操作清單:
+                    最終路由.append(路由)
+        檢視 = APIRouter(prefix=前綴, dependencies=[_重建相依宣告(值) for 值 in 路由器宣告])
+        檢視.routes.extend(最終路由)
+        驗證政策(檢視, 預期, 要求路由身份=False)

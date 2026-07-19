@@ -294,7 +294,7 @@ def test_stateful_unique_ID_generator跨include漂移會拒絕():
     assert 呼叫清單 == [1]
     with pytest.raises(ValueError, match=f"^{路由設定錯誤訊息}$"):
         建立應用程式(發布介面相依項((路由器,), ()))
-    assert 呼叫清單 == [1, 2]
+    assert 呼叫清單 == [1, 2, 3]
 
 
 def test_final_route保留callable_object身份與source有效ID():

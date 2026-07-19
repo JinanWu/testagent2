@@ -12,6 +12,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.routing import APIRoute
 
 from .相依項 import 發布介面相依項, 發布介面資源
+from .路由政策 import 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
 from .設定 import (
     允許路由前綴,
     啟動錯誤訊息,
@@ -417,6 +418,11 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
     """由 exact reconstructed composition 建立隔離 app。"""
     安全相依項 = _重建相依項(相依項)
     路由描述, 預期操作描述 = _讀取路由描述(安全相依項.路由器清單)
+    政策清單 = tuple(擷取路由器政策(路由器) for 路由器 in 安全相依項.路由器清單)
+    安全路由器清單 = tuple(建立安全路由器(政策) for 政策 in 政策清單)
+    for 路由器, 政策, 安全路由器 in zip(安全相依項.路由器清單, 政策清單, 安全路由器清單):
+        驗證政策(路由器, 政策, 要求路由身份=True)
+        驗證政策(安全路由器, 政策, 要求路由身份=False)
     應用程式 = FastAPI(
         title=發布介面標題,
         version=發布介面版本,
@@ -432,9 +438,21 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
         """回傳不接觸任何 injected resource 的固定健康狀態。"""
         return {"status": "ok"}
 
-    for 路由器 in 安全相依項.路由器清單:
-        應用程式.include_router(路由器)
+    擁有生命週期 = 應用程式.router.lifespan_context
+    for 安全路由器, 政策 in zip(安全路由器清單, 政策清單):
+        應用程式.include_router(安全路由器)
+        應用程式.router.lifespan_context = 擁有生命週期
+        驗證政策(安全路由器, 政策, 要求路由身份=False)
+    if (
+        type(應用程式.router.on_startup) is not list
+        or 應用程式.router.on_startup
+        or type(應用程式.router.on_shutdown) is not list
+        or 應用程式.router.on_shutdown
+        or 應用程式.router.lifespan_context is not 擁有生命週期
+    ):
+        raise ValueError(路由設定錯誤訊息)
     _重播路由描述(安全相依項.路由器清單, 路由描述, 預期操作描述)
     _驗證應用路由(應用程式, 預期操作描述, 取得健康狀態)
+    驗證最終政策(應用程式.routes, 政策清單)
     del 相依項
     return 應用程式
