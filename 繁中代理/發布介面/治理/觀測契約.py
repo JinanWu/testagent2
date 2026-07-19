@@ -11,7 +11,7 @@ from typing import Protocol, TypeAlias
 _最大計數 = 2**63 - 1
 _狀態 = frozenset(("pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key"))
 _聚合成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,36})(?:\.[0-9]{0,27}[1-9])?\Z")
-_最大聚合成本 = Decimal(2**63 - 1) * Decimal("999999999999999999.9999999999999999999999999999")
+_最大聚合成本 = Decimal("9223372036854775806999999999999999999.9999999990776627963145224193")
 _定價格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
