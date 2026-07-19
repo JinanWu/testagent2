@@ -129,10 +129,10 @@ def _建立工作階段與訊息(db: Path, user_id: str | None = None) -> str:
         _安全關閉(庫)
 
 
-def test_fresh_empty_db_apply_0001_to_0008_and_idempotent(tmp_path):
-    """空資料庫應依序套用八版，重跑保持無操作。"""
+def test_fresh_empty_db_apply_0001_to_0009_and_idempotent(tmp_path):
+    """空資料庫應依序套用九版，重跑保持無操作。"""
     db = tmp_path / "fresh.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
     _assert_發布遷移完成(db)
     assert _q(db, "PRAGMA foreign_key_check") == []
@@ -179,7 +179,7 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
             "'legacy cleanup','system',NULL,'evt_legacy',0,3)"
         )
 
-    assert 初始化發布介面資料庫(db) == (6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (6, 7, 8, 9)
     assert _q(
         db,
         "SELECT event_id,resource_type,resource_id,occurred_at,outcome,invocation_id,created_at "
@@ -201,7 +201,8 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
     )
     索引列 = _q(db, "PRAGMA index_list(endpoint_redactions)")
     assert {列[1] for 列 in 索引列 if 列[3] == "c"} == {
-        "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_audit"
+        "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_audit",
+        "idx_endpoint_redactions_retention_invocation_id",
     }
     unique名稱 = next(列[1] for 列 in 索引列 if 列[2] == 1 and 列[3] == "u")
     assert [列[2] for 列 in _q(db, f'PRAGMA index_info("{unique名稱}")')] == [
@@ -233,7 +234,7 @@ def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"] == {"present": False, "rows": None}
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -252,7 +253,7 @@ def test_sessions_messages_only_db_發布遷移不改legacy_session_tables(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -280,7 +281,7 @@ def test_shared_users_and_sessions_db_發布遷移不改任一legacy_table(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -338,7 +339,7 @@ def test_manifest_sorting_contiguous_duplicate_unknown_utf8_symlink_and_nonregul
 def test_loader_returns_only_pending_and_does_not_read_applied_sql(tmp_path, monkeypatch):
     """Loader只回傳pending版本，且不再讀取已套用SQL。"""
     db = tmp_path / "done.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8)
+    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
 
     def fail_read(*_args, **_kwargs):
         """若測試期間再次讀取SQL便立即失敗。"""
@@ -354,7 +355,7 @@ def test_loader_missing_db_is_read_only_and_returns_all_pending(tmp_path):
     db = tmp_path / "missing.sqlite3"
     assert not db.exists()
     pending = 載入發布介面遷移(資料庫路徑=db)
-    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert not db.exists()
 
 

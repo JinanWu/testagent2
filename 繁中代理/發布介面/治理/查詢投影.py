@@ -99,11 +99,13 @@ _索引指紋 = {
         "sqlite_autoindex_endpoint_invocations_1": (1, "pk", 0, ((0, "id"),)),
     },
     "run_events": {
+        "idx_run_events_retention_invocation_id": (0, "c", 0, ((1, "invocation_id"), (0, "id"))),
         "sqlite_autoindex_run_events_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
         "sqlite_autoindex_run_events_2": (1, "u", 0, ((1, "invocation_id"), (2, "sequence_number"))),
         "sqlite_autoindex_run_events_1": (1, "pk", 0, ((0, "id"),)),
     },
     "endpoint_tool_calls": {
+        "idx_endpoint_tool_calls_retention_invocation_id": (0, "c", 0, ((1, "invocation_id"), (0, "id"))),
         "idx_endpoint_tool_calls_invocation_created": (0, "c", 0, ((1, "invocation_id"), (11, "created_at"))),
         "sqlite_autoindex_endpoint_tool_calls_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
         "sqlite_autoindex_endpoint_tool_calls_2": (1, "u", 0, ((1, "invocation_id"), (3, "sequence_number"))),

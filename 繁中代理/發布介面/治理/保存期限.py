@@ -19,10 +19,11 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _物件摘要 = (
-    ("index", "idx_audit_events_invocation_time", "03a537a0c35a067d670de5847e0430307be75a64327e2f20ef46a7a5a5e48795"),
+    ("index", "idx_audit_events_retention_invocation_id", "12574b4c27e9eb623e63dcc8369717fd0e48325b78eac9d4e3f58b506e464449"),
     ("index", "idx_endpoint_invocations_retention_candidates", "2def7fde0fe646c07680c43625af0d54b6bae57f3f38e43ad9e6d33bdef64ba2"),
-    ("index", "idx_endpoint_redactions_invocation_time", "cac4ac46491563e2f2816acc8410386b9bde19c29c26784a189b6cca33d21a93"),
-    ("index", "idx_endpoint_tool_calls_invocation_created", "382d81f8bc5279ea532f62edc1f9f636c440468ec9c089085062b54358e04b6d"),
+    ("index", "idx_endpoint_redactions_retention_invocation_id", "6840aa298208852fec984ec8bcf7f7115fbc12beaa274e24689375f234bd64e6"),
+    ("index", "idx_endpoint_tool_calls_retention_invocation_id", "56afdb9fed064f0398d4205927f4ffd7017ce6f5662b99ceaabcfa34c3dc6173"),
+    ("index", "idx_run_events_retention_invocation_id", "839208a6f80e818ae675641f1ab6c1b20ba463c5c1e2856eb1a50d879e082c4e"),
     ("table", "audit_events", "f70689d15850c48388d80779c6f0749669a376df51c46010ca6dab9b3c63c35f"),
     ("table", "endpoint_invocations", "22062cd8cb9a0b17d70cd20c46f3fd2bb9b72f157101f3465eee43453ea7ebc2"),
     ("table", "endpoint_redactions", "ead15701fb385c3c2652214c8bab6a3214ad056a10ede486b76a376092b91eec"),

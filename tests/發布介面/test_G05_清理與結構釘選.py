@@ -206,9 +206,10 @@ def test_提交後close失敗政策(資料庫, monkeypatch, 關閉):
 
 @pytest.mark.parametrize("名稱,錯誤SQL", [
     ("idx_endpoint_invocations_retention_candidates", "CREATE INDEX idx_endpoint_invocations_retention_candidates ON endpoint_invocations(id)"),
-    ("idx_endpoint_tool_calls_invocation_created", "CREATE INDEX idx_endpoint_tool_calls_invocation_created ON endpoint_tool_calls(id)"),
-    ("idx_endpoint_redactions_invocation_time", "CREATE INDEX idx_endpoint_redactions_invocation_time ON endpoint_redactions(id)"),
-    ("idx_audit_events_invocation_time", "CREATE INDEX idx_audit_events_invocation_time ON audit_events(id)"),
+    ("idx_run_events_retention_invocation_id", "CREATE INDEX idx_run_events_retention_invocation_id ON run_events(id)"),
+    ("idx_endpoint_tool_calls_retention_invocation_id", "CREATE INDEX idx_endpoint_tool_calls_retention_invocation_id ON endpoint_tool_calls(id)"),
+    ("idx_endpoint_redactions_retention_invocation_id", "CREATE INDEX idx_endpoint_redactions_retention_invocation_id ON endpoint_redactions(id)"),
+    ("idx_audit_events_retention_invocation_id", "CREATE INDEX idx_audit_events_retention_invocation_id ON audit_events(id)"),
 ])
 @pytest.mark.parametrize("替換", [False, True])
 def test_所有關鍵索引刪除或替換均失敗(資料庫, 名稱, 錯誤SQL, 替換):
@@ -222,8 +223,8 @@ def test_所有關鍵索引刪除或替換均失敗(資料庫, 名稱, 錯誤SQL
 
 def test_額外ledger列最多只讀expected加一即失敗(資料庫, monkeypatch):
     with closing(sqlite3.connect(資料庫)) as 連線, 連線:
-        連線.execute("INSERT INTO published_api_schema_migrations VALUES(9,'ADVERSARIAL_EXTRA_G05',0)")
-        連線.execute("INSERT INTO published_api_schema_migrations VALUES(10,'UNREAD_EXTRA_G05',0)")
+        連線.execute("INSERT INTO published_api_schema_migrations VALUES(10,'ADVERSARIAL_EXTRA_G05',0)")
+        連線.execute("INSERT INTO published_api_schema_migrations VALUES(11,'UNREAD_EXTRA_G05',0)")
     代理 = _注入(monkeypatch, 資料庫)
     with pytest.raises(保存候選規劃錯誤):
         SQLite保存候選規劃器(str(資料庫)).規劃(2000000000)
