@@ -26,6 +26,11 @@ interface StrictContract {
   extra: unknown
 }
 
+const sessionSummary = { id: 'root', title: '標題', updated_at: 1, message_count: 2 }
+const sessionMetadata = { id: 'root', title: '標題', updated_at: 1 }
+const transcriptMessage = { role: 'assistant', content: '回覆' }
+const skillSummary = { id: 'skill', name: 'Skill', category: 'cat', description: 'desc' }
+
 describe('CP3 安全 API clients', () => {
   const fetchMock = vi.fn<typeof fetch>()
 
@@ -89,6 +94,39 @@ describe('CP3 安全 API clients', () => {
     },
   ]
 
+  const nestedContracts: StrictContract[] = [
+    {
+      name: 'chat reply', request: () => sendChat('hi', null, 'csrf'),
+      missing: { session_id: 'root', reply: { role: 'assistant' } },
+      wrong: { session_id: 'root', reply: { role: 'assistant', content: 1 } },
+      extra: { session_id: 'root', reply: { ...transcriptMessage, internal: true } },
+    },
+    {
+      name: 'session summary', request: () => listSessions(),
+      missing: { sessions: [{ id: 'root', title: '標題', updated_at: 1 }] },
+      wrong: { sessions: [{ ...sessionSummary, message_count: '2' }] },
+      extra: { sessions: [{ ...sessionSummary, internal: true }] },
+    },
+    {
+      name: 'session detail metadata', request: () => getSessionDetail('root'),
+      missing: { session: { id: 'root', title: '標題' }, messages: [] },
+      wrong: { session: { ...sessionMetadata, updated_at: '1' }, messages: [] },
+      extra: { session: { ...sessionMetadata, internal: true }, messages: [] },
+    },
+    {
+      name: 'transcript message', request: () => getSessionDetail('root'),
+      missing: { session: sessionMetadata, messages: [{ role: 'assistant' }] },
+      wrong: { session: sessionMetadata, messages: [{ role: 'assistant', content: 1 }] },
+      extra: { session: sessionMetadata, messages: [{ ...transcriptMessage, internal: true }] },
+    },
+    {
+      name: 'skill summary', request: () => listSkills(),
+      missing: { skills: [{ id: 'skill', name: 'Skill', category: 'cat' }] },
+      wrong: { skills: [{ ...skillSummary, description: 1 }] },
+      extra: { skills: [{ ...skillSummary, internal: true }] },
+    },
+  ]
+
   it.each(strictContracts)('$name 拒絕 missing key', async ({ request, missing }) => {
     fetchMock.mockResolvedValueOnce(jsonResponse(missing))
     await expect(request()).rejects.toThrow(ApiFormatError)
@@ -100,6 +138,21 @@ describe('CP3 安全 API clients', () => {
   })
 
   it.each(strictContracts)('$name 拒絕 extra key', async ({ request, extra }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(extra))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it.each(nestedContracts)('$name nested DTO 拒絕 missing key', async ({ request, missing }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(missing))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it.each(nestedContracts)('$name nested DTO 拒絕 wrong type', async ({ request, wrong }) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(wrong))
+    await expect(request()).rejects.toThrow(ApiFormatError)
+  })
+
+  it.each(nestedContracts)('$name nested DTO 拒絕 extra key', async ({ request, extra }) => {
     fetchMock.mockResolvedValueOnce(jsonResponse(extra))
     await expect(request()).rejects.toThrow(ApiFormatError)
   })
@@ -173,10 +226,16 @@ describe('CP3 真實對話工作流程', () => {
     }))
     await act(async () => renderer.root.findByProps({ children: '舊對話' }).props.onClick())
     expect(JSON.stringify(renderer.toJSON())).toContain('舊答案')
+    const activeSession = renderer.root.findByProps({ children: '舊對話' })
+    expect(activeSession.props['aria-current']).toBe('page')
+    expect(activeSession.props['aria-pressed']).toBe(true)
+    expect(activeSession.props.style).toMatchObject({ fontWeight: 700 })
 
     fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({
       session_id: 'root', reply: { role: 'assistant', content: '新答案' },
-    })).mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    })).mockResolvedValueOnce(jsonResponse({ sessions: [
+      { ...sessionSummary, title: '舊對話' },
+    ] }))
     await act(async () => renderer.root.findByType('textarea').props.onChange({ currentTarget: { value: '新問題' } }))
     await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
     expect(JSON.stringify(renderer.toJSON())).toContain('新答案')
@@ -187,6 +246,40 @@ describe('CP3 真實對話工作流程', () => {
     }))
     await act(async () => renderer.root.findByProps({ children: '新增對話' }).props.onClick())
     expect(JSON.stringify(renderer.toJSON())).not.toContain('新答案')
+    expect(renderer.root.findByProps({ children: '舊對話' }).props['aria-pressed']).toBe(false)
+  })
+
+  it('同一 render 的重複送出只啟動一組 auth 與 chat requests', async () => {
+    await openChat()
+    let resolveAuth!: (response: Response) => void
+    const pendingAuth = new Promise<Response>((resolve) => { resolveAuth = resolve })
+    fetchMock.mockReturnValueOnce(pendingAuth)
+      .mockResolvedValueOnce(jsonResponse({
+        session_id: 'root', reply: { role: 'assistant', content: '唯一回覆' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    await act(async () => renderer.root.findByType('textarea').props.onChange({
+      currentTarget: { value: '只送一次' },
+    }))
+    const submit = renderer.root.findByType('form').props.onSubmit
+    const event = { preventDefault: vi.fn() }
+    let first!: Promise<void>
+    let second!: Promise<void>
+    await act(async () => {
+      first = submit(event)
+      second = submit(event)
+      await Promise.resolve()
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+
+    await act(async () => {
+      resolveAuth(jsonResponse(auth))
+      await Promise.all([first, second])
+    })
+    expect(fetchMock.mock.calls.filter(([route]) => route === '/api/auth/session')).toHaveLength(2)
+    expect(fetchMock.mock.calls.filter(([route]) => route === '/api/chat')).toHaveLength(1)
+    expect(JSON.stringify(renderer.toJSON())).toContain('唯一回覆')
+    expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(true)
   })
 
   it('工作階段明細載入期間禁止送出到舊工作階段', async () => {
