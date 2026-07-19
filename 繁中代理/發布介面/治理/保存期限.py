@@ -22,6 +22,37 @@ _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
 _完整結構數 = 45
 _完整結構雜湊 = "fc8aa9a0e4b01b6b96eb67763d368f21615d3692ae091965aea873786848799f"
+_單一結構SQL最大位元組 = 65536
+_完整結構SQL總最大位元組 = 1048576
+_完整結構物件 = tuple(
+    (類型, 名稱) for 類型, 名稱組 in (
+        ("index", (
+            "idx_audit_events_endpoint_time", "idx_audit_events_invocation_time",
+            "idx_audit_events_resource_time", "idx_audit_events_retention_invocation_id",
+            "idx_endpoint_credentials_endpoint_list", "idx_endpoint_invocations_credential_created",
+            "idx_endpoint_invocations_endpoint_created", "idx_endpoint_invocations_retention_candidates",
+            "idx_endpoint_invocations_status_created", "idx_endpoint_redactions_audit",
+            "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_retention_invocation_id",
+            "idx_endpoint_tool_calls_invocation_created", "idx_endpoint_tool_calls_retention_invocation_id",
+            "idx_published_endpoints_owner_status", "idx_run_events_retention_invocation_id",
+            "idx_web_sessions_user_revoked_expires", "uq_endpoint_credentials_id_endpoint",
+        )),
+        ("table", (
+            "audit_events", "endpoint_credentials", "endpoint_invocations", "endpoint_redactions",
+            "endpoint_tool_calls", "published_api_schema_migrations", "published_endpoint_versions",
+            "published_endpoints", "rate_limit_counters", "run_events", "service_accounts", "web_sessions",
+        )),
+        ("trigger", (
+            "audit_events_no_delete", "audit_events_no_update", "endpoint_redactions_no_delete",
+            "endpoint_redactions_no_update", "endpoint_redactions_require_tombstone",
+            "endpoint_redactions_target_before_insert", "published_endpoint_versions_no_delete",
+            "published_endpoint_versions_no_update", "published_endpoints_rate_limit_positive_before_insert",
+            "published_endpoints_rate_limit_positive_before_update", "redacted_invocation_payload_no_update",
+            "redacted_run_event_no_delete", "redacted_run_event_no_update", "redacted_tool_call_no_delete",
+            "redacted_tool_call_no_update",
+        )),
+    ) for 名稱 in 名稱組
+)
 _建立寫入連線 = _開啟既有資料庫
 _保存刪除guard名稱 = (
     "audit_events_no_delete", "endpoint_redactions_no_delete",
@@ -374,18 +405,48 @@ def _刪除列數(游標: sqlite3.Cursor) -> int:
 
 
 def _驗證完整結構(連線: sqlite3.Connection) -> None:
-    """驗證完整ledger及所有非SQLite內部table/index/trigger的exact SQL fingerprint。"""
+    """先以有界metadata gate，再逐一物化預期物件的exact SQL fingerprint。"""
     if tuple(連線.execute(
         "SELECT version,name FROM published_api_schema_migrations ORDER BY version LIMIT ?",
         (len(_LEDGER) + 1,),
     )) != _LEDGER:
         raise ValueError
-    列組 = tuple(連線.execute(
-        "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+    metadata = tuple(連線.execute(
+        "SELECT type,name,typeof(sql),length(CAST(sql AS BLOB)) FROM sqlite_master "
+        "WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name LIMIT ?", (_完整結構數 + 1,),
     ))
-    if len(列組) != _完整結構數:
+    if len(metadata) != _完整結構數 or any(
+        type(列) is not tuple or len(列) != 4 or type(列[0]) is not str or type(列[1]) is not str
+        or type(列[2]) is not str or type(列[3]) is not int for 列 in metadata
+    ):
         raise ValueError
-    原文 = "\n".join("\0".join("" if 值 is None else str(值) for 值 in 列) for 列 in 列組)
+    if tuple((列[0], 列[1]) for 列 in metadata) != _完整結構物件:
+        raise ValueError
+    總位元組 = 0
+    for 列 in metadata:
+        if 列[2] != "text" or not 0 < 列[3] <= _單一結構SQL最大位元組:
+            raise ValueError
+        總位元組 += 列[3]
+        if 總位元組 > _完整結構SQL總最大位元組:
+            raise ValueError
+    原文列 = []
+    for (預期類型, 預期名稱), metadata列 in zip(_完整結構物件, metadata, strict=True):
+        游標 = 連線.execute(
+            "SELECT type,name,tbl_name,typeof(sql),length(CAST(sql AS BLOB)),sql "
+            "FROM sqlite_master WHERE name=? LIMIT 2", (預期名稱,),
+        )
+        SQL列 = tuple(游標)
+        游標.close()
+        if len(SQL列) != 1:
+            raise ValueError
+        列 = SQL列[0]
+        if (type(列) is not tuple or len(列) != 6 or 列[0] != 預期類型 or 列[1] != 預期名稱
+                or type(列[2]) is not str or 列[3] != "text" or type(列[4]) is not int
+                or 列[4] != metadata列[3] or type(列[5]) is not str
+                or len(列[5].encode()) != 列[4]):
+            raise ValueError
+        原文列.append("\0".join((列[0], 列[1], 列[2], 列[5])))
+    原文 = "\n".join(原文列)
     if hashlib.sha256(原文.encode()).hexdigest() != _完整結構雜湊:
         raise ValueError
 
