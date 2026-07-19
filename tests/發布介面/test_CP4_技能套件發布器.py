@@ -231,3 +231,83 @@ def test_父目錄同步失敗攜帶可辨識收據(tmp_path: Path) -> None:
     assert 捕捉.value.收據.套件識別碼 == "bundle-1"
 
 
+@pytest.mark.parametrize(
+    ("欄位", "惡意值"),
+    [
+        ("manifest_version", True), ("bundle_id", []), ("endpoint_id", "../endpoint"),
+        ("endpoint_version_id", ""), ("version_number", True),
+        ("created_at", {"not": "a timestamp"}),
+        ("created_by_user_id", []), ("source_skills", "not-a-list"),
+        ("excluded_files", {"not": "a-list"}), ("warnings", "not-a-list"),
+        ("total_bytes", True), ("bundle_hash", "bad"),
+    ],
+)
+def test_既有正規清單所有頂層型別與界限損毀固定拒絕(
+    tmp_path: Path, 欄位: str, 惡意值: object
+) -> None:
+    """重現 R2：canonical manifest 的每類 hostile metadata 都不能取得 authoritative receipt。
+
+    參數：隔離目錄及參數化欄位和值描述損毀。回傳：無。
+    例外：重送只接受 ``套件發布錯誤``。副作用：發布後改寫既有正規清單。
+    """
+    來源 = _建立來源(tmp_path)
+    發布器 = 技能套件發布器(tmp_path / "bundles")
+    收據 = _發布(發布器, 來源)
+    清單路徑 = 收據.路徑 / "manifest.json"
+    清單 = json.loads(清單路徑.read_bytes())
+    清單[欄位] = 惡意值
+    os.chmod(清單路徑, 0o644)
+    清單路徑.write_bytes(發布器模組.正規JSON(清單))
+    os.chmod(清單路徑, 0o444)
+    with pytest.raises(套件發布錯誤):
+        _發布(發布器, 來源)
+
+
+def test_新清單在耐久寫入前套用完整結構重驗(tmp_path: Path) -> None:
+    """新產生的負建立時間 manifest 也須在建立發布根前關閉失敗。
+
+    參數：``tmp_path`` 是隔離目錄。回傳：無。例外：只接受固定發布錯誤。
+    副作用：掃描來源，但不得建立發布根或寫入套件。
+    """
+    來源 = _建立來源(tmp_path)
+    發布根 = tmp_path / "bundles"
+    with pytest.raises(套件發布錯誤):
+        技能套件發布器(發布根).發布(
+            套件識別碼="bundle-1", 端點識別碼="endpoint-1",
+            端點版本識別碼="version-1", 版本號碼=1, 建立時間=-1.0,
+            建立者識別碼="owner-1", 技能表={"demo": 來源},
+        )
+    assert not 發布根.exists()
+
+
+@pytest.mark.parametrize(
+    "損毀",
+    ["source-extra-key", "source-hash-relation", "source-name-relation", "copied-unsorted",
+     "excluded-reason", "excluded-path-relation", "warning-entry", "hash-table-relation"],
+)
+def test_既有正規清單巢狀結構與欄間關係損毀固定拒絕(tmp_path: Path, 損毀: str) -> None:
+    """重現 R2：來源、複製、排除、警告與摘要關係均須從 canonical bytes 重驗。
+
+    參數：``tmp_path`` 隔離成果；``損毀`` 選擇實際 hostile 關係。回傳：無。
+    例外：重送只接受固定發布錯誤。副作用：發布、改寫清單並再次讀取。
+    """
+    來源 = _建立來源(tmp_path)
+    發布器 = 技能套件發布器(tmp_path / "bundles")
+    收據 = _發布(發布器, 來源)
+    清單路徑 = 收據.路徑 / "manifest.json"
+    清單 = json.loads(清單路徑.read_bytes())
+    if 損毀 == "source-extra-key": 清單["source_skills"][0]["extra"] = 1
+    elif 損毀 == "source-hash-relation": 清單["source_skills"][0]["source_hash"] = "0" * 64
+    elif 損毀 == "source-name-relation": 清單["source_skills"][0]["name"] = "other"
+    elif 損毀 == "copied-unsorted": 清單["copied_files"].reverse()
+    elif 損毀 == "excluded-reason":
+        清單["excluded_files"] = [{"path": "demo/cache.tmp", "reason": "invented"}]
+    elif 損毀 == "excluded-path-relation":
+        清單["excluded_files"] = [{"path": "other/cache.tmp", "reason": "fixed_excluded_file"}]
+    elif 損毀 == "warning-entry": 清單["warnings"] = ["invented"]
+    else: 清單["copied_file_hashes"] = {}
+    os.chmod(清單路徑, 0o644)
+    清單路徑.write_bytes(發布器模組.正規JSON(清單))
+    os.chmod(清單路徑, 0o444)
+    with pytest.raises(套件發布錯誤):
+        _發布(發布器, 來源)
