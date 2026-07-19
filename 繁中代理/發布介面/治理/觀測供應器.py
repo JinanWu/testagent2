@@ -5,6 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation, localcontext
 from types import BuiltinFunctionType, FunctionType
 import math
+import re
 import time
 from typing import Any, Callable
 
@@ -23,6 +24,9 @@ _最大計數 = 2**63 - 1
 _終態 = frozenset(("succeeded", "failed", "rate_limited", "invalid_api_key"))
 _錯誤態 = frozenset(("failed", "rate_limited", "invalid_api_key"))
 _用量欄位 = frozenset(("input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"))
+_持久成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{0,27}[1-9])?\Z")
+_最大頁位元組 = 1_048_576
+_最大頁列 = 4096
 
 
 class 端點觀測查詢錯誤(RuntimeError):
@@ -81,14 +85,7 @@ class SQLite端點觀測查詢服務:
             elif type(列) is not tuple or 列 != (端點識別碼,):
                 raise ValueError
             else:
-                游標 = 連線.execute(
-                    "SELECT status,latency_ms,usage_json,pricing_version FROM endpoint_invocations "
-                    "WHERE endpoint_id=? AND created_at>=? AND created_at<? ORDER BY id",
-                    (端點識別碼, 開始, 結束),
-                )
-                資料列 = tuple(游標)
-                游標.close()
-                游標 = None
+                資料列 = _讀取有界用量列(連線, 端點識別碼, 開始, 結束)
                 結果 = 指標查詢成功(_建立指標(端點識別碼, 開始, 結束, 資料列))
             連線.commit()
             已開始 = False
@@ -187,8 +184,10 @@ def _建立指標(端點識別碼: str, 開始: float, 結束: float,
             if 輸入 + 輸出 != 總數:
                 raise ValueError
             try:
-                成本項 = 定價版本成本(定價版本, 用量["estimated_cost_usd"])
-                小數 = Decimal(成本項.estimated_cost_usd)
+                成本文字 = 用量["estimated_cost_usd"]
+                if type(成本文字) is not str or not _持久成本格式.fullmatch(成本文字):
+                    raise ValueError
+                小數 = Decimal(成本文字)
             except (InvalidOperation, TypeError, ValueError):
                 raise ValueError from None
             用量數 += 1
@@ -222,3 +221,71 @@ def _正規小數(值: Decimal) -> str:
     if "." in 文字:
         文字 = 文字.rstrip("0").rstrip(".")
     return 文字 or "0"
+
+
+def _讀取有界用量列(連線: Any, 端點: str, 開始: float,
+             結束: float) -> tuple[tuple[Any, ...], ...]:
+    """先聚合並驗證 usage metadata，再按 exact invocation key 取得 payload。"""
+    游標 = None
+    try:
+        游標 = 連線.execute(
+            "SELECT COUNT(*),COUNT(usage_json),COALESCE(SUM(length(CAST(usage_json AS BLOB))),0),"
+            "COALESCE(SUM(CASE WHEN typeof(usage_json) IN ('text','null') THEN 0 ELSE 1 END),0) "
+            "FROM endpoint_invocations WHERE endpoint_id=? AND created_at>=? AND created_at<?",
+            (端點, 開始, 結束),
+        )
+        聚合 = 游標.fetchone()
+        if 游標.fetchone() is not None:
+            raise ValueError
+        游標.close(); 游標 = None
+        if (type(聚合) is not tuple or len(聚合) != 4
+                or any(type(值) is not int or 值 < 0 for 值 in 聚合)
+                or 聚合[0] > _最大頁列 or 聚合[1] > 聚合[0]
+                or 聚合[2] > _最大頁位元組 or 聚合[3] != 0):
+            raise ValueError
+        游標 = 連線.execute(
+            "SELECT id,status,latency_ms,pricing_version,typeof(usage_json),"
+            "length(CAST(usage_json AS BLOB)) FROM endpoint_invocations "
+            "WHERE endpoint_id=? AND created_at>=? AND created_at<? ORDER BY id",
+            (端點, 開始, 結束),
+        )
+        中繼列 = []
+        while True:
+            列 = 游標.fetchone()
+            if 列 is None:
+                break
+            if type(列) is not tuple or len(列) != 6 or len(中繼列) >= _最大頁列:
+                raise ValueError
+            識別碼, 狀態, 延遲, 版本, 類型, 長度 = 列
+            if (not _安全識別碼(識別碼) or type(狀態) is not str
+                    or 狀態 not in _終態 | {"pending", "running"}
+                    or (延遲 is not None and (type(延遲) not in (int, float)
+                        or not math.isfinite(延遲) or 延遲 < 0))
+                    or type(類型) is not str):
+                raise ValueError
+            if 類型 == "null":
+                if 長度 is not None or 版本 is not None:
+                    raise ValueError
+            elif (類型 != "text" or type(長度) is not int or 長度 < 0
+                  or type(版本) is not str):
+                raise ValueError
+            中繼列.append(列)
+        游標.close(); 游標 = None
+        if len(中繼列) != 聚合[0] or sum(列[5] or 0 for 列 in 中繼列) != 聚合[2]:
+            raise ValueError
+        結果 = []
+        for 中繼 in 中繼列:
+            游標 = 連線.execute(
+                "SELECT id,status,latency_ms,pricing_version,typeof(usage_json),"
+                "length(CAST(usage_json AS BLOB)),usage_json FROM endpoint_invocations "
+                "WHERE endpoint_id=? AND id=?", (端點, 中繼[0]),
+            )
+            列 = 游標.fetchone()
+            if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 7 or 列[:6] != 中繼:
+                raise ValueError
+            結果.append((列[1], 列[2], 列[6], 列[3]))
+            游標.close(); 游標 = None
+        return tuple(結果)
+    finally:
+        if 游標 is not None:
+            游標.close()

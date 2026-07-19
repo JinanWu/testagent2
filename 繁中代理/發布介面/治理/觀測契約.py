@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, fields
+from decimal import Decimal, InvalidOperation
 import math
 import re
 from typing import Protocol, TypeAlias
 
 _最大計數 = 2**63 - 1
 _狀態 = frozenset(("pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key"))
-_成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{0,27}[1-9])?\Z")
+_聚合成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,36})(?:\.[0-9]{0,27}[1-9])?\Z")
+_最大聚合成本 = Decimal(2**63 - 1) * Decimal("999999999999999999.9999999999999999999999999999")
 _定價格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
@@ -26,6 +28,17 @@ def _計數(值: object) -> bool:
 def _數值(值: object, 可空: bool = False) -> bool:
     """檢查 finite nonnegative exact number。"""
     return (可空 and 值 is None) or (type(值) in (int, float) and math.isfinite(值) and 值 >= 0)
+
+
+def _聚合成本(值: object) -> bool:
+    """檢查 canonical、非 exponent 且不超過 SQLite 最大列數的成本總和。"""
+    if type(值) is not str or not _聚合成本格式.fullmatch(值):
+        return False
+    try:
+        數值 = Decimal(值)
+    except (InvalidOperation, ValueError):
+        return False
+    return 數值.is_finite() and 數值 >= 0 and 數值 <= _最大聚合成本
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +100,7 @@ class 定價版本成本:
         """驗證 ASCII version 與 canonical decimal。"""
         if type(self.pricing_version) is not str or not _定價格式.fullmatch(self.pricing_version):
             raise ValueError("定價版本成本不符合契約")
-        if type(self.estimated_cost_usd) is not str or not _成本格式.fullmatch(self.estimated_cost_usd):
+        if not _聚合成本(self.estimated_cost_usd):
             raise ValueError("定價版本成本不符合契約")
 
 
@@ -122,7 +135,7 @@ class 端點指標:
         if type(self.cost_by_pricing_version) is not tuple or not all(type(項) is 定價版本成本 for 項 in self.cost_by_pricing_version):
             raise TypeError("端點指標不符合契約")
         版本們 = tuple(項.pricing_version for 項 in self.cost_by_pricing_version)
-        if 版本們 != tuple(sorted(set(版本們))) or type(self.estimated_cost_usd) is not str or not _成本格式.fullmatch(self.estimated_cost_usd):
+        if 版本們 != tuple(sorted(set(版本們))) or not _聚合成本(self.estimated_cost_usd):
             raise ValueError("端點指標不符合契約")
 
 
@@ -195,11 +208,21 @@ class 指標查詢成功:
     """Typed metrics success outcome。"""
     指標: 端點指標
 
+    def __post_init__(self) -> None:
+        """只接受 exact module-owned metrics DTO。"""
+        if type(self.指標) is not 端點指標:
+            raise TypeError("指標查詢成功不符合契約")
+
 
 @dataclass(frozen=True, slots=True)
 class 診斷查詢成功:
     """Typed diagnostics success outcome。"""
     頁: 診斷頁
+
+    def __post_init__(self) -> None:
+        """只接受 exact module-owned diagnostics DTO。"""
+        if type(self.頁) is not 診斷頁:
+            raise TypeError("診斷查詢成功不符合契約")
 
 
 @dataclass(frozen=True, slots=True)
