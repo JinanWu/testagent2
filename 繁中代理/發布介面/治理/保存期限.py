@@ -1,8 +1,9 @@
 """GOV G05 exact Gregorian 五年保存期限與唯讀候選計畫。"""
 from __future__ import annotations
 
+from calendar import isleap
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import math
 import os
@@ -118,14 +119,16 @@ class SQLite保存候選規劃器:
     def 規劃(
         self, 現在epoch秒: int | float, /, *, 候選上限: int = 100, 相依上限: int = 4096,
     ) -> tuple[保存候選計畫, ...]:
-        """依根 created_at/id 排序回傳有界候選；不讀取任何 payload、雜湊或原因。"""
-        連線 = 路徑 = 根列 = 結果列 = 列 = 期限 = 結果 = None
+        """依實際期限/id 合併至多兩個索引範圍；不讀取 payload、雜湊或原因。"""
+        連線 = 路徑 = 根列 = 候選列 = 結果列 = 列 = 期限 = 結果 = None
+        現在 = 現在秒 = 條件 = 參數 = 已見 = 呼叫ID = None
         已開始 = 已提交 = 失敗 = False
         主要控制盒: list[BaseException] = []
         回滾控制盒: list[BaseException] = []
         關閉控制盒: list[BaseException] = []
         try:
-            _UTC時間(現在epoch秒, False)
+            現在 = _UTC時間(現在epoch秒, False)
+            現在秒 = 現在.timestamp()
             if type(候選上限) is not int or not 1 <= 候選上限 <= _最大候選:
                 raise ValueError
             if type(相依上限) is not int or not 1 <= 相依上限 <= _最大相依:
@@ -136,22 +139,28 @@ class SQLite保存候選規劃器:
             已開始 = True
             _驗證路徑(連線, 路徑)
             _驗證結構(連線)
-            根列 = 連線.execute(
-                "SELECT typeof(id),id,typeof(created_at),created_at FROM endpoint_invocations "
-                "ORDER BY created_at,id LIMIT ?", (候選上限 + 1,),
-            ).fetchall()
+            候選列 = []
+            已見 = set()
+            for 條件, 參數 in _候選建立時間範圍(現在):
+                根列 = 連線.execute(
+                    "SELECT typeof(id),id,typeof(created_at),created_at FROM endpoint_invocations "
+                    f"WHERE {條件} ORDER BY created_at,id LIMIT ?",
+                    (*參數, 候選上限 + 1),
+                ).fetchall()
+                for 列 in 根列:
+                    if (type(列) is not tuple or len(列) != 4 or 列[0] != "text"
+                            or 列[2] not in ("integer", "real") or not _安全識別碼(列[1])):
+                        raise ValueError
+                    期限 = 五年保存期限(列[3])
+                    if 期限 > 現在秒:
+                        raise ValueError
+                    if 列[1] not in 已見:
+                        已見.add(列[1])
+                        候選列.append((期限, 列[1]))
+            候選列.sort()
             結果列 = []
-            for 列 in 根列:
-                if type(列) is not tuple or len(列) != 4 or 列[0] != "text" or 列[2] not in ("integer", "real"):
-                    raise ValueError
-                if not _安全識別碼(列[1]):
-                    raise ValueError
-                期限 = 五年保存期限(列[3])
-                if not 已達五年保存期限(列[3], 現在epoch秒):
-                    break
-                if len(結果列) >= 候選上限:
-                    break
-                結果列.append(_建立計畫(連線, 列[1], 期限, 相依上限))
+            for 期限, 呼叫ID in 候選列[:候選上限]:
+                結果列.append(_建立計畫(連線, 呼叫ID, 期限, 相依上限))
             結果 = tuple(結果列)
             連線.execute("COMMIT")
             已開始 = False
@@ -170,7 +179,8 @@ class SQLite保存候選規劃器:
             失敗 = 失敗 or 關閉失敗
             連線 = None
         self = 現在epoch秒 = 候選上限 = 相依上限 = 路徑 = None
-        根列 = 結果列 = 列 = 期限 = None
+        根列 = 候選列 = 結果列 = 列 = 期限 = 現在 = 現在秒 = None
+        條件 = 參數 = 已見 = 呼叫ID = None
         if 主要控制盒 or 回滾控制盒 or 關閉控制盒:
             結果 = None
         if 主要控制盒:
@@ -186,6 +196,21 @@ class SQLite保存候選規劃器:
             結果 = None
             raise 保存候選規劃錯誤(_固定錯誤) from None
         return 結果
+
+
+def _候選建立時間範圍(現在: datetime) -> tuple[tuple[str, tuple[float, ...]], ...]:
+    """回傳一或兩個不重疊 UTC 範圍，完整反推已到期的建立時間。"""
+    原年 = 現在.year - 5
+    if 現在.month == 2 and 現在.day == 29:
+        截止 = datetime(原年, 3, 1, tzinfo=timezone.utc) - timedelta(microseconds=1)
+    else:
+        截止 = 現在.replace(year=原年)
+    範圍: list[tuple[str, tuple[float, ...]]] = [("created_at<=?", (截止.timestamp(),))]
+    if 現在.month == 2 and 現在.day == 28 and isleap(原年):
+        閏日起 = datetime(原年, 2, 29, tzinfo=timezone.utc)
+        閏日止 = 現在.replace(year=原年, day=29)
+        範圍.append(("created_at>=? AND created_at<=?", (閏日起.timestamp(), 閏日止.timestamp())))
+    return tuple(範圍)
 
 def _建立計畫(連線: sqlite3.Connection, 呼叫ID: str, 期限: float, 上限: int) -> 保存候選計畫:
     """以一個共享相依列預算讀取單一根的識別資料。"""
