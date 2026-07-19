@@ -298,8 +298,10 @@ def _解碼游標(金鑰: bytes, 游標: str, 端點: str, 秒數: int) -> tuple
             or str.__eq__(值[1], 端點) is not True
             or type(值[2]) is not int or not 1 <= 值[2] <= 2_592_000
             or int.__eq__(值[2], 秒數) is not True
-            or not all(type(項) is float and math.isfinite(項) and 項 >= 0 for 項 in 值[3:6])
-            or 值[3] + 秒數 != 值[4]
+            or not all(type(項) is float and math.isfinite(項) and 項 >= 0
+                       and not (項 == 0.0 and math.copysign(1.0, 項) < 0) for 項 in 值[3:6])
+            or not 值[3] < 值[4] or 值[3] + 秒數 != 值[4]
+            or not 值[3] <= 值[5] < 值[4]
             or type(值[6]) is not str or not _安全識別碼(值[6])):
         raise ValueError
     if not hmac.compare_digest(

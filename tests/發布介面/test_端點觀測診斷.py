@@ -185,6 +185,28 @@ def test_cursor拒絕正確簽章JSON的數值與bool純量別名(診斷資料�
     _固定失敗(lambda: _列出(_服務(診斷資料庫), cursor=壞游標, limit=1, window=window))
 
 
+@pytest.mark.parametrize("索引", (3, 4, 5))
+def test_cursor每個float欄位皆拒絕正確簽章的負零(診斷資料庫, 索引):
+    payload = [1, "ep-1", 50, 0.0, 50.0, 49.0, "inv-old"]
+    payload[索引] = -0.0
+    _固定失敗(lambda: _列出(_服務(診斷資料庫), cursor=_簽署(payload), limit=1))
+
+
+@pytest.mark.parametrize(("位置", "成功"), (
+    (0.0, True),
+    (49.999, True),
+    (-0.001, False),
+    (50.0, False),
+    (50.001, False),
+))
+def test_cursor位置必須符合SQL左閉右開視窗(診斷資料庫, 位置, 成功):
+    游標 = _簽署([1, "ep-1", 50, 0.0, 50.0, 位置, "inv-boundary"])
+    if 成功:
+        assert type(_列出(_服務(診斷資料庫), cursor=游標, limit=1)) is 診斷查詢成功
+    else:
+        _固定失敗(lambda: _列出(_服務(診斷資料庫), cursor=游標, limit=1))
+
+
 @pytest.mark.parametrize("破壞", ("tamper", "wrong-key", "bad-base64", "oversize", "endpoint", "window", "position"))
 def test_cursor完整scope簽章格式與大小驗證皆固定失敗且無raw(診斷資料庫, 破壞):
     服務 = _服務(診斷資料庫)
