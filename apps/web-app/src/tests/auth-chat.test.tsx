@@ -225,6 +225,7 @@ describe('safe auth API', () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({}, 401))
       .mockResolvedValueOnce(jsonResponse(sessionBody))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
     const replaceState = vi.fn()
     vi.stubGlobal('window', {
       location: { pathname: '/untrusted' },
@@ -247,15 +248,28 @@ describe('safe auth API', () => {
 
     expect(replaceState).toHaveBeenCalledWith(null, '', DEFAULT_APP_ROUTE)
     expect(renderer!.root.findByProps({ id: 'chat-title' }).children.join('')).toContain('對話')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(fetchMock).toHaveBeenNthCalledWith(3, '/api/sessions?limit=20', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    })
     const source = JSON.stringify(renderer!.toJSON())
     expect(source).not.toMatch(/skill|技能選擇|端點建立|selectedSkill|skillId/i)
     await act(async () => { renderer!.unmount() })
   })
 
-  it('renders the local chat shell for an authenticated root without chat requests', async () => {
+  it('loads sessions and renders the server chat reply for an authenticated root', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(sessionBody))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+      .mockResolvedValueOnce(jsonResponse(sessionBody))
+      .mockResolvedValueOnce(jsonResponse({
+        session_id: 'root-1',
+        reply: { role: 'assistant', content: '您好，我能幫忙。' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
       .mockResolvedValueOnce(noContentResponse())
     vi.stubGlobal('window', {
       location: { pathname: '/' },
@@ -276,20 +290,42 @@ describe('safe auth API', () => {
       textarea.props.onChange({ currentTarget: { value: '  你好  ' } })
     })
     await act(async () => {
-      const submit = renderer!.root.findByType('form').props.onSubmit
-      submit({ preventDefault: vi.fn() })
-      submit({ preventDefault: vi.fn() })
+      await renderer!.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() })
     })
     const conversation = renderer!.root.findByProps({ role: 'log' })
     expect(conversation.findAllByType('p').filter((item) => item.children.includes('你好'))).toHaveLength(1)
+    expect(conversation.findAllByType('p').filter((item) => item.children.includes('您好，我能幫忙。'))).toHaveLength(1)
     expect(renderer!.root.findByType('textarea').props.value).toBe('')
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(fetchMock).toHaveBeenCalledTimes(5)
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/sessions?limit=20', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(4, '/api/chat', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': 'csrf-secret',
+      },
+      body: JSON.stringify({ message: '你好' }),
+      signal: expect.any(AbortSignal),
+    })
+    expect(fetchMock).toHaveBeenNthCalledWith(5, '/api/sessions?limit=20', {
+      method: 'GET',
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+      signal: expect.any(AbortSignal),
+    })
     await act(async () => {
       renderer!.root.findAllByType('button').find((button) => button.children.includes('登出'))?.props.onClick()
       await flush()
     })
     expect(renderer!.root.findByProps({ id: 'login-title' })).toBeDefined()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(6)
     await act(async () => { renderer!.unmount() })
   })
 
