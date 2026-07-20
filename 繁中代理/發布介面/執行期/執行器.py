@@ -836,13 +836,40 @@ def _驗證交叉欄位(版本: 發布執行快照, 上下文: object) -> None:
         raise
 
 
+def _是提示檔案路徑(路徑: str) -> bool:
+    """判斷 canonical bundle 路徑是否可插入模型提示。
+
+    參數：``路徑`` 是已驗證的相對 POSIX 檔案路徑。回傳：根層舊契約或
+    ``<skill-name>`` 下的 ``SKILL.md``、``references/**``、``templates/**``
+    才為真。例外：不拋出例外。副作用：只配置短暫路徑元件。
+    """
+    部分 = 路徑.split("/")
+    if 路徑 == "SKILL.md":
+        return True
+    if len(部分) >= 2 and 部分[0] in ("references", "templates"):
+        return True
+    if len(部分) == 2 and _是識別碼(部分[0]) and 部分[1] == "SKILL.md":
+        return True
+    return (
+        len(部分) >= 3
+        and _是識別碼(部分[0])
+        and 部分[1] in ("references", "templates")
+    )
+
+
 def _建立提示(系統提示: str, 檔案們: tuple[技能套件檔案, ...]) -> str:
-    """只嵌入 manifest 內 allowlisted UTF-8 text；binary/scripts/assets 固定略過。"""
+    """依 bundle 順序嵌入 allowlisted UTF-8 text。
+
+    參數：``系統提示`` 是版本快照文字；``檔案們`` 是完整 hash-verified ordered
+    bundle。回傳：系統提示及多技能說明、參考與模板合成文字。
+    例外：提示超限或輸入狀態異常時傳出驗證例外；非 UTF-8 allowlisted 檔案略過。
+    副作用：只配置提示；scripts、assets 與任意 nested 路徑不會進入提示。
+    """
     區段 = 結果 = 文字 = None
     try:
         區段 = [系統提示]
         for 項 in 檔案們:
-            if 項.path != "SKILL.md" and not 項.path.startswith(("references/", "templates/")):
+            if not _是提示檔案路徑(項.path):
                 continue
             try:
                 文字 = 項.content.decode("utf-8", errors="strict")
