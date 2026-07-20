@@ -150,12 +150,24 @@ _固定錯誤 = "技能套件協調錯誤"
 
 
 def _拒絕() -> NoReturn:
-    """以不帶錯誤鏈的固定公開錯誤關閉失敗。"""
+    """以不帶錯誤鏈的固定公開錯誤關閉失敗。
+
+    參數：無。
+    回傳：永不正常回傳。
+    例外：固定拋出 ``技能套件協調錯誤``，且不保留原始例外鏈。
+    副作用：只建立並拋出公開例外，不修改外部資源。
+    """
     raise 技能套件協調錯誤(_固定錯誤) from None
 
 
 def _清框架(錯誤: BaseException) -> None:
-    """盡力清除內部失敗框架，且不覆蓋原結果。"""
+    """盡力清除內部失敗框架，且不覆蓋原結果。
+
+    參數：錯誤是待清除 traceback frame locals 的例外物件。
+    回傳：清理完成或清理失敗被抑制後回傳 ``None``。
+    例外：不向呼叫端傳出清理階段例外。
+    副作用：可能清空既有 traceback frames 對區域物件的參照。
+    """
     try:
         traceback.clear_frames(錯誤.__traceback__)
     except BaseException:
@@ -229,3 +241,154 @@ def _開安全絕對目錄(路徑: Path) -> int:
     except BaseException:
         _關閉描述元(描述元)
         raise
+def _投影索引(投影: 已驗證技能套件清單) -> tuple[dict[str, object], set[str]]:
+    """建立 copied-file 索引及其唯一允許目錄集合。
+
+    參數：投影是已通過發布清單驗證的 detached 資料。
+    回傳：以相對路徑為鍵的檔案索引，以及包含根的允許目錄集合。
+    例外：重複路徑或無效投影由上游驗證拒絕，本函式不另轉譯。
+    副作用：只配置新的索引與集合，不讀寫檔案系統。
+    """
+    索引 = {項目.path: 項目 for 項目 in 投影.copied_files}
+    目錄 = {""}
+    for 路徑 in 索引:
+        部件 = PurePosixPath(路徑).parts
+        目錄.update("/".join(部件[:位置]) for 位置 in range(1, len(部件)))
+    return 索引, 目錄
+
+
+def _建立樹投影項目(
+    相對部件: tuple[str, ...], 種類: str, 資訊: os.stat_result, 雜湊: str | None,
+) -> _樹投影項目:
+    """把一次穩定 stat 與必要內容雜湊複製成 detached tree projection。
+
+    參數：相對部件、項目種類、穩定 stat 與一般檔案的 SHA-256 雜湊。
+    回傳：不持有 descriptor 或 DirEntry 的不可變樹投影項目。
+    例外：欄位無法轉成預期純量時直接傳出原例外。
+    副作用：無。
+    """
+    return _樹投影項目(
+        相對部件, 種類, stat.S_IMODE(資訊.st_mode), 資訊.st_dev, 資訊.st_ino,
+        資訊.st_size, 資訊.st_mtime_ns, 雜湊,
+    )
+
+
+def _資訊符合投影(資訊: os.stat_result, 項目: _樹投影項目) -> bool:
+    """精確比較可見 stat 與 preflight detached projection 欄位。
+
+    參數：資訊是 no-follow 或釘選 fd 的 stat；項目是預檢建立的投影。
+    回傳：種類、模式、dev、ino、size 與 mtime 全部相同時為真。
+    例外：不主動產生例外。
+    副作用：無。
+    """
+    是預期種類 = stat.S_ISDIR(資訊.st_mode) if 項目.種類 == "目錄" else stat.S_ISREG(資訊.st_mode)
+    return 是預期種類 and (
+        stat.S_IMODE(資訊.st_mode), 資訊.st_dev, 資訊.st_ino, 資訊.st_size, 資訊.st_mtime_ns,
+    ) == (項目.模式, 項目.裝置, 項目.節點, 項目.大小, 項目.修改奈秒)
+
+
+def _重驗套件(
+    父描述元: int, 名稱: str, 父路徑: Path, 預算: _協調預算 | None = None,
+) -> _已重驗套件:
+    """在單一釘選父 fd 下以共享預算重驗套件。
+
+    參數：父描述元、名稱與父路徑定位套件；預算可共享或由本函式建立。
+    回傳：分離的收據、清單投影、根身分及修改時間。
+    例外：結構、模式、摘要、身分、額度或描述元操作不符時傳出一般錯誤。
+    副作用：有界讀取完整套件樹並消耗共享額度；不修改檔案系統。
+    """
+    if 預算 is None:
+        預算 = _協調預算()
+    前資訊 = os.stat(名稱, dir_fd=父描述元, follow_symlinks=False)
+    if not stat.S_ISDIR(前資訊.st_mode) or stat.S_IMODE(前資訊.st_mode) != 0o555:
+        raise OSError
+    根 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=父描述元)
+    try:
+        根資訊 = os.fstat(根)
+        if (前資訊.st_dev, 前資訊.st_ino) != (根資訊.st_dev, 根資訊.st_ino):
+            raise OSError
+        原文, 清單資訊 = 預算.讀取(根, "manifest.json", 限制().最大總位元組數)
+        if 清單資訊.st_nlink != 1 or stat.S_IMODE(清單資訊.st_mode) != 0o444:
+            raise OSError
+        投影 = 驗證已發布技能套件清單(原文)
+        if 投影.bundle_id != 名稱:
+            raise OSError
+        索引, 預期目錄 = _投影索引(投影)
+        已見: set[str] = set()
+        位元組 = 0
+        樹投影: list[_樹投影項目] = [_建立樹投影項目((), "目錄", 根資訊, None)]
+
+        def 走訪(目錄描述元: int, 前綴: str, 部件前綴: tuple[str, ...]) -> None:
+            """只進入清單衍生的預期目錄並驗證每個一般檔。
+
+            參數：目錄描述元定位目前層；前綴是其套件相對路徑。
+            回傳：完成目前子樹驗證後回傳 ``None``。
+            例外：未知項目、模式、身分、摘要或額度不符時傳出一般錯誤。
+            副作用：遞迴開啟並關閉子目錄，更新外層已見集合與位元組計數。
+            """
+            nonlocal 位元組
+            for 子名 in sorted(預算.列舉(目錄描述元)):
+                相對 = 子名 if not 前綴 else f"{前綴}/{子名}"
+                相對部件 = (*部件前綴, 子名)
+                資訊 = os.stat(子名, dir_fd=目錄描述元, follow_symlinks=False)
+                if stat.S_ISDIR(資訊.st_mode) and 相對 in 預期目錄:
+                    if stat.S_IMODE(資訊.st_mode) != 0o555:
+                        raise OSError
+                    子 = os.open(子名, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                    try:
+                        釘選 = os.fstat(子)
+                        if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
+                            raise OSError
+                        投影位置 = len(樹投影)
+                        樹投影.append(_建立樹投影項目(相對部件, "目錄", 釘選, None))
+                        走訪(子, 相對, 相對部件)
+                        完成 = os.fstat(子)
+                        if not _資訊符合投影(完成, 樹投影[投影位置]):
+                            raise OSError
+                        樹投影[投影位置] = _建立樹投影項目(相對部件, "目錄", 完成, None)
+                    finally:
+                        _關閉描述元(子)
+                elif stat.S_ISREG(資訊.st_mode) and 相對 == "manifest.json" and not 前綴:
+                    if not (
+                        資訊.st_dev, 資訊.st_ino, 資訊.st_size, 資訊.st_mtime_ns,
+                    ) == (
+                        清單資訊.st_dev, 清單資訊.st_ino, 清單資訊.st_size, 清單資訊.st_mtime_ns,
+                    ):
+                        raise OSError
+                    樹投影.append(_建立樹投影項目(
+                        相對部件, "檔案", 清單資訊, hashlib.sha256(原文).hexdigest(),
+                    ))
+                    continue
+                elif stat.S_ISREG(資訊.st_mode) and 相對 in 索引:
+                    項目 = 索引[相對]
+                    if 資訊.st_nlink != 1 or stat.S_IMODE(資訊.st_mode) != 0o444:
+                        raise OSError
+                    資料, 穩定 = 預算.讀取(目錄描述元, 子名, 項目.size_bytes)  # type: ignore[attr-defined]
+                    摘要 = hashlib.sha256(資料).hexdigest()
+                    if (
+                        穩定.st_nlink != 1
+                        or (資訊.st_dev, 資訊.st_ino) != (穩定.st_dev, 穩定.st_ino)
+                        or 摘要 != 項目.sha256  # type: ignore[attr-defined]
+                    ):
+                        raise OSError
+                    位元組 += len(資料)
+                    已見.add(相對)
+                    樹投影.append(_建立樹投影項目(相對部件, "檔案", 穩定, 摘要))
+                else:
+                    raise OSError
+        走訪(根, "", ())
+        後資訊 = os.stat(名稱, dir_fd=父描述元, follow_symlinks=False)
+        if ((後資訊.st_dev, 後資訊.st_ino) != (根資訊.st_dev, 根資訊.st_ino)
+                or not _資訊符合投影(後資訊, 樹投影[0])
+                or 已見 != set(索引) or 位元組 != 投影.total_bytes):
+            raise OSError
+        樹投影[0] = _建立樹投影項目((), "目錄", 後資訊, None)
+        收據 = 套件發布收據(
+            投影.bundle_id, f"{投影.bundle_id}/manifest.json", 投影.manifest_digest,
+            投影.bundle_hash, 投影.total_bytes, Path(父路徑) / 投影.bundle_id,
+        )
+        return _已重驗套件(
+            收據, 投影, tuple(樹投影), (根資訊.st_dev, 根資訊.st_ino), 後資訊.st_mtime_ns,
+        )
+    finally:
+        _關閉描述元(根)
