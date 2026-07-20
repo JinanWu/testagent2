@@ -2,6 +2,11 @@
 
 本模組只重用既有使用者庫、工作階段庫、代理執行階段與技能索引器；不解析 HTTP，
 也不直接執行 SQL。所有回應都先重建為本模組的固定 allowlist DTO。
+
+參數：服務入口接受已驗證的使用者識別、查詢條件與明確依賴。
+回傳：回傳固定允許欄位的聊天、工作階段與技能資料物件。
+例外：輸入、資源與依賴失敗映射為固定 Web 服務例外。
+副作用：依操作查詢權威資料、執行代理或有界唯讀掃描技能檔案。
 """
 
 from __future__ import annotations
@@ -11,7 +16,7 @@ import math
 import os
 from pathlib import Path
 import stat
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 from 繁中代理.基本工具 import 取得技能根目錄清單
 from 繁中代理.使用者 import 使用者上下文
@@ -23,6 +28,14 @@ from 繁中代理.技能索引器 import (
     技能是否符合工具條件,
     解析Markdown前置資料,
     讀取停用技能名稱集合,
+)
+from .安全技能目錄 import (
+    安全讀取技能 as _共用安全讀取技能,
+    建立錨定安全技能目錄,
+    技能目錄不存在,
+    技能目錄限制,
+    技能走訪預算 as _技能走訪預算,
+    走訪有界技能檔案 as _走訪有界技能索引檔案,
 )
 
 _WEB來源 = "web"
@@ -148,7 +161,13 @@ class 技能詳情:
 
 
 class Web代理服務:
-    """協調既有 runtime/repositories，並在 HTTP 前建立安全 DTO。"""
+    """協調既有執行階段與資料庫並建立安全資料物件。
+
+    參數：建構時接受工作階段庫、使用者庫與執行階段工廠。
+    回傳：公開方法回傳固定允許欄位的 Web 資料物件。
+    例外：依輸入、資源與依賴失敗拋固定 Web 服務例外。
+    副作用：依操作查詢資料庫、執行代理或唯讀掃描技能檔案。
+    """
 
     def __init__(
         self,
@@ -338,9 +357,11 @@ class Web代理服務:
     def 讀取技能(self, 使用者識別碼: str, 技能識別碼: str) -> 技能詳情:
         """只讀目前 user 唯一可見且位於授權 root 的 bounded regular SKILL.md。
 
-        參數為 current-session user ID 與 skill ID；返回完整內容安全 DTO。缺少、
-        未授權、重複、路徑逃逸、symlink、非 regular 或超過 256 KiB 均統一為
-        Web資源不存在；其他 I/O 失敗拋 Web服務不可用。
+        參數：目前工作階段使用者識別碼與技能識別碼。
+        回傳：回傳完整內容的安全技能詳情。
+        例外：缺少、未授權、重複、連結、非一般檔案或超限皆統一為資源不存在；
+        其他輸入輸出失敗拋服務不可用。
+        副作用：查詢使用者權威並有界唯讀掃描技能根。
         """
         _驗證識別碼(技能識別碼)
         try:
@@ -364,7 +385,13 @@ class Web代理服務:
     def _建立可見技能索引(
         self, 使用者識別碼: str, 重複視為不存在: bool = False,
     ) -> tuple[dict[str, dict[str, str]], list[Path]]:
-        """載入完整 user context 並以既有 indexer 建立唯一技能 ID map。"""
+        """載入完整使用者上下文並建立唯一技能索引。
+
+        參數：使用者識別碼與重複技能是否映射為不存在的政策。
+        回傳：回傳技能識別到安全欄位的索引及脫離設定的根路徑清單。
+        例外：使用者、設定或技能目錄資料無效時傳出對應例外。
+        副作用：查詢使用者權威並有界唯讀掃描技能根。
+        """
         _驗證識別碼(使用者識別碼)
         使用者 = self._使用者庫.建立使用者上下文(user_id=使用者識別碼)
         if type(使用者) is not 使用者上下文 or 使用者.user_id != 使用者識別碼:
@@ -373,6 +400,8 @@ class Web代理服務:
             取得技能根目錄清單({"_skill_roots": None})
             if 使用者.skill_roots is None else list(使用者.skill_roots)
         )
+        根們 = tuple(Path(根目錄) for 根目錄 in 根目錄清單)
+        啟用集合 = None if 使用者.enabled_skills is None else frozenset(使用者.enabled_skills)
         索引: dict[str, dict[str, str]] = {}
         候選識別碼: set[str] = set()
         索引總位元組 = 0
@@ -413,59 +442,6 @@ class Web代理服務:
                     raise ValueError
                 索引[識別碼] = 項目
         return 索引, [Path(根目錄) for 根目錄 in 根目錄清單]
-
-
-@dataclass(slots=True)
-class _技能走訪預算:
-    """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
-
-    剩餘項目數量: int
-
-
-def _走訪有界技能索引檔案(
-    技能根目錄: Path,
-    檔名: str,
-    候選上限: int,
-    走訪預算: _技能走訪預算 | None = None,
-) -> Iterator[Path]:
-    """有界掃描每個 entry；僅完整讀完的 bounded directory batch 才排序。"""
-    if 候選上限 <= 0:
-        return
-    if 走訪預算 is None:
-        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
-    已產出 = 0
-
-    def 走訪目錄(目錄: Path) -> Iterator[Path]:
-        """依名稱走訪完整小批次，目錄、候選與其他 entry 均消耗共享預算。"""
-        nonlocal 已產出
-        if 已產出 >= 候選上限:
-            return
-        try:
-            with os.scandir(目錄) as 掃描器:
-                項目清單 = []
-                for 項目 in 掃描器:
-                    項目清單.append(項目)
-                    if len(項目清單) > 走訪預算.剩餘項目數量:
-                        走訪預算.剩餘項目數量 = 0
-                        raise ValueError("技能目錄走訪超過上限")
-        except FileNotFoundError:
-            return
-        走訪預算.剩餘項目數量 -= len(項目清單)
-        項目清單.sort(key=lambda 項目: 項目.name)
-        for 項目 in 項目清單:
-            if 已產出 >= 候選上限:
-                return
-            if 項目.name.startswith("."):
-                continue
-            路徑 = 目錄 / 項目.name
-            if 項目.name == 檔名:
-                已產出 += 1
-                yield 路徑
-                continue
-            if 項目.is_dir(follow_symlinks=False):
-                yield from 走訪目錄(路徑)
-
-    yield from 走訪目錄(技能根目錄)
 
 
 def 序列化聊天回應(回應: 聊天回應) -> dict[str, object]:
@@ -555,7 +531,13 @@ def _建立安全技能索引項目(技能路徑: Path, 根目錄: Path, 內容:
 
 
 def _安全讀取技能(來源路徑: Path, 根目錄清單: list[Path]) -> str:
-    """逐 component descriptor-relative 開啟，並限制 regular file 與大小。"""
+    """以共用描述器安全讀取器讀取 Web 技能詳情。
+
+    參數：來源路徑與允許的技能根目錄清單。
+    回傳：回傳有界且通過來源驗證的技能文字。
+    例外：共用讀取器判定不存在時統一拋 Web 資源不存在。
+    副作用：執行有界唯讀檔案系統操作。
+    """
     解析來源 = 來源路徑.resolve(strict=True)
     解析根清單 = [根.resolve(strict=True) for 根 in 根目錄清單]
     符合根 = next((根 for 根 in 解析根清單 if 解析來源.is_relative_to(根)), None)
