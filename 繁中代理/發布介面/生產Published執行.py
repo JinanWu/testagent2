@@ -222,12 +222,21 @@ class 生產Published執行資源:
             if self._已關閉:
                 return
             self._已關閉 = True
-        編排器 = self._編排器
-        if 編排器 is not None:
-            await run_in_threadpool(self._代理.清除, 編排器)
-        self._編排器 = None
-        self._模型表.clear()
-        self._工具庫 = None
+        編排器, 工具庫 = self._編排器, self._工具庫
+        清除錯誤 = None
+        try:
+            if 編排器 is not None:
+                await run_in_threadpool(self._代理.清除, 編排器)
+        except BaseException as 錯誤:
+            清除錯誤 = 錯誤
+        finally:
+            self._編排器 = None
+            self._模型表.clear()
+            if 工具庫 is not None:
+                工具庫.清除所有發布()
+            self._工具庫 = None
+        if 清除錯誤 is not None:
+            raise 清除錯誤
 class 生產Published執行建構器:
     """建立 CP4 invoke router 與單一 Published lifespan resource factory。
 
@@ -364,38 +373,48 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     快照庫 = SQLite發布快照儲存庫(資料庫, _工具摘要)
     套件載入器 = 已發布技能套件載入器(發布.技能套件發布根, 快照庫)
     工具庫 = 工具發布庫()
-    發布.工具發布安裝器(工具庫)
-    原模型表 = 發布.模型供應商註冊表工廠()
-    if type(原模型表) is not dict:
-        raise ValueError("模型供應商註冊表無效") from None
-    模型表 = dict(原模型表)
-    if (not 模型表 or any(type(鍵) is not str or not 鍵 or 值 is None for 鍵, 值 in 模型表.items())):
-        模型表.clear()
-        raise ValueError("模型供應商註冊表無效") from None
-    Runtime橋接 = 建立發布執行嘗試橋接(
-        發布快照儲存庫=快照庫, 技能套件載入器=套件載入器,
-        工具發布庫=工具庫, 模型供應商註冊表=模型表,
-    )
-    台帳 = InvocationLedger橋接(呼叫庫)
-    編排器 = 外部呼叫編排器(
-        解析器, 呼叫庫, 憑證,
-        解析未找到型別=目前版本不存在錯誤,
-        釘選型別=已釘選版本,
-        驗證型別=憑證驗證結果,
-        驗證狀態型別=憑證驗證狀態,
-        階段型別=擷取階段,
-        準備擷取=準備呼叫擷取,
-        寫入擷取=寫入呼叫擷取,
-        限流決策型別=限流決策,
-        提交雙層計數=限流器.提交,
-        驗證輸入=驗證釘選輸入結構,
-        開始執行嘗試=台帳.開始執行嘗試,
-        執行嘗試=Runtime橋接,
-        驗證輸出=驗證釘選輸出結構,
-        記錄執行嘗試=台帳.記錄執行嘗試,
-    )
-    代理.安裝(編排器)
-    return 生產Published執行資源(代理, 編排器, 工具庫, 模型表)
+    模型表: dict[str, object] = {}
+    編排器 = None
+    try:
+        發布.工具發布安裝器(工具庫)
+        原模型表 = 發布.模型供應商註冊表工廠()
+        if type(原模型表) is not dict:
+            raise ValueError("模型供應商註冊表無效") from None
+        模型表.update(原模型表)
+        if not 模型表 or any(type(鍵) is not str or not 鍵 or 值 is None for 鍵, 值 in 模型表.items()):
+            raise ValueError("模型供應商註冊表無效") from None
+        Runtime橋接 = 建立發布執行嘗試橋接(
+            發布快照儲存庫=快照庫, 技能套件載入器=套件載入器,
+            工具發布庫=工具庫, 模型供應商註冊表=模型表,
+        )
+        台帳 = InvocationLedger橋接(呼叫庫)
+        編排器 = 外部呼叫編排器(
+            解析器, 呼叫庫, 憑證,
+            解析未找到型別=目前版本不存在錯誤, 釘選型別=已釘選版本,
+            驗證型別=憑證驗證結果, 驗證狀態型別=憑證驗證狀態,
+            階段型別=擷取階段, 準備擷取=準備呼叫擷取, 寫入擷取=寫入呼叫擷取,
+            限流決策型別=限流決策, 提交雙層計數=限流器.提交,
+            驗證輸入=驗證釘選輸入結構, 開始執行嘗試=台帳.開始執行嘗試,
+            執行嘗試=Runtime橋接, 驗證輸出=驗證釘選輸出結構,
+            記錄執行嘗試=台帳.記錄執行嘗試,
+        )
+        代理.安裝(編排器)
+        return 生產Published執行資源(代理, 編排器, 工具庫, 模型表)
+    except BaseException as 啟動錯誤:
+        try:
+            if 編排器 is not None:
+                代理.清除(編排器)
+        except BaseException:
+            pass
+        finally:
+            模型表.clear()
+            try:
+                工具庫.清除所有發布()
+            except BaseException:
+                pass
+        啟動錯誤.__cause__ = None
+        啟動錯誤.__context__ = None
+        raise
 __all__ = (
     "Published生產設定", "延遲外部呼叫編排器", "生產Published執行資源",
     "生產Published執行建構器", "生產Controller建構器",
