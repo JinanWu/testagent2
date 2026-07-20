@@ -34,21 +34,44 @@ _錯誤對照 = {
     "concurrency": (409, "發布端點已由其他操作更新"),
     "internal": (500, "發布管理服務失敗"),
 }
+_草稿本文綱要 = {
+    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["original_requirement_text", "selected_skills", "response_mode"],
+        "properties": {
+            "original_requirement_text": {"type": "string", "minLength": 1, "maxLength": 16_384},
+            "selected_skills": {
+                "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": True,
+                "items": {"type": "string", "minLength": 1, "maxLength": 128,
+                          "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+            },
+            "response_mode": {"type": "string", "enum": ["text", "structured"]},
+        },
+    }}}},
+}
 _發布本文綱要 = {
     "requestBody": {"required": True, "content": {"application/json": {"schema": {
         "type": "object", "additionalProperties": False,
         "required": ["draft_id", "slug", "configuration_confirmation"],
         "properties": {
-            "draft_id": {"type": "string", "minLength": 1, "maxLength": 128},
-            "slug": {"type": "string", "minLength": 1, "maxLength": 63},
-            "configuration_confirmation": {"type": "object"},
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 128,
+                         "pattern": r"^[A-Za-z0-9_.:-]+$"},
+            "slug": {"type": "string", "minLength": 1, "maxLength": 63,
+                     "pattern": r"^[a-z0-9][a-z0-9-]*$"},
+            "configuration_confirmation": {
+                "type": "object", "maxProperties": 256,
+                "propertyNames": {"type": "string", "maxLength": 256},
+            },
         },
     }}}},
 }
 _版本本文綱要 = {
     "requestBody": {"required": True, "content": {"application/json": {"schema": {
         "type": "object", "additionalProperties": False, "required": ["configuration"],
-        "properties": {"configuration": {"type": "object"}},
+        "properties": {"configuration": {
+            "type": "object", "maxProperties": 256,
+            "propertyNames": {"type": "string", "maxLength": 256},
+        }},
     }}}},
 }
 
@@ -277,9 +300,12 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
     副作用：建立路由器、捕捉四項依賴、註冊一條路由，並清除處理器的執行期文件字串以固定
     OpenAPI 說明為空；不立即呼叫服務。
     """
-    路由器 = APIRouter()
+    路由器 = APIRouter(prefix="/api/published-endpoints")
 
-    @路由器.post("/api/published-endpoints/draft", status_code=201, response_model=草稿建立結果)
+    @路由器.post(
+        "/draft", status_code=201, response_model=草稿建立結果,
+        openapi_extra=_草稿本文綱要,
+    )
     async def 建立伺服器草稿(
         請求: Request,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
@@ -347,8 +373,9 @@ def 建立安全規劃發布路由器(
     )
 
     @路由器.post(
-        "/api/published-endpoints", status_code=201, response_model=端點發布結果,
+        "", status_code=201, response_model=端點發布結果,
         responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+        openapi_extra=_發布本文綱要,
     )
     async def 發布端點(
         請求: Request,
@@ -367,9 +394,10 @@ def 建立安全規劃發布路由器(
         return await run_in_threadpool(_安全發布端點, 發布服務, 本文, 使用者識別碼)
 
     @路由器.post(
-        "/api/published-endpoints/{endpoint_id}/versions", status_code=201,
+        "/{endpoint_id}/versions", status_code=201,
         response_model=版本建立結果,
         responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+        openapi_extra=_版本本文綱要,
     )
     async def 建立不可變版本(
         請求: Request,
