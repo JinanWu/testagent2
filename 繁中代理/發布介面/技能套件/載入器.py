@@ -365,3 +365,186 @@ def _清除框架(錯誤: BaseException) -> None:
         traceback.clear_frames(錯誤.__traceback__)
     except BaseException:
         pass
+
+
+def _驗證完整樹(
+    根描述元: int, 根身分: tuple[int, int], 清單檔案: _穩定檔案,
+    檔案身分: dict[str, tuple[int, int, int, int]],
+    目錄身分: dict[str, tuple[int, int]],
+) -> None:
+    """descriptor-relative 列舉 final tree 並拒絕任何差集、種類、模式或競態。
+
+    參數：bundle descriptor 與先前讀取時釘選的 root、manifest、files、directories identity。
+    回傳：無。例外：額外、缺失、special、symlink、模式或 identity 不符時傳出 ``OSError``。
+    副作用：遞迴開啟並列舉目錄；只讀且關閉所有自行開啟的 descriptors。
+    """
+    預期檔案 = set(檔案身分)
+    預期檔案.add("manifest.json")
+    預期目錄 = set(目錄身分)
+    實際檔案: set[str] = set()
+    實際目錄: set[str] = set()
+
+    def 走訪(目錄描述元: int, 前綴: str) -> None:
+        """走訪一個已釘選 final directory。
+
+        參數：目前 descriptor 與 bundle-relative 前綴。回傳：無。
+        例外：tree contract 不符時傳出 ``OSError``。副作用：列舉並短暫開啟子目錄。
+        """
+        for 名稱 in os.listdir(目錄描述元):
+            相對路徑 = 名稱 if not 前綴 else f"{前綴}/{名稱}"
+            可見 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
+            if stat.S_ISDIR(可見.st_mode):
+                if 相對路徑 not in 預期目錄 or stat.S_IMODE(可見.st_mode) != 0o555:
+                    raise OSError
+                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                try:
+                    釘選 = os.fstat(子描述元)
+                    身分 = (釘選.st_dev, 釘選.st_ino)
+                    if 身分 != (可見.st_dev, 可見.st_ino) or 身分 != 目錄身分[相對路徑]:
+                        raise OSError
+                    實際目錄.add(相對路徑)
+                    走訪(子描述元, 相對路徑)
+                finally:
+                    os.close(子描述元)
+            elif stat.S_ISREG(可見.st_mode):
+                if 相對路徑 not in 預期檔案 or stat.S_IMODE(可見.st_mode) != 0o444:
+                    raise OSError
+                預期身分 = (
+                    (清單檔案.裝置, 清單檔案.索引節點, 清單檔案.位元組數, 清單檔案.修改奈秒)
+                    if 相對路徑 == "manifest.json" else 檔案身分[相對路徑]
+                )
+                if _身分(可見) != 預期身分:
+                    raise OSError
+                實際檔案.add(相對路徑)
+            else:
+                raise OSError
+
+    走訪(根描述元, "")
+    結束根 = os.fstat(根描述元)
+    if (
+        (結束根.st_dev, 結束根.st_ino) != 根身分
+        or 實際檔案 != 預期檔案 or 實際目錄 != 預期目錄
+    ):
+        raise OSError
+
+
+class 已發布技能套件載入器:
+    """以釘選描述元載入且完整重驗 exact 已發布技能套件。
+
+    欄位：保存 lexical absolute 發布根與定位提供者。回傳：不適用。
+    例外：建構或載入失敗時拋出固定載入錯誤。副作用：建構不存取檔案系統。
+    """
+
+    def __init__(self, 發布根目錄: str | Path, 定位提供者: 技能套件定位提供者) -> None:
+        """保存無 cwd/home fallback 的 absolute 發布根與 provider。
+
+        參數：``發布根目錄`` 必須是 exact str 或平台 Path；``定位提供者`` 提供 exact lookup。
+        回傳：無。例外：根路徑不合契約時拋出固定載入錯誤。副作用：不執行 filesystem I/O。
+        """
+        try:
+            if type(發布根目錄) not in (str, type(Path())):
+                raise ValueError
+            根字串 = os.fspath(發布根目錄)
+            if not os.path.isabs(根字串) or "\x00" in 根字串 or unicodedata.normalize("NFC", 根字串) != 根字串:
+                raise ValueError
+            正規根 = os.path.normpath(根字串)
+            if 正規根 != 根字串.rstrip(os.sep) and not (根字串 == os.sep == 正規根):
+                raise ValueError
+            self._發布根目錄 = 正規根
+            self._定位提供者 = 定位提供者
+        except _控制流程:
+            raise
+        except BaseException:
+            raise 技能套件載入錯誤() from None
+
+    def 載入技能套件快照(
+        self, endpoint_version_id: str, skill_bundle_hash: str,
+        manifest_reference: str, source: str,
+    ) -> 技能套件快照:
+        """載入 exact version、receipt 與 canonical manifest 所釘選的內容。
+
+        參數：四個 scalar 必須分別符合版本、內容摘要、參照及固定來源契約。
+        回傳：含 canonical manifest bytes 與分離摘要的完整 immutable ``技能套件快照``。
+        例外：普通失敗固定且無鏈；控制流程例外保持 identity 與 args。
+        副作用：預檢後呼叫 provider 一次，descriptor-relative 讀取並關閉完整 bundle。
+        """
+        根描述元 = 套件描述元 = None
+        取得定位 = 定位值 = 定位 = 清單檔案 = 清單 = 結果 = None
+        檔案列: list[技能套件檔案] | None = None
+        try:
+            if (
+                not _是識別碼(endpoint_version_id) or not _是摘要(skill_bundle_hash)
+                or not _是清單參照(manifest_reference)
+                or type(source) is not str or source != _唯一來源
+            ):
+                raise ValueError
+            取得定位 = getattr(self._定位提供者, "取得技能套件定位")
+            定位值 = 取得定位(endpoint_version_id)
+            定位 = _重建定位(定位值)
+            if (
+                定位.version_id != endpoint_version_id
+                or not hmac.compare_digest(定位.bundle_hash, skill_bundle_hash)
+                or 定位.manifest_reference != manifest_reference
+            ):
+                raise ValueError
+            根描述元 = _開啟發布根(self._發布根目錄)
+            套件描述元 = _開啟套件根(根描述元, 定位.bundle_id)
+            根資訊 = os.fstat(套件描述元)
+            根身分 = (根資訊.st_dev, 根資訊.st_ino)
+            目錄身分: dict[str, tuple[int, int]] = {}
+            清單檔案 = _讀取相對檔案(
+                套件描述元, "manifest.json", 目錄身分,
+                預期大小=None, 上限=技能套件最大總位元組數,
+            )
+            if not hmac.compare_digest(hashlib.sha256(清單檔案.資料).hexdigest(), 定位.manifest_digest):
+                raise ValueError
+            清單 = 驗證已發布技能套件清單(清單檔案.資料)
+            if (
+                清單.manifest_digest != 定位.manifest_digest
+                or 清單.bundle_id != 定位.bundle_id
+                or 清單.endpoint_version_id != 定位.version_id
+                or 清單.bundle_hash != 定位.bundle_hash
+                or 清單.total_bytes != 定位.total_bytes
+            ):
+                raise ValueError
+            檔案列 = []
+            檔案身分: dict[str, tuple[int, int, int, int]] = {}
+            實讀總數 = 0
+            for 項目 in 清單.copied_files:
+                檔案 = _讀取相對檔案(
+                    套件描述元, 項目.path, 目錄身分,
+                    預期大小=項目.size_bytes, 上限=限制().最大檔案位元組數,
+                )
+                if not hmac.compare_digest(hashlib.sha256(檔案.資料).hexdigest(), 項目.sha256):
+                    raise ValueError
+                實讀總數 += len(檔案.資料)
+                if 實讀總數 > 定位.total_bytes:
+                    raise ValueError
+                檔案身分[項目.path] = (
+                    檔案.裝置, 檔案.索引節點, 檔案.位元組數, 檔案.修改奈秒,
+                )
+                檔案列.append(技能套件檔案(path=項目.path, sha256=項目.sha256, content=檔案.資料))
+            if 實讀總數 != 清單.total_bytes or 實讀總數 != 定位.total_bytes:
+                raise ValueError
+            _驗證完整樹(套件描述元, 根身分, 清單檔案, 檔案身分, 目錄身分)
+            結果 = 技能套件快照(
+                endpoint_version_id=定位.version_id, skill_bundle_hash=定位.bundle_hash,
+                manifest_digest=定位.manifest_digest, 清單原始資料=清單檔案.資料,
+                files=tuple(檔案列),
+            )
+            return 結果
+        except _控制流程 as 錯誤:
+            _清除框架(錯誤)
+            endpoint_version_id = skill_bundle_hash = manifest_reference = source = ""
+            取得定位 = 定位值 = 定位 = 清單檔案 = 清單 = 結果 = None
+            檔案列 = None
+            raise
+        except BaseException as 錯誤:
+            _清除框架(錯誤)
+            endpoint_version_id = skill_bundle_hash = manifest_reference = source = ""
+            取得定位 = 定位值 = 定位 = 清單檔案 = 清單 = 結果 = None
+            檔案列 = None
+            raise 技能套件載入錯誤() from None
+        finally:
+            _安全關閉(套件描述元)
+            _安全關閉(根描述元)
