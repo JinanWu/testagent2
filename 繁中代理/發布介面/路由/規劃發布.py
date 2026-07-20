@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, field_validator
+from starlette.concurrency import run_in_threadpool
 
 from 繁中代理.使用者 import 使用者上下文
 from ..網頁工作階段 import 網頁使用者
@@ -32,6 +33,23 @@ _錯誤對照 = {
     "status_conflict": (409, "發布端點狀態衝突"),
     "concurrency": (409, "發布端點已由其他操作更新"),
     "internal": (500, "發布管理服務失敗"),
+}
+_發布本文綱要 = {
+    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False,
+        "required": ["draft_id", "slug", "configuration_confirmation"],
+        "properties": {
+            "draft_id": {"type": "string", "minLength": 1, "maxLength": 128},
+            "slug": {"type": "string", "minLength": 1, "maxLength": 63},
+            "configuration_confirmation": {"type": "object"},
+        },
+    }}}},
+}
+_版本本文綱要 = {
+    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False, "required": ["configuration"],
+        "properties": {"configuration": {"type": "object"}},
+    }}}},
 }
 
 
@@ -188,7 +206,13 @@ class 管理操作錯誤:
 
 
 class 發布管理服務(Protocol):
-    """由整合層提供草稿與兩個原子寫入操作。"""
+    """由整合層提供草稿與兩個原子寫入操作。
+
+    參數：實作者的方法接收權威使用者識別碼及各操作所需資料。
+    回傳：各方法回傳對應成功收據或固定的管理操作錯誤。
+    例外：協定不攔截實作者例外；路由邊界會統一映射非控制流失敗。
+    副作用：協定本身無副作用；實作者可保存草稿、端點及版本。
+    """
 
     def 建立草稿(self, *, 擁有者使用者識別碼: str, 規劃: 規劃內容) -> 草稿建立結果 | 管理操作錯誤:
         """建立不具發布副作用的暫存草稿。"""
@@ -199,10 +223,16 @@ class 發布管理服務(Protocol):
         ...
 
     def 原子建立並切換版本(
-        self, *, 擁有者使用者識別碼: str, 是否管理者: bool, 端點識別碼: str,
+        self, *, 擁有者使用者識別碼: str, 端點識別碼: str,
         配置: dict[str, JsonValue],
     ) -> 版本建立結果 | 管理操作錯誤:
-        """原子建立不可變版本並切換目前版本指標。"""
+        """由服務重查擁有者或管理者權限後原子建立版本並切換指標。
+
+        參數：接收權威使用者識別碼、端點識別碼與已分離的版本配置。
+        回傳：成功時回傳版本建立結果，拒絕時回傳固定管理操作錯誤。
+        例外：實作者的非控制流例外由呼叫邊界轉成內部錯誤。
+        副作用：權限通過時以單一交易建立不可變版本並切換目前版本指標。
+        """
         ...
 
 
@@ -265,12 +295,11 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
         副作用：消耗請求本文、讀取工作階段與 CSRF 相依結果、讀取時鐘，並呼叫服務持久化草稿。
         """
         本文 = await _解析安全草稿本文(請求)
-        if type(使用者) is not 網頁使用者:
-            raise HTTPException(status_code=500, detail={"code": "identity_contract_invalid"})
+        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
         try:
-            草稿 = 服務.建立草稿(
-                使用者.識別碼, 本文.原始需求文字, tuple(本文.選擇技能), 本文.回應模式,
-                現在=時鐘(),
+            草稿 = await run_in_threadpool(
+                服務.建立草稿, 使用者識別碼, 本文.原始需求文字,
+                tuple(本文.選擇技能), 本文.回應模式, 現在=時鐘(),
             )
             if type(草稿) is not 規劃草稿:
                 raise ValueError
@@ -298,6 +327,142 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
     return 路由器
 
 
+def 建立安全規劃發布路由器(
+    草稿服務: 安全草稿服務,
+    發布服務: 發布管理服務,
+    目前工作階段相依,
+    csrf相依,
+    *,
+    時鐘=time.time,
+) -> APIRouter:
+    """建立三條正式環境管理寫入路由的單一安全工廠。
+
+    參數：接收草稿與發布服務、目前工作階段相依、跨站請求偽造防護相依及可替換時鐘。
+    回傳：含草稿、發布與版本建立三條路由的 ``APIRouter``。
+    例外：路由註冊失敗時傳遞例外；請求期間的輸入、身份及服務失敗由各處理器映射。
+    副作用：建立路由器並捕捉服務與相依項；同步服務操作於請求期間移至工作執行緒。
+    """
+    路由器 = 建立安全草稿路由器(
+        草稿服務, 目前工作階段相依, csrf相依, 時鐘=時鐘,
+    )
+
+    @路由器.post(
+        "/api/published-endpoints", status_code=201, response_model=端點發布結果,
+        responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+    )
+    async def 發布端點(
+        請求: Request,
+        使用者: 網頁使用者 = Depends(目前工作階段相依),
+        _csrf使用者: 網頁使用者 = Depends(csrf相依),
+    ) -> JSONResponse:
+        """以權威工作階段使用者識別碼執行單一原子發布。
+
+        參數：接收原始請求，以及目前工作階段與跨站防護相依回傳的身份。
+        回傳：成功時回傳狀態碼 201 與發布收據。
+        例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
+        副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次發布服務。
+        """
+        本文 = await _解析管理本文(請求, 發布端點請求)
+        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
+        return await run_in_threadpool(_安全發布端點, 發布服務, 本文, 使用者識別碼)
+
+    @路由器.post(
+        "/api/published-endpoints/{endpoint_id}/versions", status_code=201,
+        response_model=版本建立結果,
+        responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+    )
+    async def 建立不可變版本(
+        請求: Request,
+        端點識別碼: Annotated[
+            str, Path(alias="endpoint_id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")
+        ],
+        使用者: 網頁使用者 = Depends(目前工作階段相依),
+        _csrf使用者: 網頁使用者 = Depends(csrf相依),
+    ) -> JSONResponse:
+        """只傳使用者識別碼，讓服務重查權限後建立版本。
+
+        參數：接收原始請求、受限端點識別碼，以及兩個相依項回傳的身份。
+        回傳：成功時回傳狀態碼 201 與新版本及目前版本指標收據。
+        例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
+        副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次版本服務。
+        """
+        本文 = await _解析管理本文(請求, 建立版本請求)
+        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
+        return await run_in_threadpool(
+            _安全建立版本, 發布服務, 本文, 端點識別碼, 使用者識別碼,
+        )
+
+    return 路由器
+
+
+def _重建網頁身份(使用者: object, csrf使用者: object) -> str:
+    """要求兩個正規相依項回傳型別精確且同主體的網頁身份。
+
+    參數：接收目前工作階段及跨站防護相依項各自回傳的候選身份。
+    回傳：兩者皆有效且相同時回傳權威使用者識別碼。
+    例外：型別、識別碼形狀或主體一致性失效時拋出 HTTP 500。
+    副作用：無；不執行敵意物件的自訂相等或屬性存取協定。
+    """
+    if type(使用者) is not 網頁使用者 or type(csrf使用者) is not 網頁使用者:
+        raise HTTPException(status_code=500, detail={"code": "identity_contract_invalid"})
+    使用者識別碼 = object.__getattribute__(使用者, "識別碼")
+    csrf識別碼 = object.__getattribute__(csrf使用者, "識別碼")
+    if not _是識別(使用者識別碼) or not _是識別(csrf識別碼):
+        raise HTTPException(status_code=500, detail={"code": "identity_contract_invalid"})
+    相同 = str.__eq__(使用者識別碼, csrf識別碼)
+    if type(相同) is not bool or not 相同:
+        raise HTTPException(status_code=500, detail={"code": "identity_contract_invalid"})
+    return 使用者識別碼
+
+
+def _安全發布端點(服務: 發布管理服務, 請求: 發布端點請求, 使用者識別碼: str) -> JSONResponse:
+    """在工作執行緒建立分離確認並封閉處理服務結果。
+
+    參數：接收發布服務、已驗證請求及權威使用者識別碼。
+    回傳：成功時回傳狀態碼 201 且欄位固定的發布收據。
+    例外：固定服務錯誤映射為 HTTP 錯誤；控制流例外原樣傳遞。
+    副作用：複製配置並只呼叫一次原子發布服務。
+    """
+    配置 = _複製JSON物件(請求.配置確認)
+    確認 = 發布確認(請求.草稿識別碼, 請求.短名, 配置)
+    結果 = _呼叫服務(
+        服務, "原子發布", _重建發布結果,
+        擁有者使用者識別碼=使用者識別碼, 確認=確認,
+    )
+    if type(結果) is 管理操作錯誤:
+        _拋出錯誤(結果)
+    return JSONResponse(status_code=201, content={
+        "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
+        "version_number": 結果.版本編號, "status": 結果.狀態,
+        "initial_api_key": 結果.初始API金鑰,
+    })
+
+
+def _安全建立版本(
+    服務: 發布管理服務, 請求: 建立版本請求, 端點識別碼: str, 使用者識別碼: str,
+) -> JSONResponse:
+    """在工作執行緒只以使用者識別碼委派權威版本操作。
+
+    參數：接收發布服務、已驗證請求、端點識別碼及權威使用者識別碼。
+    回傳：成功時回傳狀態碼 201 且欄位固定的版本收據。
+    例外：固定服務錯誤映射為 HTTP 錯誤；控制流例外原樣傳遞。
+    副作用：複製配置並只呼叫一次原子建立與切換版本服務。
+    """
+    配置 = _複製JSON物件(請求.配置)
+    結果 = _呼叫服務(
+        服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,),
+        擁有者使用者識別碼=使用者識別碼, 端點識別碼=端點識別碼, 配置=配置,
+    )
+    if type(結果) is 管理操作錯誤:
+        _拋出錯誤(結果)
+    return JSONResponse(status_code=201, content={
+        "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
+        "version_number": 結果.版本編號,
+        "current_version_id": 結果.目前版本識別碼,
+        "schema_changed": 結果.結構已變更,
+    })
+
+
 async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求:
     """在嚴格 JSON 解析前以串流限制 HTTP 本文位元組數。
 
@@ -323,6 +488,39 @@ async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求
         if type(原始值) is not dict:
             raise ValueError
         return 安全建立草稿請求.model_validate(原始值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        raise HTTPException(status_code=422, detail={"code": "invalid_request"}) from None
+
+
+async def _解析管理本文(請求: Request, 模型: type[_嚴格請求]) -> _嚴格請求:
+    """以 32 KiB 串流上限、精確內容型別與重複鍵安全解析管理本文。
+
+    參數：接收待消耗的 HTTP 請求及目標嚴格請求模型。
+    回傳：通過位元組上限、嚴格 JSON 與模型驗證的請求物件。
+    例外：內容型別、長度、編碼、JSON 或欄位失效映射為 HTTP 422；控制流例外原樣傳遞。
+    副作用：完整消耗請求串流；不呼叫管理服務。
+    """
+    try:
+        if 請求.headers.get("content-type") != "application/json":
+            raise ValueError
+        宣告長度 = 請求.headers.get("content-length")
+        if 宣告長度 is not None and (
+            not 宣告長度.isascii() or not 宣告長度.isdigit() or int(宣告長度) > 32_768
+        ):
+            raise ValueError
+        片段們: list[bytes] = []
+        長度 = 0
+        async for 片段 in 請求.stream():
+            長度 += len(片段)
+            if 長度 > 32_768:
+                raise ValueError
+            片段們.append(片段)
+        原始值 = 解析嚴格JSON(b"".join(片段們).decode("utf-8"))
+        if type(原始值) is not dict:
+            raise ValueError
+        return 模型.model_validate(原始值)
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except BaseException:
@@ -392,11 +590,11 @@ def _建立不可變版本(
     身份: 使用者上下文,
 ) -> JSONResponse:
     """委派原子版本切換，並清除 request、identity、配置與回執。"""
-    使用者 = 是否管理者 = 配置 = 結果 = 安全 = 內容 = 回應 = None
+    使用者 = 配置 = 結果 = 安全 = 內容 = 回應 = None
     try:
-        使用者, 是否管理者 = _重建身份(身份)
+        使用者, _ = _重建身份(身份)
         配置 = _複製JSON物件(請求.配置)
-        結果 = _呼叫服務(服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,), 擁有者使用者識別碼=使用者, 是否管理者=是否管理者, 端點識別碼=端點識別碼, 配置=配置)
+        結果 = _呼叫服務(服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,), 擁有者使用者識別碼=使用者, 端點識別碼=端點識別碼, 配置=配置)
         if type(結果) is 管理操作錯誤:
             _拋出錯誤(結果)
         安全 = 結果
@@ -404,7 +602,7 @@ def _建立不可變版本(
         回應 = JSONResponse(status_code=201, content=內容)
         return 回應
     finally:
-        服務 = 請求 = 端點識別碼 = 身份 = 使用者 = 是否管理者 = None
+        服務 = 請求 = 端點識別碼 = 身份 = 使用者 = None
         配置 = 結果 = 安全 = 內容 = 回應 = None
 
 
