@@ -40,6 +40,17 @@ _JSON上限 = 1_000_000
 _本機路徑型別 = type(Path())
 
 # 唯一 authority query：禁止 current/latest/slug/MAX；LIMIT 2 用於偵測不可能的重複圖形。
+_快照查詢 = """SELECT
+ v.id,v.endpoint_id,e.service_account_id,e.status,sa.disabled_at,
+ v.system_prompt,v.allowed_tools_json,v.tool_schema_snapshot_json,
+ v.tool_runtime_revision,v.model_config_snapshot_json,v.response_schema_json,
+ v.skill_bundle_manifest_json,b.manifest_reference,b.manifest_digest,b.bundle_hash,
+ b.state,b.bundle_id,b.total_bytes,b.published_at,b.reconciled_at
+FROM published_endpoint_versions AS v
+JOIN published_endpoints AS e ON e.id=v.endpoint_id
+JOIN service_accounts AS sa ON sa.id=e.service_account_id
+JOIN published_skill_bundles AS b ON b.version_id=v.id
+WHERE v.id=? LIMIT 2"""
 
 
 class 發布快照儲存庫錯誤(RuntimeError):
@@ -54,6 +65,132 @@ class 工具摘要計算器(Protocol):
         """回傳 canonical revision 的小寫 SHA-256。"""
 
 
+class SQLite發布快照儲存庫:
+    """只按 exact version key 讀取不可變發布圖形，不解析 current 或別名。
+
+    欄位：保存資料庫路徑、工具摘要計算器與連線工廠。回傳：不適用。
+    例外：建構或查詢不合契約時拋出固定 ``發布快照儲存庫錯誤``。
+    副作用：建構不開連線；每次查詢建立一個唯讀交易並確實清理。
+    """
+
+    def __init__(self, database_path: str | Path, 工具摘要計算器: 工具摘要計算器,
+                 connection_factory: Callable[..., sqlite3.Connection] = sqlite3.connect) -> None:
+        """保存無副作用依賴；路徑與 callback 會在首次查詢前完整驗證。"""
+        if type(database_path) not in (str, _本機路徑型別) or not callable(工具摘要計算器) or not callable(connection_factory):
+            _拒絕()
+        self._路徑 = database_path
+        self._工具摘要 = 工具摘要計算器
+        self._連線工廠 = connection_factory
+
+    def 取得發布執行快照(self, endpoint_version_id: str) -> 發布執行快照:
+        """取得 exact version 的 prompt、工具、模型、綱要及 bundle reference。"""
+        列 = self._取得列(endpoint_version_id)
+        try:
+            工具 = _重建工具(列[6], 列[7], self._工具摘要)
+            模型資料 = _解析正規JSON(列[9])
+            if type(模型資料) is not dict or frozenset(dict.keys(模型資料)) != 設定鍵:
+                raise ValueError
+            模型 = 重建設定(模型資料)
+            回應 = _解析正規JSON(列[10])
+            if 回應 is not None and type(回應) is not dict:
+                raise ValueError
+            _解析清單(列[11])
+            摘要 = _權限摘要(列)
+            return 發布執行快照(
+                endpoint_id=列[1], version_id=列[0], service_account_id=列[2],
+                system_prompt=列[5], permission_snapshot_digest=摘要,
+                skill_bundle_hash=列[14], tool_handler_release=列[8],
+                tool_snapshot=工具, model_config=模型, response_schema=回應,
+                manifest_reference=列[12],
+            )
+        except _控制流程:
+            列 = 工具 = 模型資料 = 模型 = 回應 = 摘要 = None
+            raise
+        except BaseException:
+            列 = 工具 = 模型資料 = 模型 = 回應 = 摘要 = None
+        _拒絕()
+
+    def 載入服務帳戶上下文(self, service_account_id: str,
+                           endpoint_version_id: str, source: str) -> ServiceAccountContext:
+        """只從 canonical endpoint-version source 重建相同 authority row 的權限上下文。"""
+        if not _是識別(service_account_id) or type(source) is not str or source != _來源:
+            _拒絕()
+        列 = self._取得列(endpoint_version_id)
+        try:
+            if 列[2] != service_account_id:
+                raise ValueError
+            工具 = _解析允許工具(列[6])
+            return ServiceAccountContext(
+                service_account_id=列[2], endpoint_version_id=列[0],
+                permission_snapshot_digest=_權限摘要(列), allowed_tools=工具,
+                skill_bundle_hash=列[14], tool_handler_release=列[8],
+            )
+        except _控制流程:
+            列 = 工具 = None
+            raise
+        except BaseException:
+            列 = 工具 = None
+        _拒絕()
+
+    def 取得技能套件定位(self, endpoint_version_id: str) -> 技能套件定位:
+        """從同一 20-column authority row 建立 loader 的 exact 定位 DTO。
+
+        參數：``endpoint_version_id`` 是 exact 已發布版本識別碼。
+        回傳：loader 公開 ``技能套件定位`` exact class，含版本、套件、參照、雙摘要與總量。
+        例外：資料列或任一欄位不合契約時拋出固定 ``發布快照儲存庫錯誤``。
+        副作用：建立一個唯讀 SQLite 交易；不另開 adapter 連線。
+        """
+        列 = self._取得列(endpoint_version_id)
+        try:
+            return 技能套件定位(
+                version_id=列[0], bundle_id=列[16], manifest_reference=列[12],
+                manifest_digest=列[13], bundle_hash=列[14], total_bytes=列[17],
+            )
+        except _控制流程:
+            列 = None
+            raise
+        except BaseException:
+            列 = None
+        _拒絕()
+
+    def _取得列(self, 版本: str) -> tuple[Any, ...]:
+        """先做零 SQL preflight，再於同一 read transaction 驗 schema 與唯一 JOIN row。"""
+        if not _是識別(版本):
+            _拒絕()
+        return _交易讀列(self._路徑, self._連線工廠, 版本)
+
+
+def _交易讀列(原路徑: object, 工廠: Callable[..., sqlite3.Connection], 版本: str) -> tuple[Any, ...]:
+    """擁有連線生命週期，所有 ordinary failure 固定化並安全清理。"""
+    連線 = 列 = 次列 = None
+    try:
+        路徑 = _驗證路徑(原路徑)
+        uri = 路徑.as_uri() + "?mode=ro"
+        連線 = 工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+        連線.execute("BEGIN")
+        驗證資料庫結構(連線)
+        游標 = 連線.execute(_快照查詢, (版本,))
+        列, 次列 = 游標.fetchone(), 游標.fetchone()
+        if 次列 is not None:
+            raise ValueError
+        _驗證列(列, 版本)
+        結果 = tuple(列)
+    except _控制流程 as 控制:
+        _清理(連線)
+        原路徑 = 工廠 = 版本 = 連線 = 列 = 次列 = None
+        _重拋控制(控制)
+    except BaseException:
+        清理控制 = _清理(連線)
+        原路徑 = 工廠 = 版本 = 連線 = 列 = 次列 = None
+        if 清理控制 is not None:
+            _重拋控制(清理控制)
+    else:
+        清理控制 = _清理(連線)
+        原路徑 = 工廠 = 版本 = 連線 = 列 = 次列 = None
+        if 清理控制 is not None:
+            _重拋控制(清理控制)
+        return 結果
+    _拒絕()
 
 
 def _驗證列(列: object, 版本: str) -> None:
