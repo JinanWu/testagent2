@@ -245,3 +245,144 @@ class 發布管理協調器:
         ``__cause__``、``__context__``、``__suppress_context__``；不改變
         例外 identity、型別與 ``args``。
         """
+        try:
+            錯誤.__cause__ = None
+            錯誤.__context__ = None
+            錯誤.__suppress_context__ = True
+        except BaseException:
+            pass
+        try:
+            traceback.clear_frames(錯誤.__traceback__)
+        except BaseException:
+            pass
+
+    @staticmethod
+    def _清空敏感緩衝(*緩衝區: bytearray) -> None:
+        """在清理 traceback 前先把本次金鑰材料的 mutable buffers 歸零。
+
+        參數：``緩衝區`` 是本方法擁有的 entropy 與明文 bytearray。
+        回傳：無。例外：目前實作不預期拋出例外。
+        副作用：原地將每個 bytearray 的所有元素改為零；不處理 immutable bytes。
+        """
+        for 緩衝 in 緩衝區:
+            for 索引 in range(len(緩衝)):
+                緩衝[索引] = 0
+
+    def _建立快照(
+        self, 草稿: 規劃草稿, 能力: 已解析發布能力, 識別: 已準備發布識別,
+        收據: 套件發布收據 | None,
+    ) -> 發布版本快照:
+        """只由權威草稿、exact release 與套件收據建立版本快照。
+
+        參數：草稿、能力與識別已由本次流程產生；收據空值只供發布前完整預檢。
+        回傳：新的 ``發布版本快照``。
+        例外：任何欄位或關係不符時由 P04 DTO 固定拒絕。
+        副作用：只配置脫離 JSON 樹，不讀取客戶端配置或外部資源。
+        """
+        摘要 = 草稿.能力摘要
+        發布值 = 草稿.發布確認
+        if type(摘要) is not 能力摘要 or type(發布值) is not 發布值確認:
+            raise ValueError("發布管理草稿無效") from None
+        假摘要 = "0" * 64
+        清單 = {
+            "permission_revision": 摘要.權限修訂,
+            "skills": [{
+                "name": 項目.名稱, "content_sha256_reference": 項目.內容sha256參照,
+            } for 項目 in 摘要.技能],
+            "bundle_id": 識別.套件識別碼,
+            "manifest_reference": f"{識別.套件識別碼}/manifest.json" if 收據 is None else 收據.清單參照,
+            "manifest_digest": 假摘要 if 收據 is None else 收據.清單摘要,
+            "sha256": 假摘要 if 收據 is None else 收據.套件雜湊,
+        }
+        綱要 = 草稿.綱要
+        return 發布版本快照(
+            草稿.原始需求, 綱要["system_prompt"],
+            [項目.名稱 for 項目 in 摘要.技能],
+            [項目.名稱 for 項目 in 摘要.工具],
+            能力.工具結構快照, 能力.工具執行修訂, self._模型設定,
+            self._重試政策, 清單, 綱要["input_schema"],
+            發布值.response_schema, 草稿.擁有者識別碼,
+        )
+
+    def _配置識別(self, 現在: float) -> 已準備發布識別:
+        """在任何套件或資料庫寫入前一次預配完整圖形識別。
+
+        參數：現在是本 request 唯一建立時間。
+        回傳：包含六個互異識別的 ``已準備發布識別``。
+        例外：工廠或 DTO 失敗原樣交由公開邊界固定映射。
+        副作用：依序呼叫六次注入的識別碼工廠。
+        """
+        值 = [self._識別碼產生器(前綴) for 前綴 in (
+            "endpoint", "version", "credential", "account", "bundle", "audit",
+        )]
+        return 已準備發布識別(
+            endpoint_id=值[0], version_id=值[1], credential_id=值[2],
+            service_account_id=值[3], 套件識別碼=值[4], 稽核識別碼=值[5],
+            created_at=現在,
+        )
+
+    def _讀取時間(self) -> float:
+        """讀取並驗證本 request 唯一時間。
+
+        參數：無。
+        回傳：有限非負浮點時間。
+        例外：時鐘輸出無效時拋出 ``ValueError``。
+        副作用：恰呼叫一次注入時鐘。
+        """
+        值 = self._時鐘()
+        if type(值) not in (int, float) or not math.isfinite(值) or 值 < 0:
+            raise ValueError("發布管理時間無效") from None
+        return float(值)
+
+    def _取得熵(self) -> bytes:
+        """取得一次且恰為三十二位元組的金鑰熵。
+
+        參數：無。
+        回傳：exact bytes 熵。
+        例外：來源型別或長度不符時拋出 ``ValueError``。
+        副作用：恰呼叫一次注入熵來源。
+        """
+        值 = self._隨機位元組(32)
+        if type(值) is not bytes or len(值) != 32:
+            raise ValueError("發布管理熵無效") from None
+        return 值
+
+    @staticmethod
+    def _確認顯示值(配置: object, 綱要: object) -> bool:
+        """只把客戶端配置當作伺服器草稿顯示值的相等確認。
+
+        參數：配置來自路由；綱要來自共享草稿服務。
+        回傳：配置非空、鍵受限且每個值等於權威綱要時為真。
+        例外：一般形狀錯誤關閉為假；控制流程原樣傳出。
+        副作用：只比較 bounded 路由 JSON，不把客戶端值帶入任何持久化快照。
+        """
+        try:
+            if type(配置) is not dict or not 配置 or type(綱要) is not dict:
+                return False
+            對照 = {
+                "system_prompt": 綱要["system_prompt"], "input_schema": 綱要["input_schema"],
+                "response_schema": 綱要["response_schema"], "human_docs": 綱要["human_docs"],
+                "rate_limit": 綱要["rate_limit"],
+            }
+            return all(鍵 in 對照 and 值 == 對照[鍵] for 鍵, 值 in 配置.items())
+        except _控制流程:
+            raise
+        except BaseException:
+            return False
+
+    def _盡力標記孤兒(self, 收據: 套件發布收據) -> None:
+        """隔離已耐久套件而永不覆蓋目前主要失敗。
+
+        參數：收據是本次發布器成功回傳的 authoritative receipt。
+        回傳：無。
+        例外：所有普通與控制流程清理錯誤都被抑制，主要失敗保持優先。
+        副作用：可呼叫套件協調器把 active bundle 移至孤兒隔離區。
+        """
+        try:
+            self._套件協調器.標記孤兒(收據)
+        except BaseException as 清理錯誤:
+            self._清除秘密框架(清理錯誤)
+            pass
+
+
+__all__ = ["發布管理協調器"]
