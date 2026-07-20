@@ -6,13 +6,20 @@ from fastapi import FastAPI
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+from 繁中代理.使用者 import 使用者上下文
+from 繁中代理.發布介面.相依項 import 發布介面相依項
+from 繁中代理.發布介面.應用程式 import 建立應用程式
+from 繁中代理.發布介面.設定 import 網頁安全設定
+from 繁中代理.發布介面.網頁工作階段 import 網頁工作階段服務
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
 from 繁中代理.發布介面.規劃.綱要 import 規劃服務
 from 繁中代理.發布介面.路由.規劃發布 import (
     端點發布結果,
     版本建立結果,
+    建立發布版本路由器,
     建立安全規劃發布路由器,
 )
+from 繁中代理.發布介面.路由.網頁認證 import 建立CSRF相依項
 
 
 class _草稿服務:
@@ -73,6 +80,7 @@ def _發布本文():
 
 def test_CP4_W1_T3_01單一工廠路由_OpenAPI與canonical相依identity():
     client, 路由器, _, _, 次數, session, csrf = _建立()
+    assert 路由器.prefix == "/api/published-endpoints"
     assert [r.path for r in 路由器.routes] == [
         "/api/published-endpoints/draft", "/api/published-endpoints",
         "/api/published-endpoints/{endpoint_id}/versions",
@@ -88,6 +96,75 @@ def test_CP4_W1_T3_01單一工廠路由_OpenAPI與canonical相依identity():
         assert client.post("/api/published-endpoints", json=_發布本文()).status_code == 201
         assert client.post("/api/published-endpoints/endpoint-1/versions", json={"configuration": {}}).status_code == 201
     assert 次數 == {"session": 3, "csrf": 3}
+
+
+def test_CP4_W1_T3_06三個POST_OpenAPI本文皆為完整嚴格契約():
+    client, *_ = _建立()
+    with client:
+        路徑 = client.get("/openapi.json").json()["paths"]
+    草稿 = 路徑["/api/published-endpoints/draft"]["post"]["requestBody"]
+    發布 = 路徑["/api/published-endpoints"]["post"]["requestBody"]
+    版本 = 路徑["/api/published-endpoints/{endpoint_id}/versions"]["post"]["requestBody"]
+    for 本文 in (草稿, 發布, 版本):
+        assert 本文["required"] is True
+        assert set(本文["content"]) == {"application/json"}
+        綱要 = 本文["content"]["application/json"]["schema"]
+        assert 綱要["type"] == "object" and 綱要["additionalProperties"] is False
+        assert set(綱要["required"]) == set(綱要["properties"])
+    草稿欄位 = 草稿["content"]["application/json"]["schema"]["properties"]
+    assert 草稿欄位["original_requirement_text"] == {
+        "type": "string", "minLength": 1, "maxLength": 16_384,
+    }
+    assert 草稿欄位["selected_skills"] == {
+        "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": True,
+        "items": {"type": "string", "minLength": 1, "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"},
+    }
+    發布欄位 = 發布["content"]["application/json"]["schema"]["properties"]
+    assert 發布欄位["draft_id"]["pattern"] == "^[A-Za-z0-9_.:-]+$"
+    assert 發布欄位["slug"]["pattern"] == "^[a-z0-9][a-z0-9-]*$"
+    assert 發布欄位["configuration_confirmation"]["maxProperties"] == 256
+    assert 版本["content"]["application/json"]["schema"]["properties"]["configuration"]["maxProperties"] == 256
+
+
+def test_CP4_W1_T3_07canonical路由通過production組裝政策(tmp_path):
+    設定 = 網頁安全設定(("https://example.test",), Cookie安全=True, 工作階段有效秒數=60)
+    工作階段服務 = 網頁工作階段服務(tmp_path / "session.sqlite3", 有效秒數=60)
+    csrf = 建立CSRF相依項(工作階段服務, 設定)
+    路由器 = 建立安全規劃發布路由器(
+        _草稿服務(), _管理服務(), lambda: 網頁使用者("owner-1", "alice", "member"), csrf,
+    )
+    應用 = 建立應用程式(發布介面相依項((路由器,), ()))
+    assert {(方法, 路由.path) for 路由 in 應用.routes if isinstance(路由, APIRoute)
+            for 方法 in 路由.methods} == {
+        ("GET", "/healthz"),
+        ("POST", "/api/published-endpoints/draft"),
+        ("POST", "/api/published-endpoints"),
+        ("POST", "/api/published-endpoints/{endpoint_id}/versions"),
+    }
+    規格路徑 = 應用.openapi()["paths"]
+    assert all("requestBody" in 規格路徑[路徑]["post"] for 路徑 in 規格路徑 if 路徑 != "/healthz")
+
+
+def test_CP4_W1_T3_08legacy版本工廠符合新服務協定且不傳管理者聲明():
+    class _精確服務:
+        def __init__(self):
+            self.呼叫 = []
+
+        def 原子建立並切換版本(self, *, 擁有者使用者識別碼, 端點識別碼, 配置):
+            self.呼叫.append((擁有者使用者識別碼, 端點識別碼, 配置))
+            return 版本建立結果(端點識別碼, "version-2", 2, "version-2", False)
+
+    服務 = _精確服務()
+    身份 = lambda: 使用者上下文(user_id="owner-1", is_admin=True)
+    app = FastAPI(redirect_slashes=False)
+    app.include_router(建立發布版本路由器(服務, 身份))
+    with TestClient(app, raise_server_exceptions=False) as client:
+        回應 = client.post(
+            "/api/published-endpoints/endpoint-1/versions", json={"configuration": {"x": 1}},
+        )
+    assert 回應.status_code == 201
+    assert 服務.呼叫 == [("owner-1", "endpoint-1", {"x": 1})]
 
 
 def test_CP4_W1_T3_02只傳權威user_id且不信任UI_role():
