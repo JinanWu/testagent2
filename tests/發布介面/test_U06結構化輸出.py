@@ -72,7 +72,7 @@ def _建立(schema, 回應們, 觀察=None, 模型物件=None):
         system_prompt="system", permission_snapshot_digest="a" * 64,
         skill_bundle_hash=雜湊, tool_handler_release="release-1", tool_snapshot=(),
         model_config=模型設定快照("fake", "m", 0, 100, 5, 結構化, 1),
-        response_schema=schema, manifest_reference="manifest-1",
+        response_schema=schema, manifest_reference="bundle-1/manifest.json",
     )
     上下文 = ServiceAccountContext(
         service_account_id="sa-1", endpoint_version_id="ver-1",

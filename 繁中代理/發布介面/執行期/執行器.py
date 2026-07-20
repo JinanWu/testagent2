@@ -19,7 +19,11 @@ from typing import Any, Protocol
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
-from ..技能套件.清單 import 計算套件雜湊 as 計算清單套件雜湊
+from ..技能套件.清單 import (
+    是合法技能套件清單參照,
+    計算套件雜湊 as 計算清單套件雜湊,
+)
+from ..技能套件.安全複製 import 技能套件最大總位元組數
 from .工具版本庫 import 工具快照項目
 from .模型契約 import 模型設定快照, 複製JSON, 重建設定
 
@@ -28,7 +32,6 @@ _雜湊 = re.compile(r"[0-9a-f]{64}")
 _固定錯誤 = "發布執行期不可用"
 _唯一來源 = "endpoint_version_snapshot"
 _最大檔案數 = 256
-_最大套件位元組 = 4_000_000
 _最大提示位元組 = 1_000_000
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _綱要修正訊息 = "輸出未符合回應綱要；請只回傳符合綱要的 JSON。"
@@ -56,20 +59,30 @@ class 技能套件載入器(Protocol):
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
 class 技能套件檔案:
-    """一個 canonical POSIX path 與 immutable bytes 的 hash-addressed 項目。"""
+    """一個 canonical POSIX path 與 immutable bytes 的 hash-addressed 項目。
+
+    欄位：``path``、``sha256`` 與 ``content`` 保存已驗證路徑、摘要與內容。
+    回傳：建立不可變檔案 DTO。例外：任一欄位或摘要不符時拋出固定執行錯誤。
+    副作用：只複製內容，不讀寫檔案系統。
+    """
 
     path: str
     sha256: str
     content: bytes
 
     def __init__(self, *, path: str, sha256: str, content: bytes) -> None:
-        """驗證 exact scalar；內容與摘要不符一律固定拒絕。"""
+        """驗證並保存 exact 檔案 scalar。
+
+        參數：三個 keyword-only 參數分別是路徑、SHA-256 與內容。回傳：無。
+        例外：路徑、型別、共享套件額度或摘要不符時拋出固定 ``發布執行錯誤``。
+        副作用：配置內容的 immutable 複本，不存取外部資源。
+        """
         try:
             if type(self) is not 技能套件檔案 or not _是套件路徑(path):
                 raise ValueError
             if type(sha256) is not str or _雜湊.fullmatch(sha256) is None:
                 raise ValueError
-            if type(content) is not bytes or len(content) > _最大套件位元組:
+            if type(content) is not bytes or len(content) > 技能套件最大總位元組數:
                 raise ValueError
             if not hmac.compare_digest(hashlib.sha256(content).hexdigest(), sha256):
                 raise ValueError
@@ -121,7 +134,7 @@ class 技能套件快照:
             計算值 = 計算技能套件雜湊(重建檔案)
             if (not _是雜湊(skill_bundle_hash) or not _是雜湊(manifest_digest)
                     or type(清單原始資料) is not bytes
-                    or len(清單原始資料) > _最大套件位元組
+                    or len(清單原始資料) > 技能套件最大總位元組數
                     or not hmac.compare_digest(
                         hashlib.sha256(清單原始資料).hexdigest(), manifest_digest,
                     )):
@@ -197,9 +210,11 @@ class 發布執行快照:
         """完整重建所有 nested DTO；不保留 provider/caller mutable identity。"""
         工具 = 設定 = 結構 = None
         try:
-            for 值 in (endpoint_id, version_id, service_account_id, tool_handler_release, manifest_reference):
+            for 值 in (endpoint_id, version_id, service_account_id, tool_handler_release):
                 if not _是識別碼(值):
                     raise ValueError
+            if not 是合法技能套件清單參照(manifest_reference):
+                raise ValueError
             if type(system_prompt) is not str or not system_prompt.strip() or len(system_prompt.encode()) > 500_000:
                 raise ValueError
             if not _是雜湊(permission_snapshot_digest) or not _是雜湊(skill_bundle_hash):
@@ -463,7 +478,12 @@ def _模型輸出符合綱要(回應文字: str, 綱要原文: str) -> bool:
 
 
 def _重建套件檔案(不可信檔案: object) -> tuple[技能套件檔案, ...]:
-    """exact tuple 全量重建，拒絕重複、失序與超限。"""
+    """以共享 4 MiB 額度全量重建 exact 檔案 tuple。
+
+    參數：``不可信檔案`` 是待驗證的 exact tuple。回傳：排序與內容皆重新驗證的
+    immutable ``技能套件檔案`` tuple。例外：型別、身分、重複、失序、摘要或總量
+    不合契約時傳出驗證例外。副作用：只配置內容複本與短暫索引，不存取外部資源。
+    """
     結果 = 描述 = 已看 = None
     try:
         if type(不可信檔案) is not tuple or not 1 <= len(不可信檔案) <= _最大檔案數:
@@ -483,7 +503,7 @@ def _重建套件檔案(不可信檔案: object) -> tuple[技能套件檔案, ..
             重建 = 技能套件檔案(path=路徑, sha256=摘要, content=內容)
             總量 += len(重建.content)
             編碼路徑 = 重建.path.encode("utf-8")
-            if 總量 > _最大套件位元組 or 重建.path in 已看:
+            if 總量 > 技能套件最大總位元組數 or 重建.path in 已看:
                 raise ValueError
             if 前一路徑 is not None and 前一路徑 >= 編碼路徑:
                 raise ValueError
