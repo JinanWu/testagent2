@@ -186,3 +186,182 @@ def _身分(資訊: os.stat_result) -> tuple[int, int, int, int]:
     例外：非 stat-shaped hostile 值可能傳出 ``AttributeError``。副作用：只讀欄位。
     """
     return (資訊.st_dev, 資訊.st_ino, 資訊.st_size, 資訊.st_mtime_ns)
+
+
+def _開啟發布根(根字串: str) -> int:
+    """逐層 no-follow 開啟 absolute 發布根並比對 visible identity。
+
+    參數：``根字串`` 是建構時保存的 canonical absolute path。回傳：呼叫端負責關閉的
+    root descriptor。例外：缺失、symlink、special 或競態時傳出 ``OSError``。
+    副作用：逐層開啟並關閉目錄描述元，成功時保留最終描述元。
+    """
+    根路徑 = Path(根字串)
+    目前 = os.open(根路徑.anchor, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    try:
+        for 部件 in 根路徑.parts[1:]:
+            可見 = os.stat(部件, dir_fd=目前, follow_symlinks=False)
+            if not stat.S_ISDIR(可見.st_mode):
+                raise OSError
+            下一個 = os.open(部件, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+            try:
+                已開啟 = os.fstat(下一個)
+                if (可見.st_dev, 可見.st_ino) != (已開啟.st_dev, 已開啟.st_ino):
+                    raise OSError
+            except BaseException:
+                os.close(下一個)
+                raise
+            os.close(目前)
+            目前 = 下一個
+        最終可見 = os.stat(根字串, follow_symlinks=False)
+        最終釘選 = os.fstat(目前)
+        if not stat.S_ISDIR(最終可見.st_mode) or (最終可見.st_dev, 最終可見.st_ino) != (最終釘選.st_dev, 最終釘選.st_ino):
+            raise OSError
+        結果 = 目前
+        目前 = -1
+        return 結果
+    finally:
+        if 目前 >= 0:
+            os.close(目前)
+
+
+def _開啟套件根(根描述元: int, bundle_id: str) -> int:
+    """由發布根 descriptor-relative 開啟唯一 bundle root。
+
+    參數：發布根描述元與已驗證 ``bundle_id``。回傳：呼叫端負責關閉的 bundle descriptor。
+    例外：非目錄、symlink、模式非 0555 或 identity 競態時傳出 ``OSError``。
+    副作用：查詢並開啟 bundle 目錄。
+    """
+    可見 = os.stat(bundle_id, dir_fd=根描述元, follow_symlinks=False)
+    if not stat.S_ISDIR(可見.st_mode) or stat.S_IMODE(可見.st_mode) != 0o555:
+        raise OSError
+    描述元 = os.open(bundle_id, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根描述元)
+    try:
+        釘選 = os.fstat(描述元)
+        if (可見.st_dev, 可見.st_ino) != (釘選.st_dev, 釘選.st_ino):
+            raise OSError
+        return 描述元
+    except BaseException:
+        os.close(描述元)
+        raise
+
+
+def _開啟父目錄(
+    根描述元: int, 相對路徑: str, 目錄身分: dict[str, tuple[int, int]],
+) -> tuple[int, list[int]]:
+    """沿 canonical manifest path 開啟並釘選全部 intermediate directories。
+
+    參數：bundle descriptor、已由 public validator 核准的路徑及跨讀取 identity map。
+    回傳：parent descriptor 與由呼叫端反向關閉的 descriptor list。
+    例外：目錄種類、模式、symlink 或 identity 不一致時傳出 ``OSError``。
+    副作用：開啟各 intermediate directory 並更新 identity map。
+    """
+    目前 = 根描述元
+    已開啟: list[int] = []
+    前綴: list[str] = []
+    try:
+        for 名稱 in PurePosixPath(相對路徑).parts[:-1]:
+            可見 = os.stat(名稱, dir_fd=目前, follow_symlinks=False)
+            if not stat.S_ISDIR(可見.st_mode) or stat.S_IMODE(可見.st_mode) != 0o555:
+                raise OSError
+            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+            釘選 = os.fstat(子描述元)
+            if (可見.st_dev, 可見.st_ino) != (釘選.st_dev, 釘選.st_ino):
+                os.close(子描述元)
+                raise OSError
+            前綴.append(名稱)
+            路徑鍵 = "/".join(前綴)
+            現有 = 目錄身分.setdefault(路徑鍵, (釘選.st_dev, 釘選.st_ino))
+            if 現有 != (釘選.st_dev, 釘選.st_ino):
+                os.close(子描述元)
+                raise OSError
+            已開啟.append(子描述元)
+            目前 = 子描述元
+        return 目前, 已開啟
+    except BaseException:
+        for 描述元 in reversed(已開啟):
+            os.close(描述元)
+        raise
+
+
+def _讀取穩定檔案(
+    目錄描述元: int, 名稱: str, *, 預期大小: int | None, 上限: int,
+) -> _穩定檔案:
+    """先 gate metadata，再以 O_NOFOLLOW 讀取並 before/after 重驗一般檔案。
+
+    參數：parent descriptor、單一檔名、可選 exact size 與配置上限。回傳：內容及穩定身分。
+    例外：special、symlink、模式非 0444、超限、短讀或競態時傳出 ``OSError``。
+    副作用：短暫開啟與讀取檔案描述元，最後一律關閉。
+    """
+    可見 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
+    if (
+        not stat.S_ISREG(可見.st_mode) or stat.S_IMODE(可見.st_mode) != 0o444
+        or 可見.st_size > 上限 or (預期大小 is not None and 可見.st_size != 預期大小)
+    ):
+        raise OSError
+    描述元 = os.open(名稱, os.O_RDONLY | _不可跟隨, dir_fd=目錄描述元)
+    try:
+        讀取前 = os.fstat(描述元)
+        if _身分(可見) != _身分(讀取前) or not stat.S_ISREG(讀取前.st_mode):
+            raise OSError
+        區塊列: list[bytes] = []
+        總數 = 0
+        while True:
+            區塊 = os.read(描述元, min(65536, 上限 + 1 - 總數))
+            if not 區塊:
+                break
+            區塊列.append(區塊)
+            總數 += len(區塊)
+            if 總數 > 上限:
+                raise OSError
+        讀取後 = os.fstat(描述元)
+        if _身分(讀取前) != _身分(讀取後) or 總數 != 讀取前.st_size:
+            raise OSError
+        資料 = b"".join(區塊列)
+        return _穩定檔案(資料, 讀取後.st_dev, 讀取後.st_ino, 讀取後.st_size, 讀取後.st_mtime_ns)
+    finally:
+        os.close(描述元)
+
+
+def _讀取相對檔案(
+    根描述元: int, 路徑: str, 目錄身分: dict[str, tuple[int, int]], *,
+    預期大小: int | None, 上限: int,
+) -> _穩定檔案:
+    """descriptor-relative 讀取 canonical bundle path 並關閉 intermediate descriptors。
+
+    參數：bundle descriptor、canonical 路徑、目錄 identity map、size 與上限。
+    回傳：穩定檔案 observation。例外：路徑任一層不安全時傳出 ``OSError``。
+    副作用：短暫開啟路徑中的目錄與檔案，最後關閉所有新增描述元。
+    """
+    父描述元, 已開啟 = _開啟父目錄(根描述元, 路徑, 目錄身分)
+    try:
+        return _讀取穩定檔案(
+            父描述元, PurePosixPath(路徑).parts[-1], 預期大小=預期大小, 上限=上限,
+        )
+    finally:
+        for 描述元 in reversed(已開啟):
+            os.close(描述元)
+
+
+def _安全關閉(描述元: int | None) -> None:
+    """盡力關閉 loader 擁有的 descriptor。
+
+    參數：``描述元`` 是可選檔案描述元。回傳：無。例外：所有關閉錯誤皆被抑制。
+    副作用：若值有效則嘗試關閉一次。
+    """
+    if 描述元 is not None:
+        try:
+            os.close(描述元)
+        except BaseException:
+            pass
+
+
+def _清除框架(錯誤: BaseException) -> None:
+    """盡力清空已停止的 hostile callback traceback frames。
+
+    參數：``錯誤`` 是即將離開公開邊界的例外。回傳：無。例外：清理錯誤皆被抑制。
+    副作用：清除 traceback 中已停止執行 frame 的 locals。
+    """
+    try:
+        traceback.clear_frames(錯誤.__traceback__)
+    except BaseException:
+        pass
