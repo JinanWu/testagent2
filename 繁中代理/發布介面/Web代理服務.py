@@ -15,20 +15,10 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
-import stat
 from typing import Any, Protocol
 
 from 繁中代理.基本工具 import 取得技能根目錄清單
 from 繁中代理.使用者 import 使用者上下文
-from 繁中代理.技能索引器 import (
-    取得目前平台名稱,
-    建立可用工具集名稱集合,
-    截斷摘要文字,
-    技能是否符合平台,
-    技能是否符合工具條件,
-    解析Markdown前置資料,
-    讀取停用技能名稱集合,
-)
 from .安全技能目錄 import (
     安全讀取技能 as _共用安全讀取技能,
     建立錨定安全技能目錄,
@@ -369,7 +359,7 @@ class Web代理服務:
             原始項目 = 索引.get(技能識別碼)
             if 原始項目 is None:
                 raise Web資源不存在
-            內容 = _安全讀取技能(Path(原始項目["path"]), 根目錄清單)
+            內容 = 原始項目["content"]
             return 技能詳情(_建立技能項目(技能識別碼, 原始項目), 內容)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -402,46 +392,22 @@ class Web代理服務:
         )
         根們 = tuple(Path(根目錄) for 根目錄 in 根目錄清單)
         啟用集合 = None if 使用者.enabled_skills is None else frozenset(使用者.enabled_skills)
-        索引: dict[str, dict[str, str]] = {}
-        候選識別碼: set[str] = set()
-        索引總位元組 = 0
-        索引項目數量 = 0
-        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
-        for 根目錄 in 根目錄清單:
-            根路徑 = Path(根目錄)
-            剩餘候選上限 = _最大技能索引項目數量 + 1 - 索引項目數量
-            for 技能路徑 in _走訪有界技能索引檔案(
-                根路徑, "SKILL.md", 剩餘候選上限, 走訪預算,
-            ):
-                索引項目數量 += 1
-                if 索引項目數量 > _最大技能索引項目數量:
-                    raise ValueError
-                if 使用者.enabled_skills is not None and 技能路徑.parent.name not in 使用者.enabled_skills:
-                    continue
-                候選ID = 技能路徑.parent.name
-                if 候選ID in 候選識別碼:
-                    if 重複視為不存在:
-                        raise Web資源不存在
-                    raise ValueError
-                候選識別碼.add(候選ID)
-                try:
-                    內容 = _安全讀取技能(技能路徑, [根路徑])
-                except Web資源不存在:
-                    continue
-                索引總位元組 += len(內容.encode("utf-8"))
-                if 索引總位元組 > _最大技能索引總位元組:
-                    raise ValueError
-                項目 = _建立安全技能索引項目(技能路徑, 根路徑, 內容)
-                if 項目 is None:
-                    continue
-                識別碼 = 項目.get("skill_name")
-                _驗證識別碼(識別碼)
-                if 識別碼 in 索引:
-                    if 重複視為不存在:
-                        raise Web資源不存在
-                    raise ValueError
-                索引[識別碼] = 項目
-        return 索引, [Path(根目錄) for 根目錄 in 根目錄清單]
+        try:
+            目錄結果 = 建立錨定安全技能目錄(
+                根們, 啟用集合, 重複視為不存在=重複視為不存在,
+                上限=技能目錄限制(
+                    _最大技能檔案位元組, _最大技能索引項目數量,
+                    _最大技能索引總位元組, _最大技能走訪項目數量,
+                ),
+            )
+        except 技能目錄不存在:
+            raise Web資源不存在 from None
+        描述列 = 目錄結果.技能
+        索引 = {描述.名稱: {
+            "skill_name": 描述.名稱, "category": 描述.分類,
+            "description": 描述.摘要, "content": 描述.內容,
+        } for 描述 in 描述列}
+        return 索引, list(根們)
 
 
 def 序列化聊天回應(回應: 聊天回應) -> dict[str, object]:
@@ -506,30 +472,6 @@ def _建立技能項目(識別碼: str, 原始項目: dict[str, str]) -> 技能�
     return 技能項目(識別碼, 名稱, 分類, 描述)
 
 
-def _建立安全技能索引項目(技能路徑: Path, 根目錄: Path, 內容: str) -> dict[str, str] | None:
-    """只從已安全 bounded 讀取的內容解析既有索引 metadata。"""
-    相對路徑 = 技能路徑.relative_to(根目錄)
-    if len(相對路徑.parts) < 2 or any(片段.startswith(".") for 片段 in 相對路徑.parts):
-        return None
-    前置資料 = 解析Markdown前置資料(內容)
-    技能名稱 = str(前置資料.get("name") or 相對路徑.parts[-2])
-    停用技能 = 讀取停用技能名稱集合()
-    if 技能名稱 in 停用技能 or 相對路徑.parts[-2] in 停用技能:
-        return None
-    工具名稱: set[str] = set()
-    if not 技能是否符合平台(前置資料, 取得目前平台名稱()) or not 技能是否符合工具條件(
-        前置資料, 工具名稱, 建立可用工具集名稱集合(工具名稱)
-    ):
-        return None
-    分類 = "/".join(相對路徑.parts[:-2]) if len(相對路徑.parts) > 2 else "general"
-    return {
-        "skill_name": 技能名稱,
-        "category": 分類,
-        "description": 截斷摘要文字(前置資料.get("description", "")),
-        "path": str(技能路徑),
-    }
-
-
 def _安全讀取技能(來源路徑: Path, 根目錄清單: list[Path]) -> str:
     """以共用描述器安全讀取器讀取 Web 技能詳情。
 
@@ -538,48 +480,12 @@ def _安全讀取技能(來源路徑: Path, 根目錄清單: list[Path]) -> str:
     例外：共用讀取器判定不存在時統一拋 Web 資源不存在。
     副作用：執行有界唯讀檔案系統操作。
     """
-    解析來源 = 來源路徑.resolve(strict=True)
-    解析根清單 = [根.resolve(strict=True) for 根 in 根目錄清單]
-    符合根 = next((根 for 根 in 解析根清單 if 解析來源.is_relative_to(根)), None)
-    if 符合根 is None:
-        raise Web資源不存在
-    初始狀態 = 來源路徑.lstat()
-    if stat.S_ISLNK(初始狀態.st_mode) or not stat.S_ISREG(初始狀態.st_mode):
-        raise Web資源不存在
-    if 初始狀態.st_size > _最大技能檔案位元組:
-        raise Web資源不存在
-    相對片段 = 來源路徑.absolute().relative_to(符合根).parts
-    目錄flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    目錄描述符 = os.open(符合根, 目錄flags)
-    目前路徑 = 符合根
     try:
-        for 片段 in 相對片段[:-1]:
-            下一描述符 = os.open(片段, 目錄flags, dir_fd=目錄描述符)
-            os.close(目錄描述符)
-            目錄描述符 = 下一描述符
-            目前路徑 /= 片段
-        描述符 = os.open(
-            相對片段[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=目錄描述符,
+        return _共用安全讀取技能(
+            來源路徑, tuple(根目錄清單), 最大位元組=_最大技能檔案位元組,
         )
-        try:
-            開啟狀態 = os.fstat(描述符)
-            目前目錄狀態 = os.stat(目前路徑, follow_symlinks=False)
-            if (
-                not stat.S_ISREG(開啟狀態.st_mode) or 開啟狀態.st_size > _最大技能檔案位元組
-                or (初始狀態.st_dev, 初始狀態.st_ino) != (開啟狀態.st_dev, 開啟狀態.st_ino)
-                or (目前目錄狀態.st_dev, 目前目錄狀態.st_ino)
-                != (os.fstat(目錄描述符).st_dev, os.fstat(目錄描述符).st_ino)
-            ):
-                raise Web資源不存在
-            with os.fdopen(描述符, "rb", closefd=False) as 檔案:
-                原始內容 = 檔案.read(_最大技能檔案位元組 + 1)
-        finally:
-            os.close(描述符)
-    finally:
-        os.close(目錄描述符)
-    if len(原始內容) > _最大技能檔案位元組:
-        raise Web資源不存在
-    return 原始內容.decode("utf-8")
+    except 技能目錄不存在:
+        raise Web資源不存在 from None
 
 
 def _確認工作階段資料(資料: object, 識別碼: str, 使用者識別碼: str) -> None:
