@@ -222,7 +222,7 @@ def _開安全絕對目錄(路徑: Path) -> int:
     參數：路徑是待釘選的詞彙絕對或相對目錄路徑。
     回傳：呼叫端取得所有權的最終目錄描述元。
     例外：非法部件、連結、開啟或中途關閉失敗皆直接傳出。
-    副作用：逐層開啟並關閉描述元，只保留成功回傳的最終 fd。
+    副作用：逐層開啟並關閉描述元；close 結果不明的舊 fd 不會被猜測重試。
     """
     絕對 = Path(os.path.abspath(os.fspath(路徑)))
     描述元 = os.open("/", os.O_RDONLY | _僅目錄)
@@ -231,12 +231,10 @@ def _開安全絕對目錄(路徑: Path) -> int:
             if 部件 in {"", ".", ".."}:
                 raise OSError
             下一個 = os.open(部件, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=描述元)
-            try:
-                _關閉描述元(描述元)
-            except BaseException:
-                _關閉描述元(下一個)
-                raise
-            描述元 = 下一個
+            # open 成功後立即把唯一 owned slot 轉交 next；因此 close 舊 fd 前後的
+            # 任意非同步控制都只會由外層關閉 next，絕不重關結果不明的 stale old。
+            舊描述元, 描述元 = 描述元, 下一個
+            _關閉描述元(舊描述元)
         return 描述元
     except BaseException:
         _關閉描述元(描述元)
