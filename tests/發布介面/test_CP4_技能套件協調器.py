@@ -246,3 +246,234 @@ def test_啟動協調兩套件完整讀取共享4MiB且超限零部分異動(tmp
     assert not (tmp_path / "bundles" / ".orphaned").exists()
     assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
     連線.close()
+
+
+def test_重驗後manifest替換不改變釘選DB決策(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """協調 DB lookup 與 insert 只可使用 descriptor 驗證時取得的 immutable projection。"""
+    根, _ = _發布(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+    原重驗 = 協調模組._重驗套件
+    已替換 = False
+
+    def 重驗後替換(*參數, **關鍵字):
+        nonlocal 已替換
+        結果 = 原重驗(*參數, **關鍵字)
+        if not 已替換 and 結果.收據.套件識別碼 == "bundle-1":
+            清單路徑 = 根 / "bundle-1" / "manifest.json"
+            os.chmod(清單路徑, 0o644)
+            清單路徑.write_bytes(b"{}")
+            已替換 = True
+        return 結果
+
+    monkeypatch.setattr(協調模組, "_重驗套件", 重驗後替換)
+    結果 = 技能套件協調器(根, 孤兒保留秒數=60).啟動協調(2.0, 連線)
+
+    assert 結果.已補收據 == ("bundle-1",)
+    assert 連線.execute("SELECT version_id,bundle_id FROM published_skill_bundles").fetchone() == (
+        "ver-1", "bundle-1",
+    )
+    連線.close()
+
+
+def test_啟動完整讀取共享4MiB接受精確邊界(tmp_path: Path) -> None:
+    """manifest 與內容完整讀取總和恰好等於公開 authority 時仍應成功。"""
+    來源 = tmp_path / "source-boundary"
+    來源.mkdir()
+    for 索引 in range(3):
+        (來源 / f"part-{索引}.bin").write_bytes(bytes([索引]) * (1024 * 1024))
+    (來源 / "SKILL.md").write_bytes(b"s" * ((1024 * 1024) - 4096))
+    發布器 = 技能套件發布器(tmp_path / "bundles")
+    初次 = 發布器.發布(
+        套件識別碼="bundle-1", 端點識別碼="ep-1", 端點版本識別碼="ver-1",
+        版本號碼=1, 建立時間=1.0, 建立者識別碼="owner-1", 技能表={"demo": 來源},
+    )
+    清單大小 = (初次.路徑 / "manifest.json").stat().st_size
+    for 目前, 目錄列, 檔案列 in os.walk(初次.路徑, topdown=False):
+        for 名稱 in 檔案列:
+            os.chmod(Path(目前) / 名稱, 0o644)
+        for 名稱 in 目錄列:
+            os.chmod(Path(目前) / 名稱, 0o755)
+        os.chmod(目前, 0o755)
+    shutil.rmtree(初次.路徑)
+    (來源 / "SKILL.md").write_bytes(b"s" * ((1024 * 1024) - 清單大小))
+    收據 = 發布器.發布(
+        套件識別碼="bundle-1", 端點識別碼="ep-1", 端點版本識別碼="ver-1",
+        版本號碼=1, 建立時間=1.0, 建立者識別碼="owner-1", 技能表={"demo": 來源},
+    )
+    assert 收據.總位元組數 + (收據.路徑 / "manifest.json").stat().st_size == 技能套件最大總位元組數
+    _, 連線 = _資料庫(tmp_path)
+
+    結果 = 技能套件協調器(tmp_path / "bundles", 孤兒保留秒數=60).啟動協調(2.0, 連線)
+
+    assert 結果.已補收據 == ("bundle-1",)
+    連線.close()
+
+
+def test_隔離失敗回復收據並保留呼叫端既有交易(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """receipt write 後隔離失敗須 rollback to/release 自有 savepoint，不回滾外層交易。"""
+    根, _ = _發布(tmp_path, "bundle-a", "ver-1")
+    _發布(tmp_path, "bundle-b", "missing-1")
+    _, 連線 = _資料庫(tmp_path)
+    連線.execute("UPDATE published_endpoints SET updated_at=9 WHERE id='ep-1'")
+    monkeypatch.setattr(技能套件協調器, "_隔離已重驗套件", lambda *_: (_ for _ in ()).throw(OSError()))
+
+    with pytest.raises(技能套件協調錯誤):
+        技能套件協調器(根, 孤兒保留秒數=1).啟動協調(2.0, 連線)
+
+    assert 連線.in_transaction
+    assert 連線.execute("SELECT updated_at FROM published_endpoints WHERE id='ep-1'").fetchone() == (9.0,)
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.rollback()
+    連線.close()
+
+
+def test_retention失敗回復收據及自建交易狀態(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """到期孤兒刪除失敗時，新增收據與 coordinator 自建外層交易都必須回復。"""
+    根, _ = _發布(tmp_path, "bundle-a", "ver-1")
+    _, 孤兒收據 = _發布(tmp_path, "bundle-b", "missing-1")
+    協調器 = 技能套件協調器(根, 孤兒保留秒數=1, 時鐘=lambda: 1.0)
+    協調器.標記孤兒(孤兒收據)
+    _, 連線 = _資料庫(tmp_path)
+    monkeypatch.setattr(技能套件協調器, "_刪除已重驗孤兒", lambda *_: (_ for _ in ()).throw(OSError()))
+
+    with pytest.raises(技能套件協調錯誤):
+        協調器.啟動協調(10.0, 連線)
+
+    assert not 連線.in_transaction
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.close()
+
+
+def test_隔離close失敗回復收據及自建交易狀態(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """隔離完成後 descriptor close 的普通失敗仍須回復本輪 receipt writes。"""
+    根, _ = _發布(tmp_path, "bundle-a", "ver-1")
+    _發布(tmp_path, "bundle-b", "missing-1")
+    _, 連線 = _資料庫(tmp_path)
+    原改名 = 協調模組._不可覆寫改名at
+    原關閉 = 協調模組._系統關閉
+    狀態 = {"改名": False, "已失敗": False}
+
+    def 改名後啟用(*參數):
+        原改名(*參數)
+        狀態["改名"] = True
+
+    def 關閉後失敗(描述元: int):
+        原關閉(描述元)
+        if 狀態["改名"] and not 狀態["已失敗"]:
+            狀態["已失敗"] = True
+            raise OSError("close")
+
+    monkeypatch.setattr(協調模組, "_不可覆寫改名at", 改名後啟用)
+    monkeypatch.setattr(協調模組, "_系統關閉", 關閉後失敗)
+    with pytest.raises(技能套件協調錯誤):
+        技能套件協調器(根, 孤兒保留秒數=1).啟動協調(2.0, 連線)
+    assert 狀態["已失敗"] and not 連線.in_transaction
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.close()
+
+
+def test_control與close失敗保留原identity及args(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """mutation control failure 展開時的 close failure 不得替換原物件或參數。"""
+    根, _ = _發布(tmp_path, "bundle-a", "ver-1")
+    _發布(tmp_path, "bundle-b", "missing-1")
+    _, 連線 = _資料庫(tmp_path)
+    原關閉 = 協調模組._系統關閉
+    原控制 = KeyboardInterrupt("原控制", 7)
+    狀態 = {"控制": False, "已失敗": False}
+
+    def 控制改名(*_):
+        狀態["控制"] = True
+        raise 原控制
+
+    def 關閉後失敗(描述元: int):
+        原關閉(描述元)
+        if 狀態["控制"] and not 狀態["已失敗"]:
+            狀態["已失敗"] = True
+            raise OSError("close")
+
+    monkeypatch.setattr(協調模組, "_不可覆寫改名at", 控制改名)
+    monkeypatch.setattr(協調模組, "_系統關閉", 關閉後失敗)
+    with pytest.raises(KeyboardInterrupt) as 捕捉:
+        技能套件協調器(根, 孤兒保留秒數=1).啟動協調(2.0, 連線)
+    assert 捕捉.value is 原控制 and 捕捉.value.args == ("原控制", 7)
+    assert 狀態["已失敗"] and not 連線.in_transaction
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.close()
+
+
+def _發布大量孤兒(tmp_path: Path, *, 額外檔案數: int = 128) -> tuple[Path, 技能套件協調器]:
+    """建立會令舊版 preflight 加 deletion 重複列舉超過 256 項的到期孤兒。"""
+    來源 = tmp_path / "source-many"
+    來源.mkdir()
+    (來源 / "SKILL.md").write_text("# safe")
+    for 索引 in range(額外檔案數):
+        (來源 / f"item-{索引:03}.txt").write_text(str(索引))
+    根 = tmp_path / "bundles"
+    收據 = 技能套件發布器(根).發布(
+        套件識別碼="bundle-many", 端點識別碼="ep-1", 端點版本識別碼="missing-many",
+        版本號碼=2, 建立時間=1.0, 建立者識別碼="owner-1", 技能表={"demo": 來源},
+    )
+    協調器 = 技能套件協調器(根, 孤兒保留秒數=0, 時鐘=lambda: 1.0)
+    協調器.標記孤兒(收據)
+    return 根, 協調器
+
+
+def test_到期刪除依完整投影且不再次消耗共享預算(tmp_path: Path) -> None:
+    """129 個技能檔只在 preflight 消耗 authority，mutation 依投影重驗後可完整刪除。"""
+    根, 協調器 = _發布大量孤兒(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+
+    結果 = 協調器.啟動協調(10.0, 連線)
+
+    assert 結果.已刪除 == ("bundle-many",)
+    assert not (根 / ".orphaned" / "bundle-many").exists()
+    連線.close()
+
+
+def test_129項投影不一致在任何unlink前拒絕且before等於after(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """最後一檔 metadata 在 preflight 後改變時，exact revalidation 不得先部分刪除前項。"""
+    根, 協調器 = _發布大量孤兒(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+    原預檢 = 協調器._預檢啟動
+    套件根 = 根 / ".orphaned" / "bundle-many"
+    變更後快照: list[tuple[str, int, int, int]] = []
+
+    def 快照() -> list[tuple[str, int, int, int]]:
+        """以路徑、種類模式、大小與 inode 比較整棵測試樹。"""
+        return sorted(
+            (
+                路徑.relative_to(套件根).as_posix(),
+                stat.S_IFMT(路徑.lstat().st_mode) | stat.S_IMODE(路徑.lstat().st_mode),
+                路徑.lstat().st_size,
+                路徑.lstat().st_ino,
+            )
+            for 路徑 in 套件根.rglob("*")
+        )
+
+    def 預檢後改變最後項目():
+        """保留 preflight projection 後只改變排序最後一檔的模式。"""
+        結果 = 原預檢()
+        目標 = 套件根 / "demo" / "item-127.txt"
+        os.chmod(目標, 0o644)
+        變更後快照.extend(快照())
+        return 結果
+
+    unlink呼叫: list[str] = []
+    原unlink = 協調模組.os.unlink
+
+    def 記錄unlink(名稱, *參數, **關鍵字):
+        """記錄任何不應發生的 unlink 後仍呼叫真實 primitive。"""
+        unlink呼叫.append(os.fspath(名稱))
+        return 原unlink(名稱, *參數, **關鍵字)
+
+    monkeypatch.setattr(協調器, "_預檢啟動", 預檢後改變最後項目)
+    monkeypatch.setattr(協調模組.os, "unlink", 記錄unlink)
+    with pytest.raises(技能套件協調錯誤):
+        協調器.啟動協調(10.0, 連線)
+
+    assert unlink呼叫 == []
+    assert 快照() == 變更後快照
+    assert not 連線.in_transaction
+    連線.close()
