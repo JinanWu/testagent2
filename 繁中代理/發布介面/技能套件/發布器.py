@@ -20,6 +20,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import traceback
 from typing import Any, Callable, Mapping
 
 from .安全複製 import 掃描技能, 重驗檔案, 限制
@@ -78,11 +79,133 @@ _清單鍵 = {
     "created_at", "created_by_user_id", "source_skills", "copied_files", "copied_file_hashes",
     "excluded_files", "warnings", "total_bytes", "bundle_hash",
 }
-_身分鍵 = ("bundle_id", "endpoint_id", "endpoint_version_id", "version_number")
 _來源技能鍵 = {"name", "source_path", "source_hash"}
 _檔案鍵 = {"path", "size_bytes", "sha256"}
 _排除鍵 = {"path", "reason"}
 _允許排除原因 = {"fixed_excluded_directory", "fixed_excluded_file", "symlink_not_copied"}
+
+
+@dataclass(frozen=True, slots=True)
+class 已驗證清單檔案:
+    """保存 public validator 核准的一個 copied file projection。
+
+    欄位：``path`` 是 canonical bundle 路徑；``size_bytes`` 是內容長度；``sha256``
+    是內容摘要。回傳：建立不可變 projection。例外：欄位建構不主動拋出例外。
+    副作用：只保存 immutable scalar，不存取檔案系統。
+    """
+
+    path: str
+    size_bytes: int
+    sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class 已驗證技能套件清單:
+    """保存 canonical manifest 的 immutable authoritative projection。
+
+    欄位：``manifest_digest`` 識別完整 canonical bytes；其餘識別欄位、總量、
+    ``bundle_hash`` 與 ordered ``copied_files`` 來自同一已驗證 manifest。
+    回傳：建立不可變 projection。例外：欄位建構不主動拋出例外。
+    副作用：只保存 immutable scalar 與 tuple。
+    """
+
+    manifest_digest: str
+    bundle_id: str
+    endpoint_id: str
+    endpoint_version_id: str
+    version_number: int
+    total_bytes: int
+    bundle_hash: str
+    copied_files: tuple[已驗證清單檔案, ...]
+
+
+def _拒絕清單常數(_值: str) -> object:
+    """拒絕 JSON nonfinite token。
+
+    參數：``_值`` 是 decoder 提供的 token。回傳：不適用。
+    例外：固定拋出 ``ValueError``。副作用：無。
+    """
+    raise ValueError
+
+
+def _建立無重複清單物件(項目們: list[tuple[str, Any]]) -> dict[str, Any]:
+    """由 decoder pairs 建立 exact dict 並拒絕 duplicate key。
+
+    參數：``項目們`` 是同一 JSON object 的 ordered pairs。回傳：新 exact dict。
+    例外：鍵重複時拋出 ``ValueError``。副作用：只配置 bounded mapping。
+    """
+    結果: dict[str, Any] = {}
+    for 鍵, 值 in 項目們:
+        if 鍵 in 結果:
+            raise ValueError
+        結果[鍵] = 值
+    return 結果
+
+
+def _清除例外框架(錯誤: BaseException) -> None:
+    """盡力清空已離開的敵對驗證框架。
+
+    參數：``錯誤`` 是正要離開公開邊界的原例外。回傳：無。
+    例外：框架清理錯誤一律抑制。副作用：清空 traceback 中已停止執行框架的 locals。
+    """
+    try:
+        traceback.clear_frames(錯誤.__traceback__)
+    except BaseException:
+        pass
+
+
+def 驗證已發布技能套件清單(原始資料: bytes) -> 已驗證技能套件清單:
+    """驗證 canonical manifest bytes 並回傳唯一 immutable projection。
+
+    參數：``原始資料`` 是待驗證的 exact bytes。回傳：包含 manifest digest、身分、
+    bundle hash、總量及 ordered files 的 ``已驗證技能套件清單``。
+    例外：非 bytes、超限、非嚴格 UTF-8、duplicate key、nonfinite、非 canonical bytes、
+    schema/type/bounds/relations/digest 不符時拋出 ``ValueError``。
+    副作用：只解碼與配置 immutable projection，不存取檔案系統。
+    """
+    原文 = 清單 = 檔案們 = 項目 = 結果 = None
+    失敗 = False
+    try:
+        if type(原始資料) is not bytes or not 原始資料 or len(原始資料) > 限制().最大總位元組數:
+            raise ValueError
+        原文 = 原始資料.decode("utf-8", errors="strict")
+        清單 = json.loads(
+            原文,
+            parse_constant=_拒絕清單常數,
+            object_pairs_hook=_建立無重複清單物件,
+        )
+        if 正規JSON(清單) != 原始資料:
+            raise ValueError
+        _驗證清單結構(清單)
+        檔案們 = tuple(
+            已驗證清單檔案(項目["path"], 項目["size_bytes"], 項目["sha256"])
+            for 項目 in 清單["copied_files"]
+        )
+        結果 = 已驗證技能套件清單(
+            hashlib.sha256(原始資料).hexdigest(),
+            清單["bundle_id"], 清單["endpoint_id"], 清單["endpoint_version_id"],
+            清單["version_number"], 清單["total_bytes"], 清單["bundle_hash"], 檔案們,
+        )
+        return 結果
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
+        try:
+            _清除例外框架(錯誤)
+        except BaseException:
+            pass
+        原始資料 = b""
+        原文 = 清單 = 檔案們 = 項目 = 結果 = None
+        raise
+    except BaseException as 錯誤:
+        try:
+            _清除例外框架(錯誤)
+        except BaseException:
+            pass
+        原始資料 = b""
+        原文 = 清單 = 檔案們 = 項目 = 結果 = None
+        失敗 = True
+    if 失敗:
+        raise ValueError from None
+    raise AssertionError
 
 
 def _合法清單路徑(值: object) -> bool:
@@ -482,7 +605,7 @@ class 技能套件發布器:
                 端點版本識別碼=端點版本識別碼, 版本號碼=版本號碼,
                 建立時間=建立時間, 建立者識別碼=建立者識別碼, 掃描列=掃描列,
             )
-            _驗證清單結構(清單)
+            驗證已發布技能套件清單(原始資料)
             self.根目錄.mkdir(parents=True, exist_ok=True)
             最終目錄 = self.根目錄 / 套件識別碼
             try:
@@ -556,21 +679,29 @@ class 技能套件發布器:
                 os.close(根描述元)
             if stat.S_IMODE(清單資訊.st_mode) != 0o444:
                 raise ValueError
-            既有清單 = json.loads(原始資料)
-            if 正規JSON(既有清單) != 原始資料:
+            既有清單 = 驗證已發布技能套件清單(原始資料)
+            預期投影 = 驗證已發布技能套件清單(正規JSON(預期清單))
+            if (
+                既有清單.bundle_id != 預期投影.bundle_id
+                or 既有清單.endpoint_id != 預期投影.endpoint_id
+                or 既有清單.endpoint_version_id != 預期投影.endpoint_version_id
+                or 既有清單.version_number != 預期投影.version_number
+            ):
                 raise ValueError
-            索引 = _驗證清單結構(既有清單)
-            if any(既有清單.get(鍵) != 預期清單.get(鍵) for 鍵 in _身分鍵):
+            if 既有清單.bundle_hash != 預期投影.bundle_hash:
                 raise ValueError
-            if 既有清單["bundle_hash"] != 預期清單["bundle_hash"]:
-                raise ValueError
-            清單摘要 = hashlib.sha256(原始資料).hexdigest()
-            _重驗最終內容(最終目錄, 清單摘要, 索引)
-            套件識別碼 = 既有清單["bundle_id"]
+            索引 = {
+                項目.path: {
+                    "path": 項目.path, "size_bytes": 項目.size_bytes, "sha256": 項目.sha256,
+                }
+                for 項目 in 既有清單.copied_files
+            }
+            _重驗最終內容(最終目錄, 既有清單.manifest_digest, 索引)
+            套件識別碼 = 既有清單.bundle_id
             return 套件發布收據(
                 套件識別碼, f"{套件識別碼}/manifest.json",
-                清單摘要, 既有清單["bundle_hash"],
-                既有清單["total_bytes"], 最終目錄,
+                既有清單.manifest_digest, 既有清單.bundle_hash,
+                既有清單.total_bytes, 最終目錄,
             )
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
