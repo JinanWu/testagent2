@@ -1,4 +1,10 @@
-"""MGT M02 草稿、原子發布與不可變版本管理路由。"""
+"""MGT M02 草稿、原子發布與不可變版本管理路由。
+
+參數：模組工廠接收發布服務、權威身份與跨站防護相依項。
+回傳：建立具嚴格 JSON、固定錯誤與明確 OpenAPI 位元組契約的管理路由器。
+例外：設定失效時傳遞註冊例外；請求失敗由各公開處理器固定映射。
+副作用：匯入只定義契約；工廠註冊路由，請求處理才消耗本文並呼叫服務。
+"""
 
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from typing import Annotated, Any, Literal, Protocol, cast, get_type_hints
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
+from jsonschema import Draft202012Validator
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, field_validator
 from starlette.concurrency import run_in_threadpool
 
@@ -39,7 +46,7 @@ _草稿本文綱要 = {
         "type": "object", "additionalProperties": False,
         "required": ["original_requirement_text", "selected_skills", "response_mode"],
         "properties": {
-            "original_requirement_text": {"type": "string", "minLength": 1, "maxLength": 16_384},
+            "original_requirement_text": {"type": "string", "minLength": 1, "x-maxUtf8Bytes": 16_384},
             "selected_skills": {
                 "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": True,
                 "items": {"type": "string", "minLength": 1, "maxLength": 128,
@@ -60,7 +67,7 @@ _發布本文綱要 = {
                      "pattern": r"^[a-z0-9][a-z0-9-]*$"},
             "configuration_confirmation": {
                 "type": "object", "maxProperties": 256,
-                "propertyNames": {"type": "string", "maxLength": 256},
+                "propertyNames": {"type": "string", "x-maxUtf8Bytes": 256},
             },
         },
     }}}},
@@ -70,10 +77,55 @@ _版本本文綱要 = {
         "type": "object", "additionalProperties": False, "required": ["configuration"],
         "properties": {"configuration": {
             "type": "object", "maxProperties": 256,
-            "propertyNames": {"type": "string", "maxLength": 256},
+            "propertyNames": {"type": "string", "x-maxUtf8Bytes": 256},
         }},
     }}}},
 }
+
+
+def OpenAPI本文符合專案契約(綱要: dict[str, Any], 本文: Any) -> bool:
+    """同時執行標準 JSON Schema 與專案 UTF-8 位元組擴充。
+
+    參數：``綱要`` 是含 ``x-maxUtf8Bytes`` 的本文綱要；``本文`` 是候選 JSON 值。
+    回傳：標準規則及所有字串與屬性名稱位元組上限皆通過時回傳 ``True``。
+    例外：控制流例外原樣傳遞；綱要、編碼或驗證失效則回傳 ``False``。
+    副作用：只走訪綱要與本文，不修改輸入或執行外部輸入輸出。
+    """
+    try:
+        if type(綱要) is not dict:
+            return False
+        Draft202012Validator.check_schema(綱要)
+        return Draft202012Validator(綱要).is_valid(本文) and _符合OpenAPI位元組(綱要, 本文)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        return False
+
+
+def _符合OpenAPI位元組(綱要: dict[str, Any], 值: Any) -> bool:
+    """遞迴執行專案 ``x-maxUtf8Bytes`` 關鍵字。
+
+    參數：``綱要`` 是目前JSON節點的OpenAPI綱要；``值`` 是待驗證的同層候選值。
+    回傳：目前節點、物件屬性名稱、子屬性及陣列項目的UTF-8位元組上限全數通過時回傳``True``。
+    例外：字串編碼或遞迴走訪遇到的例外原樣傳遞，由公開契約檢查器統一處理。
+    副作用：只讀取綱要與候選值，不修改輸入，也不執行檔案、資料庫或網路操作。
+    """
+    上限 = 綱要.get("x-maxUtf8Bytes")
+    if 上限 is not None and (type(上限) is not int or type(值) is not str or len(值.encode("utf-8")) > 上限):
+        return False
+    if type(值) is dict:
+        名稱綱要 = 綱要.get("propertyNames", {})
+        if type(名稱綱要) is dict and any(not _符合OpenAPI位元組(名稱綱要, 鍵) for 鍵 in 值):
+            return False
+        屬性 = 綱要.get("properties", {})
+        額外 = 綱要.get("additionalProperties", {})
+        for 鍵, 子值 in 值.items():
+            子綱要 = 屬性.get(鍵, 額外) if type(屬性) is dict else 額外
+            if type(子綱要) is dict and not _符合OpenAPI位元組(子綱要, 子值):
+                return False
+    elif type(值) is list and type(綱要.get("items")) is dict:
+        return all(_符合OpenAPI位元組(綱要["items"], 子值) for 子值 in 值)
+    return True
 
 
 class _嚴格請求(BaseModel):
@@ -389,9 +441,14 @@ def 建立安全規劃發布路由器(
         例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
         副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次發布服務。
         """
-        本文 = await _解析管理本文(請求, 發布端點請求)
-        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
-        return await run_in_threadpool(_安全發布端點, 發布服務, 本文, 使用者識別碼)
+        本文 = 使用者識別碼 = 回應 = None
+        try:
+            本文 = await _解析管理本文(請求, 發布端點請求)
+            使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
+            回應 = await run_in_threadpool(_安全發布端點, 發布服務, 本文, 使用者識別碼)
+            return 回應
+        finally:
+            請求 = 使用者 = _csrf使用者 = 本文 = 使用者識別碼 = 回應 = None
 
     @路由器.post(
         "/{endpoint_id}/versions", status_code=201,
@@ -414,11 +471,17 @@ def 建立安全規劃發布路由器(
         例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
         副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次版本服務。
         """
-        本文 = await _解析管理本文(請求, 建立版本請求)
-        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
-        return await run_in_threadpool(
-            _安全建立版本, 發布服務, 本文, 端點識別碼, 使用者識別碼,
-        )
+        本文 = 使用者識別碼 = 回應 = None
+        try:
+            本文 = await _解析管理本文(請求, 建立版本請求)
+            使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
+            回應 = await run_in_threadpool(
+                _安全建立版本, 發布服務, 本文, 端點識別碼, 使用者識別碼,
+            )
+            return 回應
+        finally:
+            請求 = 端點識別碼 = 使用者 = _csrf使用者 = None
+            本文 = 使用者識別碼 = 回應 = None
 
     return 路由器
 
@@ -451,19 +514,25 @@ def _安全發布端點(服務: 發布管理服務, 請求: 發布端點請求, 
     例外：固定服務錯誤映射為 HTTP 錯誤；控制流例外原樣傳遞。
     副作用：複製配置並只呼叫一次原子發布服務。
     """
-    配置 = _複製JSON物件(請求.配置確認)
-    確認 = 發布確認(請求.草稿識別碼, 請求.短名, 配置)
-    結果 = _呼叫服務(
-        服務, "原子發布", _重建發布結果,
-        擁有者使用者識別碼=使用者識別碼, 確認=確認,
-    )
-    if type(結果) is 管理操作錯誤:
-        _拋出錯誤(結果)
-    return JSONResponse(status_code=201, content={
-        "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
-        "version_number": 結果.版本編號, "status": 結果.狀態,
-        "initial_api_key": 結果.初始API金鑰,
-    })
+    配置 = 確認 = 結果 = 內容 = 回應 = None
+    try:
+        配置 = _複製JSON物件(請求.配置確認)
+        確認 = 發布確認(請求.草稿識別碼, 請求.短名, 配置)
+        結果 = _呼叫服務(
+            服務, "原子發布", _重建發布結果,
+            擁有者使用者識別碼=使用者識別碼, 確認=確認,
+        )
+        if type(結果) is 管理操作錯誤:
+            _拋出錯誤(結果)
+        內容 = {
+            "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
+            "version_number": 結果.版本編號, "status": 結果.狀態,
+            "initial_api_key": 結果.初始API金鑰,
+        }
+        回應 = JSONResponse(status_code=201, content=內容)
+        return 回應
+    finally:
+        服務 = 請求 = 使用者識別碼 = 配置 = 確認 = 結果 = 內容 = 回應 = None
 
 
 def _安全建立版本(
@@ -476,19 +545,24 @@ def _安全建立版本(
     例外：固定服務錯誤映射為 HTTP 錯誤；控制流例外原樣傳遞。
     副作用：複製配置並只呼叫一次原子建立與切換版本服務。
     """
-    配置 = _複製JSON物件(請求.配置)
-    結果 = _呼叫服務(
-        服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,),
-        擁有者使用者識別碼=使用者識別碼, 端點識別碼=端點識別碼, 配置=配置,
-    )
-    if type(結果) is 管理操作錯誤:
-        _拋出錯誤(結果)
-    return JSONResponse(status_code=201, content={
-        "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
-        "version_number": 結果.版本編號,
-        "current_version_id": 結果.目前版本識別碼,
-        "schema_changed": 結果.結構已變更,
-    })
+    配置 = 結果 = 內容 = 回應 = None
+    try:
+        配置 = _複製JSON物件(請求.配置)
+        結果 = _呼叫服務(
+            服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,),
+            擁有者使用者識別碼=使用者識別碼, 端點識別碼=端點識別碼, 配置=配置,
+        )
+        if type(結果) is 管理操作錯誤:
+            _拋出錯誤(結果)
+        內容 = {
+            "endpoint_id": 結果.端點識別碼, "version_id": 結果.版本識別碼,
+            "version_number": 結果.版本編號, "current_version_id": 結果.目前版本識別碼,
+            "schema_changed": 結果.結構已變更,
+        }
+        回應 = JSONResponse(status_code=201, content=內容)
+        return 回應
+    finally:
+        服務 = 請求 = 端點識別碼 = 使用者識別碼 = 配置 = 結果 = 內容 = 回應 = None
 
 
 async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求:
@@ -617,7 +691,13 @@ def _建立不可變版本(
     端點識別碼: Annotated[str, Path(alias="endpoint_id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")],
     身份: 使用者上下文,
 ) -> JSONResponse:
-    """委派原子版本切換，並清除 request、identity、配置與回執。"""
+    """委派舊工廠的原子版本切換並清除所有傳遞參照。
+
+    參數：接收服務、已驗證請求、路徑端點識別碼與權威工作階段身份。
+    回傳：成功時回傳狀態碼 201 與固定欄位的版本切換收據。
+    例外：服務錯誤映射為固定 HTTP 錯誤；控制流例外保持 identity 與參數原樣傳遞。
+    副作用：複製配置、呼叫一次原子版本服務，離開時清除請求、身份、配置與回執別名。
+    """
     使用者 = 配置 = 結果 = 安全 = 內容 = 回應 = None
     try:
         使用者, _ = _重建身份(身份)

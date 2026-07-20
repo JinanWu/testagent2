@@ -113,7 +113,7 @@ def test_CP4_W1_T3_06三個POST_OpenAPI本文皆為完整嚴格契約():
         assert set(綱要["required"]) == set(綱要["properties"])
     草稿欄位 = 草稿["content"]["application/json"]["schema"]["properties"]
     assert 草稿欄位["original_requirement_text"] == {
-        "type": "string", "minLength": 1, "maxLength": 16_384,
+        "type": "string", "minLength": 1, "x-maxUtf8Bytes": 16_384,
     }
     assert 草稿欄位["selected_skills"] == {
         "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": True,
