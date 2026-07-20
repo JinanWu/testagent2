@@ -9,7 +9,9 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
+import stat
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -32,10 +34,12 @@ from .端點發布 import (
     _驗證已開啟資料庫路徑,
     _驗證既有資料庫路徑,
 )
+from ..技能套件.儲存庫 import 套件收據儲存庫
 from ..技能套件.發布器 import (
     套件發布收據,
     已驗證技能套件清單,
 )
+from ..技能套件.協調器 import _協調預算, _開安全絕對目錄, _重驗套件, _關閉描述元
 from ..資料庫結構契約 import 驗證資料庫結構 as _權威驗證資料庫結構
 from .綱要 import _slug格式
 class 版本配置輸入錯誤(ValueError):
@@ -612,6 +616,220 @@ def _確保關閉(連線: sqlite3.Connection) -> list[BaseException]:
         except BaseException:
             pass
     return 控制列
+
+
+def _配置並啟用交易(
+    連線: sqlite3.Connection, 執行者: str, 執行者類型: str, 端點識別碼: str,
+    快照: 發布版本快照, 版本識別碼: str, 建立時間: float,
+    收據: 套件發布收據, 稽核識別碼: str, 請求識別碼: str | None,
+    驗證器: Callable[..., Any],
+) -> 版本配置結果:
+    """在同一立即交易寫入版本、呼叫端收據、稽核與條件式目前指標。
+
+    參數：呼叫端連線、權威執行者、端點、已準備版本資料、收據、稽核及驗證器。
+    回傳：四項寫入全部耐久提交後的 ``版本配置結果``。
+    例外：存取拒絕與一般交易失敗使用固定版本錯誤；清理控制流程依優先序傳出。
+    副作用：開始立即交易，提交或回滾全部四項狀態，最後恰關閉一次連線。
+    """
+    資料庫連線, 權威執行者, 權威類型, 端點 = 連線, 執行者, 執行者類型, 端點識別碼
+    快照副本, 版本, 時間 = 快照, 版本識別碼, 建立時間
+    收據副本, 稽核, 請求, 驗證目標 = 收據, 稽核識別碼, 請求識別碼, 驗證器
+    已開始 = 已提交 = 存取失敗 = 一般失敗 = False
+    端點列 = 聚合列 = 前版列 = 目前列 = 清單 = 中繼資料 = 結果 = 游標 = 收據庫 = None
+    權威套件 = 權威投影 = None
+    數量 = 最小值 = 最大值 = 版號 = 輸入JSON = 回應JSON = 結構變更 = 證明 = 摘要 = None
+    回滾控制: list[BaseException] = []
+    關閉控制: list[BaseException] = []
+    try:
+        資料庫連線.execute("PRAGMA foreign_keys=ON")
+        if 資料庫連線.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            raise sqlite3.DatabaseError
+        資料庫連線.execute("BEGIN IMMEDIATE")
+        已開始 = True
+        _驗證schema(資料庫連線)
+        端點列 = 資料庫連線.execute(
+            "SELECT owner_user_id,status,current_version_id FROM published_endpoints WHERE id=?",
+            (端點,),
+        ).fetchone()
+        存取失敗 = (
+            type(端點列) is not tuple or len(端點列) != 3 or 端點列[1] != "active"
+            or (權威類型 == "user" and 端點列[0] != 權威執行者)
+        )
+        if not 存取失敗:
+            聚合列 = 資料庫連線.execute(
+                "SELECT count(*),min(version_number),max(version_number) FROM published_endpoint_versions WHERE endpoint_id=?",
+                (端點,),
+            ).fetchone()
+            if (type(聚合列) is not tuple or len(聚合列) != 3 or type(聚合列[0]) is not int
+                    or 聚合列[0] <= 0 or 聚合列[1] != 1 or 聚合列[2] != 聚合列[0]):
+                raise sqlite3.DatabaseError
+            數量, 最小值, 最大值 = 聚合列
+            目前列 = 資料庫連線.execute(
+                "SELECT version_number FROM published_endpoint_versions WHERE id=? AND endpoint_id=?",
+                (端點列[2], 端點),
+            ).fetchone()
+            if 目前列 != (數量,):
+                raise sqlite3.DatabaseError
+            版號 = 數量 + 1
+            前版列 = 資料庫連線.execute(
+                "SELECT input_schema_json,response_schema_json FROM published_endpoint_versions WHERE endpoint_id=? AND version_number=?",
+                (端點, 數量),
+            ).fetchone()
+            if type(前版列) is not tuple or len(前版列) != 2:
+                raise sqlite3.DatabaseError
+            輸入JSON = None if 快照副本.input_schema is None else _正規JSON(快照副本.input_schema)
+            回應JSON = _正規JSON(快照副本.response_schema)
+            結構變更 = not (_schema等價(前版列[0], 輸入JSON) and _schema等價(前版列[1], 回應JSON))
+            游標 = 資料庫連線.execute(
+                "INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (版本, 端點, 版號, 快照副本.original_requirement_text, 快照副本.system_prompt,
+                 _正規JSON(快照副本.allowed_skills), _正規JSON(快照副本.allowed_tools),
+                 _正規JSON(快照副本.tool_schema_snapshot), 快照副本.tool_runtime_revision,
+                 _正規JSON(快照副本.model_config_snapshot), _正規JSON(快照副本.retry_policy),
+                 _正規JSON(快照副本.skill_bundle_manifest), 輸入JSON, 回應JSON, int(結構變更),
+                 快照副本.created_by_user_id, 時間),
+            )
+            if 游標.rowcount != 1:
+                raise sqlite3.DatabaseError
+            清單 = _解析正規物件(_正規JSON(快照副本.skill_bundle_manifest))
+            摘要 = 清單.get("sha256")
+            套件父路徑 = 收據副本.路徑.parent
+            套件父描述元 = _開安全絕對目錄(套件父路徑)
+            try:
+                權威套件 = _重驗套件(
+                    套件父描述元, 收據副本.套件識別碼, 套件父路徑, _協調預算(),
+                )
+                權威投影 = 權威套件.投影
+                if (
+                    權威套件.收據 != 收據副本
+                    or 權威投影.bundle_id != 收據副本.套件識別碼
+                    or 權威投影.endpoint_id != 端點
+                    or 權威投影.endpoint_version_id != 版本
+                    or 權威投影.version_number != 版號
+                ):
+                    raise sqlite3.DatabaseError
+                證明 = 驗證目標(權威投影, 版本, 端點)
+                if type(證明) is not bool or not 證明:
+                    raise sqlite3.DatabaseError
+                回呼後可見 = os.stat(
+                    收據副本.套件識別碼, dir_fd=套件父描述元, follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISDIR(回呼後可見.st_mode)
+                    or (回呼後可見.st_dev, 回呼後可見.st_ino) != 權威套件.根身分
+                ):
+                    raise sqlite3.DatabaseError
+                回呼後描述元 = os.open(
+                    收據副本.套件識別碼,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=套件父描述元,
+                )
+                try:
+                    回呼後釘選 = os.fstat(回呼後描述元)
+                    if (
+                        not stat.S_ISDIR(回呼後釘選.st_mode)
+                        or (回呼後釘選.st_dev, 回呼後釘選.st_ino) != 權威套件.根身分
+                        or (回呼後釘選.st_dev, 回呼後釘選.st_ino)
+                        != (回呼後可見.st_dev, 回呼後可見.st_ino)
+                    ):
+                        raise sqlite3.DatabaseError
+                finally:
+                    _關閉描述元(回呼後描述元)
+            finally:
+                _關閉描述元(套件父描述元)
+            清單 = 證明 = 權威套件 = 權威投影 = None
+            收據庫 = object.__new__(套件收據儲存庫)
+            收據庫.連線 = 資料庫連線
+            收據庫.新增(版本識別碼=版本, 收據=收據副本, 發布時間=時間)
+            中繼資料 = _正規JSON({
+                "old_version_id": 端點列[2], "new_version_id": 版本,
+                "version_number": 版號, "bundle_sha256": 摘要,
+            })
+            游標 = 資料庫連線.execute(
+                "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) VALUES(?,?,?,'endpoint_version_activated','success',?,?,'published_endpoint_version',?,?,?,NULL,?,?)",
+                (稽核, 稽核, 時間, 權威類型, 權威執行者, 版本, 請求,
+                 端點, 中繼資料, 時間),
+            )
+            if 游標.rowcount != 1:
+                raise sqlite3.DatabaseError
+            游標 = 資料庫連線.execute(
+                "UPDATE published_endpoints SET current_version_id=?,updated_at=? WHERE id=? AND status='active' AND current_version_id IS ?",
+                (版本, 時間, 端點, 端點列[2]),
+            )
+            if 游標.rowcount != 1:
+                raise sqlite3.DatabaseError
+            結果 = 版本配置結果(版本, 端點, 版號, 結構變更, 時間)
+            try:
+                資料庫連線.execute("COMMIT")
+            except BaseException as 提交例外:
+                是控制流程 = isinstance(提交例外, (KeyboardInterrupt, SystemExit, GeneratorExit))
+                交易中 = _交易仍在進行(資料庫連線)
+                if not 交易中:
+                    已開始 = False
+                    if _符合原子配置提交後條件(
+                        資料庫連線, 結果, 快照副本, 收據副本, 稽核,
+                        請求, 權威類型, 權威執行者, 端點列[2], 摘要,
+                    ):
+                        已提交 = True
+                    else:
+                        raise
+                else:
+                    raise
+                if 是控制流程:
+                    raise
+            else:
+                已開始 = False
+                已提交 = True
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外鏈(控制)
+        清單 = None
+        if 已開始:
+            回滾控制 = _確保回滾(資料庫連線)
+        關閉控制 = _確保關閉(資料庫連線)
+        回滾控制.clear(); 關閉控制.clear(); _清除例外鏈(控制)
+        del 資料庫連線, 權威執行者, 權威類型, 端點, 快照副本, 版本, 時間, 收據副本
+        del 稽核, 請求, 驗證目標, 已開始, 已提交, 存取失敗, 一般失敗, 端點列, 聚合列
+        del 前版列, 目前列, 清單, 中繼資料, 結果, 游標, 收據庫, 權威套件, 權威投影
+        del 數量, 最小值, 最大值
+        del 版號, 輸入JSON, 回應JSON, 結構變更, 證明, 摘要, 回滾控制, 關閉控制, 控制
+        raise
+    except BaseException:
+        清單 = None
+        if 已開始:
+            回滾控制 = _確保回滾(資料庫連線)
+        關閉控制 = _確保關閉(資料庫連線)
+        一般失敗 = True
+    if 存取失敗 and not 一般失敗:
+        if 已開始:
+            回滾控制 = _確保回滾(資料庫連線)
+        關閉控制 = _確保關閉(資料庫連線)
+    if 一般失敗 or 存取失敗:
+        應拒絕 = 存取失敗 and not 一般失敗
+        del 資料庫連線, 權威執行者, 權威類型, 端點, 快照副本, 版本, 時間, 收據副本
+        del 稽核, 請求, 驗證目標, 已開始, 已提交, 存取失敗, 一般失敗, 端點列, 聚合列
+        del 前版列, 目前列, 清單, 中繼資料, 結果, 游標, 收據庫, 權威套件, 權威投影
+        del 數量, 最小值, 最大值
+        del 版號, 輸入JSON, 回應JSON, 結構變更, 證明, 摘要
+        if 回滾控制:
+            關閉控制.clear(); _拋出清理控制(回滾控制.pop())
+        if 關閉控制:
+            _拋出清理控制(關閉控制.pop())
+        if 應拒絕:
+            raise 版本存取錯誤("版本配置存取遭拒") from None
+        _拒絕配置()
+    assert 已提交
+    關閉控制 = _確保關閉(資料庫連線)
+    del 資料庫連線, 權威執行者, 權威類型, 端點, 快照副本, 版本, 時間, 收據副本
+    del 稽核, 請求, 驗證目標, 已開始, 已提交, 存取失敗, 一般失敗, 端點列, 聚合列
+    del 前版列, 目前列, 清單, 中繼資料, 游標, 收據庫, 權威套件, 權威投影
+    del 數量, 最小值, 最大值
+    del 版號, 輸入JSON, 回應JSON, 結構變更, 證明, 摘要, 回滾控制
+    if 關閉控制:
+        del 結果
+        _拋出清理控制(關閉控制.pop())
+    del 關閉控制
+    assert type(結果) is 版本配置結果
+    return 結果
 
 
 def _配置交易(
