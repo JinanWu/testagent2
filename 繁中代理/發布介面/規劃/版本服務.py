@@ -296,6 +296,84 @@ class SQLite版本配置服務:
         del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, 輸入失敗, 配置失敗
         return result
 
+    def 配置並啟用(
+        self, *, 執行者使用者識別碼: str, 執行者類型: str, 端點識別碼: str,
+        已準備快照: 發布版本快照, 已準備版本識別碼: str, 已準備時間: float,
+        套件收據: 套件發布收據, 稽核識別碼: str, 請求識別碼: str | None,
+        套件驗證器: BundlePublicationVerifier,
+    ) -> 版本配置結果:
+        """預檢全部 prepared 輸入，再以單一立即交易配置、收據化及切換。
+
+        參數：權威執行者、端點、已準備快照與識別、套件收據、稽核資料及驗證器。
+        回傳：提交成功後只含新版本固定純量的 ``版本配置結果``。
+        例外：輸入、存取或交易失敗分別映射固定版本錯誤；控制流程例外原樣傳出。
+        副作用：預檢後開啟資料庫，完整交易提交或回滾，最後恰關閉一次連線。
+        """
+        快照 = 收據 = 驗證器 = 路徑 = 身分 = 位址 = 連線 = 結果 = None
+        輸入無效 = 執行失敗 = 連線已擁有 = False
+        try:
+            輸入無效 = (
+                not _是識別(執行者使用者識別碼) or type(執行者類型) is not str
+                or 執行者類型 not in ("user", "admin") or not _是識別(端點識別碼)
+                or not _是識別(已準備版本識別碼) or not _是有限非負(已準備時間)
+                or not _是識別(稽核識別碼)
+                or (請求識別碼 is not None and not _是識別(請求識別碼))
+                or not callable(套件驗證器)
+            )
+            if not 輸入無效:
+                快照 = _重建版本快照(已準備快照)
+                輸入無效 = 快照.created_by_user_id != 執行者使用者識別碼
+            if not 輸入無效:
+                收據 = _重建原子套件收據(快照, 套件收據)
+                驗證器 = _擷取呼叫目標(套件驗證器)
+                路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+                位址 = 路徑.as_uri() + "?mode=rw"
+                連線 = self._連線工廠(位址, uri=True, timeout=30.0, isolation_level=None)
+                連線已擁有 = True
+                if not isinstance(連線, sqlite3.Connection):
+                    raise TypeError("connection_factory 必須回傳 sqlite3.Connection")
+                _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+                連線已擁有 = False
+                結果 = _配置並啟用交易(
+                    連線, 執行者使用者識別碼, 執行者類型, 端點識別碼,
+                    快照, 已準備版本識別碼, 已準備時間, 收據,
+                    稽核識別碼, 請求識別碼, 驗證器,
+                )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+            if 連線已擁有:
+                _確保關閉(連線).clear()
+            _清除例外鏈(控制)
+            del self, 執行者使用者識別碼, 執行者類型, 端點識別碼, 已準備快照
+            del 已準備版本識別碼, 已準備時間, 套件收據, 稽核識別碼, 請求識別碼, 套件驗證器
+            del 快照, 收據, 驗證器, 路徑, 身分, 位址, 連線, 結果, 輸入無效, 執行失敗, 連線已擁有, 控制
+            raise
+        except 版本存取錯誤:
+            del self, 執行者使用者識別碼, 執行者類型, 端點識別碼, 已準備快照
+            del 已準備版本識別碼, 已準備時間, 套件收據, 稽核識別碼, 請求識別碼, 套件驗證器
+            del 快照, 收據, 驗證器, 路徑, 身分, 位址, 連線, 結果, 輸入無效, 執行失敗, 連線已擁有
+            raise
+        except 端點發布輸入錯誤:
+            輸入無效 = True
+        except BaseException:
+            if 連線已擁有:
+                _確保關閉(連線).clear()
+                連線已擁有 = False
+            執行失敗 = True
+        if 輸入無效:
+            del self, 執行者使用者識別碼, 執行者類型, 端點識別碼, 已準備快照
+            del 已準備版本識別碼, 已準備時間, 套件收據, 稽核識別碼, 請求識別碼, 套件驗證器
+            del 快照, 收據, 驗證器, 路徑, 身分, 位址, 連線, 結果, 輸入無效, 執行失敗, 連線已擁有
+            raise 版本配置輸入錯誤("版本配置輸入無效") from None
+        if 執行失敗 or 結果 is None:
+            del self, 執行者使用者識別碼, 執行者類型, 端點識別碼, 已準備快照
+            del 已準備版本識別碼, 已準備時間, 套件收據, 稽核識別碼, 請求識別碼, 套件驗證器
+            del 快照, 收據, 驗證器, 路徑, 身分, 位址, 連線, 結果, 輸入無效, 執行失敗, 連線已擁有
+            _拒絕配置()
+        del self, 執行者使用者識別碼, 執行者類型, 端點識別碼, 已準備快照
+        del 已準備版本識別碼, 已準備時間, 套件收據, 稽核識別碼, 請求識別碼, 套件驗證器
+        del 快照, 收據, 驗證器, 路徑, 身分, 位址, 連線, 輸入無效, 執行失敗, 連線已擁有
+        return 結果
+
     def 啟用(
         self, owner_user_id: str, endpoint_id: str, version_id: str, *,
         request_id: str | None = None, bundle_verifier: BundlePublicationVerifier,
