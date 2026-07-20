@@ -212,6 +212,21 @@ class 工具發布庫:
             內容 = self._發布.get(handler_release)
         return None if 內容 is None else _建立發布檢視(內容)
 
+    def 清除所有發布(self) -> None:
+        """原子移除全部 live releases 且保留 one-shot 墓碑。
+
+        參數：
+            無。
+        返回值：
+            ``None``；完成時 authoritative live table 已清空。
+        例外：
+            無預期例外；鎖配置失敗只可能由 Python runtime 原樣傳出。
+        副作用：
+            在生命週期鎖內釋放所有 live handler、schema 與版本庫參照，已使用 identity 仍不可重用。
+        """
+        with self._鎖:
+            self._發布.clear()
+
     def 移除發布(self, handler_release: str) -> None:
         """移除 live release 且保留永久墓碑。
 
