@@ -110,6 +110,131 @@ class _能力資料:
     管理者: bool
 
 
+class 擁有者能力轉接器:
+    """不快取使用者、技能路徑或發布檢視的權威轉接器。
+
+    參數：建構時固定使用者權威、工具發布庫與處理器發布識別。
+    回傳：公開方法回傳當次重建的權限快照或發布能力。
+    例外：一般失敗固定映射為擁有者能力錯誤，控制流程外露。
+    副作用：每次公開操作重查權威並有界唯讀掃描技能根。
+    """
+
+    def __init__(self, 使用者庫物件: 使用者權威來源, 工具發布庫物件: 工具發布庫, 處理器發布: str) -> None:
+        """保存三個 authority locator。
+
+        參數：使用者庫、exact 工具發布庫與 release ID。回傳：無。例外：輸入不符固定
+        映射為能力錯誤。副作用：不查 authority、不掃描檔案，也不取得發布檢視。
+        """
+        if type(工具發布庫物件) is not 工具發布庫 or not _是識別(處理器發布):
+            _拒絕()
+        self._使用者庫 = 使用者庫物件
+        self._工具發布庫 = 工具發布庫物件
+        self._處理器發布 = 處理器發布
+
+    def 查詢規劃權限(self, 擁有者: str, /) -> 規劃權限快照:
+        """重查完整 owner authority。
+
+        參數：exact owner ID。回傳：fresh detached ``規劃權限快照``。例外：一般失敗
+        固定為能力錯誤；控制流原樣。副作用：查 user/release 並 bounded 掃描技能 roots。
+        """
+        資料 = None
+        try:
+            資料 = self._重建(擁有者)
+            結果 = _重建快照(資料.快照)
+        except _控制流 as 控制:
+            _清除控制鏈(控制)
+            del self, 擁有者, 資料, 控制
+            raise
+        except BaseException:
+            del self, 擁有者, 資料
+            _拒絕()
+        del self, 擁有者, 資料
+        return 結果
+
+    def 解析發布能力(self, 擁有者: str, pinned摘要: 能力摘要, /) -> 已解析發布能力:
+        """重查 authority 並解析 exact pinned selection。
+
+        參數：owner 與草稿保存的 exact 能力摘要。回傳：fresh 完整快照、selected roots 與
+        current admin authority。例外：撤銷、修訂／內容／工具漂移固定拒絕；控制流原樣。
+        副作用：每次重新查 user/release/skills，不使用 cached path 或其他 release fallback。
+        """
+        資料 = 結果 = None
+        try:
+            if type(pinned摘要) is not 能力摘要:
+                raise ValueError
+            資料 = self._重建(擁有者)
+            技能表 = {項目.名稱: 項目 for 項目 in 資料.快照.技能}
+            工具表 = {項目.名稱: 項目 for 項目 in 資料.快照.工具}
+            if (pinned摘要.權限修訂 != 資料.快照.權限修訂
+                    or tuple(技能表.get(項目.名稱) for 項目 in pinned摘要.技能) != pinned摘要.技能
+                    or tuple(工具表.get(項目.名稱) for 項目 in pinned摘要.工具) != pinned摘要.工具):
+                raise ValueError
+            描述表 = {項目.名稱: 項目 for 項目 in 資料.描述}
+            來源 = tuple(發布技能來源(名稱, Path(描述表[名稱].來源目錄), 描述表[名稱].內容sha256)
+                       for 名稱 in (項目.名稱 for 項目 in pinned摘要.技能))
+            結果 = 已解析發布能力(_重建快照(資料.快照), 來源, 資料.管理者)
+        except _控制流 as 控制:
+            _清除控制鏈(控制)
+            del self, 擁有者, pinned摘要, 資料, 結果, 控制
+            raise
+        except BaseException:
+            del self, 擁有者, pinned摘要, 資料, 結果
+            _拒絕()
+        del self, 擁有者, pinned摘要, 資料
+        return 結果
+
+    def _重建(self, 擁有者: str) -> _能力資料:
+        """建立單次正規權威投影。
+
+        參數：擁有者為本次查詢的明確使用者識別。
+        回傳：回傳權限快照、技能描述與管理者狀態。
+        例外：權威、發布或技能資料無效時傳出底層例外。
+        副作用：查詢使用者與工具權威並有界唯讀掃描技能根。
+        """
+        if not _是識別(擁有者):
+            raise ValueError
+        上下文 = self._使用者庫.建立使用者上下文(user_id=擁有者)
+        if type(上下文) is not 使用者上下文 or 上下文.user_id != 擁有者 or type(上下文.disabled) is not bool or 上下文.disabled:
+            raise ValueError
+        角色 = _正規集合(上下文.roles, list, 32)
+        工具限制 = _可選權限(上下文.enabled_tools)
+        技能限制 = _可選權限(上下文.enabled_skills)
+        根們 = _技能roots(上下文.skill_roots)
+        目錄結果 = 建立錨定安全技能目錄(根們, 技能限制)
+        描述, 根身分 = 目錄結果.技能, 目錄結果.根身分
+        發布版 = self._工具發布庫.取得發布(self._處理器發布)
+        if 發布版 is None or 發布版.handler_release != self._處理器發布:
+            raise ValueError
+        工具資料, 授權工具列 = [], []
+        註冊列 = 發布版.tools
+        if type(註冊列) is not tuple or len(註冊列) > 256:
+            raise ValueError
+        for 註冊 in 註冊列:
+            if type(註冊) is not 工具發布註冊 or type(註冊.tool) is not 工具定義:
+                raise ValueError
+            名稱, 說明, 結構 = 註冊.tool.名稱, 註冊.tool.說明, 註冊.tool.參數結構
+            if not _是識別(名稱) or not _是識別(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
+                raise ValueError
+            結構JSON = 建立正規JSON(結構)
+            if len(結構JSON.encode("utf-8")) > 32768:
+                raise ValueError
+            if 工具限制 is None or 名稱 in 工具限制:
+                工具資料.append({"name": 名稱, "revision": 註冊.revision, "description": 說明, "parameters": 解析嚴格JSON(結構JSON)})
+                授權工具列.append(授權工具(名稱, 註冊.revision))
+        授權工具列.sort(key=lambda 項目: 項目.名稱)
+        工具資料.sort(key=lambda 項目: 項目["name"])
+        授權技能列 = tuple(授權技能(項目.名稱, 項目.摘要 or 項目.名稱, 項目.內容sha256) for 項目 in 描述)
+        投影 = {"owner": 擁有者, "roles": list(角色),
+              "skill_roots": [{"path": str(根.路徑), "device": 根.裝置, "inode": 根.節點,
+                                "mode": 根.模式, "hash": 根.目錄雜湊}
+                                for 根 in 根身分],
+              "handler_release": self._處理器發布,
+              "skills": [{"name": 項目.名稱, "summary": 項目.摘要, "content_sha256_reference": 項目.內容sha256參照} for 項目 in 授權技能列],
+              "tools": 工具資料}
+        修訂 = "perm-" + hashlib.sha256(建立正規JSON(投影).encode("utf-8")).hexdigest()
+        return _能力資料(規劃權限快照(修訂, 授權技能列, tuple(授權工具列)), 描述, "admin" in 角色)
+
+
 def _是識別(值: object) -> bool:
     """驗證精確且有界的識別字串。
 
@@ -225,3 +350,6 @@ def _拒絕() -> NoReturn:
     副作用：僅造成控制流程轉移。
     """
     raise 擁有者能力錯誤(_固定錯誤) from None
+
+
+__all__ = ["擁有者能力轉接器", "擁有者能力錯誤", "已解析發布能力", "發布技能來源"]
