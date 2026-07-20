@@ -1,4 +1,10 @@
-"""INV I05 有界 external invoke FastAPI adapter。"""
+"""INV I05 有界 external invoke FastAPI adapter。
+
+參數：由 ``建立外部呼叫路由`` 接收同步編排器與有界 transport 設定。
+返回值：提供單一 ``POST /v1/endpoints/{slug}/invoke`` 的 router。
+例外：request ordinary failures 固定映射公開錯誤；控制流程例外保留 identity。
+副作用：讀取有界 HTTP body，並把完整同步 invocation 委派至 Starlette threadpool。
+"""
 
 from __future__ import annotations
 
@@ -10,6 +16,7 @@ from typing import Any, Callable, Protocol, cast
 
 from fastapi import APIRouter, Path, Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 from ..呼叫.錯誤映射 import 錯誤映射結果
 from ..呼叫.編排器 import 呼叫成功結果
@@ -47,7 +54,13 @@ def 建立外部呼叫路由(
     時鐘: Callable[[], int | float] | None = None,
     本文最大位元組: int = 65536,
 ) -> APIRouter:
-    """建立只含精確 POST invoke path 的可掛載 router。"""
+    """建立只含精確 POST invoke path 的可掛載 router。
+
+    參數：同步編排器、可選 request ID／clock factories 與正整數 body 上限。
+    返回值：具固定 prefix 與單一 invoke endpoint 的 ``APIRouter``。
+    例外：body 上限不合約時拋 ``ValueError``，不呼叫任何注入。
+    副作用：只建立 route closure；不執行編排器或讀取 request。
+    """
     if type(本文最大位元組) is not int or 本文最大位元組 < 1:
         raise ValueError("本文上限不符合契約") from None
     產生識別 = 請求識別產生器 or (lambda: f"req_{uuid.uuid4().hex}")
@@ -62,7 +75,13 @@ def 建立外部呼叫路由(
         }}}}},
     )
     async def 呼叫端點(請求: Request, 路徑短名: str = Path(alias="slug")) -> JSONResponse:
-        """在 materialize JSON 前限制 bytes，嚴格解析後才呼叫 I04。"""
+        """在 materialize JSON 前限制 bytes，嚴格解析後才呼叫 I04。
+
+        參數：目前 ASGI request 與 FastAPI 解析的 endpoint slug。
+        返回值：I04 成功／錯誤投影，或固定 request/internal error JSON response。
+        例外：KISG 控制流程 identity 原樣傳出；ordinary failures 不跨 transport 邊界。
+        副作用：讀取一次有界 body；preflight 後在 threadpool 執行完整同步編排。
+        """
         短名 = 路徑短名
         原始本文 = 本文 = 金鑰 = 請求識別 = None
         輸入 = 中繼資料 = 結果 = 投影 = None
@@ -84,7 +103,9 @@ def 建立外部呼叫路由(
                     or len(請求識別.encode("utf-8")) > 128
                     or type(現在) not in (int, float) or not math.isfinite(float(現在)) or 現在 < 0):
                 raise ValueError
-            結果 = 編排器.執行(短名, 請求識別, 金鑰, 輸入, 中繼資料, 現在)
+            結果 = await run_in_threadpool(
+                編排器.執行, 短名, 請求識別, 金鑰, 輸入, 中繼資料, 現在,
+            )
             金鑰 = 輸入 = 中繼資料 = 請求識別 = 現在 = None
             投影 = _轉換結果(結果)
             結果 = None
