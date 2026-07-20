@@ -1,10 +1,14 @@
 """CP4-W1-T3：三條 management routes 的 canonical 安全工廠。"""
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
+import pytest
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from 繁中代理.使用者 import 使用者上下文
 from 繁中代理.發布介面.相依項 import 發布介面相依項
@@ -18,6 +22,7 @@ from 繁中代理.發布介面.路由.規劃發布 import (
     版本建立結果,
     建立發布版本路由器,
     建立安全規劃發布路由器,
+    OpenAPI本文符合專案契約,
 )
 from 繁中代理.發布介面.路由.網頁認證 import 建立CSRF相依項
 
@@ -78,6 +83,43 @@ def _發布本文():
     return {"draft_id": "draft-safe", "slug": "safe-api", "configuration_confirmation": {"system_prompt": "safe"}}
 
 
+def _含標記(值, 標記, 已訪):
+    if 值 is None or id(值) in 已訪:
+        return False
+    已訪.add(id(值))
+    if type(值) is str:
+        return 標記 in 值
+    if type(值) is bytes:
+        return 標記.encode() in 值
+    if type(值) is dict:
+        return any(_含標記(項, 標記, 已訪) for 對 in dict.items(值) for 項 in 對)
+    if type(值) in (list, tuple, set, frozenset):
+        return any(_含標記(項, 標記, 已訪) for 項 in 值)
+    欄位 = getattr(type(值), "__slots__", ())
+    if type(欄位) is str:
+        欄位 = (欄位,)
+    for 欄 in 欄位:
+        try:
+            if _含標記(object.__getattribute__(值, 欄), 標記, 已訪):
+                return True
+        except (AttributeError, TypeError):
+            pass
+    return False
+
+
+def _請求(本文):
+    原始 = __import__("json").dumps(本文, ensure_ascii=False).encode()
+    已送 = False
+    async def receive():
+        nonlocal 已送
+        if 已送:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        已送 = True
+        return {"type": "http.request", "body": 原始, "more_body": False}
+    from starlette.requests import Request
+    return Request({"type": "http", "method": "POST", "path": "/", "headers": [(b"content-type", b"application/json")]}, receive)
+
+
 def test_CP4_W1_T3_01單一工廠路由_OpenAPI與canonical相依identity():
     client, 路由器, _, _, 次數, session, csrf = _建立()
     assert 路由器.prefix == "/api/published-endpoints"
@@ -124,7 +166,56 @@ def test_CP4_W1_T3_06三個POST_OpenAPI本文皆為完整嚴格契約():
     assert 發布欄位["draft_id"]["pattern"] == "^[A-Za-z0-9_.:-]+$"
     assert 發布欄位["slug"]["pattern"] == "^[a-z0-9][a-z0-9-]*$"
     assert 發布欄位["configuration_confirmation"]["maxProperties"] == 256
+    assert 發布欄位["configuration_confirmation"]["propertyNames"] == {
+        "type": "string", "x-maxUtf8Bytes": 256,
+    }
     assert 版本["content"]["application/json"]["schema"]["properties"]["configuration"]["maxProperties"] == 256
+
+
+def test_CP4_W1_T3_09專案OpenAPI契約明確執行UTF8位元組上限():
+    client, *_ = _建立()
+    with client:
+        路徑 = client.get("/openapi.json").json()["paths"]
+    草稿綱要 = 路徑["/api/published-endpoints/draft"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    發布綱要 = 路徑["/api/published-endpoints"]["post"]["requestBody"]["content"]["application/json"]["schema"]
+    超位元需求 = {"original_requirement_text": "界" * 5_462, "selected_skills": ["alpha"], "response_mode": "text"}
+    百個中文字鍵 = {"configuration_confirmation": {"界" * 100: 1}, "draft_id": "d", "slug": "safe"}
+    assert Draft202012Validator(草稿綱要).is_valid(超位元需求)
+    assert Draft202012Validator(發布綱要).is_valid(百個中文字鍵)
+    assert not OpenAPI本文符合專案契約(草稿綱要, 超位元需求)
+    assert not OpenAPI本文符合專案契約(發布綱要, 百個中文字鍵)
+    assert OpenAPI本文符合專案契約(草稿綱要, _草稿本文())
+
+
+@pytest.mark.parametrize("錯誤", [KeyboardInterrupt("K"), SystemExit("S"), GeneratorExit("G")])
+@pytest.mark.parametrize("路由索引,本文,必要框", [
+    (1, {"draft_id": "d", "slug": "safe", "configuration_confirmation": {"marker": "ROUTE-SENSITIVE"}}, {"發布端點", "_安全發布端點", "_呼叫服務", "_重拋控制流"}),
+    (2, {"configuration": {"marker": "ROUTE-SENSITIVE"}}, {"建立不可變版本", "_安全建立版本", "_呼叫服務", "_重拋控制流"}),
+])
+def test_CP4_W1_T3_10控制流identity_args不變且路由traceback零敏感locals(錯誤, 路由索引, 本文, 必要框):
+    class _失敗服務:
+        def 原子發布(self, **_):
+            raise 錯誤
+        def 原子建立並切換版本(self, **_):
+            raise 錯誤
+    路由器 = 建立安全規劃發布路由器(_草稿服務(), _失敗服務(), lambda: None, lambda: None)
+    端點 = 路由器.routes[路由索引].endpoint
+    使用者 = 網頁使用者("owner-ROUTE-SENSITIVE", "alice", "member")
+    參數 = (_請求(本文), 使用者, 使用者) if 路由索引 == 1 else (_請求(本文), "endpoint-1", 使用者, 使用者)
+    原args = 錯誤.args
+    錯誤.__traceback__ = None
+    with pytest.raises(type(錯誤)) as 捕捉:
+        asyncio.run(端點(*參數))
+    assert 捕捉.value is 錯誤 and 錯誤.args == 原args
+    名稱 = set()
+    追蹤 = 錯誤.__traceback__
+    while 追蹤 is not None:
+        框 = 追蹤.tb_frame
+        if 框.f_code.co_filename.endswith("規劃發布.py"):
+            名稱.add(框.f_code.co_name)
+            assert all(not _含標記(值, "ROUTE-SENSITIVE", set()) for 值 in tuple(框.f_locals.values()))
+        追蹤 = 追蹤.tb_next
+    assert 必要框 <= 名稱
 
 
 def test_CP4_W1_T3_07canonical路由通過production組裝政策(tmp_path):
