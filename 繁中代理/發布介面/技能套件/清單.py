@@ -181,8 +181,11 @@ def 建立清單(
     來源: list[dict[str, str]] = []
     警告: list[str] = []
     for 掃描 in sorted(掃描列, key=lambda 項目: 項目.名稱.encode("utf-8")):
+        技能主檔 = next((檔案 for 檔案 in 掃描.檔案 if 檔案.相對路徑 == "SKILL.md"), None)
+        if 技能主檔 is None:
+            raise ValueError("技能缺少 SKILL.md")
         來源.append(
-            {"name": 掃描.名稱, "source_path": 掃描.來源路徑, "source_hash": 掃描.來源雜湊}
+            {"name": 掃描.名稱, "source_path": 掃描.來源路徑, "source_hash": 技能主檔.雜湊}
         )
         for 檔案 in 掃描.檔案:
             已複製.append(
