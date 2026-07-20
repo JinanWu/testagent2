@@ -532,3 +532,175 @@ def _安全刪樹(父: int, 名稱: str, 投影: tuple[_樹投影項目, ...]) -
         for 部件, 描述元 in reversed(tuple(目錄描述元.items())):
             if 部件 not in 已關閉:
                 _關閉描述元(描述元)
+
+
+class 技能套件協調器:
+    """以固定根、明確 retention 與可注入時鐘協調技能套件。
+
+    參數：建構時接收技能套件根、孤兒保存期限與可替換時鐘。
+    回傳：建立可執行隔離與有界啟動協調的服務物件。
+    例外：建構輸入不符固定契約時拋出 ``技能套件協調錯誤``。
+    副作用：建構只保存設定；公開操作才會存取檔案系統與SQLite。
+    """
+
+    def __init__(self, 根目錄: str | Path, *, 孤兒保留秒數: float, 時鐘=time.time) -> None:
+        """保存 lexical absolute 根與已驗證 retention；不建立目錄。
+
+        參數：根目錄定位發布套件；孤兒保留秒數控制清理期限；時鐘提供目前時間。
+        回傳：無回傳值。
+        例外：保存期限或路徑契約無效時拋出 ``技能套件協調錯誤``。
+        副作用：只保存正規路徑與純量設定，不開啟目錄或資料庫。
+        """
+        if type(孤兒保留秒數) not in (int, float) or not math.isfinite(孤兒保留秒數) or 孤兒保留秒數 < 0:
+            _拒絕()
+        self.根目錄 = Path(os.path.abspath(os.fspath(根目錄)))
+        self.孤兒保留秒數 = float(孤兒保留秒數)
+        self._時鐘 = 時鐘
+
+    def 標記孤兒(self, 收據: 套件發布收據) -> Path:
+        """重驗 exact receipt 後原子不可覆寫移入同根 ``.orphaned``。
+
+        參數：收據必須精確描述本協調器根下的一個已發布套件。
+        回傳：成功隔離後的 ``.orphaned/<bundle-id>`` 絕對路徑。
+        例外：普通失敗映射為固定協調錯誤；控制例外保持 identity 傳出。
+        副作用：可建立隔離根、原子改名、更新孤兒時間並同步兩個父目錄。
+        """
+        失敗 = False
+        try:
+            if type(收據) is not 套件發布收據 or 收據.路徑 != self.根目錄 / 收據.套件識別碼:
+                raise ValueError
+            根 = _開安全絕對目錄(self.根目錄)
+            try:
+                實際 = _重驗套件(根, 收據.套件識別碼, self.根目錄)
+                if 實際.收據 != 收據:
+                    raise ValueError
+                try:
+                    os.mkdir(".orphaned", 0o700, dir_fd=根)
+                except FileExistsError:
+                    pass
+                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+                try:
+                    if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
+                        raise OSError
+                    _不可覆寫改名at(根, 收據.套件識別碼, 孤兒根, 收據.套件識別碼)
+                    os.utime(收據.套件識別碼, (self._時鐘(), self._時鐘()), dir_fd=孤兒根, follow_symlinks=False)
+                    os.fsync(孤兒根)
+                    os.fsync(根)
+                finally:
+                    _關閉描述元(孤兒根)
+            finally:
+                _關閉描述元(根)
+            return self.根目錄 / ".orphaned" / 收據.套件識別碼
+        except _控制例外 as 錯誤:
+            _清框架(錯誤)
+            raise
+        except 技能套件協調錯誤:
+            raise
+        except BaseException as 錯誤:
+            _清框架(錯誤)
+            失敗 = True
+        if 失敗:
+            _拒絕()
+        raise AssertionError
+
+    def _預檢啟動(
+        self,
+    ) -> tuple[tuple[_已重驗套件, ...], tuple[_已重驗套件, ...]]:
+        """在任何 mutation 前以單一 authority 建立完整 detached projections。
+
+        參數：使用建構時保存的套件根，不另接受參數。
+        回傳：已完整重驗的 active 與 orphan 套件 tuple。
+        例外：列舉、讀取、身分、內容或共享額度不符時直接傳出一般錯誤。
+        副作用：只做有界列舉及讀取並關閉自有 fd，不修改資料庫或檔案系統。
+        """
+        根 = _開安全絕對目錄(self.根目錄)
+        孤兒根: int | None = None
+        預算 = _協調預算()
+        try:
+            根名稱 = sorted(預算.列舉(根))
+            active名稱 = [名稱 for 名稱 in 根名稱 if 名稱 != ".orphaned"]
+            if any(_識別碼.fullmatch(名稱) is None for 名稱 in active名稱):
+                raise OSError
+            if ".orphaned" in 根名稱:
+                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+                if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
+                    raise OSError
+                孤兒名稱 = sorted(預算.列舉(孤兒根))
+            else:
+                孤兒名稱 = []
+            if (
+                any(_識別碼.fullmatch(名稱) is None for 名稱 in 孤兒名稱)
+                or not set(active名稱).isdisjoint(孤兒名稱)
+            ):
+                raise OSError
+            作用中 = tuple(
+                _重驗套件(根, 名稱, self.根目錄, 預算) for 名稱 in active名稱
+            )
+            孤兒 = () if 孤兒根 is None else tuple(
+                _重驗套件(孤兒根, 名稱, self.根目錄 / ".orphaned", 預算)
+                for 名稱 in 孤兒名稱
+            )
+            return 作用中, 孤兒
+        finally:
+            try:
+                if 孤兒根 is not None:
+                    _關閉描述元(孤兒根)
+            finally:
+                _關閉描述元(根)
+
+    def _隔離已重驗套件(self, 套件: _已重驗套件) -> None:
+        """只依釘選 projection 名稱及 root identity 移動 preflight 成果。
+
+        參數：套件是本輪 preflight 產生的 detached authoritative projection。
+        回傳：原子隔離並同步完成後回傳 ``None``。
+        例外：路徑、身分、模式、碰撞、改名或同步失敗時直接傳出一般錯誤。
+        副作用：可建立孤兒根、改名套件、設定修改時間並同步目錄。
+        """
+        名稱 = 套件.投影.bundle_id
+        if 套件.收據.路徑 != self.根目錄 / 名稱 or 套件.收據.套件識別碼 != 名稱:
+            raise OSError
+        根 = _開安全絕對目錄(self.根目錄)
+        try:
+            可見 = os.stat(名稱, dir_fd=根, follow_symlinks=False)
+            if (可見.st_dev, 可見.st_ino) != 套件.根身分:
+                raise OSError
+            try:
+                os.mkdir(".orphaned", 0o700, dir_fd=根)
+            except FileExistsError:
+                pass
+            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+            try:
+                if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
+                    raise OSError
+                _不可覆寫改名at(根, 名稱, 孤兒根, 名稱)
+                時間 = self._時鐘()
+                os.utime(名稱, (時間, 時間), dir_fd=孤兒根, follow_symlinks=False)
+                os.fsync(孤兒根)
+                os.fsync(根)
+            finally:
+                _關閉描述元(孤兒根)
+        finally:
+            _關閉描述元(根)
+
+    def _刪除已重驗孤兒(self, 套件: _已重驗套件) -> None:
+        """不再消耗共享 authority 地重驗並刪除一個到期孤兒。
+
+        參數：套件包含 preflight 的清單及完整 detached tree projection。
+        回傳：投影相符並刪除、同步孤兒根後回傳 ``None``。
+        例外：根身分、投影、開啟、刪除或同步不符時直接傳出一般錯誤。
+        副作用：重驗成功後按投影反向 unlink/rmdir，最後同步孤兒根。
+        """
+        名稱 = 套件.投影.bundle_id
+        根 = _開安全絕對目錄(self.根目錄)
+        try:
+            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+            try:
+                可見 = os.stat(名稱, dir_fd=孤兒根, follow_symlinks=False)
+                if (可見.st_dev, 可見.st_ino) != 套件.根身分:
+                    raise OSError
+                _安全刪樹(孤兒根, 名稱, 套件.樹投影)
+                os.fsync(孤兒根)
+            finally:
+                _關閉描述元(孤兒根)
+        finally:
+            _關閉描述元(根)
