@@ -21,6 +21,7 @@ from typing import Any, Protocol
 
 from ...工具 import 工具定義
 from ..嚴格JSON import 建立正規JSON, 解析嚴格JSON
+from .工具結果 import 工具設定錯誤, 工具逾時
 
 _識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _雜湊 = re.compile(r"[0-9a-f]{64}")
@@ -193,7 +194,12 @@ class 版本釘選工具登錄器:
             工具 = 參數副本 = 結果 = None
             del self, 名稱, 參數
             raise
-        except BaseException:
+        except BaseException as 錯誤:
+            類別 = type(錯誤)
+            if 類別 is 工具逾時 or 類別 is 工具設定錯誤:
+                工具 = 參數副本 = 結果 = 類別 = None
+                del self, 名稱, 參數
+                raise
             工具 = 參數副本 = 結果 = None
             del self, 名稱, 參數
             return _失敗結果()
