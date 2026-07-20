@@ -216,3 +216,250 @@ def _可達標記(值, 標記, 已見):
     if type(字典) is dict:
         return _可達標記(字典, 標記, 已見)
     return False
+
+
+@pytest.mark.parametrize("控制", [KeyboardInterrupt("K"), SystemExit("S"), GeneratorExit("G")])
+def test_control_flow保留identity_args並清除鏈與production_locals(tmp_path, 控制):
+    標記 = "OWNER-CONTROL-SECRET"
+
+    class _失敗來源:
+        def __init__(self):
+            self.敏感 = 標記
+
+        def 建立使用者上下文(self, user_id=None):
+            try:
+                raise RuntimeError(標記)
+            except RuntimeError:
+                raise 控制
+
+    轉接器 = 擁有者能力轉接器(_失敗來源(), _工具庫(), "release-1")
+    原args = 控制.args
+    控制.__traceback__ = None
+    with pytest.raises(type(控制)) as 捕捉:
+        轉接器.查詢規劃權限("owner-1")
+    assert 捕捉.value is 控制 and 控制.args == 原args
+    assert 控制.__cause__ is 控制.__context__ is None and 控制.__suppress_context__ is True
+    追蹤 = 控制.__traceback__
+    while 追蹤 is not None:
+        框 = 追蹤.tb_frame
+        if 框.f_code.co_filename.endswith("擁有者能力.py"):
+            assert all(not _可達標記(值, 標記, set()) for 值 in tuple(框.f_locals.values()))
+        追蹤 = 追蹤.tb_next
+
+
+def test_cleanup失敗不可覆蓋原control_identity與args(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.規劃.擁有者能力 as 能力模組
+
+    原控制 = SystemExit("ORIGINAL")
+
+    class _控制來源:
+        def 建立使用者上下文(self, user_id=None):
+            raise 原控制
+
+    def cleanup控制(_):
+        raise KeyboardInterrupt("CLEANUP")
+
+    monkeypatch.setattr(能力模組.traceback, "clear_frames", cleanup控制)
+    轉接器 = 擁有者能力轉接器(_控制來源(), _工具庫(), "release-1")
+    原args = 原控制.args
+    with pytest.raises(SystemExit) as 捕捉:
+        轉接器.查詢規劃權限("owner-1")
+    assert 捕捉.value is 原控制 and 捕捉.value.args is 原args
+
+
+def test_aggregate雙讀預算邊界含兩次加一probe且超額前不讀(tmp_path, monkeypatch):
+    根 = tmp_path / "skills"
+    _寫技能(根)
+    大小 = (根 / "alpha" / "SKILL.md").stat().st_size
+    限制 = 技能目錄限制(256 * 1024, 10, 2 * (大小 + 1), 20)
+    assert [項.名稱 for 項 in 建立錨定安全技能目錄((根,), None, 上限=限制).技能] == ["alpha"]
+
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+    原read = os.read
+    讀取次數 = 0
+
+    def 計數read(fd, count):
+        nonlocal 讀取次數
+        讀取次數 += 1
+        return 原read(fd, count)
+
+    monkeypatch.setattr(目錄模組.os, "read", 計數read)
+    with pytest.raises(技能目錄錯誤):
+        建立錨定安全技能目錄(
+            (根,), None, 上限=技能目錄限制(256 * 1024, 10, 2 * (大小 + 1) - 1, 20),
+        )
+    assert 讀取次數 == 0
+
+
+def test_root_swap供應evil再restore仍只讀anchored_root(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+
+    根 = tmp_path / "skills"
+    _寫技能(根, "ORIGINAL")
+    原open = os.open
+    已競態 = False
+
+    def 競態open(path, flags, *args, **kwargs):
+        nonlocal 已競態
+        if path == "SKILL.md" and kwargs.get("dir_fd") is not None and not 已競態:
+            已競態 = True
+            舊根 = tmp_path / "old"
+            根.rename(舊根)
+            _寫技能(根, "EVIL")
+            fd = 原open(path, flags, *args, **kwargs)
+            for 子 in (根 / "alpha").iterdir():
+                子.unlink()
+            (根 / "alpha").rmdir()
+            根.rmdir()
+            舊根.rename(根)
+            return fd
+        return 原open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(目錄模組.os, "open", 競態open)
+    結果 = 建立錨定安全技能目錄((根,), None)
+    assert 已競態 and "ORIGINAL" in 結果.技能[0].內容 and "EVIL" not in 結果.技能[0].內容
+
+
+def test_root_open前lstat後被換成symlink時拒絕且不供應evil(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+
+    根, evil = tmp_path / "skills", tmp_path / "evil"
+    _寫技能(根, "ORIGINAL")
+    _寫技能(evil, "EVIL")
+    原open = os.open
+    已替換 = False
+
+    def 競態open(path, flags, *args, **kwargs):
+        nonlocal 已替換
+        if path == 根.name and kwargs.get("dir_fd") is not None and not 已替換:
+            已替換 = True
+            根.rename(tmp_path / "old")
+            根.symlink_to(evil, target_is_directory=True)
+        return 原open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(目錄模組.os, "open", 競態open)
+    with pytest.raises((技能目錄錯誤, OSError)):
+        建立錨定安全技能目錄((根,), None)
+    assert 已替換
+
+
+def test_anchored_descriptor_stack在子掃描失敗後不洩漏任何fd(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+
+    根 = tmp_path / "skills"
+    _寫技能(根)
+    原open, 原scandir = os.open, os.scandir
+    已開啟: list[int] = []
+    掃描次數 = 0
+
+    def 追蹤open(*args, **kwargs):
+        fd = 原open(*args, **kwargs)
+        已開啟.append(fd)
+        return fd
+
+    def 失敗scandir(fd):
+        nonlocal 掃描次數
+        掃描次數 += 1
+        if 掃描次數 == 2:
+            raise RuntimeError("child scan failed")
+        return 原scandir(fd)
+
+    monkeypatch.setattr(目錄模組.os, "open", 追蹤open)
+    monkeypatch.setattr(目錄模組.os, "scandir", 失敗scandir)
+    with pytest.raises(RuntimeError, match="child scan failed"):
+        建立錨定安全技能目錄((根,), None)
+    for fd in 已開啟:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+    assert 已開啟
+
+
+def test_primary期間close在釋放前失敗只嘗試一次且不猜測retry(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+
+    根 = tmp_path / "skills"
+    _寫技能(根)
+    原控制 = SystemExit("PRIMARY", "ARGS")
+    原close = os.close
+    目標描述器 = None
+    關閉嘗試: list[int] = []
+    哨兵描述器 = os.open("/dev/null", os.O_RDONLY)
+
+    def 失敗讀取(描述器, _大小):
+        nonlocal 目標描述器
+        目標描述器 = 描述器
+        raise 原控制
+
+    def 釋放前失敗(描述器):
+        關閉嘗試.append(描述器)
+        if 描述器 == 目標描述器:
+            raise KeyboardInterrupt("close-before-release")
+        return 原close(描述器)
+
+    monkeypatch.setattr(目錄模組.os, "read", 失敗讀取)
+    monkeypatch.setattr(目錄模組.os, "close", 釋放前失敗)
+    原參數 = 原控制.args
+    try:
+        with pytest.raises(SystemExit) as 捕捉:
+            建立錨定安全技能目錄((根,), None)
+
+        assert 捕捉.value is 原控制 and 捕捉.value.args is 原參數
+        assert 目標描述器 is not None
+        assert 關閉嘗試.count(目標描述器) == 1
+        assert len(關閉嘗試) == len(set(關閉嘗試))
+        os.fstat(哨兵描述器)
+        os.fstat(目標描述器)
+    finally:
+        monkeypatch.setattr(目錄模組.os, "close", 原close)
+        for 描述器 in (哨兵描述器, 目標描述器):
+            if 描述器 is not None:
+                try:
+                    原close(描述器)
+                except OSError:
+                    pass
+
+
+def test_primary期間close釋放後同inode同fd重用仍不會誤關哨兵(tmp_path, monkeypatch):
+    import 繁中代理.發布介面.安全技能目錄 as 目錄模組
+
+    根 = tmp_path / "skills"
+    _寫技能(根)
+    技能路徑 = 根 / "alpha" / "SKILL.md"
+    原控制 = GeneratorExit("PRIMARY", "ARGS")
+    原close = os.close
+    目標描述器 = None
+    哨兵描述器 = None
+    關閉嘗試: list[int] = []
+
+    def 失敗讀取(描述器, _大小):
+        nonlocal 目標描述器
+        目標描述器 = 描述器
+        raise 原控制
+
+    def 釋放後失敗(描述器):
+        nonlocal 哨兵描述器
+        關閉嘗試.append(描述器)
+        原close(描述器)
+        if 描述器 == 目標描述器:
+            哨兵描述器 = os.open(技能路徑, os.O_RDONLY)
+            assert 哨兵描述器 == 描述器
+            raise KeyboardInterrupt("close-after-release")
+
+    monkeypatch.setattr(目錄模組.os, "read", 失敗讀取)
+    monkeypatch.setattr(目錄模組.os, "close", 釋放後失敗)
+    原參數 = 原控制.args
+    try:
+        with pytest.raises(GeneratorExit) as 捕捉:
+            建立錨定安全技能目錄((根,), None)
+
+        assert 捕捉.value is 原控制 and 捕捉.value.args is 原參數
+        assert 目標描述器 is not None
+        assert 哨兵描述器 is not None and 哨兵描述器 == 目標描述器
+        assert 關閉嘗試.count(目標描述器) == 1
+        哨兵狀態 = os.fstat(哨兵描述器)
+        路徑狀態 = 技能路徑.stat()
+        assert (哨兵狀態.st_dev, 哨兵狀態.st_ino) == (路徑狀態.st_dev, 路徑狀態.st_ino)
+    finally:
+        monkeypatch.setattr(目錄模組.os, "close", 原close)
+        if 哨兵描述器 is not None:
+            原close(哨兵描述器)
