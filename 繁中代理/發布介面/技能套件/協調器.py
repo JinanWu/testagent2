@@ -704,3 +704,93 @@ class 技能套件協調器:
                 _關閉描述元(孤兒根)
         finally:
             _關閉描述元(根)
+
+    def 啟動協調(self, 現在: float, 資料庫: sqlite3.Connection) -> 啟動協調結果:
+        """有界掃描 active/orphan；補收據、隔離或依 retention 刪除。
+
+        參數：現在是有限非負 epoch 秒；資料庫是呼叫端持有的 SQLite 連線。
+        回傳：本輪已補收據、已隔離與已刪除識別碼的不可變結果。
+        例外：普通失敗映射為固定協調錯誤；控制例外保持 identity 傳出。
+        副作用：讀取套件及資料庫，並可在自有 savepoint 內寫收據與變更套件樹。
+        """
+        失敗 = False
+        try:
+            if (type(現在) not in (int, float) or not math.isfinite(現在) or 現在 < 0
+                    or type(資料庫) is not sqlite3.Connection):
+                raise ValueError
+            呼叫端原有交易 = 資料庫.in_transaction
+            作用中, 孤兒 = self._預檢啟動()
+            已補: list[str] = []
+            已隔離: list[str] = []
+            儲存庫 = 套件收據儲存庫(資料庫)
+            決策: list[tuple[_已重驗套件, str]] = []
+            for 套件 in 作用中:
+                收據 = 套件.收據
+                投影 = 套件.投影
+                既有 = 儲存庫.依版本查詢(投影.endpoint_version_id)
+                if 既有 is not None:
+                    if (
+                        既有.套件識別碼, 既有.清單參照, 既有.清單摘要,
+                        既有.套件雜湊, 既有.總位元組數,
+                    ) != (
+                        投影.bundle_id, 收據.清單參照, 投影.manifest_digest,
+                        投影.bundle_hash, 投影.total_bytes,
+                    ):
+                        raise OSError
+                    決策.append((套件, "existing"))
+                    continue
+                版本 = 資料庫.execute(
+                    "SELECT endpoint_id,version_number FROM published_endpoint_versions WHERE id=?",
+                    (投影.endpoint_version_id,),
+                ).fetchone()
+                if 版本 == (投影.endpoint_id, 投影.version_number):
+                    決策.append((套件, "reconcile"))
+                elif 版本 is None:
+                    決策.append((套件, "orphan"))
+                else:
+                    raise OSError
+            已刪除: list[str] = []
+            自建外層 = False
+            儲存點已建立 = False
+            儲存點 = ""
+            try:
+                if not 呼叫端原有交易:
+                    資料庫.execute("BEGIN")
+                    自建外層 = True
+                儲存點 = f"bundle_coordinator_{uuid.uuid4().hex}"
+                資料庫.execute(f'SAVEPOINT "{儲存點}"')
+                儲存點已建立 = True
+                for 套件, 動作 in 決策:
+                    if 動作 == "reconcile":
+                        儲存庫.新增(
+                            版本識別碼=套件.投影.endpoint_version_id, 收據=套件.收據,
+                            發布時間=現在, 狀態="reconciled", 協調時間=現在,
+                        )
+                        已補.append(套件.投影.bundle_id)
+                    elif 動作 == "orphan":
+                        self._隔離已重驗套件(套件)
+                        已隔離.append(套件.投影.bundle_id)
+                for 套件 in 孤兒:
+                    if 現在 - (套件.修改奈秒 / 1_000_000_000) > self.孤兒保留秒數:
+                        self._刪除已重驗孤兒(套件)
+                        已刪除.append(套件.投影.bundle_id)
+                資料庫.execute(f'RELEASE SAVEPOINT "{儲存點}"')
+                儲存點已建立 = False
+            except BaseException:
+                if 儲存點已建立:
+                    _回復儲存點(資料庫, 儲存點, 回復外層=自建外層)
+                elif not 呼叫端原有交易 and 資料庫.in_transaction:
+                    _執行清理(lambda: 資料庫.execute("ROLLBACK"))
+                raise
+            return 啟動協調結果(tuple(已補), tuple(已隔離), tuple(已刪除))
+        except _控制例外 as 錯誤:
+            _清框架(錯誤)
+            raise
+        except 技能套件協調錯誤:
+            raise
+        except BaseException as 錯誤:
+            _清框架(錯誤)
+            失敗 = True
+        if 失敗:
+            _拒絕()
+        raise AssertionError
