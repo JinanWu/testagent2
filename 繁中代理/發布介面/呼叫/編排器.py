@@ -532,7 +532,13 @@ class 外部呼叫入口:
 
 
 class 外部呼叫編排器:
-    """組合 frozen FND／LOG／CRED／RATE 邊界，不持有交易或 runtime。"""
+    """組合 frozen FND／LOG／CRED／RATE 邊界，不持有交易或 runtime。
+
+    參數：建構時接收 exact dependency types 與各階段 callbacks。
+    回傳：建立可執行固定呼叫順序的傳輸中立編排器。
+    例外：依賴違反契約時由公開操作固定映射或拋編排錯誤。
+    副作用：建構無副作用；公開操作依序呼叫已注入的儲存與 runtime 邊界。
+    """
 
     def __init__(
         self, 解析器: object, 呼叫儲存庫: object, 憑證服務: object, *,
@@ -543,14 +549,21 @@ class 外部呼叫編排器:
         寫入擷取: Callable[..., str],
         限流決策型別: type,
         提交雙層計數: Callable[[str, str, int, int, float], object],
-        驗證輸入: Callable[[object], bool],
+        驗證輸入: Callable[[object, object], bool],
+        開始執行嘗試: Callable[[InvocationRef, 執行嘗試請求], None] | None = None,
         執行嘗試: Callable[[執行嘗試請求], 執行嘗試結果] | None = None,
         驗證輸出: Callable[[object, object], bool] | None = None,
         記錄執行嘗試: Callable[
             [InvocationRef, 執行嘗試請求, 執行嘗試結果, bool | None], 執行嘗試紀錄收據
         ] | None = None,
     ) -> None:
-        """保存已組合的 exact dependency types 與 callback 邊界。"""
+        """保存已組合的 exact dependency types 與 callback 邊界。
+
+        參數：解析、儲存、憑證、限流、schema、runtime、pre-hook 與 recorder 依賴。
+        回傳：無。
+        例外：建構只保存參照，沒有預期例外。
+        副作用：不執行 callback、資料庫或模型操作。
+        """
         self._解析器 = 解析器
         self._解析未找到型別 = 解析未找到型別
         self._呼叫儲存庫 = 呼叫儲存庫
@@ -564,6 +577,7 @@ class 外部呼叫編排器:
         self._限流決策型別 = 限流決策型別
         self._提交雙層計數 = 提交雙層計數
         self._驗證輸入 = 驗證輸入
+        self._開始執行嘗試 = 開始執行嘗試
         self._執行嘗試 = 執行嘗試
         self._驗證輸出 = 驗證輸出
         self._記錄執行嘗試 = 記錄執行嘗試
@@ -572,7 +586,13 @@ class 外部呼叫編排器:
         self, 短名: str, 請求識別: str, 提供的API金鑰: str,
         輸入資料: object, 中繼資料: object | None, 驗證時間: int | float,
     ) -> 呼叫成功結果 | 錯誤映射結果:
-        """完成 I03 gate 後最多執行兩次；recorder 只能接觸 disposable DTO。"""
+        """完成 I03 gate 後最多執行兩次；recorder 只能接觸 disposable DTO。
+
+        參數：短名、請求與憑證資料、輸入、中繼資料及驗證時間。
+        回傳：成功信封或 canonical 錯誤映射結果。
+        例外：控制流程保留 identity；普通 runtime／recorder 異常固定為 internal error。
+        副作用：依序執行 I03、attempt-1 pre-hook、模型嘗試、驗證與 ledger callback。
+        """
         入口 = None
         try:
             入口 = self.開始(短名, 請求識別, 提供的API金鑰, 輸入資料, 中繼資料, 驗證時間)
@@ -588,6 +608,7 @@ class 外部呼叫編排器:
         端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
         端點版本 = 0
         執行函式 = self._執行嘗試
+        開始函式 = self._開始執行嘗試
         驗證函式 = self._驗證輸出
         紀錄函式 = self._記錄執行嘗試
         錯誤碼 = None
@@ -617,6 +638,13 @@ class 外部呼叫編排器:
                     請求 = 執行嘗試請求(
                         私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
                     )
+                    if 次數 == 1 and 開始函式 is not None:
+                        開始函式(
+                            InvocationRef(呼叫識別, 私有請求識別, 工作階段識別),
+                            執行嘗試請求(
+                                私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                            ),
+                        )
                     原始結果 = 執行函式(請求)
                     if type(原始結果) is not 執行嘗試結果:
                         raise ValueError
@@ -662,7 +690,7 @@ class 外部呼叫編排器:
                         結果 = 呼叫成功結果(信封)
                         請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
                         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
-                        執行函式 = 驗證函式 = 紀錄函式 = 入口 = None
+                        開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = 入口 = None
                         私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
                         return 結果
                     終局快照 = None
@@ -674,7 +702,7 @@ class 外部呼叫編排器:
             紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
             私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
             端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
-            執行函式 = 驗證函式 = 紀錄函式 = 錯誤碼 = None
+            開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = 錯誤碼 = None
             _清理並重拋(控制)
         except BaseException:
             失敗 = True
@@ -685,7 +713,7 @@ class 外部呼叫編排器:
         入口 = 請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
         私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
-        執行函式 = 驗證函式 = 紀錄函式 = None
+        開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = None
         return 映射呼叫錯誤(錯誤碼, endpoint=端點, invocation=呼叫)
 
     def 開始(
@@ -833,7 +861,7 @@ class 外部呼叫編排器:
                 else:
                     輸入函式 = self._驗證輸入
                     輸入快照 = 快照.建立輸入()
-                    輸入有效 = 輸入函式(輸入快照)
+                    輸入有效 = 輸入函式(釘選, 輸入快照)
                     輸入快照 = None
                     if type(輸入有效) is not bool:
                         raise ValueError

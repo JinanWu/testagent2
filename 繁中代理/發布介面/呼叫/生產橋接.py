@@ -228,3 +228,72 @@ def 驗證釘選輸出結構(釘選版本: object, 輸出資料: object) -> bool
     副作用：只呼叫 pin 重建 fresh snapshot，不作其他 I/O。
     """
     return _驗證釘選結構(釘選版本, 輸出資料, "response_schema")
+
+
+class InvocationLedger橋接:
+    """把 INV attempt lifecycle 寫入既有 SQLite 呼叫儲存庫。
+
+    參數：儲存庫必須是 production ``SQLite呼叫儲存庫``。
+    回傳：提供 pre-hook 與 recorder callbacks。
+    例外：輸入或儲存失敗沿用固定 repository/bridge 錯誤，不揭露 DTO 內容。
+    副作用：依序轉 running、附加 attempt event，並在 terminal 時一次結案。
+    """
+
+    def __init__(self, repository: SQLite呼叫儲存庫) -> None:
+        """保存 genuine SQLite repository，不建立第二套 DTO 或連線。
+
+        參數：repository 為 exact ``SQLite呼叫儲存庫``。
+        回傳：無。
+        例外：型別不符時固定拋 ``生產橋接錯誤``。
+        副作用：無。
+        """
+        if type(repository) is not SQLite呼叫儲存庫:
+            raise 生產橋接錯誤("invocation ledger橋接初始化失敗") from None
+        self._儲存庫 = repository
+
+    def 開始執行嘗試(self, invocation: InvocationRef, request: 執行嘗試請求) -> None:
+        """只在 attempt 1 的模型呼叫前把 pending 轉為 running。
+
+        參數：exact invocation 與 attempt 1 request。
+        回傳：成功提交後回傳 ``None``。
+        例外：DTO 不符固定拒絕；repository 失敗沿用其固定錯誤。
+        副作用：一次更新 invocation status；attempt 2 不應呼叫本方法。
+        """
+        if type(invocation) is not InvocationRef or type(request) is not 執行嘗試請求 or request.attempt != 1:
+            raise 生產橋接錯誤("invocation ledger開始失敗") from None
+        self._儲存庫.標記執行中(invocation.id)
+
+    def 記錄執行嘗試(
+        self, invocation: InvocationRef, request: 執行嘗試請求,
+        result: 執行嘗試結果, schema_valid: bool | None,
+    ) -> 執行嘗試紀錄收據:
+        """以 repository 單一交易 append attempt event 並依 terminal 規則結案。
+
+        參數：exact invocation、request、result 與 output schema 判定。
+        回傳：匹配 invocation/attempt/sequence 的 exact committed receipt。
+        例外：非法組合固定拒絕；repository 失敗沿用固定且不可重複結案語意。
+        副作用：附加 deterministic event；成功、typed failure 或第二次 invalid 時結案。
+        """
+        if (type(invocation) is not InvocationRef or type(request) is not 執行嘗試請求
+                or type(result) is not 執行嘗試結果
+                or (schema_valid is not None and type(schema_valid) is not bool)):
+            raise 生產橋接錯誤("invocation ledger記錄失敗") from None
+        種類, 次數 = result.kind, request.attempt
+        if (種類 == "success") != (schema_valid is not None):
+            raise 生產橋接錯誤("invocation ledger記錄失敗") from None
+        狀態 = 輸出 = 錯誤 = 用量資料 = None
+        if 種類 == "success" and schema_valid is True:
+            用量 = result.usage
+            用量資料 = None if 用量 is None else {
+                "total_tokens": object.__getattribute__(用量, "total_tokens"),
+            }
+            狀態, 輸出 = "succeeded", result.data
+        elif 種類 != "success" or 次數 == 2:
+            錯誤碼 = 種類 if 種類 != "success" else "model_output_schema_invalid"
+            狀態, 錯誤 = "failed", {"code": 錯誤碼}
+        序號 = self._儲存庫.原子記錄執行事件並結案(
+            invocation.id, f"{invocation.id}:attempt:{次數}", "model_attempt",
+            {"attempt": 次數, "kind": 種類, "schema_valid": schema_valid}, 次數,
+            status=狀態, output=輸出, error=錯誤, usage=用量資料,
+        )
+        return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號)
