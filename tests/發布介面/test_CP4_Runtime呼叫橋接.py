@@ -240,3 +240,102 @@ def test_tool_loop只執行snapshot_release且附加結果再呼叫模型():
     assert len(model.calls) == 2
     assert model.calls[1]["messages"][-1]["role"] == "tool"
     assert json.loads(model.calls[1]["messages"][-1]["content"])["success"] is True
+
+
+@pytest.mark.parametrize("arguments", ['{"value":"bad"}', '{"value":1,"value":2}', '[]'])
+def test_invalid_tool_arguments不執行handler且不是假成功(arguments):
+    called = []
+    model = _Model([模型回應快照("UNEXECUTED", "tool_calls", {}, [{
+        "id": "call-1", "type": "function",
+        "function": {"name": "lookup", "arguments": arguments},
+    }])])
+    bridge, request, *_ = _bridge(model, _materials(handler=lambda args: called.append(args)))
+
+    result = bridge(request)
+
+    assert result.kind == "tool_execution_failed" and called == [] and len(model.calls) == 1
+
+
+def test_handler普通失敗固定且控制流程保留identity():
+    call = {"id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":1}'}}
+    def failing(_args):
+        raise RuntimeError("secret")
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, _materials(handler=failing))
+    assert bridge(request).kind == "tool_execution_failed"
+
+    control = KeyboardInterrupt("control-secret")
+    def interrupted(_args):
+        raise control
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, _materials(handler=interrupted))
+    with pytest.raises(KeyboardInterrupt) as captured:
+        bridge(request)
+    assert captured.value is control
+
+
+@pytest.mark.parametrize("exception_type,expected", [
+    (工具逾時, "tool_timeout"), (工具設定錯誤, "endpoint_misconfigured"),
+])
+def test_canonical工具例外穿透registry_executor_bridge(exception_type, expected):
+    signal = exception_type("SECRET/path")
+    call = {"id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":1}'}}
+
+    def failing(_args):
+        raise signal
+
+    materials = _materials(handler=failing)
+    release = materials[3].取得發布("rel-old")
+    assert release is not None
+    registry = 建立版本釘選工具登錄器(release, materials[0].tool_snapshot)
+    with pytest.raises(exception_type) as captured:
+        registry.呼叫工具("lookup", {"value": 1})
+    assert captured.value is signal
+
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, materials)
+    result = bridge(request)
+    assert result.kind == expected and len(model.calls) == 1
+    assert "SECRET" not in repr(result)
+
+
+def test_canonical工具例外子類與未知工具仍是一般工具失敗():
+    class 衍生逾時(工具逾時):
+        pass
+
+    def subclass_failure(_args):
+        raise 衍生逾時("SECRET")
+
+    for name, handler in (("lookup", subclass_failure),
+                          ("missing", lambda _args: pytest.fail("未知工具不可執行"))):
+        call = {"id": "call-1", "type": "function",
+                "function": {"name": name, "arguments": '{"value":1}'}}
+        model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+        bridge, request, *_ = _bridge(model, _materials(handler=handler))
+        assert bridge(request).kind == "tool_execution_failed"
+
+
+def test_timeout與pin_release_provider錯配固定分類():
+    timeout = _Model([供應商逾時("secret")])
+    bridge, request, *_ = _bridge(timeout, _materials())
+    assert bridge(request).kind == "model_timeout"
+
+    model = _Model([模型回應快照("unused", "stop", {}, [])])
+    bridge, request, _, _, releases = _bridge(model, _materials())
+    wrong = 執行嘗試請求(_Pin("ep-other", "sa-1", "ver-1", 1), {}, None, 1)
+    assert bridge(wrong).kind == "endpoint_misconfigured"
+    assert releases.calls == [] and model.calls == []
+
+    missing_provider = _Model([模型回應快照("unused", "stop", {}, [])])
+    bridge, request, *_ = _bridge(missing_provider, _materials(provider="not-registered"))
+    assert bridge(request).kind == "endpoint_misconfigured" and missing_provider.calls == []
+
+    missing_release_materials = list(_materials())
+    object.__setattr__(missing_release_materials[0], "tool_handler_release", "rel-missing")
+    object.__setattr__(missing_release_materials[1], "tool_handler_release", "rel-missing")
+    missing_release = _Model([模型回應快照("unused", "stop", {}, [])])
+    bridge, request, *_, releases = _bridge(missing_release, tuple(missing_release_materials))
+    assert bridge(request).kind == "endpoint_misconfigured"
+    assert releases.calls == ["rel-missing"] and missing_release.calls == []
