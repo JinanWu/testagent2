@@ -241,6 +241,46 @@ def _開安全絕對目錄(路徑: Path) -> int:
     except BaseException:
         _關閉描述元(描述元)
         raise
+
+
+def _不可覆寫改名at(來源父: int, 來源: str, 目標父: int, 目標: str) -> None:
+    """只使用描述元相對的原子不可覆寫原語移動目錄。
+
+    參數：來源與目標父 fd 搭配各自單一目錄名稱。
+    回傳：移動成功後回傳 ``None``。
+    例外：平台不支援、目的碰撞、權限或系統呼叫失敗時傳出一般錯誤。
+    副作用：原子移動目錄；Darwin 上短暫放寬並恢復來源目錄模式。
+    """
+    函式庫 = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin" and hasattr(函式庫, "renameatx_np"):
+        函式 = 函式庫.renameatx_np
+        函式.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        函式.restype = ctypes.c_int
+        # Darwin 會拒絕移動模式 0555 且非空的目錄；以釘選 fd 暫時只放寬
+        # 目錄 inode，rename 後立即恢復，內容檔仍維持 0444。
+        來源描述元 = os.open(來源, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=來源父)
+        try:
+            if stat.S_IMODE(os.fstat(來源描述元).st_mode) != 0o555:
+                raise OSError
+            os.fchmod(來源描述元, 0o755)
+            try:
+                結果 = 函式(來源父, os.fsencode(來源), 目標父, os.fsencode(目標), 0x00000004)
+            finally:
+                _執行清理(lambda: os.fchmod(來源描述元, 0o555))
+        finally:
+            _關閉描述元(來源描述元)
+    elif sys.platform.startswith("linux") and hasattr(函式庫, "renameat2"):
+        函式 = 函式庫.renameat2
+        函式.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        函式.restype = ctypes.c_int
+        結果 = 函式(來源父, os.fsencode(來源), 目標父, os.fsencode(目標), 1)
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename unsupported")
+    if 結果:
+        錯誤碼 = ctypes.get_errno()
+        raise OSError(錯誤碼, os.strerror(錯誤碼))
+
+
 def _投影索引(投影: 已驗證技能套件清單) -> tuple[dict[str, object], set[str]]:
     """建立 copied-file 索引及其唯一允許目錄集合。
 
@@ -392,3 +432,103 @@ def _重驗套件(
         )
     finally:
         _關閉描述元(根)
+
+
+def _安全刪樹(父: int, 名稱: str, 投影: tuple[_樹投影項目, ...]) -> None:
+    """完整重驗 detached projection 後依反向順序刪除樹。
+
+    參數：父 fd 與名稱定位樹根；投影列出 preflight 釘選的每個目錄及檔案。
+    回傳：投影全部相符且完整刪除後回傳 ``None``。
+    例外：缺項、多項、種類、身分、內容、模式或刪除操作不符時傳出一般錯誤。
+    副作用：重驗階段只做有界列舉及讀取；通過後才調整模式並 unlink/rmdir。
+    """
+    if not 投影 or 投影[0].相對部件 != () or 投影[0].種類 != "目錄":
+        raise OSError
+    項目索引 = {項目.相對部件: 項目 for 項目 in 投影}
+    if len(項目索引) != len(投影):
+        raise OSError
+    子項: dict[tuple[str, ...], dict[str, _樹投影項目]] = {}
+    for 項目 in 投影[1:]:
+        父項目 = 項目索引.get(項目.相對部件[:-1])
+        if not 項目.相對部件 or 父項目 is None or 父項目.種類 != "目錄":
+            raise OSError
+        同層 = 子項.setdefault(項目.相對部件[:-1], {})
+        if 項目.相對部件[-1] in 同層:
+            raise OSError
+        同層[項目.相對部件[-1]] = 項目
+    目錄描述元: dict[tuple[str, ...], int] = {}
+    已關閉: set[tuple[str, ...]] = set()
+    已開始刪除 = False
+    根 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=父)
+    目錄描述元[()] = 根
+
+    def 驗證目錄(部件: tuple[str, ...]) -> None:
+        """以投影子項數加一為硬界線驗證目前釘選目錄。
+
+        參數：部件定位已開啟目錄描述元及其 exact expected children。
+        回傳：目前子樹的 metadata 與檔案雜湊全部相符後回傳 ``None``。
+        例外：第 expected+1 項即關閉拒絕，任何 projection 差異亦直接拒絕。
+        副作用：只讀取並保留預期目錄 fd；不變更檔案系統。
+        """
+        目前 = 目錄描述元[部件]
+        目前項目 = 項目索引[部件]
+        if not _資訊符合投影(os.fstat(目前), 目前項目):
+            raise OSError
+        預期 = 子項.get(部件, {})
+        名稱列: list[str] = []
+        迭代器 = os.scandir(目前)
+        try:
+            for 掃描項目 in 迭代器:
+                名稱列.append(掃描項目.name)
+                if len(名稱列) > len(預期):
+                    raise OSError
+        finally:
+            _執行清理(迭代器.close)
+        if len(名稱列) != len(預期) or set(名稱列) != set(預期):
+            raise OSError
+        for 子名 in sorted(名稱列):
+            子投影 = 預期[子名]
+            可見 = os.stat(子名, dir_fd=目前, follow_symlinks=False)
+            if not _資訊符合投影(可見, 子投影):
+                raise OSError
+            if 子投影.種類 == "目錄":
+                子描述元 = os.open(子名, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+                目錄描述元[子投影.相對部件] = 子描述元
+                if not _資訊符合投影(os.fstat(子描述元), 子投影):
+                    raise OSError
+                驗證目錄(子投影.相對部件)
+            elif 子投影.種類 == "檔案":
+                資料, 穩定 = _讀取有界檔案(目前, 子名, 子投影.大小)
+                if (
+                    穩定.st_nlink != 1
+                    or not _資訊符合投影(穩定, 子投影)
+                    or hashlib.sha256(資料).hexdigest() != 子投影.雜湊
+                ):
+                    raise OSError
+            else:
+                raise OSError
+
+    try:
+        驗證目錄(())
+        # 所有 projected entries 都已在不修改檔案系統的階段精確重驗；以下才開始 mutation。
+        for 部件, 描述元 in 目錄描述元.items():
+            os.fchmod(描述元, 0o700)
+        for 項目 in reversed(投影):
+            if 項目.種類 == "檔案":
+                os.unlink(項目.相對部件[-1], dir_fd=目錄描述元[項目.相對部件[:-1]])
+                已開始刪除 = True
+            elif 項目.相對部件:
+                已關閉.add(項目.相對部件)
+                _關閉描述元(目錄描述元[項目.相對部件])
+                os.rmdir(項目.相對部件[-1], dir_fd=目錄描述元[項目.相對部件[:-1]])
+        已關閉.add(())
+        _關閉描述元(根)
+        os.rmdir(名稱, dir_fd=父)
+    finally:
+        if not 已開始刪除:
+            for 部件, 描述元 in 目錄描述元.items():
+                if 部件 not in 已關閉:
+                    _執行清理(lambda 描述元=描述元: os.fchmod(描述元, 0o555))
+        for 部件, 描述元 in reversed(tuple(目錄描述元.items())):
+            if 部件 not in 已關閉:
+                _關閉描述元(描述元)
