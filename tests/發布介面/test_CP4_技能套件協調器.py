@@ -477,3 +477,75 @@ def test_129項投影不一致在任何unlink前拒絕且before等於after(
     assert 快照() == 變更後快照
     assert not 連線.in_transaction
     連線.close()
+
+
+def test_uuid失敗會回滾自建BEGIN並恢復原交易狀態(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BEGIN 後 savepoint 名稱產生失敗仍在 setup 保護流程內。"""
+    根, _ = _發布(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+    monkeypatch.setattr(協調模組.uuid, "uuid4", lambda: (_ for _ in ()).throw(OSError("uuid")))
+
+    with pytest.raises(技能套件協調錯誤):
+        技能套件協調器(根, 孤兒保留秒數=60).啟動協調(2.0, 連線)
+
+    assert not 連線.in_transaction
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.close()
+
+
+def test_authorizer拒絕SAVEPOINT會回滾自建BEGIN(tmp_path: Path) -> None:
+    """SAVEPOINT 未建立時不得呼叫 rollback-to，且 coordinator 自建交易必須回滾。"""
+    根, _ = _發布(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+
+    def 授權(動作, *_):
+        """只拒絕 SQLite SAVEPOINT opcode。"""
+        return sqlite3.SQLITE_DENY if 動作 == sqlite3.SQLITE_SAVEPOINT else sqlite3.SQLITE_OK
+
+    連線.set_authorizer(授權)
+    with pytest.raises(技能套件協調錯誤):
+        技能套件協調器(根, 孤兒保留秒數=60).啟動協調(2.0, 連線)
+    連線.set_authorizer(None)
+
+    assert not 連線.in_transaction
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.close()
+
+
+def test_nested呼叫端交易遇SAVEPOINT拒絕不回滾caller也不留協調狀態(tmp_path: Path) -> None:
+    """caller 已有交易而 SAVEPOINT 未建立時，只傳出失敗並完整保留 caller state。"""
+    根, _ = _發布(tmp_path)
+    _, 連線 = _資料庫(tmp_path)
+    連線.execute("UPDATE published_endpoints SET updated_at=17 WHERE id='ep-1'")
+
+    def 授權(動作, *_):
+        """拒絕 savepoint setup，允許 caller 既有交易中的查詢。"""
+        return sqlite3.SQLITE_DENY if 動作 == sqlite3.SQLITE_SAVEPOINT else sqlite3.SQLITE_OK
+
+    連線.set_authorizer(授權)
+    with pytest.raises(技能套件協調錯誤):
+        技能套件協調器(根, 孤兒保留秒數=60).啟動協調(2.0, 連線)
+    連線.set_authorizer(None)
+
+    assert 連線.in_transaction
+    assert 連線.execute("SELECT updated_at FROM published_endpoints WHERE id='ep-1'").fetchone() == (17.0,)
+    assert 連線.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (0,)
+    連線.rollback()
+    連線.close()
+
+
+def test_R4六個public與helper文件皆具四章() -> None:
+    """R4 觸及的六個公開／helper callable 都明載參數、回傳、例外與副作用。"""
+    物件列 = (
+        協調模組._安全刪樹,
+        技能套件協調器._預檢啟動,
+        技能套件協調器._隔離已重驗套件,
+        技能套件協調器._刪除已重驗孤兒,
+        技能套件協調器.標記孤兒,
+        技能套件協調器.啟動協調,
+    )
+    for 物件 in 物件列:
+        文件 = 物件.__doc__ or ""
+        assert all(章 in 文件 for 章 in ("參數：", "回傳：", "例外：", "副作用：")), 物件.__name__
