@@ -81,7 +81,8 @@ def _建立(schema, 回應們, 觀察=None, 模型物件=None):
     )
     套件 = 技能套件快照(
         endpoint_version_id="ver-1", skill_bundle_hash=雜湊,
-        manifest_digest=雜湊, files=(檔案,),
+        manifest_digest=hashlib.sha256(b"{}").hexdigest(),
+        清單原始資料=b"{}", files=(檔案,),
     )
     版本提供者 = _版本(版本快照)
     帳戶載入器 = _帳戶(上下文)

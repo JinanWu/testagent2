@@ -159,23 +159,32 @@ def test_複製JSON控制在兩個真實canonical_helper框架清理(monkeypatch
     _執行器框架皆乾淨(錯誤.value, {必含})
 
 
-def test_hashlib在檔案重建後控制仍清除manifest與內容(monkeypatch):
-    原函式 = 執行器模組.hashlib.sha256
+def test_canonical套件雜湊控制仍清除檔案projection(monkeypatch):
+    """確認 BUNDLE canonical helper 的控制例外維持 identity 且清除 projection。
+
+    參數：``monkeypatch`` 替換執行器捕捉的 canonical bundle helper。回傳：無。
+    例外：測試只接受注入的 ``KeyboardInterrupt``。副作用：測試期間暫時替換 helper。
+    """
     呼叫數 = 0
     中斷 = KeyboardInterrupt(標記)
 
-    def 受控函式(內容):
+    def 受控函式(項目們):
+        """檢查 projection 不攜帶原始內容後注入控制例外。
+
+        參數：``項目們`` 是 ordered file 三元組來源。回傳：不適用。
+        例外：固定拋出測試控制例外。副作用：遞增區域呼叫計數。
+        """
         nonlocal 呼叫數
         呼叫數 += 1
-        if sys._getframe(1).f_code.co_name == "計算技能套件雜湊":
-            assert 標記.encode() in 內容
-            raise 中斷
-        return 原函式(內容)
+        assert len(項目們) == 1
+        assert set(項目們[0]) == {"path", "size_bytes", "sha256"}
+        assert "content" not in 項目們[0]
+        raise 中斷
 
-    monkeypatch.setattr(執行器模組.hashlib, "sha256", 受控函式)
+    monkeypatch.setattr(執行器模組, "計算清單套件雜湊", 受控函式)
     with pytest.raises(KeyboardInterrupt) as 錯誤:
         計算技能套件雜湊(_檔案())
-    assert 錯誤.value is 中斷 and 呼叫數 >= 3
+    assert 錯誤.value is 中斷 and 呼叫數 == 1
     _執行器框架皆乾淨(錯誤.value, {"計算技能套件雜湊"})
 
 

@@ -292,9 +292,11 @@ def _執行材料(*, 端點="endpoint-1", 版本="ver-2", 帳戶="sa-1", 提示=
         for 路徑, 內容 in 原檔案
     )
     套件雜湊 = 計算技能套件雜湊(檔案)
+    清單位元 = b"{}"
     套件 = 技能套件快照(
         endpoint_version_id=版本, skill_bundle_hash=套件雜湊,
-        manifest_digest=套件雜湊, files=檔案,
+        manifest_digest=hashlib.sha256(清單位元).hexdigest(),
+        清單原始資料=清單位元, files=檔案,
     )
     工具庫 = 工具版本庫()
     工具項目 = 工具庫.登錄修訂(
@@ -617,7 +619,8 @@ def test_bundle拒絕失序重複與同長內容偽造():
     for 檔案們 in ((乙, 甲), (甲, 甲)):
         with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
             技能套件快照(endpoint_version_id="ver-2", skill_bundle_hash="a" * 64,
-                       manifest_digest="a" * 64, files=檔案們)
+                       manifest_digest=hashlib.sha256(b"{}").hexdigest(),
+                       清單原始資料=b"{}", files=檔案們)
     object.__setattr__(甲, "content", b"z")
     with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
         計算技能套件雜湊((甲, 乙))
