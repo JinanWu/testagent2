@@ -162,3 +162,107 @@ class 工具發布版:
         if 失敗:
             _拒絕()
         return 結果
+
+class 工具發布庫:
+    """以 one-shot release identity 保存 sealed 工具發布，不提供目前或預設版。
+
+    參數：建構不接受參數。回傳：依 exact release 的 fresh 檢視。
+    例外：一般發布生命週期失敗固定映射。副作用：登錄與移除會在鎖內原子更新記憶體表。
+    """
+
+    def __init__(self) -> None:
+        """建立空發布表與永久墓碑；參數與回傳：無；例外：標準配置錯誤；副作用：配置鎖。"""
+        self._發布: dict[str, _發布內容] = {}
+        self._已使用: set[str] = set()
+        self._鎖 = threading.Lock()
+
+    def 登錄發布(self, 描述: 工具發布描述) -> 工具發布版:
+        """完整預檢並封存後原子安裝 one-shot release。
+
+        參數：exact ``工具發布描述``。回傳：新鮮發布檢視。
+        例外：重複、墓碑、DTO、schema 或 handler 問題固定失敗；控制流程原樣。
+        副作用：只有完整預檢成功且 identity 未用時才一次加入發布與墓碑。
+        """
+        失敗 = False
+        try:
+            內容 = _建立發布內容(描述)
+            with self._鎖:
+                if 內容.handler_release in self._已使用:
+                    _拒絕()
+                self._發布[內容.handler_release] = 內容
+                self._已使用.add(內容.handler_release)
+        except _控制流程例外:
+            raise
+        except 工具發布錯誤:
+            raise
+        except BaseException:
+            失敗 = True
+        if 失敗:
+            _拒絕()
+        return _建立發布檢視(內容)
+
+    def 取得發布(self, handler_release: str) -> 工具發布版 | None:
+        """只依 exact release 取得 fresh sealed 檢視，不做 fallback。
+
+        參數：``handler_release``。回傳：新檢視或 ``None``。例外：控制流程原樣。副作用：無。
+        """
+        if not _是識別(handler_release):
+            return None
+        with self._鎖:
+            內容 = self._發布.get(handler_release)
+        return None if 內容 is None else _建立發布檢視(內容)
+
+    def 移除發布(self, handler_release: str) -> None:
+        """移除 live release 且保留永久墓碑。
+
+        參數：exact release。回傳：無。例外：無預期例外。副作用：可能原子移除 live 發布。
+        """
+        if _是識別(handler_release):
+            with self._鎖:
+                self._發布.pop(handler_release, None)
+
+def _建立發布內容(不可信描述: 工具發布描述) -> _發布內容:
+    """重建完整輸入、拒絕重名並在獨立版本庫封存所有 revisions。
+
+    參數：呼叫端描述。回傳：module-owned sealed 內容。例外：一般失敗固定映射。副作用：只修改未公開暫存庫。
+    """
+    if type(不可信描述) is not 工具發布描述:
+        _拒絕()
+    release = object.__getattribute__(不可信描述, "handler_release")
+    註冊們 = object.__getattribute__(不可信描述, "tools")
+    if not _是識別(release) or type(註冊們) is not tuple:
+        _拒絕()
+    庫, 快照們, 已看 = 工具版本庫(), [], set()
+    for 不可信註冊 in 註冊們:
+        if type(不可信註冊) is not 工具發布註冊:
+            _拒絕()
+        revision = object.__getattribute__(不可信註冊, "revision")
+        不可信工具 = object.__getattribute__(不可信註冊, "tool")
+        if not _是識別(revision) or type(不可信工具) is not 工具定義:
+            _拒絕()
+        名稱 = object.__getattribute__(不可信工具, "名稱")
+        if not _是識別(名稱) or 名稱 in 已看:
+            _拒絕()
+        工具 = 工具定義(
+            名稱,
+            object.__getattribute__(不可信工具, "說明"),
+            object.__getattribute__(不可信工具, "參數結構"),
+            object.__getattribute__(不可信工具, "處理函數"),
+        )
+        快照們.append(庫.登錄修訂(revision, 工具))
+        已看.add(名稱)
+    return _發布內容(release, tuple(快照們), 庫)
+
+def _建立發布檢視(內容: _發布內容) -> 工具發布版:
+    """從 authoritative 內容建立不共享 repository 或 handler binding 的檢視。
+
+    參數：module-owned 發布內容。回傳：完全 detached 的發布版。例外：重建失敗傳出供公開邊界固定映射。副作用：無。
+    """
+    註冊們 = []
+    for 項目 in 內容.snapshots:
+        修訂 = 內容.revisions.取得工具修訂(項目.name, 項目.revision)
+        if 修訂 is None:
+            _拒絕()
+        工具 = 工具定義(修訂.名稱, 修訂.說明, 解析嚴格JSON(修訂.參數JSON), 修訂.處理函數)
+        註冊們.append(工具發布註冊(修訂.修訂名稱, 工具))
+    return 工具發布版(_建立發布內容(工具發布描述(內容.handler_release, tuple(註冊們))))
