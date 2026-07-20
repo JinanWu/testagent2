@@ -349,6 +349,103 @@ class SQLite呼叫儲存庫:
                 raise
         raise 呼叫儲存錯誤("執行事件附加失敗") from None
 
+    def 原子記錄執行事件並結案(
+        self, invocation_id: str, event_id: str, event_type: str, payload: object,
+        expected_sequence: int, *, status: str | None = None, output: object | None = None,
+        error: object | None = None, usage: object | None = None,
+    ) -> int:
+        """以單一立即交易附加 expected event，並可同時完成 running invocation。
+
+        相同 event 已完整提交時回放原序號；任何不完整、衝突或普通失敗皆回滾。
+        """
+        連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
+        payload快照 = output快照 = error快照 = usage快照 = None
+        payload_json = output_json = error_json = usage_json = None
+        時間原值 = 時間 = 序號 = None
+        try:
+            if (any(type(值) is not str or not 值.strip() for 值 in (invocation_id, event_id, event_type))
+                    or type(expected_sequence) is not int or expected_sequence < 1
+                    or status not in (None, "succeeded", "failed")):
+                raise ValueError
+            if status is None:
+                if output is not None or error is not None or usage is not None:
+                    raise ValueError
+            elif ((status == "succeeded" and (output is None or error is not None))
+                  or (status == "failed" and (output is not None or error is None))):
+                raise ValueError
+            with closing(self._開啟連線()) as 連線, 連線:
+                連線.execute("BEGIN IMMEDIATE")
+                payload快照 = self._建立可信JSON樹(payload)
+                if type(payload快照) is not dict:
+                    raise ValueError
+                output快照 = None if output is None else self._建立可信JSON樹(output)
+                error快照 = None if error is None else self._建立可信JSON樹(error)
+                usage快照 = None if usage is None else self._建立可信JSON樹(usage)
+                payload = output = error = usage = None
+                payload_json = 建立正規JSON(payload快照)
+                output_json = None if output快照 is None else 建立正規JSON(output快照)
+                error_json = None if error快照 is None else 建立正規JSON(error快照)
+                usage_json = None if usage快照 is None else 建立正規JSON(usage快照)
+                呼叫列 = 連線.execute(
+                    "SELECT status,output_json,error_json,usage_json,latency_ms,pricing_version,completed_at "
+                    "FROM endpoint_invocations WHERE id=?", (invocation_id,),
+                ).fetchone()
+                事件列 = 連線.execute(
+                    "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
+                    (event_id,),
+                ).fetchone()
+                if 事件列 is not None:
+                    if 事件列 != (invocation_id, expected_sequence, event_type, payload_json):
+                        raise ValueError
+                    if status is None:
+                        if 呼叫列 != ("running", None, None, None, None, None, None):
+                            raise ValueError
+                    elif (呼叫列 is None or len(呼叫列) != 7 or 呼叫列[0] != status
+                          or 呼叫列[1:4] != (output_json, error_json, usage_json)
+                          or 呼叫列[4] is not None or 呼叫列[5] is not None
+                          or type(呼叫列[6]) not in (int, float)):
+                        raise ValueError
+                    return expected_sequence
+                if 呼叫列 != ("running", None, None, None, None, None, None):
+                    raise ValueError
+                最大序號列 = 連線.execute(
+                    "SELECT MAX(sequence_number) FROM run_events WHERE invocation_id=?", (invocation_id,),
+                ).fetchone()
+                if (最大序號列 is None or len(最大序號列) != 1
+                        or (最大序號列[0] is not None
+                            and (type(最大序號列[0]) is not int or 最大序號列[0] < 1))):
+                    raise ValueError
+                序號 = 1 if 最大序號列[0] is None else 最大序號列[0] + 1
+                if 序號 != expected_sequence:
+                    raise ValueError
+                時間原值 = self._時鐘()
+                if type(時間原值) not in (int, float) or not self._非負有限(時間原值):
+                    raise ValueError
+                時間 = float(時間原值)
+                連線.execute(
+                    "INSERT INTO run_events(id,invocation_id,sequence_number,event_type,payload_json,created_at) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (event_id, invocation_id, 序號, event_type, payload_json, 時間),
+                )
+                if status is not None:
+                    游標 = 連線.execute(
+                        "UPDATE endpoint_invocations SET status=?,output_json=?,error_json=?,usage_json=?,"
+                        "completed_at=? WHERE id=? AND status='running'",
+                        (status, output_json, error_json, usage_json, 時間, invocation_id),
+                    )
+                    if 游標.rowcount != 1:
+                        raise ValueError
+            return expected_sequence
+        except BaseException as 邊界錯誤:
+            是控制流程 = type(邊界錯誤) in _控制流程例外
+            invocation_id = event_id = event_type = payload = expected_sequence = status = None
+            output = error = usage = 連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
+            payload快照 = output快照 = error快照 = usage快照 = None
+            payload_json = output_json = error_json = usage_json = 時間原值 = 時間 = 序號 = None
+            if 是控制流程:
+                raise
+        raise 呼叫儲存錯誤("執行事件原子提交失敗") from None
+
     def 附加工具呼叫(
         self, invocation_id: str, tool_call_id: str, tool_name: str, arguments: object,
         outcome: str, *, result: object = _未提供, error: object = _未提供,
