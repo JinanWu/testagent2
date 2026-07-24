@@ -391,6 +391,9 @@ def 建立模型供應商(模式: str, 模型名稱: str) -> 模型供應商:
     """
     if 模式 == "fake":
         return 假模型供應商()
-    專案識別碼 = os.getenv("AIAGENT_GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT") or "lab-cola-rd"
-    位置 = os.getenv("AIAGENT_GCP_LOCATION", "global")
+    專案識別碼 = (os.getenv("AIAGENT_GCP_PROJECT") or os.getenv("GCP_PROJECT_ID")
+                or os.getenv("GOOGLE_CLOUD_PROJECT") or "").strip()
+    if not 專案識別碼:
+        raise ValueError("Vertex AI 專案未設定：請設 AIAGENT_GCP_PROJECT 或 GCP_PROJECT_ID")
+    位置 = (os.getenv("AIAGENT_GCP_LOCATION") or os.getenv("GCP_LOCATION") or "global").strip()
     return GeminiADC供應商(模型名稱=模型名稱, 專案識別碼=專案識別碼, 位置=位置)
