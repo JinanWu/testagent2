@@ -306,6 +306,112 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
     del 連線, 路徑, 身分, 路徑狀態, 資料庫列, 列, 主檔, 主檔狀態, 失敗, 關閉控制
 
 
+def _建立JSON副本(來源: Any, *, 拒絕秘密鍵: bool = False) -> Any:
+    """以 exact built-ins 單次走訪建立 bounded canonical JSON tree。"""
+    計數 = [0]
+    描述: list[tuple[Any, tuple[Any, ...]]] = []
+    結果 = 容器 = 原項目 = 目前項目 = 原值 = 目前值 = 編碼 = None
+    索引 = 0
+    try:
+        結果 = _複製JSON節點(來源, set(), 0, 計數, 描述, 拒絕秘密鍵)
+        for 容器, 原項目 in 描述:
+            目前項目 = tuple(list.__iter__(容器)) if type(容器) is list else tuple(dict.items(容器))
+            if len(目前項目) != len(原項目):
+                raise ValueError
+            for 索引 in range(len(原項目)):
+                原值 = 原項目[索引]
+                目前值 = 目前項目[索引]
+                if type(容器) is list:
+                    if 目前值 is not 原值:
+                        raise ValueError
+                elif 目前值[0] is not 原值[0] or 目前值[1] is not 原值[1]:
+                    raise ValueError
+                原值 = 目前值 = None
+            容器 = 原項目 = 目前項目 = None
+        編碼 = json.dumps(結果, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+        if len(編碼) > _JSON_UTF8上限:
+            raise ValueError
+    except BaseException:
+        描述.clear()
+        計數.clear()
+        if type(結果) is list or type(結果) is dict:
+            結果.clear()
+        del 來源, 拒絕秘密鍵, 計數, 描述, 結果, 容器, 原項目, 目前項目, 原值, 目前值, 編碼, 索引
+        raise
+    描述.clear()
+    計數.clear()
+    del 來源, 拒絕秘密鍵, 計數, 描述, 容器, 原項目, 目前項目, 原值, 目前值, 編碼, 索引
+    return 結果
+
+
+def _複製JSON節點(
+    來源: Any, 路徑: set[int], 深度: int, 計數: list[int],
+    描述: list[tuple[Any, tuple[Any, ...]]], 拒絕秘密鍵: bool,
+) -> Any:
+    """遞迴複製 exact JSON；每一個遞迴 traceback frame 都自行清除。"""
+    容器識別 = 原項目 = 項目 = 鍵 = 已複製 = 結果 = None
+    結果串列: list[Any] = []
+    結果物件: dict[str, Any] = {}
+    已加入路徑 = False
+    try:
+        計數[0] += 1
+        if 計數[0] > _最多節點 or 深度 > _最大深度:
+            raise ValueError
+        if 來源 is None or type(來源) is bool or type(來源) is int:
+            結果 = 來源
+        elif type(來源) is float:
+            if not math.isfinite(來源):
+                raise ValueError
+            結果 = 來源
+        elif type(來源) is str:
+            if len(來源.encode("utf-8")) > _字串UTF8上限:
+                raise ValueError
+            結果 = 來源
+        else:
+            if type(來源) not in (list, dict):
+                raise ValueError
+            容器識別 = id(來源)
+            if 容器識別 in 路徑:
+                raise ValueError
+            路徑.add(容器識別)
+            已加入路徑 = True
+            if type(來源) is list:
+                原項目 = tuple(list.__iter__(來源))
+                描述.append((來源, 原項目))
+                for 項目 in 原項目:
+                    已複製 = _複製JSON節點(項目, 路徑, 深度 + 1, 計數, 描述, 拒絕秘密鍵)
+                    結果串列.append(已複製)
+                    項目 = 已複製 = None
+                結果 = 結果串列
+            else:
+                原項目 = tuple(dict.items(來源))
+                描述.append((來源, 原項目))
+                for 鍵, 項目 in 原項目:
+                    if type(鍵) is not str or (拒絕秘密鍵 and _禁止秘密鍵.search(鍵)):
+                        raise ValueError
+                    已複製 = _複製JSON節點(項目, 路徑, 深度 + 1, 計數, 描述, 拒絕秘密鍵)
+                    結果物件[鍵] = 已複製
+                    鍵 = 項目 = 已複製 = None
+                結果 = 結果物件
+            路徑.remove(容器識別)
+            已加入路徑 = False
+    except BaseException:
+        if 已加入路徑 and type(容器識別) is int:
+            路徑.discard(容器識別)
+        描述.clear()
+        計數.clear()
+        結果串列.clear()
+        結果物件.clear()
+        if type(結果) is list or type(結果) is dict:
+            結果.clear()
+        del 來源, 路徑, 深度, 計數, 描述, 拒絕秘密鍵, 容器識別, 原項目, 項目, 鍵, 已複製, 結果, 結果串列, 結果物件, 已加入路徑
+        raise
+    結果串列 = []
+    結果物件 = {}
+    del 來源, 路徑, 深度, 計數, 描述, 拒絕秘密鍵, 容器識別, 原項目, 項目, 鍵, 已複製, 結果串列, 結果物件, 已加入路徑
+    return 結果
+
+
 def _是字串陣列(值: Any) -> bool:
     """確認 exact list 只含唯一、bounded exact strings。"""
     if type(值) is not list:
