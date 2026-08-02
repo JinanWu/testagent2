@@ -20,8 +20,8 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
-_完整結構數 = 45
-_完整結構雜湊 = "fc8aa9a0e4b01b6b96eb67763d368f21615d3692ae091965aea873786848799f"
+_完整結構數 = 51
+_完整結構雜湊 = "b832119c1ffd7f397ca063fe62f1c39336ee4279e9b842226c7784b89d6e9a69"
 _單一結構SQL最大位元組 = 65536
 _完整結構SQL總最大位元組 = 1048576
 _完整結構物件 = tuple(
@@ -29,7 +29,8 @@ _完整結構物件 = tuple(
         ("index", (
             "idx_audit_events_endpoint_time", "idx_audit_events_invocation_time",
             "idx_audit_events_resource_time", "idx_audit_events_retention_invocation_id",
-            "idx_endpoint_credentials_endpoint_list", "idx_endpoint_invocations_credential_created",
+            "idx_auth_failure_rate_counters_window_start", "idx_endpoint_credentials_endpoint_lifecycle",
+            "idx_endpoint_invocations_credential_created",
             "idx_endpoint_invocations_endpoint_created", "idx_endpoint_invocations_retention_candidates",
             "idx_endpoint_invocations_status_created", "idx_endpoint_redactions_audit",
             "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_retention_invocation_id",
@@ -38,15 +39,19 @@ _完整結構物件 = tuple(
             "idx_web_sessions_user_revoked_expires", "uq_endpoint_credentials_id_endpoint",
         )),
         ("table", (
-            "audit_events", "endpoint_credentials", "endpoint_invocations", "endpoint_redactions",
+            "audit_events", "auth_failure_rate_counters", "endpoint_credentials",
+            "endpoint_invocations", "endpoint_redactions",
             "endpoint_tool_calls", "published_api_schema_migrations", "published_endpoint_versions",
             "published_endpoints", "rate_limit_counters", "run_events", "service_accounts", "web_sessions",
         )),
         ("trigger", (
-            "audit_events_no_delete", "audit_events_no_update", "endpoint_redactions_no_delete",
-            "endpoint_redactions_no_update", "endpoint_redactions_require_tombstone",
-            "endpoint_redactions_target_before_insert", "published_endpoint_versions_no_delete",
-            "published_endpoint_versions_no_update", "published_endpoints_rate_limit_positive_before_insert",
+            "audit_events_no_delete", "audit_events_no_update",
+            "endpoint_credentials_allowlist_insert_check", "endpoint_credentials_allowlist_update_check",
+            "endpoint_redactions_no_delete", "endpoint_redactions_no_update",
+            "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
+            "finite_endpoint_credentials_insert", "finite_endpoint_credentials_update",
+            "published_endpoint_versions_no_delete", "published_endpoint_versions_no_update",
+            "published_endpoints_rate_limit_positive_before_insert",
             "published_endpoints_rate_limit_positive_before_update", "redacted_invocation_payload_no_update",
             "redacted_run_event_no_delete", "redacted_run_event_no_update", "redacted_tool_call_no_delete",
             "redacted_tool_call_no_update",
