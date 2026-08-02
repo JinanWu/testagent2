@@ -233,6 +233,144 @@ def 安全讀取技能(來源路徑: Path, 根目錄清單: tuple[Path, ...], *,
         raise 技能目錄不存在 from None
 
 
+def 建立錨定安全技能目錄(
+    根目錄清單: tuple[Path, ...], 啟用技能: frozenset[str] | None,
+    *, 重複視為不存在: bool = False, 上限: 技能目錄限制 = 技能目錄限制(),
+) -> 錨定安全技能目錄:
+    """從同一錨定描述器掃描並建立安全技能目錄。
+
+    參數：技能根、啟用技能、重複政策與資源限制。
+    回傳：回傳脫離描述器生命週期的技能與根身分。
+    例外：不安全來源、重複、競態或超限時拋技能目錄例外。
+    副作用：讀取停用設定並執行有界唯讀檔案系統操作。
+    """
+    _驗證輸入(根目錄清單, 啟用技能, 重複視為不存在, 上限)
+    描述表: dict[str, 安全技能描述] = {}
+    根結果: list[安全技能根身分] = []
+    走訪預算 = 技能走訪預算(上限.走訪項目)
+    讀取預算 = _技能讀取預算(上限.索引總位元組)
+    候選數 = 0
+    停用 = 讀取停用技能名稱集合()
+
+    設定根們 = tuple(sorted((_詞法絕對路徑(根) for 根 in 根目錄清單), key=str))
+    已見根身分: set[tuple[int, int]] = set()
+    for 設定路徑 in 設定根們:
+        錨定根 = _開啟錨定技能根(設定路徑)
+        根描述器 = 錨定根.描述器[-1]
+        開啟前身分 = 錨定根.身分[-1]
+        根錯誤: BaseException | None = None
+        根雜湊項目: list[tuple[str, str, str]] = []
+        try:
+            已開啟 = os.fstat(根描述器)
+            if 開啟前身分 != _根身分(已開啟):
+                raise 技能目錄錯誤("技能目錄不可用")
+            節點身分 = (已開啟.st_dev, 已開啟.st_ino)
+            if 節點身分 in 已見根身分:
+                raise 技能目錄錯誤("技能目錄根別名重複")
+            已見根身分.add(節點身分)
+
+            def 掃描目錄(目錄描述器: int, 相對片段: tuple[str, ...]) -> None:
+                """從已持有描述器與相對片段遞迴掃描。
+
+                參數：目錄描述器與相對於設定根的路徑片段。
+                回傳：無回傳值。
+                例外：競態、來源不安全或資源超限時拋技能目錄例外。
+                副作用：唯讀掃描目錄、讀取技能並更新外層目錄資料。
+                """
+                nonlocal 候選數
+                with os.scandir(目錄描述器) as 掃描器:
+                    項目清單 = []
+                    for 項目 in 掃描器:
+                        項目清單.append(項目.name)
+                        if len(項目清單) > 走訪預算.剩餘項目數量:
+                            走訪預算.剩餘項目數量 = 0
+                            raise 技能目錄錯誤("技能目錄超過限制")
+                走訪預算.剩餘項目數量 -= len(項目清單)
+                for 名 in sorted(項目清單):
+                    if 名.startswith("."):
+                        continue
+                    try:
+                        狀態 = os.stat(名, dir_fd=目錄描述器, follow_symlinks=False)
+                    except FileNotFoundError:
+                        continue
+                    if 名 == "SKILL.md":
+                        if not 相對片段:
+                            continue
+                        候選數 += 1
+                        if 候選數 > 上限.索引項目:
+                            raise 技能目錄錯誤("技能目錄超過限制")
+                        if not stat.S_ISREG(狀態.st_mode) or 狀態.st_size > 上限.檔案位元組:
+                            continue
+                        try:
+                            原始內容 = _從目錄讀取技能(目錄描述器, 名, 狀態, 上限.檔案位元組, 讀取預算)
+                            內容 = 原始內容.decode("utf-8")
+                        except (技能目錄不存在, UnicodeError):
+                            continue
+                        候選 = 相對片段[-1]
+                        前置 = 解析Markdown前置資料(內容)
+                        名稱 = str(前置.get("name") or 候選)
+                        if 啟用技能 is not None and 名稱 not in 啟用技能:
+                            continue
+                        工具名稱: set[str] = set()
+                        if (名稱 in 停用 or 候選 in 停用
+                                or not 技能是否符合平台(前置, 取得目前平台名稱())
+                                or not 技能是否符合工具條件(前置, 工具名稱, 建立可用工具集名稱集合(工具名稱))):
+                            continue
+                        if 名稱 in 描述表:
+                            if 重複視為不存在:
+                                raise 技能目錄不存在 from None
+                            raise 技能目錄錯誤("技能目錄重複")
+                        相對檔 = 相對片段 + (名,)
+                        分類 = "/".join(相對片段[:-1]) if len(相對片段) > 1 else "general"
+                        摘要 = 截斷摘要文字(前置.get("description", ""))
+                        內容雜湊 = hashlib.sha256(原始內容).hexdigest()
+                        來源 = 設定路徑.joinpath(*相對片段)
+                        描述表[名稱] = 安全技能描述(名稱, 分類, 摘要, 內容, 內容雜湊, 來源)
+                        根雜湊項目.append(("/".join(相對檔), 名稱, 內容雜湊))
+                    elif stat.S_ISDIR(狀態.st_mode):
+                        子描述器 = os.open(名, _目錄旗標(), dir_fd=目錄描述器)
+                        子錯誤: BaseException | None = None
+                        try:
+                            if _根身分(狀態) != _根身分(os.fstat(子描述器)):
+                                raise 技能目錄不存在
+                            掃描目錄(子描述器, 相對片段 + (名,))
+                        except BaseException as 錯誤:
+                            子錯誤 = 錯誤
+                            raise
+                        finally:
+                            _關閉且不覆蓋(子描述器, 子錯誤)
+
+            掃描目錄(根描述器, ())
+            _重驗錨定技能根(錨定根)
+            根內容 = repr(tuple(sorted(根雜湊項目))).encode("utf-8")
+            根結果.append(安全技能根身分(
+                設定路徑, 已開啟.st_dev, 已開啟.st_ino, 已開啟.st_mode,
+                hashlib.sha256(根內容).hexdigest(),
+            ))
+        except BaseException as 錯誤:
+            根錯誤 = 錯誤
+            raise
+        finally:
+            _關閉描述器們且不覆蓋(錨定根.描述器, 根錯誤)
+
+    排序根 = tuple(sorted(根結果, key=lambda 根: str(根.路徑)))
+    return 錨定安全技能目錄(tuple(描述表[名稱] for 名稱 in sorted(描述表)), 排序根)
+
+
+def 建立安全技能目錄(
+    根目錄清單: tuple[Path, ...], 啟用技能: frozenset[str] | None,
+    *, 重複視為不存在: bool = False, 上限: 技能目錄限制 = 技能目錄限制(),
+) -> tuple[安全技能描述, ...]:
+    """透過錨定入口建立相容的技能描述序列。
+
+    參數：技能根、啟用技能、重複政策與資源限制。
+    回傳：回傳依名稱排序的安全技能描述。
+    例外：錨定入口的技能目錄例外原樣傳出。
+    副作用：執行有界唯讀檔案系統操作。
+    """
+    return 建立錨定安全技能目錄(
+        根目錄清單, 啟用技能, 重複視為不存在=重複視為不存在, 上限=上限,
+    ).技能
 
 
 def _從目錄讀取技能(
