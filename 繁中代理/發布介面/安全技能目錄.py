@@ -145,6 +145,158 @@ class 技能目錄限制:
     索引項目: int = 最大技能索引項目
     索引總位元組: int = 最大技能索引總位元組
     走訪項目: int = 最大技能走訪項目
+
+
+def 走訪有界技能檔案(
+    技能根目錄: Path, 檔名: str, 候選上限: int,
+    走訪預算: 技能走訪預算 | None = None,
+) -> Iterator[Path]:
+    """以根、檔名、候選上限及共享預算走訪。
+
+    參數：技能根、檔名、候選上限與可選共享走訪預算。
+    回傳：回傳依名稱排序的路徑迭代器。
+    例外：目錄超限或輸入畸形時拋技能目錄錯誤。
+    副作用：唯讀掃描目錄並遞減共享預算。
+    """
+    if not isinstance(技能根目錄, Path) or type(檔名) is not str or type(候選上限) is not int:
+        raise 技能目錄錯誤("技能目錄不可用")
+    if 候選上限 <= 0:
+        return
+    if 走訪預算 is None:
+        走訪預算 = 技能走訪預算(最大技能走訪項目)
+    已產出 = 0
+
+    def 走訪目錄(目錄: Path) -> Iterator[Path]:
+        """掃描單一路徑。
+
+        參數：目錄為本次遞迴掃描路徑。
+        回傳：回傳符合檔名的候選迭代器。
+        例外：走訪項目超限時拋技能目錄錯誤。
+        副作用：唯讀掃描目錄並更新外層計數。
+        """
+        nonlocal 已產出
+        if 已產出 >= 候選上限:
+            return
+        try:
+            with os.scandir(目錄) as 掃描器:
+                項目清單 = []
+                for 項目 in 掃描器:
+                    項目清單.append(項目)
+                    if len(項目清單) > 走訪預算.剩餘項目數量:
+                        走訪預算.剩餘項目數量 = 0
+                        raise 技能目錄錯誤("技能目錄超過限制")
+        except FileNotFoundError:
+            return
+        走訪預算.剩餘項目數量 -= len(項目清單)
+        項目清單.sort(key=lambda 項目: 項目.name)
+        for 項目 in 項目清單:
+            if 已產出 >= 候選上限:
+                return
+            if 項目.name.startswith("."):
+                continue
+            路徑 = 目錄 / 項目.name
+            if 項目.name == 檔名:
+                已產出 += 1
+                yield 路徑
+            elif 項目.is_dir(follow_symlinks=False):
+                yield from 走訪目錄(路徑)
+
+    yield from 走訪目錄(技能根目錄)
+
+
+def 安全讀取技能(來源路徑: Path, 根目錄清單: tuple[Path, ...], *, 最大位元組: int = 最大技能檔案位元組) -> str:
+    """從錨定目錄結果安全讀取指定技能。
+
+    參數：來源路徑、技能根清單與單檔最大位元組。
+    回傳：回傳符合來源的技能文字內容。
+    例外：輸入、來源或內容不安全時統一拋技能目錄不存在。
+    副作用：執行有界唯讀目錄與檔案輸入輸出。
+    """
+    try:
+        if (not isinstance(來源路徑, Path) or type(根目錄清單) is not tuple
+                or any(not isinstance(根, Path) for 根 in 根目錄清單)
+                or type(最大位元組) is not int or 最大位元組 <= 0):
+            raise 技能目錄不存在
+        結果 = 建立錨定安全技能目錄(
+            根目錄清單, None,
+            上限=技能目錄限制(最大位元組, 最大技能索引項目,
+                               max(2 * (最大位元組 + 1), 最大技能索引總位元組),
+                               最大技能走訪項目),
+        )
+        目標 = _詞法絕對路徑(來源路徑)
+        符合 = [項目 for 項目 in 結果.技能
+              if _詞法絕對路徑(項目.來源目錄 / "SKILL.md") == 目標]
+        if len(符合) != 1:
+            raise 技能目錄不存在
+        return 符合[0].內容
+    except (技能目錄不存在, 技能目錄錯誤, FileNotFoundError, PermissionError, UnicodeError):
+        raise 技能目錄不存在 from None
+
+
+
+
+def _從目錄讀取技能(
+    目錄描述器: int, 名稱: str, 初始狀態: os.stat_result, 最大位元組: int, 預算: _技能讀取預算,
+) -> bytes:
+    """相對錨定父目錄開啟技能並執行雙讀。
+
+    參數：父目錄描述器、名稱、初始狀態、單檔上限與共享讀取預算。
+    回傳：回傳兩次讀取一致的原始位元組。
+    例外：來源競態、不安全或超限時拋技能目錄例外。
+    副作用：讀取、定位並關閉技能檔案描述器，且遞減共享預算。
+    """
+    檔案描述器 = os.open(名稱, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=目錄描述器)
+    失敗: BaseException | None = None
+    try:
+        開啟狀態 = os.fstat(檔案描述器)
+        if (not stat.S_ISREG(開啟狀態.st_mode) or 開啟狀態.st_size > 最大位元組
+                or _檔案身分(初始狀態) != _檔案身分(開啟狀態)):
+            raise 技能目錄不存在
+        每次配置 = 開啟狀態.st_size + 1
+        所需 = 2 * 每次配置
+        if 所需 > 預算.剩餘位元組:
+            raise 技能目錄錯誤("技能目錄超過限制")
+        預算.剩餘位元組 -= 所需
+        原始 = _讀取含探測(檔案描述器, 開啟狀態.st_size)
+        讀後 = os.fstat(檔案描述器)
+        if _檔案身分(開啟狀態) != _檔案身分(讀後) or len(原始) != 讀後.st_size:
+            raise 技能目錄不存在
+        os.lseek(檔案描述器, 0, os.SEEK_SET)
+        驗證 = _讀取含探測(檔案描述器, 讀後.st_size)
+        驗證後 = os.fstat(檔案描述器)
+        if (_檔案身分(讀後) != _檔案身分(驗證後)
+                or hashlib.sha256(原始).digest() != hashlib.sha256(驗證).digest()):
+            raise 技能目錄不存在
+        return 原始
+    except BaseException as 錯誤:
+        失敗 = 錯誤
+        raise
+    finally:
+        _關閉且不覆蓋(檔案描述器, 失敗)
+
+
+def _讀取含探測(檔案描述器: int, 已知大小: int) -> bytes:
+    """讀取已知大小並額外探測一個位元組。
+
+    參數：檔案描述器與已知檔案大小。
+    回傳：回傳不超過已知大小的位元組。
+    例外：讀到額外位元組時拋技能目錄不存在；系統例外原樣傳出。
+    副作用：推進檔案描述器的讀取位置。
+    """
+    區塊: list[bytes] = []
+    剩餘 = 已知大小 + 1
+    while 剩餘:
+        內容 = os.read(檔案描述器, min(65_536, 剩餘))
+        if not 內容:
+            break
+        區塊.append(內容)
+        剩餘 -= len(內容)
+    結果 = b"".join(區塊)
+    if len(結果) > 已知大小:
+        raise 技能目錄不存在
+    return 結果
+
+
 def _驗證輸入(根目錄清單, 啟用技能, 重複視為不存在, 上限) -> None:
     """驗證技能目錄公開輸入。
 
