@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import sqlite3
 import stat
+import sys
 
 import pytest
 
@@ -49,6 +50,144 @@ def _資料庫(tmp_path: Path, *, 有版本: bool = True) -> tuple[Path, sqlite3
         )
     連線.commit()
     return 路徑, 連線
+
+
+def test_開安全絕對目錄close釋放後失敗不重關舊fd且不洩漏next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ownership transfer 後 close 已釋放舊 fd 時，外層不得再 close stale fd。"""
+    目標 = tmp_path / "parent" / "target"
+    目標.mkdir(parents=True)
+    原開啟 = 協調模組.os.open
+    原關閉 = 協調模組._系統關閉
+    已開啟: list[int] = []
+    關閉紀錄: list[int] = []
+    重用哨兵: list[int] = []
+
+    def 記錄開啟(*參數, **關鍵字):
+        描述元 = 原開啟(*參數, **關鍵字)
+        已開啟.append(描述元)
+        return 描述元
+
+    def 首次關閉後失敗(描述元: int):
+        關閉紀錄.append(描述元)
+        原關閉(描述元)
+        if len(關閉紀錄) == 1:
+            # 真正重用剛釋放的 fd；若外層誤關 stale old，會關掉此 sentinel。
+            哨兵 = 原開啟(os.devnull, os.O_RDONLY)
+            assert 哨兵 == 描述元
+            重用哨兵.append(哨兵)
+            raise OSError("close-after-release")
+
+    monkeypatch.setattr(協調模組.os, "open", 記錄開啟)
+    monkeypatch.setattr(協調模組, "_系統關閉", 首次關閉後失敗)
+    try:
+        with pytest.raises(OSError, match="close-after-release"):
+            協調模組._開安全絕對目錄(目標)
+
+        assert len(已開啟) == 2
+        assert 關閉紀錄 == 已開啟
+        assert len(重用哨兵) == 1
+        os.fstat(重用哨兵[0])
+        with pytest.raises(OSError):
+            os.fstat(已開啟[1])
+    finally:
+        for 描述元 in 重用哨兵:
+            原關閉(描述元)
+
+
+def test_開安全絕對目錄舊close成功後下一opcode控制仍清理next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """old close 回傳後、下一 opcode 前注入控制，outer owned slot 必須已持有 next。"""
+    目標 = tmp_path / "parent" / "target"
+    目標.mkdir(parents=True)
+    原開啟 = 協調模組.os.open
+    原關閉 = 協調模組._系統關閉
+    原控制 = KeyboardInterrupt("after-old-close-before-next-opcode", 23)
+    已開啟: list[int] = []
+    關閉紀錄: list[int] = []
+    舊關閉已回傳 = False
+
+    def 記錄開啟(*參數, **關鍵字):
+        描述元 = 原開啟(*參數, **關鍵字)
+        已開啟.append(描述元)
+        return 描述元
+
+    def 記錄關閉(描述元: int):
+        nonlocal 舊關閉已回傳
+        關閉紀錄.append(描述元)
+        原關閉(描述元)
+        if len(關閉紀錄) == 1:
+            舊關閉已回傳 = True
+
+    def opcode追蹤(框架, 事件, 參數):
+        if 框架.f_code is 協調模組._開安全絕對目錄.__code__:
+            框架.f_trace_opcodes = True
+            if 事件 == "opcode" and 舊關閉已回傳:
+                raise 原控制
+        return opcode追蹤
+
+    monkeypatch.setattr(協調模組.os, "open", 記錄開啟)
+    monkeypatch.setattr(協調模組, "_系統關閉", 記錄關閉)
+    sys.settrace(opcode追蹤)
+    try:
+        with pytest.raises(KeyboardInterrupt) as 捕捉:
+            協調模組._開安全絕對目錄(目標)
+    finally:
+        sys.settrace(None)
+
+    assert 捕捉.value is 原控制 and 捕捉.value.args == ("after-old-close-before-next-opcode", 23)
+    assert len(已開啟) == 2
+    assert 關閉紀錄 == 已開啟
+    for 描述元 in 已開啟:
+        with pytest.raises(OSError):
+            os.fstat(描述元)
+
+
+def test_開安全絕對目錄close釋放前失敗不猜測重試並保留控制物件(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """close 是否釋放不明時不得重試 stale fd；next cleanup 不得遮蔽控制例外。"""
+    目標 = tmp_path / "parent" / "target"
+    目標.mkdir(parents=True)
+    原開啟 = 協調模組.os.open
+    原關閉 = 協調模組._系統關閉
+    原控制 = KeyboardInterrupt("close-before-release", 17)
+    已開啟: list[int] = []
+    關閉紀錄: list[int] = []
+
+    def 記錄開啟(*參數, **關鍵字):
+        描述元 = 原開啟(*參數, **關鍵字)
+        已開啟.append(描述元)
+        return 描述元
+
+    def 首次關閉前控制失敗(描述元: int):
+        關閉紀錄.append(描述元)
+        if len(關閉紀錄) == 1:
+            raise 原控制
+        原關閉(描述元)
+        raise OSError("next-cleanup-after-release")
+
+    monkeypatch.setattr(協調模組.os, "open", 記錄開啟)
+    monkeypatch.setattr(協調模組, "_系統關閉", 首次關閉前控制失敗)
+    try:
+        with pytest.raises(KeyboardInterrupt) as 捕捉:
+            協調模組._開安全絕對目錄(目標)
+
+        assert 捕捉.value is 原控制 and 捕捉.value.args == ("close-before-release", 17)
+        assert len(已開啟) == 2
+        assert 關閉紀錄 == 已開啟
+        assert len(關閉紀錄) == len(set(關閉紀錄))
+        os.fstat(已開啟[0])
+        with pytest.raises(OSError):
+            os.fstat(已開啟[1])
+    finally:
+        if 已開啟:
+            try:
+                原關閉(已開啟[0])
+            except OSError:
+                pass
 
 
 def test_標記孤兒完整重驗後原子移入固定隔離區(tmp_path: Path) -> None:
