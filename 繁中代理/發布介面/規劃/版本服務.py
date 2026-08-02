@@ -1,8 +1,13 @@
-"""PUB P05 既有發布端點的不可變版本配置服務。"""
+"""PUB P05 既有發布端點的不可變版本配置服務。
+
+參數／欄位：不適用；本模組定義版本配置、啟用與目前版本解析契約。
+回傳：不適用；各服務與資料型別的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、常數與函式，不開啟資料庫或變更目前版本。
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from dataclasses import dataclass, field
@@ -16,7 +21,6 @@ _JSON深度上限 = 64
 from .端點發布 import (
     發布版本快照,
     端點發布輸入錯誤,
-    _schema指紋,
     _正規JSON,
     _是有限非負,
     _是識別,
@@ -24,11 +28,11 @@ from .端點發布 import (
     _安全關閉,
     _拋出清理控制,
     _清除例外鏈,
-    _遷移ledger,
     _重建版本快照,
     _驗證已開啟資料庫路徑,
     _驗證既有資料庫路徑,
 )
+from ..資料庫結構契約 import 驗證資料庫結構 as _權威驗證資料庫結構
 from .綱要 import _slug格式
 class 版本配置輸入錯誤(ValueError):
     """代表 P05 scalar 或 prepared snapshot 不符合固定契約。"""
@@ -68,7 +72,14 @@ class BundlePublicationVerifier(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class 版本啟用結果:
-    """成功提交後的 immutable pointer/audit receipt。"""
+    """保存成功提交後的不可變目前版本指標與稽核收據。
+
+    欄位：``endpoint_id``、舊版與新版識別碼標示指標變更；``version_number``、
+    ``audit_id`` 與 ``activated_at`` 保存版本號碼、稽核識別碼及啟用時間。
+    回傳：建立通過欄位驗證的不可變啟用結果。
+    例外：欄位型別、格式或界限無效時拋出 ``版本啟用輸入錯誤``。
+    副作用：建構時只驗證並保存欄位，不讀寫資料庫或稽核儲存區。
+    """
 
     endpoint_id: str
     old_version_id: str | None
@@ -78,6 +89,13 @@ class 版本啟用結果:
     activated_at: float
 
     def __post_init__(self) -> None:
+        """驗證版本啟用結果的識別碼、版本號碼與時間。
+
+        參數：無額外參數；讀取目前結果實例的六個不可變欄位。
+        回傳：驗證成功時回傳 ``None``。
+        例外：欄位 exact type、格式或界限不符時拋出 ``版本啟用輸入錯誤``。
+        副作用：只讀取實例欄位，不修改資料庫或外部狀態。
+        """
         if (type(self) is not 版本啟用結果 or not _是識別(self.endpoint_id)
                 or (self.old_version_id is not None and not _是識別(self.old_version_id))
                 or not _是識別(self.new_version_id) or not _是識別(self.audit_id)
@@ -88,7 +106,14 @@ class 版本啟用結果:
 
 @dataclass(frozen=True, slots=True)
 class 已釘選版本:
-    """只保存 immutable scalar/canonical bytes；每次取快照皆重新 detached。"""
+    """只保存不可變純量與正規文字，每次取用皆重建脫離快照。
+
+    欄位：端點、服務帳戶與版本識別碼指定版本；版本號碼、結構變更旗標、建立時間
+    與正規版本 JSON 保存可重驗內容。
+    回傳：建立可反覆重建全新 ``發布版本快照`` 的不可變釘選版本。
+    例外：欄位或正規內容無法安全重建時拋出 ``目前版本解析錯誤``；控制流程例外原樣傳出。
+    副作用：建構時解析並重建短暫快照以驗證內容，不讀寫資料庫或修改外部狀態。
+    """
 
     endpoint_id: str
     service_account_id: str
@@ -99,6 +124,14 @@ class 已釘選版本:
     _版本JSON: str = field(repr=False)
 
     def __post_init__(self) -> None:
+        """重驗釘選版本純量並確認正規版本快照可安全重建。
+
+        參數：無額外參數；讀取目前實例的釘選欄位與正規 JSON 文字。
+        回傳：驗證成功時回傳 ``None``。
+        例外：控制流程例外原樣傳出；其他資料或解析異常固定映射為
+        ``目前版本解析錯誤``。
+        副作用：配置並清除短暫快照資料，不讀寫資料庫或修改外部狀態。
+        """
         snapshot = None
         失敗 = False
         try:
@@ -170,7 +203,13 @@ class 版本配置結果:
         ):
             _拒絕輸入()
 class SQLite版本配置服務:
-    """以 BEGIN IMMEDIATE 配置下一個 create-only immutable version。"""
+    """以立即交易配置下一個只能建立一次的不可變版本。
+
+    參數／欄位：建構時保存資料庫路徑、版本識別工廠、時鐘與連線工廠。
+    回傳：建立可執行配置、啟用及目前版本解析的服務實例。
+    例外：建構只保存參照；個別服務操作依其文件字串傳出輸入、存取或交易錯誤。
+    副作用：建構不呼叫工廠或開啟資料庫；服務操作才會依各自契約管理交易。
+    """
 
     def __init__(
         self,
@@ -179,6 +218,14 @@ class SQLite版本配置服務:
         clock: Callable[[], float],
         connection_factory: Callable[..., sqlite3.Connection] = sqlite3.connect,
     ) -> None:
+        """保存版本配置服務所需路徑、工廠與時鐘。
+
+        參數：資料庫路徑指定既有 SQLite；版本識別工廠與時鐘提供交易資料；
+        連線工廠建立受服務管理的連線。
+        回傳：無。
+        例外：建構只保存參照，沒有預期例外。
+        副作用：不呼叫任何工廠、不開啟資料庫，也不開始交易。
+        """
         self._資料庫路徑 = database_path
         self._版本識別工廠 = version_id_factory
         self._時鐘 = clock
@@ -384,7 +431,16 @@ def _配置交易(
     connection: sqlite3.Connection, owner: str, endpoint_id: str,
     snapshot: 發布版本快照, id_factory: Callable[[], str], clock: Callable[[], float],
 ) -> 版本配置結果:
-    """鎖後驗 schema/authority/序列，唯一 INSERT 後耐久提交。"""
+    """鎖後驗證結構、權限與序列，唯一寫入後耐久提交。
+
+    參數：連線由本函式完成交易及關閉；擁有者與端點識別授權目標；快照提供
+    不可變版本資料；識別工廠與時鐘提供新列純量。
+    回傳：成功提交後的 ``版本配置結果``。
+    例外：存取不符時拋出 ``版本存取錯誤``；一般交易失敗固定映射為
+    ``版本配置錯誤``；清理控制流程例外依契約原樣傳出。
+    副作用：設定外鍵、開始立即交易、驗證資料庫、插入版本、提交並關閉連線；
+    失敗時回滾且關閉連線。
+    """
     begun = committed = ordinary_failure = access_failure = False
     ledger = rows = raw = endpoint = aggregate = previous = version_id = created_at = result = None
     count = minimum = maximum = number = input_json = response_json = parameters = cursor = None
@@ -397,11 +453,7 @@ def _配置交易(
             raise sqlite3.DatabaseError
         connection.execute("BEGIN IMMEDIATE")
         begun = True
-        ledger = tuple(connection.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version"))
-        rows = list(connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
-        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-        if ledger != _遷移ledger or hashlib.sha256(raw.encode()).hexdigest() != _schema指紋:
-            raise sqlite3.DatabaseError
+        _權威驗證資料庫結構(connection)
         endpoint = connection.execute(
             "SELECT owner_user_id,status FROM published_endpoints WHERE id=?", (endpoint_id,),
         ).fetchone()
@@ -500,18 +552,16 @@ def _配置交易(
 
 
 def _驗證schema(connection: sqlite3.Connection) -> None:
-    """在既有交易/read snapshot 驗證完整 migration ledger 與 schema。"""
+    """在既有交易讀取快照內驗證完整遷移帳本與資料庫結構。
+
+    參數：``connection`` 是已開始交易且由呼叫端管理的 SQLite 連線。
+    回傳：中央帳本與結構指紋完全符合時回傳 ``None``。
+    例外：控制流程例外原樣傳出；中央驗證器的資料庫結構錯誤原樣傳出。
+    副作用：只讀取中央結構中繼資料並清除短暫容器，不提交、回滾或關閉連線。
+    """
     ledger = rows = raw = None
     try:
-        ledger = tuple(connection.execute(
-            "SELECT version,name FROM published_api_schema_migrations ORDER BY version"
-        ))
-        rows = list(connection.execute(
-            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
-        ))
-        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-        if ledger != _遷移ledger or hashlib.sha256(raw.encode()).hexdigest() != _schema指紋:
-            raise sqlite3.DatabaseError
+        _權威驗證資料庫結構(connection)
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         if type(rows) is list:
             rows.clear()

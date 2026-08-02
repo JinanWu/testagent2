@@ -1,9 +1,14 @@
-"""PUB P04 端點發布 DTO 與 SQLite 原子交易。"""
+"""PUB P04 端點發布資料傳輸物件與 SQLite 原子交易。
+
+參數／欄位：不適用；本模組定義發布快照、初始憑證、結果與交易服務。
+回傳：不適用；各資料型別與發布操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、常數與函式，不開啟資料庫或發布端點。
+"""
 
 from __future__ import annotations
 
 import json
-import hashlib
 import math
 import os
 
@@ -15,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 from ..憑證.儲存庫 import _allowlist_json有效
+from ..資料庫結構契約 import 驗證資料庫結構
 from .綱要 import 發布值確認, 規劃草稿, _重建公開草稿
 
 _JSON_UTF8上限 = 1024 * 1024
@@ -30,15 +36,6 @@ _禁止秘密鍵 = re.compile(
 )
 _輸入錯誤訊息 = "端點發布輸入無效"
 _發布錯誤訊息 = "端點發布失敗"
-_schema指紋 = "3e33dee54d88e50cdd217a277087f692c6b4b341d9c7befbdd399af2fe957939"
-_遷移ledger = (
-    (1, "0001_建立發布端點核心.sql"), (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"), (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"), (6, "0006_擴充稽核事件契約.sql"),
-    (7, "0007_建立不可逆遮蔽墓碑.sql"), (8, "0008_建立五年保存候選索引.sql"),
-    (9, "0009_建立保存相依識別索引.sql"), (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 
 
 class 端點發布輸入錯誤(ValueError):
@@ -51,7 +48,15 @@ class 端點發布錯誤(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class 發布版本快照:
-    """完整對應 published v1 欄位的 detached 快照。"""
+    """完整對應已發布第一版欄位的脫離快照。
+
+    欄位：需求、系統提示詞、技能與工具、工具結構及修訂、模型與重試設定、技能套件
+    清單、輸入與回應結構，以及建立者識別碼共同描述待發布版本。
+    回傳：建立已重建可變 JSON 樹且通過固定契約驗證的不可變快照。
+    例外：欄位型別、界限、JSON 或契約無效時拋出 ``端點發布輸入錯誤``；
+    控制流程例外原樣傳出。
+    副作用：建構時以脫離副本取代可變欄位，不讀寫資料庫或其他外部資源。
+    """
 
     original_requirement_text: str = field(repr=False)
     system_prompt: str = field(repr=False)
@@ -67,7 +72,14 @@ class 發布版本快照:
     created_by_user_id: str
 
     def __post_init__(self) -> None:
-        """以單次 exact traversal 建立 module-owned JSON tree。"""
+        """以單次精確走訪驗證並建立模組自有的 JSON 樹。
+
+        參數：無額外參數；讀取目前快照實例的全部發布欄位。
+        回傳：重建與驗證成功時回傳 ``None``。
+        例外：輸入型別、界限、JSON 或欄位契約不符時傳出 ``端點發布輸入錯誤``；
+        控制流程例外原樣傳出。
+        副作用：以不可變欄位取代可變輸入的脫離副本，不執行外部輸入輸出。
+        """
         try:
             _重建版本快照(self, 建構中=True)
         except BaseException:
@@ -77,7 +89,15 @@ class 發布版本快照:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class 已準備初始憑證:
-    """只攜帶已加密憑證材料，結構上不可能接收 plaintext key。"""
+    """只攜帶已加密憑證材料，結構上不接受明文金鑰。
+
+    欄位：名稱、用途、金鑰版本、nonce、密文、摘要、前綴、末四碼、到期時間、
+    允許位址、速率上限與建立者識別碼描述已準備憑證。
+    回傳：建立已驗證密文材料與脫離允許清單的不可變憑證資料。
+    例外：欄位型別、密文、摘要、界限或允許清單無效時拋出 ``端點發布輸入錯誤``；
+    控制流程例外原樣傳出。
+    副作用：建構時重建可變允許清單，不讀寫資料庫或接觸明文金鑰。
+    """
 
     name: str
     purpose: str
@@ -93,7 +113,14 @@ class 已準備初始憑證:
     created_by_user_id: str
 
     def __post_init__(self) -> None:
-        """驗證已準備密文、hash、生命週期與 canonical allowlist。"""
+        """驗證已準備密文、摘要、生命週期與正規允許清單。
+
+        參數：無額外參數；讀取目前憑證實例的密文與公開中繼欄位。
+        回傳：重建與驗證成功時回傳 ``None``。
+        例外：輸入型別、密文、摘要、界限或允許清單不符時傳出
+        ``端點發布輸入錯誤``；控制流程例外原樣傳出。
+        副作用：以脫離副本取代可變允許清單，不存取資料庫或明文金鑰。
+        """
         try:
             _重建初始憑證(self, 建構中=True)
         except BaseException:
@@ -360,7 +387,16 @@ def _驗證並寫入(
     credential: 已準備初始憑證, confirmation: 發布值確認,
     ids: tuple[Any, ...], created_at: float,
 ) -> None:
-    """鎖住 schema 後驗證 fingerprint，並以明確狀態機完成單一交易。"""
+    """鎖住資料庫結構後驗證指紋，並以明確狀態機完成單一交易。
+
+    參數：連線由本函式完成交易及關閉；擁有者、草稿、快照、憑證、確認、
+    識別碼與建立時間共同描述待發布的固定第一版圖形。
+    回傳：成功提交並關閉連線後回傳 ``None``。
+    例外：交易或結構失敗固定映射為 ``端點發布錯誤``；回滾或關閉時的控制流程
+    例外依清理契約原樣傳出。
+    副作用：設定外鍵及驗證函式、開始立即交易、寫入端點圖形、提交並關閉連線；
+    失敗時回滾且關閉連線。
+    """
     已開始 = False
     已提交 = False
     交易失敗 = False
@@ -376,11 +412,7 @@ def _驗證並寫入(
         )
         連線.execute("BEGIN IMMEDIATE")
         已開始 = True
-        ledger = tuple(連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version"))
-        rows = list(連線.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
-        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-        if ledger != _遷移ledger or hashlib.sha256(raw.encode("utf-8")).hexdigest() != _schema指紋:
-            raise sqlite3.DatabaseError
+        驗證資料庫結構(連線)
         endpoint_id, version_id, credential_id, account_id = ids[:4]
         _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (account_id, created_at))
         _執行一列(
