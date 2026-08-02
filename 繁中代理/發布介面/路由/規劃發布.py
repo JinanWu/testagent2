@@ -28,6 +28,309 @@ _錯誤對照 = {
 }
 
 
+class _嚴格請求(BaseModel):
+    """拒絕額外欄位與型別轉換的管理請求基底。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def 驗證JSON資源(cls, 值: Any) -> Any:
+        """限制巢狀 JSON 的深度、節點與字串 UTF-8 大小。"""
+        if type(值) is dict:
+            _檢查JSON(值, 0, [0])
+        return 值
+
+
+class 建立草稿請求(_嚴格請求):
+    """Planner 需求與內容；只建立不可呼叫的暫存草稿。"""
+
+    原始需求文字: Annotated[StrictStr, Field(alias="original_requirement_text", min_length=1, max_length=16_384)]
+    規劃器內容: Annotated[dict[str, JsonValue], Field(alias="planner_content")]
+
+
+class 發布端點請求(_嚴格請求):
+    """使用者對草稿、slug 與配置的明確發布確認。"""
+
+    草稿識別碼: Annotated[StrictStr, Field(alias="draft_id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")]
+    短名: Annotated[StrictStr, Field(alias="slug", min_length=1, max_length=63, pattern=r"^[a-z0-9][a-z0-9-]*$")]
+    配置確認: Annotated[dict[str, JsonValue], Field(alias="configuration_confirmation")]
+
+
+class 建立版本請求(_嚴格請求):
+    """新不可變版本的完整配置確認。"""
+
+    配置: Annotated[dict[str, JsonValue], Field(alias="configuration")]
+
+
+@dataclass(frozen=True, slots=True)
+class 規劃內容:
+    """傳給整合服務的 detached Planner 投影。"""
+
+    原始需求: str
+    內容: dict[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class 發布確認:
+    """傳給單一原子發布操作的確認投影。"""
+
+    草稿識別碼: str
+    短名: str
+    配置: dict[str, JsonValue]
+
+
+@dataclass(frozen=True, slots=True)
+class 草稿建立結果:
+    """草稿建立後唯一可公開的識別、期限與預覽。"""
+
+    草稿識別碼: Annotated[str, Field(alias="draft_id")]
+    到期時間: Annotated[float, Field(alias="expires_at")]
+    預覽: Annotated[dict[str, JsonValue], Field(alias="preview")]
+
+
+@dataclass(frozen=True, slots=True)
+class 端點發布結果:
+    """原子發布 receipt；初始明文金鑰只供本次成功回應。"""
+
+    端點識別碼: Annotated[str, Field(alias="endpoint_id")]
+    版本識別碼: Annotated[str, Field(alias="version_id")]
+    版本編號: Annotated[int, Field(alias="version_number")]
+    狀態: Annotated[str, Field(alias="status")]
+    初始API金鑰: Annotated[str, Field(alias="initial_api_key")] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class 版本建立結果:
+    """新版本與目前指標完成原子切換後的 receipt。"""
+
+    端點識別碼: Annotated[str, Field(alias="endpoint_id")]
+    版本識別碼: Annotated[str, Field(alias="version_id")]
+    版本編號: Annotated[int, Field(alias="version_number")]
+    目前版本識別碼: Annotated[str, Field(alias="current_version_id")]
+    結構已變更: Annotated[bool, Field(alias="schema_changed")]
+
+
+@dataclass(frozen=True, slots=True)
+class 管理操作錯誤:
+    """整合服務唯一可回傳的固定錯誤分類。"""
+
+    種類: Literal["invalid", "draft_not_found", "endpoint_not_found", "forbidden", "status_conflict", "concurrency", "internal"]
+
+
+class 發布管理服務(Protocol):
+    """由整合層提供草稿與兩個原子寫入操作。"""
+
+    def 建立草稿(self, *, 擁有者使用者識別碼: str, 規劃: 規劃內容) -> 草稿建立結果 | 管理操作錯誤:
+        """建立不具發布副作用的暫存草稿。"""
+        ...
+
+    def 原子發布(self, *, 擁有者使用者識別碼: str, 確認: 發布確認) -> 端點發布結果 | 管理操作錯誤:
+        """以單一原子操作發布端點、首版與初始憑證。"""
+        ...
+
+    def 原子建立並切換版本(
+        self, *, 擁有者使用者識別碼: str, 是否管理者: bool, 端點識別碼: str,
+        配置: dict[str, JsonValue],
+    ) -> 版本建立結果 | 管理操作錯誤:
+        """原子建立不可變版本並切換目前版本指標。"""
+        ...
+
+
+def _呼叫服務(服務: 發布管理服務, 方法名稱: str, 重建器=None, 重建參數=(), **參數):
+    """在同一 totalized 邊界呼叫服務並重建不可信回執。"""
+    結果 = 方法 = 安全結果 = None
+    控制流: list[BaseException] = []
+    失敗 = False
+    try:
+        try:
+            方法 = object.__getattribute__(服務, 方法名稱)
+            結果 = 方法(**參數)
+            if type(結果) is 管理操作錯誤:
+                安全結果 = _重建管理錯誤(結果)
+            elif 重建器 is None:
+                安全結果 = 結果
+            else:
+                安全結果 = 重建器(結果, *重建參數)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
+            控制流.append(錯誤)
+        except BaseException:
+            失敗 = True
+        if 控制流:
+            安全結果 = None
+            _重拋控制流(控制流)
+        if 失敗:
+            安全結果 = None
+            _無效結果()
+        return 安全結果
+    finally:
+        服務 = 方法名稱 = 重建器 = 重建參數 = 參數 = 方法 = 結果 = 安全結果 = None
+
+
+def _重拋控制流(暫存: list[BaseException]) -> None:
+    """pop 後重拋原控制流，使 production frame 不保留其 args。"""
+    raise 暫存.pop()
+
+
+def _重建管理錯誤(來源: 管理操作錯誤) -> 管理操作錯誤:
+    """重建 exact error receipt，拒絕竄改種類。"""
+    種類 = object.__getattribute__(來源, "種類")
+    if type(種類) is not str or 種類 not in _錯誤對照:
+        raise ValueError
+    return 管理操作錯誤(種類)
+
+
+def _拋出錯誤(錯誤: 管理操作錯誤) -> None:
+    """只接受模組自有 exact error DTO 並套固定映射。"""
+    try:
+        種類 = object.__getattribute__(錯誤, "種類")
+        狀態, 訊息 = _錯誤對照[種類]
+    except BaseException:
+        raise HTTPException(status_code=500, detail="發布管理服務失敗") from None
+    raise HTTPException(status_code=狀態, detail=訊息)
+
+
+def _重建身份(身份: 使用者上下文) -> tuple[str, bool]:
+    """沿用 M01 的精確可信 session identity 契約。"""
+    身份類型 = 使用者 = 管理者 = 結果 = None
+    try:
+        身份類型 = type(身份)
+        if 身份類型 is not 使用者上下文:
+            raise HTTPException(status_code=500, detail="使用者身份不符合契約")
+        使用者 = object.__getattribute__(身份, "user_id")
+        管理者 = object.__getattribute__(身份, "is_admin")
+        if not _是識別(使用者) or type(管理者) is not bool:
+            raise HTTPException(status_code=500, detail="使用者身份不符合契約")
+        結果 = (使用者, 管理者)
+        return 結果
+    finally:
+        身份 = 身份類型 = 使用者 = 管理者 = 結果 = None
+
+
+def _重建草稿結果(來源: object) -> 草稿建立結果:
+    """驗證並重建模組自有的安全草稿結果。"""
+    識別 = 到期 = 預覽 = 安全結果 = None
+    控制流: list[BaseException] = []
+    失敗 = type(來源) is not 草稿建立結果
+    try:
+        try:
+            if not 失敗:
+                識別 = object.__getattribute__(來源, "草稿識別碼")
+                到期 = object.__getattribute__(來源, "到期時間")
+                預覽 = object.__getattribute__(來源, "預覽")
+                失敗 = not _是識別(識別) or not _是時間(到期)
+            if not 失敗:
+                安全結果 = 草稿建立結果(識別, 到期, _複製JSON物件(預覽))
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
+            控制流.append(錯誤)
+        except BaseException:
+            失敗 = True
+        if 控制流:
+            安全結果 = None
+            _重拋控制流(控制流)
+        if 失敗:
+            安全結果 = None
+            _無效結果()
+        return 安全結果
+    finally:
+        來源 = 識別 = 到期 = 預覽 = 安全結果 = None
+
+
+def _重建發布結果(來源: object) -> 端點發布結果:
+    """先驗證所有非秘密槽，最後一次讀取並立即封裝初始金鑰。"""
+    端點 = 版本 = 編號 = 狀態 = 金鑰 = 安全結果 = None
+    控制流: list[BaseException] = []
+    失敗 = type(來源) is not 端點發布結果
+    try:
+        try:
+            if not 失敗:
+                端點 = object.__getattribute__(來源, "端點識別碼")
+                版本 = object.__getattribute__(來源, "版本識別碼")
+                編號 = object.__getattribute__(來源, "版本編號")
+                狀態 = object.__getattribute__(來源, "狀態")
+                失敗 = not _是識別(端點) or not _是識別(版本) or type(編號) is not int or 編號 != 1 or type(狀態) is not str or 狀態 != "active"
+            if not 失敗:
+                金鑰 = object.__getattribute__(來源, "初始API金鑰")
+                if _是金鑰(金鑰):
+                    安全結果 = 端點發布結果(端點, 版本, 編號, 狀態, 金鑰)
+                else:
+                    失敗 = True
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
+            控制流.append(錯誤)
+        except BaseException:
+            失敗 = True
+        if 控制流:
+            安全結果 = None
+            _重拋控制流(控制流)
+        if 失敗:
+            安全結果 = None
+            _無效結果()
+        return 安全結果
+    finally:
+        來源 = 端點 = 版本 = 編號 = 狀態 = 金鑰 = 安全結果 = None
+
+
+def _重建版本結果(來源: object, 端點識別碼: str) -> 版本建立結果:
+    """逐槽精確驗證並重建與 authoritative 路徑端點一致的結果。"""
+    回執端點 = 版本 = 編號 = 目前版本 = 已變更 = 安全結果 = None
+    回執端點類型 = 版本類型 = 編號類型 = 目前版本類型 = 已變更類型 = None
+    端點比較 = 版本比較 = None
+    控制流: list[BaseException] = []
+    失敗 = type(來源) is not 版本建立結果
+    try:
+        try:
+            if not 失敗:
+                回執端點 = 版本建立結果.端點識別碼.__get__(來源, 版本建立結果)
+                回執端點類型 = type(回執端點)
+                失敗 = 回執端點類型 is not str or not _是識別(回執端點)
+            if not 失敗:
+                失敗 = type(端點識別碼) is not str or not _是識別(端點識別碼)
+            if not 失敗:
+                端點比較 = str.__eq__(回執端點, 端點識別碼)
+                失敗 = type(端點比較) is not bool or not 端點比較
+            if not 失敗:
+                版本 = 版本建立結果.版本識別碼.__get__(來源, 版本建立結果)
+                版本類型 = type(版本)
+                失敗 = 版本類型 is not str or not _是識別(版本)
+            if not 失敗:
+                編號 = 版本建立結果.版本編號.__get__(來源, 版本建立結果)
+                編號類型 = type(編號)
+                失敗 = 編號類型 is not int or 編號 < 2 or 編號 > 2_147_483_647
+            if not 失敗:
+                目前版本 = 版本建立結果.目前版本識別碼.__get__(來源, 版本建立結果)
+                目前版本類型 = type(目前版本)
+                失敗 = 目前版本類型 is not str or not _是識別(目前版本)
+            if not 失敗:
+                版本比較 = str.__eq__(目前版本, 版本)
+                失敗 = type(版本比較) is not bool or not 版本比較
+            if not 失敗:
+                已變更 = 版本建立結果.結構已變更.__get__(來源, 版本建立結果)
+                已變更類型 = type(已變更)
+                失敗 = 已變更類型 is not bool
+            if not 失敗:
+                安全結果 = 版本建立結果(回執端點, 版本, 編號, 目前版本, 已變更)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
+            控制流.append(錯誤)
+        except BaseException:
+            失敗 = True
+        if 控制流:
+            安全結果 = None
+            _重拋控制流(控制流)
+        if 失敗:
+            安全結果 = None
+            _無效結果()
+        return 安全結果
+    finally:
+        來源 = 端點識別碼 = 回執端點 = 版本 = 編號 = 目前版本 = 已變更 = None
+        回執端點類型 = 版本類型 = 編號類型 = 目前版本類型 = 已變更類型 = None
+        端點比較 = 版本比較 = 安全結果 = 錯誤 = None
+
+
+def _無效結果() -> None:
+    """以固定且不洩漏內容的服務失敗中止。"""
+    raise HTTPException(status_code=500, detail="發布管理服務失敗") from None
+
+
 def _是識別(值: Any) -> bool:
     """判斷值是否為有界 ASCII 識別碼。"""
     值類型 = 符合 = 結果 = None
