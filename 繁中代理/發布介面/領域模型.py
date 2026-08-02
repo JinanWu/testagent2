@@ -18,6 +18,46 @@ from .嚴格JSON import 建立正規JSON, 解析嚴格JSON
 
 JsonObject = dict[str, Any]
 
+AuditMetadataScalar = bool | int | float | None
+
+_AUDIT_METADATA_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+_AUDIT_RESOURCE_TYPE_PATTERN = re.compile(r"[a-z][a-z0-9_.]{0,63}")
+
+_AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
+    {
+        "raw",
+        "plaintext",
+        "secret",
+        "token",
+        "password",
+        "api_key",
+        "cipher",
+        "master",
+        "private",
+        "filesystem",
+        "path",
+        "hash",
+        "sha256",
+        "full_hash",
+        "schema_path",
+    }
+)
+
+_AUDIT_SAFE_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+
+_AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk[-_]|bearer)")
+
+_AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN = re.compile(r"(?i)[0-9a-f]{64}")
+
+_AUDIT_ACTOR_TYPES = frozenset(("user", "service_account", "system"))
+
+class AuditMetadataError(ValueError):
+    """AuditMetadata 不符合公開安全契約時使用的固定錯誤型別。"""
+
+class AuditReferenceError(ValueError):
+    """稽核參照不符合公開安全契約時使用的固定錯誤型別。"""
+
 class _公開DTO:
     """提供公開 DTO 共用的 JSON 輸出行為。"""
 
@@ -29,6 +69,166 @@ class _公開DTO:
         拋出 TypeError。
         """
         return asdict(self)
+
+class AuditMetadata:
+    """公開稽核 metadata 的安全快照。
+
+    只接受 key 為受限格式的字串，value 為 bool、int、finite float 或 None。
+    建構時會複製輸入 mapping，內部以 read-only mapping 保存，避免呼叫端後續
+    mutation 影響公開契約輸出。
+    """
+
+    _資料: Mapping[str, AuditMetadataScalar]
+
+    def __init__(self, metadata: Mapping[str, AuditMetadataScalar] | None = None) -> None:
+        """驗證 metadata 並建立不可變 defensive snapshot。
+
+        所有 validation failure 都轉為固定 AuditMetadataError 訊息，且在丟出前清除
+        本 frame 的輸入、key 與 value locals，避免敏感字串被 production traceback
+        locals 保留。
+        """
+        錯誤 = False
+        項目列: tuple[tuple[Any, Any], ...] | None = None
+        快照: dict[str, AuditMetadataScalar] | None = None
+        已見鍵: set[str] | None = None
+        鍵: Any = None
+        值: Any = None
+        try:
+            if metadata is None:
+                項目列 = ()
+            elif isinstance(metadata, Mapping):
+                項目列 = tuple(metadata.items())
+            else:
+                錯誤 = True
+                項目列 = ()
+        except Exception:
+            object.__setattr__(self, "_資料", MappingProxyType({}))
+            錯誤 = True
+
+        if not 錯誤:
+            try:
+                assert 項目列 is not None
+                快照 = {}
+                已見鍵 = set()
+                for 鍵, 值 in 項目列:
+                    if not _稽核Metadata鍵合法(鍵) or not _稽核Metadata值合法(值):
+                        錯誤 = True
+                        break
+                    if 鍵 in 已見鍵:
+                        錯誤 = True
+                        break
+                    已見鍵.add(鍵)
+                    快照[鍵] = 值
+            except Exception:
+                錯誤 = True
+
+        if 錯誤:
+            object.__setattr__(self, "_資料", MappingProxyType({}))
+            metadata = 項目列 = 快照 = 已見鍵 = 鍵 = 值 = None
+            raise AuditMetadataError("AuditMetadata 不符合公開契約")
+
+        object.__setattr__(self, "_資料", MappingProxyType(快照 if 快照 is not None else {}))
+
+    def to_json(self) -> dict[str, AuditMetadataScalar]:
+        """回傳依原始順序建立的 ordinary new dict。
+
+        此方法沒有參數與外部副作用；不會拋出contract例外，修改回傳dict也不會改變
+        內部不可變快照。
+        """
+        return dict(self._資料)
+
+class AuditActorRef:
+    """公開稽核事件 actor 的最小安全參照。
+
+    actor_type 僅接受 exact str enum：user、service_account、system。user 與
+    service_account 必須提供安全 actor_id；system 則必須使用 None，避免把系統動作
+    誤綁到任意外部識別值。
+    """
+
+    actor_type: str | None
+    actor_id: str | None
+
+    def __init__(self, actor_type: str, actor_id: str | None) -> None:
+        """驗證 actor 參照並建立 frozen DTO。
+
+        所有 validation failure 都轉成固定 AuditReferenceError；錯誤路徑不保留原始
+        輸入、raw secret、hash 或 path 片段於領域模型 frame locals。
+        """
+        錯誤 = False
+        安全actor_type: str | None = None
+        安全actor_id: str | None = None
+        object.__setattr__(self, "actor_type", None)
+        object.__setattr__(self, "actor_id", None)
+        try:
+            if type(actor_type) is not str or actor_type not in _AUDIT_ACTOR_TYPES:
+                錯誤 = True
+            elif actor_type == "system":
+                if actor_id is not None:
+                    錯誤 = True
+                else:
+                    安全actor_type = actor_type
+                    安全actor_id = None
+            elif _稽核安全識別值合法(actor_id):
+                安全actor_type = actor_type
+                安全actor_id = actor_id
+            else:
+                錯誤 = True
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            actor_type = actor_id = 安全actor_type = 安全actor_id = None
+            raise AuditReferenceError("AuditActorRef 不符合公開契約")
+
+        object.__setattr__(self, "actor_type", 安全actor_type)
+        object.__setattr__(self, "actor_id", 安全actor_id)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 actor JSON，且每次都是 ordinary new dict。"""
+        return {"actor_type": self.actor_type, "actor_id": self.actor_id}
+
+class AuditResourceRef:
+    """公開稽核事件 resource 的最小安全參照。
+
+    resource_type 是小寫資源分類 code，只接受 ``[a-z][a-z0-9_.]{0,63}``；
+    resource_id 重用稽核參照安全 identifier 規則。兩個欄位都必須是 exact str，
+    且都拒絕 raw secret、完整 digest 與本機路徑特徵。
+    """
+
+    resource_type: str | None
+    resource_id: str | None
+
+    def __init__(self, resource_type: str, resource_id: str) -> None:
+        """驗證 resource 參照並建立 frozen DTO。
+
+        所有 validation failure 都轉成固定 AuditReferenceError；錯誤路徑先清除
+        原始輸入與 safe locals，再於 except 區塊外丟出，避免 production traceback
+        locals 保留 secret、digest、path 或測試 marker。
+        """
+        錯誤 = False
+        安全resource_type: str | None = None
+        安全resource_id: str | None = None
+        object.__setattr__(self, "resource_type", None)
+        object.__setattr__(self, "resource_id", None)
+        try:
+            if _稽核資源型別合法(resource_type) and _稽核安全識別值合法(resource_id):
+                安全resource_type = resource_type
+                安全resource_id = resource_id
+            else:
+                錯誤 = True
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            resource_type = resource_id = 安全resource_type = 安全resource_id = None
+            raise AuditReferenceError("AuditResourceRef 不符合公開契約")
+
+        object.__setattr__(self, "resource_type", 安全resource_type)
+        object.__setattr__(self, "resource_id", 安全resource_id)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 resource JSON，且每次都是 ordinary new dict。"""
+        return {"resource_type": self.resource_type, "resource_id": self.resource_id}
 
 class EndpointRef(_公開DTO):
     """公開端點版本的最小參照。"""
@@ -314,6 +514,71 @@ def _重建PublishedError(原始錯誤: Any) -> PublishedError:
     except Exception:
         原始錯誤 = 代碼 = 訊息 = 正規文字 = 細節 = None
         raise ValueError("PublishedError 不符合公開契約") from None
+
+def _稽核Metadata鍵合法(鍵: Any) -> bool:
+    """檢查單一metadata key是否安全。
+
+    參數可為任意值；回傳格式與敏感片段檢查結果，不拋出contract例外，也沒有
+    外部副作用。
+    """
+    if type(鍵) is not str:
+        return False
+    if _AUDIT_METADATA_KEY_PATTERN.fullmatch(鍵) is None:
+        return False
+    return not any(敏感片段 in 鍵 for 敏感片段 in _AUDIT_METADATA_SENSITIVE_KEY_PARTS)
+
+def _稽核Metadata值合法(值: Any) -> bool:
+    """檢查單一metadata value是否為允許的exact scalar。
+
+    參數可為任意值；回傳型別與有限數檢查結果，不拋出contract例外，也沒有
+    外部副作用。
+    """
+    if 值 is None:
+        return True
+    if type(值) is bool:
+        return True
+    if type(值) is int:
+        return True
+    if type(值) is float:
+        return math.isfinite(值)
+    return False
+
+def _稽核安全識別值合法(值: Any) -> bool:
+    """檢查稽核參照 identifier 是否可公開保存。
+
+    參數可為任意值；只回傳 bool，不拋出 contract 例外，也不保存輸入值。合法值
+    需為 exact str、長度 1..128、符合安全字元白名單，並拒絕常見 raw secret、
+    PEM marker、完整 64 hex digest、本機路徑與任何 whitespace。
+    """
+    if type(值) is not str:
+        return False
+    if _AUDIT_SAFE_IDENTIFIER_PATTERN.fullmatch(值) is None:
+        return False
+    return not _稽核參照字串含不安全內容(值)
+
+def _稽核可空安全識別值合法(值: Any) -> bool:
+    """檢查 optional 稽核 identifier；None 表示未綁定，其他值沿用安全規則。"""
+    if 值 is None:
+        return True
+    return _稽核安全識別值合法(值)
+
+def _稽核資源型別合法(值: Any) -> bool:
+    """檢查稽核 resource_type 是否為安全小寫公開 code。"""
+    if type(值) is not str:
+        return False
+    if _AUDIT_RESOURCE_TYPE_PATTERN.fullmatch(值) is None:
+        return False
+    return not _稽核參照字串含不安全內容(值)
+
+def _稽核參照字串含不安全內容(值: str) -> bool:
+    """回傳字串是否帶有 raw secret、digest、路徑或空白特徵。"""
+    if any(字元.isspace() for 字元 in 值):
+        return True
+    if "/" in 值 or "\\" in 值 or 值.startswith("~"):
+        return True
+    if _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN.search(值) is not None:
+        return True
+    return _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN.search(值) is not None
 
 def _凍結JSON值(值: Any) -> Any:
     """將已審核 JSON value 轉為 tuple 與 read-only mapping 組成的快照。"""
