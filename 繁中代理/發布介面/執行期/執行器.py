@@ -24,6 +24,7 @@ from ..技能套件.清單 import (
     計算套件雜湊 as 計算清單套件雜湊,
 )
 from ..技能套件.安全複製 import 技能套件最大總位元組數
+from .工具結果 import 工具設定錯誤, 工具逾時
 from .工具版本庫 import 工具快照項目
 from .模型契約 import 模型設定快照, 複製JSON, 重建設定
 
@@ -35,12 +36,18 @@ _最大檔案數 = 256
 _最大提示位元組 = 1_000_000
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _綱要修正訊息 = "輸出未符合回應綱要；請只回傳符合綱要的 JSON。"
+_最大工具回合 = 8
+_最大工具呼叫 = 16
+_最大工具結果位元組 = 262_144
 
 class 發布執行錯誤(RuntimeError):
     """版本、套件或組裝邊界失敗時不洩漏內容的固定錯誤。"""
 
 class 結構化輸出錯誤(發布執行錯誤):
     """兩次模型輸出皆不符合版本釘選綱要。"""
+
+class 發布工具執行錯誤(發布執行錯誤):
+    """釘選工具呼叫無效、失敗或超過有界執行額度。"""
 
 class 發布執行快照提供者(Protocol):
     """只依 exact endpoint version id 取得 immutable 快照。"""
@@ -593,7 +600,7 @@ import weakref
 
 from .工具版本庫 import 建立版本釘選工具登錄器
 from .服務帳戶 import 載入服務帳戶上下文或失敗關閉
-from .模型契約 import 模型轉接請求
+from .模型契約 import 模型轉接請求, 模型逾時錯誤
 from .模型轉接器 import 建立模型轉接器
 
 
@@ -615,6 +622,107 @@ def _建立執行模型請求(狀態: tuple[object, ...], 輸入原文: str, 修
     except BaseException:
         狀態 = 輸入原文 = 修正 = 輸入 = 訊息 = 工具 = 結構 = 結果 = None
         raise
+
+
+def _建立初始訊息(狀態: tuple[object, ...], 輸入原文: str) -> list[dict[str, Any]]:
+    """建立 single-attempt 起始對話；metadata 僅存在不可信 user role。
+
+    參數：sealed executor state 與 canonical input。回傳：fresh messages。
+    例外：輸入失真時傳出驗證例外。副作用：不呼叫 provider 或工具。
+    """
+    輸入 = _解析正規JSON(輸入原文, 500_000)
+    return [
+        {"role": "system", "content": 狀態[1]},
+        {"role": "user", "content": 輸入原文, "metadata": {"input_json": 輸入}},
+    ]
+
+
+def _建立對話模型請求(狀態: tuple[object, ...], 訊息: list[dict[str, Any]]) -> 模型轉接請求:
+    """由 invocation-local transcript 與建立點釘選工具／schema 建立 fresh request。
+
+    參數：sealed state 與已驗證 transcript。回傳：detached 模型請求。
+    例外：任一資料失真時傳出驗證例外。副作用：只讀 captured registry。
+    """
+    工具 = 狀態[2].列出工具結構()  # type: ignore[union-attr]
+    結構 = None if 狀態[4] is None else _解析正規JSON(狀態[4], 500_000)
+    return 模型轉接請求(訊息, 工具, 結構)
+
+
+def _工具綱要索引(登錄器: object) -> dict[str, dict[str, Any]]:
+    """捕捉目前 executor 所封存 release 的 exact 名稱與 parameters schema。
+
+    參數：版本釘選工具登錄器。回傳：fresh name→schema 索引。
+    例外：重名或工具外形失真時拋出驗證例外。副作用：不查詢其他 release。
+    """
+    結果: dict[str, dict[str, Any]] = {}
+    for 項 in 登錄器.列出工具結構():  # type: ignore[union-attr]
+        if type(項) is not dict or frozenset(項) != frozenset(("type", "function")):
+            raise ValueError
+        函數 = dict.__getitem__(項, "function")
+        if dict.__getitem__(項, "type") != "function" or type(函數) is not dict:
+            raise ValueError
+        if frozenset(函數) != frozenset(("name", "description", "parameters")):
+            raise ValueError
+        名稱, 綱要 = dict.__getitem__(函數, "name"), dict.__getitem__(函數, "parameters")
+        if not _是識別碼(名稱) or type(綱要) is not dict or 名稱 in 結果:
+            raise ValueError
+        Draft202012Validator.check_schema(綱要)
+        結果[名稱] = 綱要
+    return 結果
+
+
+def _附加工具回合(訊息: list[dict[str, Any]], 回應: object,
+                   登錄器: object, 呼叫們: list[dict[str, Any]]) -> None:
+    """嚴格驗證並執行一回 captured-release calls，再附加 assistant/tool messages。
+
+    參數：local transcript、模型回應、釘選登錄器及 detached calls。回傳：無。
+    例外：name/id/arguments/schema、handler 或結果額度不符時固定工具失敗。
+    副作用：每個完整預檢成功的 call 恰好執行一次；結果只加入 local transcript。
+    """
+    try:
+        綱要們 = _工具綱要索引(登錄器)
+        已看: set[str] = set()
+        描述 = []
+        for 呼叫 in 呼叫們:
+            if type(呼叫) is not dict or frozenset(呼叫) != frozenset(("id", "type", "function")):
+                raise ValueError
+            識別, 類型, 函數 = (dict.__getitem__(呼叫, 鍵) for 鍵 in ("id", "type", "function"))
+            if not _是識別碼(識別) or 識別 in 已看 or 類型 != "function" or type(函數) is not dict:
+                raise ValueError
+            if frozenset(函數) != frozenset(("name", "arguments")):
+                raise ValueError
+            名稱, 參數原文 = (dict.__getitem__(函數, 鍵) for 鍵 in ("name", "arguments"))
+            if not _是識別碼(名稱) or 名稱 not in 綱要們 or type(參數原文) is not str:
+                raise ValueError
+            參數 = _解析模型JSON(參數原文, 32_768)
+            if type(參數) is not dict:
+                raise ValueError
+            _建立綱要驗證器(綱要們[名稱]).validate(參數)
+            已看.add(識別)
+            描述.append((識別, 名稱, 參數))
+        安全呼叫 = 複製JSON(呼叫們, 1_000_000)
+        訊息.append({"role": "assistant", "content": object.__getattribute__(回應, "text"),
+                   "tool_calls": 安全呼叫,
+                   "finish_reason": object.__getattribute__(回應, "finish_reason")})
+        結果總量 = 0
+        for 識別, 名稱, 參數 in 描述:
+            工具結果 = 登錄器.呼叫工具(名稱, 參數)  # type: ignore[union-attr]
+            if type(工具結果) is not str:
+                raise ValueError
+            結果總量 += len(工具結果.encode("utf-8"))
+            if 結果總量 > _最大工具結果位元組:
+                raise ValueError
+            結果物件 = _解析模型JSON(工具結果, _最大工具結果位元組)
+            if type(結果物件) is not dict or dict.get(結果物件, "success") is not True:
+                raise ValueError
+            訊息.append({"role": "tool", "tool_call_id": 識別,
+                       "name": 名稱, "content": 工具結果})
+    except _控制流程:
+        raise
+    except BaseException as 錯誤:
+        if type(錯誤) is 工具逾時 or type(錯誤) is 工具設定錯誤:
+            raise
+        raise 發布工具執行錯誤("發布工具執行失敗") from None
 
 
 class 發布執行器:
@@ -668,6 +776,59 @@ class 發布執行器:
         if 失敗:
             raise 發布執行錯誤(_固定錯誤) from None
         raise AssertionError
+
+    def 執行單次(self, 請求: 發布執行請求):
+        """執行一個 INV attempt；允許有界工具 roundtrip，但不做 schema 修正重試。
+
+        參數：``請求`` 是已脫離 JSON。回傳：沒有未執行 tool call 的最終模型回應。
+        例外：工具外形、schema、handler 或額度失敗固定為 ``發布工具執行錯誤``；
+        其他普通失敗固定化；控制流程 identity 保留。副作用：只呼叫 captured provider
+        與 exact-release handler。
+        """
+        狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+        try:
+            if type(self) is not _發布執行器實作 or type(請求) is not 發布執行請求:
+                raise ValueError
+            with _執行器狀態鎖:
+                狀態 = _執行器狀態.get(self)
+            if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
+                raise ValueError
+            輸入原文 = object.__getattribute__(請求, "_input_json")
+            訊息 = _建立初始訊息(狀態, 輸入原文)
+            工具總數 = 0
+            for 回合 in range(_最大工具回合 + 1):
+                模型請求 = _建立對話模型請求(狀態, 訊息)
+                回應 = 狀態[3].產生回應(模型請求)  # type: ignore[union-attr]
+                呼叫們 = object.__getattribute__(回應, "tool_calls")
+                if type(呼叫們) is not list:
+                    raise ValueError
+                if not 呼叫們:
+                    return 回應
+                if 回合 == _最大工具回合:
+                    raise 發布工具執行錯誤("發布工具執行失敗")
+                工具總數 += len(呼叫們)
+                if not 1 <= len(呼叫們) <= _最大工具呼叫 or 工具總數 > _最大工具呼叫:
+                    raise 發布工具執行錯誤("發布工具執行失敗")
+                _附加工具回合(訊息, 回應, 狀態[2], 呼叫們)
+        except _控制流程:
+            self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            raise
+        except 模型逾時錯誤:
+            self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            raise
+        except (工具逾時, 工具設定錯誤):
+            狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            del self, 請求
+            raise
+        except 發布工具執行錯誤:
+            self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            raise 發布工具執行錯誤("發布工具執行失敗") from None
+        except 發布執行錯誤:
+            self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            raise
+        except BaseException:
+            self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
+            raise 發布執行錯誤(_固定錯誤) from None
 
 
 class _發布執行器實作(發布執行器):

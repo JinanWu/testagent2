@@ -75,21 +75,41 @@ __all__ = [
     "驗證資料庫結構",
     "建立目前工作階段相依項",
     "建立ASGI應用程式",
+    "建立CP4ASGI應用程式",
     "建立環境應用程式",
+    "Published生產設定",
+    "生產Published執行建構器",
+    "生產Controller建構器",
 ]
 
 
 def __getattr__(名稱: str):
-    """延遲公開網頁路由工廠，避免使用者模組初始化期間形成循環匯入。"""
+    """延遲公開網頁與 Published 工廠，避免模組初始化期間形成循環匯入。
+
+    參數：
+        名稱: 呼叫端查詢的 exact module attribute 名稱。
+    返回值：
+        白名單名稱對應的 canonical factory、設定類別或 builder identity。
+    例外：
+        名稱不在公開白名單時拋 ``AttributeError``；必要子模組匯入錯誤原樣傳出。
+    副作用：
+        首次查詢時延遲匯入對應子模組，不建立 app、資料庫或 lifespan resource。
+    """
     if 名稱 == "建立目前工作階段相依項":
         from .路由 import 建立目前工作階段相依項
 
         return 建立目前工作階段相依項
-    if 名稱 in {"建立ASGI應用程式", "建立環境應用程式"}:
-        from .asgi import 建立ASGI應用程式, 建立環境應用程式
+    if 名稱 in {"建立ASGI應用程式", "建立CP4ASGI應用程式", "建立環境應用程式"}:
+        from .asgi import 建立ASGI應用程式, 建立CP4ASGI應用程式, 建立環境應用程式
 
         return {
             "建立ASGI應用程式": 建立ASGI應用程式,
+            "建立CP4ASGI應用程式": 建立CP4ASGI應用程式,
             "建立環境應用程式": 建立環境應用程式,
         }[名稱]
+    if 名稱 in {"Published生產設定", "生產Published執行建構器", "生產Controller建構器"}:
+        from .生產Published執行 import Published生產設定, 生產Controller建構器, 生產Published執行建構器
+        return {"Published生產設定": Published生產設定,
+                "生產Published執行建構器": 生產Published執行建構器,
+                "生產Controller建構器": 生產Controller建構器}[名稱]
     raise AttributeError(名稱)
