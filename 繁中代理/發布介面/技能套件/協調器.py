@@ -555,6 +555,34 @@ class 技能套件協調器:
         self.孤兒保留秒數 = float(孤兒保留秒數)
         self._時鐘 = 時鐘
 
+    def 讀取已驗證清單(self, 收據: 套件發布收據) -> 已驗證技能套件清單:
+        """由 authoritative receipt 描述元安全重驗 active 套件並回傳 immutable 清單。
+
+        參數：收據必須精確描述本協調器根下的 active 套件。
+        回傳：同一次完整樹重驗所得的 canonical manifest 投影。
+        例外：普通失敗固定映射為技能套件協調錯誤；控制流程維持 identity。
+        副作用：有界讀取套件樹並關閉自有描述元，不修改檔案系統。
+        """
+        try:
+            if type(收據) is not 套件發布收據 or 收據.路徑 != self.根目錄 / 收據.套件識別碼:
+                raise ValueError
+            根 = _開安全絕對目錄(self.根目錄)
+            try:
+                實際 = _重驗套件(根, 收據.套件識別碼, self.根目錄)
+                if 實際.收據 != 收據:
+                    raise ValueError
+                return 實際.投影
+            finally:
+                _關閉描述元(根)
+        except _控制例外 as 錯誤:
+            _清框架(錯誤)
+            raise
+        except 技能套件協調錯誤:
+            raise
+        except BaseException as 錯誤:
+            _清框架(錯誤)
+            _拒絕()
+
     def 標記孤兒(self, 收據: 套件發布收據) -> Path:
         """重驗 exact receipt 後原子不可覆寫移入同根 ``.orphaned``。
 

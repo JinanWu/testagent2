@@ -100,10 +100,25 @@ class 已驗證清單檔案:
 
 
 @dataclass(frozen=True, slots=True)
+class 已驗證來源技能:
+    """保存 canonical manifest 中一個來源技能的不可變權威投影。
+
+    參數：名稱、來源絕對路徑與來源內容摘要皆來自已驗證清單。
+    回傳：建立只含 immutable scalar 的來源技能投影。
+    例外：資料類別建構不主動拋出例外。
+    副作用：無。
+    """
+
+    name: str
+    source_path: str
+    source_hash: str
+
+
+@dataclass(frozen=True, slots=True)
 class 已驗證技能套件清單:
     """保存 canonical manifest 的 immutable authoritative projection。
 
-    欄位：``manifest_digest`` 識別完整 canonical bytes；其餘識別欄位、總量、
+    參數：``manifest_digest`` 識別完整 canonical bytes；其餘識別欄位、總量、
     ``bundle_hash`` 與 ordered ``copied_files`` 來自同一已驗證 manifest。
     回傳：建立不可變 projection。例外：欄位建構不主動拋出例外。
     副作用：只保存 immutable scalar 與 tuple。
@@ -116,6 +131,7 @@ class 已驗證技能套件清單:
     version_number: int
     total_bytes: int
     bundle_hash: str
+    source_skills: tuple[已驗證來源技能, ...]
     copied_files: tuple[已驗證清單檔案, ...]
 
 
@@ -177,6 +193,10 @@ def 驗證已發布技能套件清單(原始資料: bytes) -> 已驗證技能套
         if 正規JSON(清單) != 原始資料:
             raise ValueError
         _驗證清單結構(清單)
+        來源們 = tuple(
+            已驗證來源技能(項目["name"], 項目["source_path"], 項目["source_hash"])
+            for 項目 in 清單["source_skills"]
+        )
         檔案們 = tuple(
             已驗證清單檔案(項目["path"], 項目["size_bytes"], 項目["sha256"])
             for 項目 in 清單["copied_files"]
@@ -184,7 +204,7 @@ def 驗證已發布技能套件清單(原始資料: bytes) -> 已驗證技能套
         結果 = 已驗證技能套件清單(
             hashlib.sha256(原始資料).hexdigest(),
             清單["bundle_id"], 清單["endpoint_id"], 清單["endpoint_version_id"],
-            清單["version_number"], 清單["total_bytes"], 清單["bundle_hash"], 檔案們,
+            清單["version_number"], 清單["total_bytes"], 清單["bundle_hash"], 來源們, 檔案們,
         )
         return 結果
     except (KeyboardInterrupt, SystemExit, GeneratorExit) as 錯誤:
@@ -440,9 +460,10 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
             ["/".join(PurePosixPath(路徑).parts[1:]), 項目["size_bytes"], 項目["sha256"]]
             for 路徑, 項目 in 索引.items() if PurePosixPath(路徑).parts[0] == 名稱
         ]
-        if not 技能項目 or not any(項目[0] == "SKILL.md" for 項目 in 技能項目):
+        技能主檔 = next((項目 for 項目 in 技能項目 if 項目[0] == "SKILL.md"), None)
+        if 技能主檔 is None:
             raise ValueError
-        if hashlib.sha256(正規JSON(技能項目)).hexdigest() != 來源["source_hash"]:
+        if 技能主檔[2] != 來源["source_hash"]:
             raise ValueError
     排除列 = 清單["excluded_files"]
     if type(排除列) is not list or len(排除列) > 限制().最大檔案數:

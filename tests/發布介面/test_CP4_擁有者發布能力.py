@@ -139,3 +139,29 @@ def test_missing_exact_release不使用current_latest或其他發布(tmp_path):
     轉接器 = 擁有者能力轉接器(使用者庫, 庫, "missing")
     with pytest.raises(擁有者能力錯誤):
         轉接器.查詢規劃權限("owner-1")
+
+
+def test_發布解析只投影草稿exact_selected_tools與skills(tmp_path):
+    """owner 另有授權時，未被草稿選取的工具與技能不得進入發布能力。"""
+    _技能(tmp_path, "alpha")
+    _技能(tmp_path, "beta")
+    使用者庫 = _使用者庫(_上下文(
+        tmp_path, enabled_tools={"alpha-tool", "beta-tool"}, enabled_skills={"alpha", "beta"},
+    ))
+    庫 = 工具發布庫()
+    工具們 = tuple(
+        工具發布註冊(
+            f"rev-{名稱[0]}",
+            工具定義(名稱, 名稱 + " description", {"type": "object", "properties": {}}, lambda _: "ok"),
+        )
+        for 名稱 in ("alpha-tool", "beta-tool")
+    )
+    庫.登錄發布(工具發布描述("release-1", 工具們))
+    轉接器 = 擁有者能力轉接器(使用者庫, 庫, "release-1")
+    完整 = 轉接器.查詢規劃權限("owner-1")
+    摘要 = 能力摘要(完整.權限修訂, (完整.技能[0],), (完整.工具[0],))
+    結果 = 轉接器.解析發布能力("owner-1", 摘要)
+    assert tuple(結果.建立技能表()) == ("alpha",)
+    assert tuple(結果.工具結構快照) == ("alpha-tool",)
+    assert [項目.名稱 for 項目 in 結果.權限快照.技能] == ["alpha"]
+    assert [項目.名稱 for 項目 in 結果.權限快照.工具] == ["alpha-tool"]
