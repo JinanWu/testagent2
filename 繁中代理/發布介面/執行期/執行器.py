@@ -112,6 +112,130 @@ class 技能套件快照:
         except BaseException:
             self = endpoint_version_id = skill_bundle_hash = manifest_digest = files = 重建檔案 = None
             raise 發布執行錯誤(_固定錯誤) from None
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class 發布執行快照:
+    """單一 endpoint version 的完整 prompt/tool/model pin。"""
+
+    endpoint_id: str
+    version_id: str
+    service_account_id: str
+    system_prompt: str
+    permission_snapshot_digest: str
+    skill_bundle_hash: str
+    tool_handler_release: str
+    tool_snapshot: tuple[工具快照項目, ...]
+    model_config: 模型設定快照
+    _response_schema_json: str | None
+    manifest_reference: str
+
+    @property
+    def response_schema(self) -> dict[str, Any] | None:
+        """每次由 private canonical JSON 產生 fresh schema tree。"""
+        原文 = 結果 = None
+        失敗 = False
+        try:
+            原文 = object.__getattribute__(self, "_response_schema_json")
+            if 原文 is None:
+                return None
+            結果 = _解析正規JSON(原文, 500_000)
+            if type(結果) is not dict:
+                raise ValueError
+            return 結果
+        except _控制流程:
+            self = 原文 = 結果 = None
+            raise
+        except BaseException:
+            self = 原文 = 結果 = None
+            失敗 = True
+        if 失敗:
+            raise 發布執行錯誤(_固定錯誤) from None
+        raise AssertionError
+
+    def __init__(
+        self, *, endpoint_id: str, version_id: str, service_account_id: str,
+        system_prompt: str, permission_snapshot_digest: str,
+        skill_bundle_hash: str, tool_handler_release: str,
+        tool_snapshot: tuple[工具快照項目, ...], model_config: 模型設定快照,
+        response_schema: dict[str, Any] | None, manifest_reference: str,
+    ) -> None:
+        """完整重建所有 nested DTO；不保留 provider/caller mutable identity。"""
+        工具 = 設定 = 結構 = None
+        try:
+            for 值 in (endpoint_id, version_id, service_account_id, tool_handler_release, manifest_reference):
+                if not _是識別碼(值):
+                    raise ValueError
+            if type(system_prompt) is not str or not system_prompt.strip() or len(system_prompt.encode()) > 500_000:
+                raise ValueError
+            if not _是雜湊(permission_snapshot_digest) or not _是雜湊(skill_bundle_hash):
+                raise ValueError
+            工具 = _重建工具快照(tool_snapshot)
+            設定 = 重建設定(model_config)
+            結構 = None if response_schema is None else 複製JSON(response_schema, 500_000)
+            if 結構 is not None and type(結構) is not dict:
+                raise ValueError
+            if 設定.structured_output != (結構 is not None):
+                raise ValueError
+            值們 = (endpoint_id, version_id, service_account_id, system_prompt,
+                    permission_snapshot_digest, skill_bundle_hash, tool_handler_release,
+                    工具, 設定, None if 結構 is None else _建立正規JSON(結構),
+                    manifest_reference)
+            for 名稱, 值 in zip(self.__dataclass_fields__, 值們, strict=True):
+                object.__setattr__(self, 名稱, 值)
+        except _控制流程:
+            self = endpoint_id = version_id = service_account_id = system_prompt = None
+            permission_snapshot_digest = skill_bundle_hash = tool_handler_release = None
+            tool_snapshot = model_config = response_schema = manifest_reference = 工具 = 設定 = 結構 = None
+            raise
+        except BaseException:
+            self = endpoint_id = version_id = service_account_id = system_prompt = None
+            permission_snapshot_digest = skill_bundle_hash = tool_handler_release = None
+            tool_snapshot = model_config = response_schema = manifest_reference = 工具 = 設定 = 結構 = None
+            raise 發布執行錯誤(_固定錯誤) from None
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class 發布執行請求:
+    """只包含一份 detached JSON input；不存在 system/tool role 注入入口。"""
+
+    _input_json: str
+
+    @property
+    def input(self) -> Any:
+        """每次回傳 fresh exact-builtins JSON tree。"""
+        原文 = 結果 = None
+        失敗 = False
+        try:
+            原文 = object.__getattribute__(self, "_input_json")
+            結果 = _解析正規JSON(原文, 500_000)
+            return 結果
+        except _控制流程:
+            self = 原文 = 結果 = None
+            raise
+        except BaseException:
+            self = 原文 = 結果 = None
+            失敗 = True
+        if 失敗:
+            raise 發布執行錯誤(_固定錯誤) from None
+        raise AssertionError
+
+    def __init__(self, input: Any) -> None:
+        """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。"""
+        結果 = None
+        失敗 = False
+        try:
+            結果 = 複製JSON(input, 500_000)
+            object.__setattr__(self, "_input_json", _建立正規JSON(結果))
+            return
+        except _控制流程:
+            self = input = 結果 = None
+            raise
+        except BaseException:
+            self = input = 結果 = None
+            失敗 = True
+        if 失敗:
+            raise 發布執行錯誤(_固定錯誤) from None
+        raise AssertionError
+
 def 計算技能套件雜湊(files: tuple[技能套件檔案, ...]) -> str:
     """重建 canonical ordered manifest 後計算整體 SHA-256。"""
     重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 清單 = 原文 = 原始位元 = 結果 = None
@@ -139,6 +263,166 @@ def 計算技能套件雜湊(files: tuple[技能套件檔案, ...]) -> str:
     if 失敗:
         raise 發布執行錯誤(_固定錯誤) from None
     raise AssertionError
+
+
+def _建立正規JSON(值: Any) -> str:
+    """先 detach module-owned exact JSON tree，再編碼唯一 canonical identity。"""
+    脫離 = 結果 = None
+    try:
+        脫離 = 複製JSON(值, 500_000)
+        結果 = json.dumps(
+            脫離, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+        return 結果
+    except _控制流程:
+        值 = 脫離 = 結果 = None
+        raise
+    except BaseException:
+        值 = 脫離 = 結果 = None
+        raise
+
+
+def _拒絕正規JSON常數(值: str) -> object:
+    """拒絕 JSON 非有限常數且不在 hook traceback 保留 token。"""
+    try:
+        raise ValueError
+    except BaseException:
+        值 = None
+        raise
+
+
+def _建立正規JSON物件(項目們: list[tuple[str, Any]]) -> dict[str, Any]:
+    """以 cleanup-aware explicit loop 拒絕 duplicate object keys。"""
+    結果 = 鍵 = 值 = None
+    try:
+        結果 = {}
+        for 鍵, 值 in 項目們:
+            if 鍵 in 結果:
+                raise ValueError
+            結果[鍵] = 值
+        return 結果
+    except BaseException:
+        項目們 = 結果 = 鍵 = 值 = None
+        raise
+
+
+def _解析正規JSON(原文: object, 上限: int) -> Any:
+    """嚴格拒絕 duplicate/nonfinite/noncanonical 後回傳 fresh exact tree。"""
+    來源 = 已解析 = 重建 = 重播 = None
+    try:
+        if type(原文) is not str or len(原文.encode("utf-8")) > 上限:
+            raise ValueError
+        來源 = 原文
+        已解析 = json.loads(
+            來源, parse_constant=_拒絕正規JSON常數,
+            object_pairs_hook=_建立正規JSON物件,
+        )
+        重建 = 複製JSON(已解析, 上限)
+        重播 = _建立正規JSON(重建)
+        if 重播 != 來源:
+            raise ValueError
+        return 重建
+    except _控制流程:
+        原文 = 上限 = 來源 = 已解析 = 重建 = 重播 = None
+        raise
+    except BaseException:
+        原文 = 上限 = 來源 = 已解析 = 重建 = 重播 = None
+        raise
+
+
+def _解析模型JSON(原文: object, 上限: int) -> Any:
+    """接受任意合法排版，但拒絕 duplicate、nonfinite 與超限 JSON。"""
+    來源 = 已解析 = 重建 = None
+    try:
+        if type(原文) is not str or len(原文.encode("utf-8")) > 上限:
+            raise ValueError
+        來源 = 原文
+        已解析 = json.loads(
+            來源, parse_constant=_拒絕正規JSON常數,
+            object_pairs_hook=_建立正規JSON物件,
+        )
+        重建 = 複製JSON(已解析, 上限)
+        return 重建
+    except BaseException:
+        原文 = 上限 = 來源 = 已解析 = 重建 = None
+        raise
+
+
+def _綱要只含本機參照(綱要: object) -> bool:
+    """只允許同一份 schema resource 內以 # 起始的靜態或動態參照。"""
+    待看 = [綱要]
+    目前 = 鍵 = 值 = None
+    try:
+        while 待看:
+            目前 = 待看.pop()
+            if type(目前) is dict:
+                for 鍵, 值 in dict.items(目前):
+                    if 鍵 in ("$ref", "$dynamicRef"):
+                        if type(值) is not str or not 值.startswith("#"):
+                            return False
+                    if type(值) in (dict, list):
+                        待看.append(值)
+            elif type(目前) is list:
+                for 值 in 目前:
+                    if type(值) in (dict, list):
+                        待看.append(值)
+        return True
+    finally:
+        綱要 = 待看 = 目前 = 鍵 = 值 = None
+
+
+def _建立綱要驗證器(綱要: dict[str, Any]) -> Draft202012Validator:
+    """建立不啟用 format checker 的 fresh Draft 2020-12 validator。"""
+    結果 = None
+    try:
+        結果 = Draft202012Validator(綱要)
+        return 結果
+    except BaseException:
+        綱要 = 結果 = None
+        raise
+
+
+def _預檢回應綱要(綱要原文: str | None) -> None:
+    """在 SA/bundle/tool/model callback 前檢查 meta-schema 與遠端參照。"""
+    綱要 = 驗證器 = None
+    try:
+        if 綱要原文 is None:
+            return
+        綱要 = _解析正規JSON(綱要原文, 500_000)
+        if type(綱要) is not dict or not _綱要只含本機參照(綱要):
+            raise ValueError
+        Draft202012Validator.check_schema(綱要)
+        驗證器 = _建立綱要驗證器(綱要)
+    except BaseException:
+        綱要原文 = 綱要 = 驗證器 = None
+        raise
+
+
+def _模型輸出符合綱要(回應文字: str, 綱要原文: str) -> bool:
+    """以 invocation-local schema/tree 驗證；只有輸出無效可觸發 retry。"""
+    綱要 = 驗證器 = 已解析 = 驗證錯誤 = None
+    try:
+        綱要 = _解析正規JSON(綱要原文, 500_000)
+        驗證器 = _建立綱要驗證器(綱要)
+        try:
+            已解析 = _解析模型JSON(回應文字, 500_000)
+        except _控制流程:
+            raise
+        except (ValueError, RecursionError, UnicodeError):
+            return False
+        try:
+            驗證器.validate(已解析)
+        except _控制流程:
+            raise
+        except ValidationError as 驗證錯誤:
+            if type(驗證錯誤) is not ValidationError:
+                raise
+            return False
+        return True
+    finally:
+        回應文字 = 綱要原文 = 綱要 = 驗證器 = 已解析 = 驗證錯誤 = None
+
+
 def _重建套件檔案(不可信檔案: object) -> tuple[技能套件檔案, ...]:
     """exact tuple 全量重建，拒絕重複、失序與超限。"""
     結果 = 描述 = 已看 = None
@@ -181,6 +465,42 @@ def _重建套件檔案(不可信檔案: object) -> tuple[技能套件檔案, ..
     except BaseException:
         不可信檔案 = 結果 = 描述 = 已看 = 原項 = 路徑 = 摘要 = 內容 = 重建 = None
         raise
+
+def _重建工具快照(值: object) -> tuple[工具快照項目, ...]:
+    """完整捕捉並重建 U02 exact tool snapshot tuple。"""
+    結果 = 描述 = 已看 = None
+    try:
+        if type(值) is not tuple:
+            raise ValueError
+        描述 = []
+        for 項 in 值:
+            if type(項) is not 工具快照項目:
+                raise ValueError
+            描述.append((項, object.__getattribute__(項, "name"),
+                         object.__getattribute__(項, "revision"),
+                         object.__getattribute__(項, "digest")))
+        結果 = []
+        已看 = set()
+        for 原項, 名稱, 修訂, 摘要 in 描述:
+            if 名稱 in 已看:
+                raise ValueError
+            已看.add(名稱)
+            結果.append(工具快照項目(name=名稱, revision=修訂, digest=摘要))
+        if len(值) != len(描述):
+            raise ValueError
+        for 索引 in range(len(描述)):
+            原項, 名稱, 修訂, 摘要 = 描述[索引]
+            if 值[索引] is not 原項:
+                raise ValueError
+            if (object.__getattribute__(原項, "name") is not 名稱
+                    or object.__getattribute__(原項, "revision") is not 修訂
+                    or object.__getattribute__(原項, "digest") is not 摘要):
+                raise ValueError
+        return tuple(結果)
+    except BaseException:
+        值 = 結果 = 描述 = 已看 = 原項 = 名稱 = 修訂 = 摘要 = None
+        raise
+
 def _是套件路徑(值: object) -> bool:
     """只接受 bounded NFC relative POSIX path，拒絕 path traversal 概念。"""
     if type(值) is not str or not 值 or len(值.encode()) > 512 or "\\" in 值:
