@@ -225,13 +225,14 @@ def test_帳密失敗固定401且strict_unknown_fields(tmp_path, payload):
 
 
 def test_OpenAPI_exact_auth_inventory(tmp_path):
-    """三條 auth routes 有 exact operation IDs、schemas 與 response inventory。"""
+    """四條 auth routes 有 exact operation IDs、schemas 與 response inventory。"""
     _, app, _, _, _ = _建立認證客戶端(tmp_path)
     spec = app.openapi()
     assert {path for path in spec["paths"] if path.startswith("/api/auth")} == {
-        "/api/auth/login", "/api/auth/session", "/api/auth/logout"
+        "/api/auth/login", "/api/auth/me", "/api/auth/session", "/api/auth/logout"
     }
     expected = {
+        ("/api/auth/me", "get"): ("取得目前網頁認證使用者_api_auth_me_get", {"200", "401", "503"}),
         ("/api/auth/session", "get"): ("取得網頁認證工作階段_api_auth_session_get", {"200", "401", "503"}),
         ("/api/auth/login", "post"): ("登入網頁認證工作階段_api_auth_login_post", {"200", "401", "422", "503"}),
         ("/api/auth/logout", "post"): ("登出網頁認證工作階段_api_auth_logout_post", {"204", "401", "403", "503"}),
