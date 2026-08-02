@@ -84,6 +84,8 @@ class 已解析發布能力:
     權限快照: 規劃權限快照
     技能來源: tuple[發布技能來源, ...]
     具有管理權限: bool
+    工具結構快照: dict[str, Any]
+    工具執行修訂: str
 
     def 建立技能表(self) -> dict[str, Path]:
         """建立發布器使用的技能根目錄輸入。
@@ -108,6 +110,7 @@ class _能力資料:
     快照: 規劃權限快照
     描述: tuple[安全技能描述, ...]
     管理者: bool
+    工具結構快照: dict[str, Any]
 
 
 class 擁有者能力轉接器:
@@ -172,7 +175,16 @@ class 擁有者能力轉接器:
             描述表 = {項目.名稱: 項目 for 項目 in 資料.描述}
             來源 = tuple(發布技能來源(名稱, Path(描述表[名稱].來源目錄), 描述表[名稱].內容sha256)
                        for 名稱 in (項目.名稱 for 項目 in pinned摘要.技能))
-            結果 = 已解析發布能力(_重建快照(資料.快照), 來源, 資料.管理者)
+            已選工具 = tuple(工具表[項目.名稱] for 項目 in pinned摘要.工具)
+            已選技能 = tuple(技能表[項目.名稱] for 項目 in pinned摘要.技能)
+            工具結構 = {
+                項目.名稱: 資料.工具結構快照[項目.名稱] for 項目 in pinned摘要.工具
+            }
+            結果 = 已解析發布能力(
+                規劃權限快照(pinned摘要.權限修訂, 已選技能, 已選工具),
+                來源, 資料.管理者,
+                解析嚴格JSON(建立正規JSON(工具結構)), self._處理器發布,
+            )
         except _控制流 as 控制:
             _清除控制鏈(控制)
             del self, 擁有者, pinned摘要, 資料, 結果, 控制
@@ -232,7 +244,17 @@ class 擁有者能力轉接器:
               "skills": [{"name": 項目.名稱, "summary": 項目.摘要, "content_sha256_reference": 項目.內容sha256參照} for 項目 in 授權技能列],
               "tools": 工具資料}
         修訂 = "perm-" + hashlib.sha256(建立正規JSON(投影).encode("utf-8")).hexdigest()
-        return _能力資料(規劃權限快照(修訂, 授權技能列, tuple(授權工具列)), 描述, "admin" in 角色)
+        工具結構快照 = {
+            項目["name"]: {
+                "revision": 項目["revision"], "description": 項目["description"],
+                "parameters": 項目["parameters"],
+            }
+            for 項目 in 工具資料
+        }
+        return _能力資料(
+            規劃權限快照(修訂, 授權技能列, tuple(授權工具列)), 描述,
+            "admin" in 角色, 工具結構快照,
+        )
 
 
 def _是識別(值: object) -> bool:
