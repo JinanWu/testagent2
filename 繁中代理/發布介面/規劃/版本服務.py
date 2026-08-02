@@ -225,6 +225,161 @@ class SQLite版本配置服務:
         del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, 輸入失敗, 配置失敗
         return result
 
+    def 啟用(
+        self, owner_user_id: str, endpoint_id: str, version_id: str, *,
+        request_id: str | None = None, bundle_verifier: BundlePublicationVerifier,
+        audit_id_factory: Callable[[], str], clock: Callable[[], float],
+    ) -> 版本啟用結果:
+        """鎖後授權、驗 bundle，並原子寫入 current pointer 與 audit。"""
+        path = identity = uri = connection = result = None
+        驗證目標 = 稽核目標 = 時鐘目標 = None
+        invalid = failed = False
+        try:
+            invalid = (not _是識別(owner_user_id) or not _是識別(endpoint_id)
+                       or not _是識別(version_id)
+                       or (request_id is not None and not _是識別(request_id))
+                       or not callable(bundle_verifier) or not callable(audit_id_factory)
+                       or not callable(clock))
+            if not invalid:
+                驗證目標 = _擷取呼叫目標(bundle_verifier)
+                稽核目標 = _擷取呼叫目標(audit_id_factory)
+                時鐘目標 = _擷取呼叫目標(clock)
+                path, identity = _驗證既有資料庫路徑(self._資料庫路徑)
+                uri = path.as_uri() + "?mode=rw"
+                connection = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+                _驗證已開啟資料庫路徑(connection, path, identity)
+                result = _啟用交易(
+                    connection, owner_user_id, endpoint_id, version_id, request_id,
+                    驗證目標, 稽核目標, 時鐘目標,
+                )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+            _清除例外鏈(控制)
+            del self, owner_user_id, endpoint_id, version_id, request_id, bundle_verifier, audit_id_factory, clock
+            del path, identity, uri, connection, result, 驗證目標, 稽核目標, 時鐘目標, invalid, failed, 控制
+            raise
+        except 版本啟用存取錯誤:
+            del self, owner_user_id, endpoint_id, version_id, request_id, bundle_verifier, audit_id_factory, clock
+            del path, identity, uri, connection, result, 驗證目標, 稽核目標, 時鐘目標, invalid, failed
+            raise
+        except BaseException:
+            failed = True
+        if invalid:
+            del self, owner_user_id, endpoint_id, version_id, request_id, bundle_verifier, audit_id_factory, clock
+            del path, identity, uri, connection, result, 驗證目標, 稽核目標, 時鐘目標, invalid, failed
+            raise 版本啟用輸入錯誤("版本啟用輸入無效") from None
+        if failed or result is None:
+            del self, owner_user_id, endpoint_id, version_id, request_id, bundle_verifier, audit_id_factory, clock
+            del path, identity, uri, connection, result, 驗證目標, 稽核目標, 時鐘目標, invalid, failed
+            raise 版本啟用錯誤("版本啟用失敗") from None
+        del self, owner_user_id, endpoint_id, version_id, request_id, bundle_verifier, audit_id_factory, clock
+        del path, identity, uri, connection, 驗證目標, 稽核目標, 時鐘目標, invalid, failed
+        return result
+
+
+class SQLite目前版本解析器:
+    """以單一 authoritative JOIN 為 invocation 釘住 current immutable version。"""
+
+    def __init__(
+        self, database_path: str | Path,
+        connection_factory: Callable[..., sqlite3.Connection] = sqlite3.connect,
+    ) -> None:
+        self._資料庫路徑 = database_path
+        self._連線工廠 = connection_factory
+
+    def 依slug解析(self, slug: str) -> 已釘選版本:
+        """在單一 deferred read transaction 釘住 schema、current JOIN 與 detached 結果。"""
+        path = identity = uri = connection = row = payload = result = None
+        failed = 不存在 = owned = begun = 已完成 = False
+        rollback_controls: list[BaseException] = []
+        close_controls: list[BaseException] = []
+        try:
+            if type(slug) is not str or _slug格式.fullmatch(slug) is None:
+                raise ValueError
+            path, identity = _驗證既有資料庫路徑(self._資料庫路徑)
+            uri = path.as_uri() + "?mode=ro"
+            connection = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+            _驗證已開啟資料庫路徑(connection, path, identity)
+            owned = True
+            connection.execute("BEGIN")
+            begun = True
+            _驗證schema(connection)
+            row = connection.execute(
+                "SELECT e.id,e.service_account_id,e.status,v.id,v.version_number,v.original_requirement_text,v.system_prompt,v.allowed_skills_json,v.allowed_tools_json,v.tool_schema_snapshot_json,v.tool_runtime_revision,v.model_config_snapshot_json,v.retry_policy_json,v.skill_bundle_manifest_json,v.input_schema_json,v.response_schema_json,v.schema_changed,v.created_by_user_id,v.created_at FROM published_endpoints e JOIN published_endpoint_versions v ON v.id=e.current_version_id AND v.endpoint_id=e.id WHERE e.slug=? AND e.status='active' AND v.id=e.current_version_id AND v.endpoint_id=e.id",
+                (slug,),
+            ).fetchone()
+            if row is None:
+                不存在 = True
+                raise LookupError
+            if (type(row) is not tuple or len(row) != 19 or row[2] != "active"
+                    or not _是識別(row[0]) or not _是識別(row[1]) or not _是識別(row[3])
+                    or type(row[4]) is not int or row[4] <= 0
+                    or type(row[16]) is not int or row[16] not in (0, 1)
+                    or not _是有限非負(row[18])):
+                raise sqlite3.DatabaseError
+            payload = {
+                "original_requirement_text": row[5], "system_prompt": row[6],
+                "allowed_skills": _解析正規值(row[7]), "allowed_tools": _解析正規值(row[8]),
+                "tool_schema_snapshot": _解析正規值(row[9]), "tool_runtime_revision": row[10],
+                "model_config_snapshot": _解析正規值(row[11]), "retry_policy": _解析正規值(row[12]),
+                "skill_bundle_manifest": _解析正規值(row[13]),
+                "input_schema": None if row[14] is None else _解析正規值(row[14]),
+                "response_schema": _解析正規值(row[15]), "created_by_user_id": row[17],
+            }
+            result = 已釘選版本(
+                row[0], row[1], row[3], row[4], row[16] == 1, row[18], _正規JSON(payload),
+            )
+            payload.clear()
+            connection.execute("COMMIT")
+            begun = False
+            已完成 = True
+        except (KeyboardInterrupt, SystemExit, GeneratorExit) as control:
+            _清除例外鏈(control)
+            if begun:
+                rollback_controls = _安全回滾(connection)
+            if owned:
+                close_controls = _安全關閉(connection)
+            rollback_controls.clear(); close_controls.clear(); _清除例外鏈(control)
+            if type(payload) is dict:
+                payload.clear()
+            del self, slug, path, identity, uri, connection, row, payload, result
+            del failed, 不存在, owned, begun, 已完成, rollback_controls, close_controls, control
+            raise
+        except BaseException:
+            failed = True
+        if failed or result is None or not 已完成:
+            if begun:
+                rollback_controls = _安全回滾(connection)
+                begun = False
+            if owned:
+                close_controls = _安全關閉(connection)
+            if type(payload) is dict:
+                payload.clear()
+            應拋不存在 = 不存在
+            del self, slug, path, identity, uri, connection, row, payload
+            del 不存在, owned, begun, 已完成
+            if rollback_controls:
+                close_controls.clear(); del result, failed, 應拋不存在
+                _拋出清理控制(rollback_controls.pop())
+            if close_controls:
+                del result, failed, 應拋不存在, rollback_controls
+                _拋出清理控制(close_controls.pop())
+            del result, failed, rollback_controls, close_controls
+            if 應拋不存在:
+                del 應拋不存在
+                raise 目前版本不存在錯誤("目前版本不存在") from None
+            del 應拋不存在
+            raise 目前版本解析錯誤("目前版本解析失敗") from None
+        close_controls = _安全關閉(connection)
+        if type(payload) is dict:
+            payload.clear()
+        del self, slug, path, identity, uri, connection, row, payload
+        del failed, 不存在, owned, begun, 已完成, rollback_controls
+        if close_controls:
+            del result
+            _拋出清理控制(close_controls.pop())
+        del close_controls
+        return result
+
 def _配置交易(
     connection: sqlite3.Connection, owner: str, endpoint_id: str,
     snapshot: 發布版本快照, id_factory: Callable[[], str], clock: Callable[[], float],
@@ -428,6 +583,147 @@ def _擷取呼叫目標(回呼: Callable[..., Any]) -> Callable[..., Any]:
         raise
     del 回呼, 描述器
     return 目標
+
+
+def _啟用交易(
+    connection: sqlite3.Connection, owner: str, endpoint_id: str, version_id: str,
+    request_id: str | None, 驗證目標: Callable[..., Any],
+    稽核目標: Callable[[], str], 時鐘目標: Callable[[], float],
+) -> 版本啟用結果:
+    """同一 BEGIN IMMEDIATE 內驗證 bundle、append audit 並 CAS pointer。"""
+    begun = access_failure = ordinary_failure = False
+    endpoint = candidate = aggregate = current = manifest = current_number = None
+    old_id = audit_id = activated_at = metadata = result = cursor = proof = sha256 = None
+    rollback_controls: list[BaseException] = []
+    close_controls: list[BaseException] = []
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        if connection.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            raise sqlite3.DatabaseError
+        connection.execute("BEGIN IMMEDIATE")
+        begun = True
+        _驗證schema(connection)
+        endpoint = connection.execute(
+            "SELECT owner_user_id,status,current_version_id FROM published_endpoints WHERE id=?",
+            (endpoint_id,),
+        ).fetchone()
+        if endpoint is None:
+            access_failure = True
+        elif (type(endpoint) is not tuple or len(endpoint) != 3
+              or (endpoint[2] is not None and not _是識別(endpoint[2]))):
+            raise sqlite3.DatabaseError
+        else:
+            access_failure = endpoint[:2] != (owner, "active")
+        if not access_failure:
+            old_id = endpoint[2]
+            candidate = connection.execute(
+                "SELECT version_number,skill_bundle_manifest_json FROM published_endpoint_versions WHERE id=? AND endpoint_id=?",
+                (version_id, endpoint_id),
+            ).fetchone()
+            aggregate = connection.execute(
+                "SELECT count(*),min(version_number),max(version_number) FROM published_endpoint_versions WHERE endpoint_id=?",
+                (endpoint_id,),
+            ).fetchone()
+            if (type(candidate) is not tuple or len(candidate) != 2
+                    or type(candidate[0]) is not int or candidate[0] <= 0
+                    or type(candidate[1]) is not str
+                    or type(aggregate) is not tuple or len(aggregate) != 3
+                    or type(aggregate[0]) is not int or type(aggregate[1]) is not int
+                    or type(aggregate[2]) is not int
+                    or aggregate[0] <= 0 or aggregate[1] != 1
+                    or aggregate[2] != aggregate[0]):
+                raise sqlite3.DatabaseError
+            current_number = 0
+            if old_id is not None:
+                current = connection.execute(
+                    "SELECT version_number FROM published_endpoint_versions WHERE id=? AND endpoint_id=?",
+                    (old_id, endpoint_id),
+                ).fetchone()
+                if (type(current) is not tuple or len(current) != 1
+                        or type(current[0]) is not int or current[0] <= 0):
+                    raise sqlite3.DatabaseError
+                current_number = current[0]
+            if candidate[0] != current_number + 1:
+                raise sqlite3.DatabaseError
+            manifest = _解析正規物件(candidate[1])
+            sha256 = manifest.get("sha256")
+            if type(sha256) is not str or len(sha256) != 64 or any(ch not in "0123456789abcdef" for ch in sha256):
+                raise sqlite3.DatabaseError
+            proof = 驗證目標(manifest, version_id, endpoint_id)
+            if type(proof) is not bool or not proof:
+                raise sqlite3.DatabaseError
+            manifest = None
+            proof = None
+            audit_id, activated_at = 稽核目標(), 時鐘目標()
+            if not _是識別(audit_id) or not _是有限非負(activated_at):
+                raise ValueError
+            metadata = _正規JSON({
+                "old_version_id": old_id, "new_version_id": version_id,
+                "version_number": candidate[0], "bundle_sha256": sha256,
+            })
+            cursor = connection.execute(
+                "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) VALUES(?,?,?,'endpoint_version_activated','success','user',?,'published_endpoint_version',?,?,?,NULL,?,?)",
+                (audit_id, audit_id, activated_at, owner, version_id, request_id,
+                 endpoint_id, metadata, activated_at),
+            )
+            if type(cursor.rowcount) is not int or cursor.rowcount != 1:
+                raise sqlite3.DatabaseError
+            cursor = connection.execute(
+                "UPDATE published_endpoints SET current_version_id=?,updated_at=? WHERE id=? AND owner_user_id=? AND status='active' AND current_version_id IS ?",
+                (version_id, activated_at, endpoint_id, owner, old_id),
+            )
+            if type(cursor.rowcount) is not int or cursor.rowcount != 1:
+                raise sqlite3.DatabaseError
+            connection.execute("COMMIT")
+            begun = False
+            result = 版本啟用結果(endpoint_id, old_id, version_id, candidate[0], audit_id, activated_at)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as control:
+        _清除例外鏈(control)
+        manifest = None
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+        rollback_controls.clear(); close_controls.clear()
+        _清除例外鏈(control)
+        del connection, owner, endpoint_id, version_id, request_id, 驗證目標, 稽核目標, 時鐘目標
+        del begun, access_failure, ordinary_failure, endpoint, candidate, aggregate, current, manifest, current_number
+        del old_id, audit_id, activated_at, metadata, result, cursor, proof, sha256, rollback_controls, close_controls, control
+        raise
+    except BaseException:
+        manifest = None
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+        ordinary_failure = True
+    if access_failure and not ordinary_failure:
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+    if ordinary_failure or access_failure:
+        denied = access_failure and not ordinary_failure
+        del connection, owner, endpoint_id, version_id, request_id, 驗證目標, 稽核目標, 時鐘目標
+        del begun, access_failure, ordinary_failure, endpoint, candidate, aggregate, current, manifest, current_number
+        del old_id, audit_id, activated_at, metadata, result, cursor, proof, sha256
+        if rollback_controls:
+            close_controls.clear(); _拋出清理控制(rollback_controls.pop())
+        if close_controls:
+            _拋出清理控制(close_controls.pop())
+        del rollback_controls, close_controls
+        if denied:
+            del denied
+            raise 版本啟用存取錯誤("版本啟用存取遭拒") from None
+        del denied
+        raise 版本啟用錯誤("版本啟用失敗") from None
+    close_controls = _安全關閉(connection)
+    del connection, owner, endpoint_id, version_id, request_id, 驗證目標, 稽核目標, 時鐘目標
+    del begun, access_failure, ordinary_failure, endpoint, candidate, aggregate, current, manifest, current_number
+    del old_id, audit_id, activated_at, metadata, cursor, proof, sha256, rollback_controls
+    if close_controls:
+        del result
+        _拋出清理控制(close_controls.pop())
+    del close_controls
+    assert type(result) is 版本啟用結果
+    return result
 
 
 def _schema等價(left: str | None, right: str | None) -> bool:
