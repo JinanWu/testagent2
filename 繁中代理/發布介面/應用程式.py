@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, NoReturn
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, routing as FastAPI路由
 from fastapi.routing import APIRoute
 
 from .相依項 import 發布介面相依項, 發布介面資源
@@ -211,6 +211,38 @@ def _讀取端點身份(路由: APIRoute):
     if type(路由字典) is not dict or "endpoint" not in 路由字典:
         raise ValueError(路由設定錯誤訊息)
     return dict.__getitem__(路由字典, "endpoint")
+
+
+def _擷取安全路由(路由器: APIRouter) -> tuple[APIRoute, ...]:
+    """從 module-owned sanitized router 擷取 exact list 的 ordered exact routes。"""
+    路由器字典 = object.__getattribute__(路由器, "__dict__")
+    if type(路由器字典) is not dict:
+        raise ValueError(路由設定錯誤訊息)
+    路由原值 = dict.get(路由器字典, "routes")
+    if type(路由原值) is not list:
+        raise ValueError(路由設定錯誤訊息)
+    結果 = []
+    for 路由 in 路由原值:
+        if type(路由) is not APIRoute:
+            raise ValueError(路由設定錯誤訊息)
+        結果.append(路由)
+    return tuple(結果)
+
+
+def _驗證新版附加切片(附加路由, 安全路由器: APIRouter) -> None:
+    """驗證 include 精確 appended slice 是指向 sanitized router 的新版容器。"""
+    if type(附加路由) is not tuple or len(附加路由) != 1:
+        raise ValueError(路由設定錯誤訊息)
+    容器 = 附加路由[0]
+    預期類別 = vars(FastAPI路由).get("_IncludedRouter")
+    if not isinstance(預期類別, type) or type(容器) is not 預期類別:
+        raise ValueError(路由設定錯誤訊息)
+    容器字典 = object.__getattribute__(容器, "__dict__")
+    if (
+        type(容器字典) is not dict
+        or dict.get(容器字典, "original_router") is not 安全路由器
+    ):
+        raise ValueError(路由設定錯誤訊息)
 
 
 def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
@@ -440,15 +472,33 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
 
     擁有生命週期 = 應用程式.router.lifespan_context
     for 安全路由器, 政策 in zip(安全路由器清單, 政策清單):
-        原路由數 = len(應用程式.router.routes)
+        安全路由 = _擷取安全路由(安全路由器)
+        應用路由 = 應用程式.router.routes
+        if type(應用路由) is not list:
+            raise ValueError(路由設定錯誤訊息)
+        原路由數 = len(應用路由)
+        原應用路由 = tuple(應用路由)
         應用程式.include_router(安全路由器)
         應用程式.router.lifespan_context = 擁有生命週期
         驗證政策(安全路由器, 政策, 要求路由身份=False)
+        目前安全路由 = _擷取安全路由(安全路由器)
+        if len(目前安全路由) != len(安全路由) or any(
+            目前 is not 原始 for 目前, 原始 in zip(目前安全路由, 安全路由)
+        ):
+            raise ValueError(路由設定錯誤訊息)
         if _框架形狀 == "新":
-            if len(應用程式.router.routes) != 原路由數 + 1:
+            if (
+                應用程式.router.routes is not 應用路由
+                or len(應用路由) < 原路由數
+                or any(目前 is not 原始 for 目前, 原始 in zip(應用路由[:原路由數], 原應用路由))
+            ):
                 raise ValueError(路由設定錯誤訊息)
-            del 應用程式.router.routes[原路由數:]
-            應用程式.router.routes.extend(安全路由器.routes)
+            附加路由 = tuple(應用路由[原路由數:])
+            _驗證新版附加切片(附加路由, 安全路由器)
+            del 應用路由[原路由數:]
+            應用路由.extend(安全路由)
+            if len(應用路由) != 原路由數 + len(安全路由):
+                raise ValueError(路由設定錯誤訊息)
     for 路由器, 政策 in zip(安全相依項.路由器清單, 政策清單):
         驗證政策(路由器, 政策, 要求路由身份=True, 檢查生命週期=False)
     if (
