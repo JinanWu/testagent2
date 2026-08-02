@@ -529,3 +529,389 @@ class 外部呼叫入口:
     authentication: object | None
     error: 錯誤映射結果 | None
     _續行快照: _正規呼叫快照 | None = None
+
+
+class 外部呼叫編排器:
+    """組合 frozen FND／LOG／CRED／RATE 邊界，不持有交易或 runtime。"""
+
+    def __init__(
+        self, 解析器: object, 呼叫儲存庫: object, 憑證服務: object, *,
+        解析未找到型別: type,
+        釘選型別: type, 驗證型別: type, 驗證狀態型別: type,
+        階段型別: type,
+        準備擷取: Callable[[object, object, object | None], object | None],
+        寫入擷取: Callable[..., str],
+        限流決策型別: type,
+        提交雙層計數: Callable[[str, str, int, int, float], object],
+        驗證輸入: Callable[[object], bool],
+        執行嘗試: Callable[[執行嘗試請求], 執行嘗試結果] | None = None,
+        驗證輸出: Callable[[object, object], bool] | None = None,
+        記錄執行嘗試: Callable[
+            [InvocationRef, 執行嘗試請求, 執行嘗試結果, bool | None], 執行嘗試紀錄收據
+        ] | None = None,
+    ) -> None:
+        """保存已組合的 exact dependency types 與 callback 邊界。"""
+        self._解析器 = 解析器
+        self._解析未找到型別 = 解析未找到型別
+        self._呼叫儲存庫 = 呼叫儲存庫
+        self._憑證服務 = 憑證服務
+        self._釘選型別 = 釘選型別
+        self._驗證型別 = 驗證型別
+        self._驗證狀態型別 = 驗證狀態型別
+        self._階段型別 = 階段型別
+        self._準備擷取 = 準備擷取
+        self._寫入擷取 = 寫入擷取
+        self._限流決策型別 = 限流決策型別
+        self._提交雙層計數 = 提交雙層計數
+        self._驗證輸入 = 驗證輸入
+        self._執行嘗試 = 執行嘗試
+        self._驗證輸出 = 驗證輸出
+        self._記錄執行嘗試 = 記錄執行嘗試
+
+    def 執行(
+        self, 短名: str, 請求識別: str, 提供的API金鑰: str,
+        輸入資料: object, 中繼資料: object | None, 驗證時間: int | float,
+    ) -> 呼叫成功結果 | 錯誤映射結果:
+        """完成 I03 gate 後最多執行兩次；recorder 只能接觸 disposable DTO。"""
+        入口 = None
+        try:
+            入口 = self.開始(短名, 請求識別, 提供的API金鑰, 輸入資料, 中繼資料, 驗證時間)
+        except _控制流程 as 控制:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = 入口 = None
+            _清理並重拋(控制)
+        if 入口.error is not None:
+            return 入口.error
+
+        請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+        紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
+        私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
+        端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
+        端點版本 = 0
+        執行函式 = self._執行嘗試
+        驗證函式 = self._驗證輸出
+        紀錄函式 = self._記錄執行嘗試
+        錯誤碼 = None
+        失敗 = False
+        try:
+            if type(入口.endpoint) is not EndpointRef or type(入口.invocation) is not InvocationRef:
+                raise ValueError
+            端點識別 = object.__getattribute__(入口.endpoint, "id")
+            端點短名 = object.__getattribute__(入口.endpoint, "slug")
+            端點版本 = object.__getattribute__(入口.endpoint, "version")
+            呼叫識別 = object.__getattribute__(入口.invocation, "id")
+            私有請求識別 = object.__getattribute__(入口.invocation, "request_id")
+            工作階段識別 = object.__getattribute__(入口.invocation, "session_id")
+            私有端點 = EndpointRef(端點識別, 端點短名, 端點版本)
+            私有呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
+            私有快照 = object.__getattribute__(入口, "_續行快照")
+            私有釘選 = object.__getattribute__(入口, "pinned_version")
+            if type(私有快照) is not _正規呼叫快照 or 私有釘選 is None:
+                raise ValueError
+            入口 = None
+            if 執行函式 is None or 驗證函式 is None:
+                錯誤碼 = "endpoint_misconfigured"
+            elif 紀錄函式 is None:
+                錯誤碼 = "internal_error"
+            else:
+                for 次數 in (1, 2):
+                    請求 = 執行嘗試請求(
+                        私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                    )
+                    原始結果 = 執行函式(請求)
+                    if type(原始結果) is not 執行嘗試結果:
+                        raise ValueError
+                    安全結果 = 執行嘗試結果(
+                        object.__getattribute__(原始結果, "kind"),
+                        object.__getattribute__(原始結果, "data"),
+                        object.__getattribute__(原始結果, "usage"),
+                        object.__getattribute__(原始結果, "warnings"),
+                    )
+                    原始結果 = None
+                    驗證有效 = None
+                    if object.__getattribute__(安全結果, "kind") == "success":
+                        原始資料 = _建立正規呼叫快照(
+                            object.__getattribute__(安全結果, "data"), None,
+                        ).建立輸入()
+                        驗證有效 = 驗證函式(私有釘選, 原始資料)
+                        原始資料 = None
+                        if type(驗證有效) is not bool:
+                            raise ValueError
+                    終局快照 = _建立終局結果快照(安全結果, 驗證有效)
+                    紀錄呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
+                    紀錄請求 = 執行嘗試請求(
+                        私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                    )
+                    紀錄結果 = 終局快照.建立結果()
+                    收據 = 紀錄函式(紀錄呼叫, 紀錄請求, 紀錄結果, 終局快照.結構有效)
+                    紀錄呼叫 = 紀錄請求 = 紀錄結果 = 請求 = 安全結果 = None
+                    _確認執行嘗試收據(收據, 呼叫識別, 次數)
+                    收據 = None
+                    if 終局快照.種類 != "success":
+                        錯誤碼 = 終局快照.種類
+                        終局快照 = None
+                        break
+                    if 終局快照.結構有效:
+                        安全結果 = 終局快照.建立結果()
+                        信封 = 建立成功信封(
+                            EndpointRef(端點識別, 端點短名, 端點版本),
+                            InvocationRef(呼叫識別, 私有請求識別, 工作階段識別),
+                            object.__getattribute__(安全結果, "data"),
+                            usage=object.__getattribute__(安全結果, "usage"),
+                            warnings=object.__getattribute__(安全結果, "warnings"),
+                        )
+                        結果 = 呼叫成功結果(信封)
+                        請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+                        紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
+                        執行函式 = 驗證函式 = 紀錄函式 = 入口 = None
+                        私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
+                        return 結果
+                    終局快照 = None
+                if 錯誤碼 is None:
+                    錯誤碼 = "model_output_schema_invalid"
+        except _控制流程 as 控制:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+            入口 = 請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+            紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
+            私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
+            端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
+            執行函式 = 驗證函式 = 紀錄函式 = 錯誤碼 = None
+            _清理並重拋(控制)
+        except BaseException:
+            失敗 = True
+        if 失敗:
+            錯誤碼 = "internal_error"
+        端點, 呼叫 = 私有端點, 私有呼叫
+        self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+        入口 = 請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+        紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
+        私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
+        執行函式 = 驗證函式 = 紀錄函式 = None
+        return 映射呼叫錯誤(錯誤碼, endpoint=端點, invocation=呼叫)
+
+    def 開始(
+        self, 短名: str, 請求識別: str, 提供的API金鑰: str,
+        輸入資料: object, 中繼資料: object | None, 驗證時間: int | float,
+    ) -> 外部呼叫入口:
+        """認證成功後刷新、提交雙層計數，再依 D20 status/rate/input 決定。"""
+        釘選 = 驗證結果 = 擷取命令 = 端點 = 呼叫 = 結果 = 決策 = 快照 = None
+        擷取輸入 = 擷取中繼 = 輸入快照 = None
+        端點識別 = 版本識別 = 憑證識別 = 呼叫識別 = 狀態 = 狀態值 = None
+        認證端點 = 端點狀態 = 超限範圍 = 重試秒數 = None
+        端點上限 = 憑證上限 = 端點計數 = 憑證計數 = 0
+        允許 = 輸入有效 = 快照失敗 = False
+        準備函式 = self._準備擷取
+        解析函式 = 驗證函式 = 刷新函式 = 計數函式 = 輸入函式 = None
+        解析未找到 = 解析失敗 = 編排失敗 = False
+        try:
+            解析函式 = self._解析器.依slug解析
+            釘選 = 解析函式(短名)
+        except _控制流程 as 控制:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+            釘選 = 解析函式 = None
+            _清理並重拋(控制)
+        except Exception as 解析錯誤:
+            解析未找到 = type(解析錯誤) is self._解析未找到型別
+            解析失敗 = not 解析未找到
+            解析錯誤 = None
+        except BaseException:
+            解析失敗 = True
+        if 解析未找到:
+            self = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = 解析函式 = None
+            短名 = 釘選 = None
+            return 外部呼叫入口(None, None, None, None, 映射呼叫錯誤("endpoint_not_found"))
+        if 解析失敗:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+            釘選 = 解析函式 = None
+            raise 外部呼叫編排錯誤("外部呼叫編排失敗") from None
+
+        try:
+            釘選 = _重建可信釘選版本(釘選, self._釘選型別)
+            端點識別 = object.__getattribute__(釘選, "endpoint_id")
+            版本識別 = object.__getattribute__(釘選, "version_id")
+            版本編號 = object.__getattribute__(釘選, "version_number")
+            if (type(短名) is not str or not 短名 or type(請求識別) is not str or not 請求識別
+                    or type(端點識別) is not str or not 端點識別
+                    or type(版本識別) is not str or not 版本識別
+                    or type(版本編號) is not int or 版本編號 < 1
+                    or type(驗證時間) not in (int, float)
+                    or not math.isfinite(float(驗證時間)) or 驗證時間 < 0):
+                raise ValueError
+            端點 = EndpointRef(端點識別, 短名, 版本編號)
+            驗證函式 = self._憑證服務.驗證
+            驗證結果 = 驗證函式(端點識別, 提供的API金鑰)
+            提供的API金鑰 = None
+            if type(驗證結果) is not self._驗證型別:
+                raise ValueError
+            狀態 = 驗證結果.status
+            if type(狀態) is not self._驗證狀態型別:
+                raise ValueError
+            狀態值 = 狀態.value
+            if type(狀態值) is not str:
+                raise ValueError
+            階段 = _選擇階段(self._階段型別, 狀態值)
+            憑證識別 = 驗證結果.credential_id if 狀態值 == "authenticated" else None
+            if 狀態值 == "authenticated" and (type(憑證識別) is not str or not 憑證識別):
+                raise ValueError
+            if 狀態值 == "authenticated":
+                認證端點 = 驗證結果.endpoint_id
+                端點狀態 = 驗證結果.endpoint_status
+                憑證上限 = 驗證結果.credential_rate_limit
+                端點上限 = 驗證結果.endpoint_rate_limit
+                if (type(認證端點) is not str or 認證端點 != 端點識別
+                        or type(端點狀態) is not str or 端點狀態 not in ("active", "disabled", "archived")
+                        or type(端點上限) is not int or not 1 <= 端點上限 <= 10_000
+                        or type(憑證上限) is not int or not 1 <= 憑證上限 <= 10_000):
+                    raise ValueError
+            try:
+                快照 = _建立正規呼叫快照(輸入資料, 中繼資料)
+            except ValueError:
+                快照失敗 = True
+            if 快照失敗:
+                擷取輸入 = 擷取中繼 = None
+            else:
+                assert type(快照) is _正規呼叫快照
+                擷取輸入 = 快照.建立輸入()
+                擷取中繼 = 快照.建立中繼資料()
+            輸入資料 = 中繼資料 = None
+            擷取命令 = 準備函式(階段, 擷取輸入, 擷取中繼)
+            擷取輸入 = 擷取中繼 = None
+            if 擷取命令 is None:
+                raise ValueError
+            呼叫識別 = self._寫入擷取(
+                self._呼叫儲存庫, 擷取命令, 端點識別, 版本識別, 請求識別,
+                credential_id=憑證識別,
+            )
+            if type(呼叫識別) is not str or not 呼叫識別:
+                raise ValueError
+            呼叫 = InvocationRef(呼叫識別, 請求識別)
+            if 狀態值 != "authenticated":
+                錯誤碼 = "api_key_expired" if 狀態值 == "api_key_expired" else "invalid_api_key"
+                結果 = 外部呼叫入口(
+                    端點, 呼叫, 釘選, None,
+                    映射呼叫錯誤(錯誤碼, endpoint=端點, invocation=呼叫),
+                )
+            else:
+                刷新函式 = self._憑證服務.刷新已認證使用
+                刷新函式(驗證結果, float(驗證時間))
+                計數函式 = self._提交雙層計數
+                決策 = 計數函式(端點識別, 憑證識別, 端點上限, 憑證上限, float(驗證時間))
+                if type(決策) is not self._限流決策型別:
+                    raise ValueError
+                允許 = 決策.允許
+                端點計數 = 決策.端點計數
+                憑證計數 = 決策.憑證計數
+                超限範圍 = 決策.超限範圍
+                重試秒數 = 決策.重試秒數
+                if (type(允許) is not bool or type(端點計數) is not int or not 1 <= 端點計數 <= 2**63 - 1
+                        or type(憑證計數) is not int or not 1 <= 憑證計數 <= 2**63 - 1):
+                    raise ValueError
+                if 允許:
+                    if (超限範圍 is not None or 重試秒數 is not None
+                            or 端點計數 > 端點上限 or 憑證計數 > 憑證上限):
+                        raise ValueError
+                else:
+                    if (type(超限範圍) is not str or 超限範圍 not in ("endpoint", "credential")
+                            or type(重試秒數) is not int or not 1 <= 重試秒數 <= 60):
+                        raise ValueError
+                    if 超限範圍 == "endpoint":
+                        if 端點計數 <= 端點上限:
+                            raise ValueError
+                    elif 端點計數 > 端點上限 or 憑證計數 <= 憑證上限:
+                        raise ValueError
+                錯誤碼 = "endpoint_disabled" if 端點狀態 == "disabled" else (
+                    "endpoint_archived" if 端點狀態 == "archived" else None
+                )
+                if 錯誤碼 is not None:
+                    結果 = _認證錯誤(端點, 呼叫, 釘選, 驗證結果, 錯誤碼)
+                elif not 允許:
+                    結果 = _認證錯誤(
+                        端點, 呼叫, 釘選, 驗證結果, "rate_limit_exceeded",
+                        {"scope": 超限範圍, "retry_after_seconds": 重試秒數},
+                    )
+                elif 快照失敗:
+                    結果 = _認證錯誤(端點, 呼叫, 釘選, 驗證結果, "input_schema_invalid")
+                else:
+                    輸入函式 = self._驗證輸入
+                    輸入快照 = 快照.建立輸入()
+                    輸入有效 = 輸入函式(輸入快照)
+                    輸入快照 = None
+                    if type(輸入有效) is not bool:
+                        raise ValueError
+                    if not 輸入有效:
+                        結果 = _認證錯誤(端點, 呼叫, 釘選, 驗證結果, "input_schema_invalid")
+                    else:
+                        結果 = 外部呼叫入口(端點, 呼叫, 釘選, 驗證結果, None, 快照)
+        except _控制流程 as 控制:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+            釘選 = 驗證結果 = 擷取命令 = 端點 = 呼叫 = 結果 = 決策 = 快照 = None
+            擷取輸入 = 擷取中繼 = 輸入快照 = None
+            端點識別 = 版本識別 = 憑證識別 = 呼叫識別 = 狀態 = 狀態值 = None
+            認證端點 = 端點狀態 = 超限範圍 = 重試秒數 = None
+            端點上限 = 憑證上限 = 端點計數 = 憑證計數 = 0
+            允許 = 輸入有效 = 快照失敗 = False
+            準備函式 = 解析函式 = 驗證函式 = 刷新函式 = 計數函式 = 輸入函式 = None
+            _清理並重拋(控制)
+        except BaseException:
+            編排失敗 = True
+        if 編排失敗:
+            self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
+            釘選 = 驗證結果 = 擷取命令 = 端點 = 呼叫 = 結果 = 決策 = 快照 = None
+            擷取輸入 = 擷取中繼 = 輸入快照 = None
+            端點識別 = 版本識別 = 憑證識別 = 呼叫識別 = 狀態 = 狀態值 = None
+            認證端點 = 端點狀態 = 超限範圍 = 重試秒數 = None
+            端點上限 = 憑證上限 = 端點計數 = 憑證計數 = 0
+            允許 = 輸入有效 = 快照失敗 = False
+            準備函式 = 解析函式 = 驗證函式 = 刷新函式 = 計數函式 = 輸入函式 = None
+            raise 外部呼叫編排錯誤("外部呼叫編排失敗") from None
+        return 結果
+
+
+def _確認執行嘗試收據(原始收據: object, 呼叫識別: str, 嘗試次數: int) -> None:
+    """trusted-rebuild recorder receipt 並要求 authoritative identity 完全匹配。"""
+    if type(原始收據) is not 執行嘗試紀錄收據:
+        raise ValueError("執行嘗試紀錄失敗") from None
+    安全收據 = 執行嘗試紀錄收據(
+        object.__getattribute__(原始收據, "invocation_id"),
+        object.__getattribute__(原始收據, "attempt"),
+        object.__getattribute__(原始收據, "committed"),
+        object.__getattribute__(原始收據, "sequence"),
+    )
+    if (object.__getattribute__(安全收據, "invocation_id") != 呼叫識別
+            or object.__getattribute__(安全收據, "attempt") != 嘗試次數):
+        原始收據 = 安全收據 = 呼叫識別 = 嘗試次數 = None
+        raise ValueError("執行嘗試紀錄失敗") from None
+
+
+def _認證錯誤(
+    端點: EndpointRef, 呼叫: InvocationRef, 釘選: object, 驗證結果: object,
+    錯誤碼: str, 細節: dict[str, Any] | None = None,
+) -> 外部呼叫入口:
+    """保留已認證主流程權限，並以 I01 固定 mapper 建立拒絕結果。"""
+    return 外部呼叫入口(
+        端點, 呼叫, 釘選, 驗證結果,
+        映射呼叫錯誤(錯誤碼, endpoint=端點, invocation=呼叫, details=細節),
+    )
+
+
+def _選擇階段(階段型別: type, 狀態: str) -> object:
+    """將 CRED 固定分類轉成既有 LOG 階段，不接受未知分類。"""
+    if 狀態 == "authenticated":
+        return 階段型別.AUTHENTICATED
+    if 狀態 == "invalid_api_key":
+        return 階段型別.INVALID_API_KEY
+    if 狀態 in ("api_key_expired", "api_key_revoked"):
+        return 階段型別.PRE_CREDENTIAL_REJECTION
+    raise ValueError
+
+
+def _清理並重拋(控制: BaseException) -> None:
+    """保留 K/I/S/G identity/args，移除舊 traceback 與例外鏈。"""
+    BaseException.__setattr__(控制, "__traceback__", None)
+    BaseException.__setattr__(控制, "__cause__", None)
+    BaseException.__setattr__(控制, "__context__", None)
+    BaseException.__setattr__(控制, "__suppress_context__", True)
+    try:
+        raise 控制
+    except _控制流程:
+        控制 = None  # type: ignore[assignment]
+        raise
