@@ -82,7 +82,7 @@ def _結構快照():
         system_prompt="prompt", permission_snapshot_digest="a" * 64,
         skill_bundle_hash="b" * 64, tool_handler_release="release-1", tool_snapshot=(),
         model_config=模型設定快照("fake", "model", 0, 10, 5, True, 1),
-        response_schema={"marker": 標記}, manifest_reference="manifest-1",
+        response_schema={"marker": 標記}, manifest_reference="bundle-1/manifest.json",
     )
 
 

@@ -11,7 +11,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 import hashlib
 import json
+from pathlib import PurePosixPath
+import re
 from typing import Any, Iterable
+import unicodedata
+
+
+_技能套件識別碼格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_清單參照最大位元組數 = 142
+
+
+def 是合法技能套件清單參照(值: object) -> bool:
+    """嚴格判斷 canonical ``<bundle-id>/manifest.json`` lexical reference。
+
+    參數：``值`` 是不可信輸入；只接受 exact ``str``、NFC、受限 bundle ID 與恰好
+    兩段的相對 POSIX 路徑，拒絕反斜線、絕對路徑、空段、``.``、``..``、非 canonical
+    拼法及超過 142 UTF-8 位元組的值。回傳：完全符合時為 ``True``，一般不合法輸入
+    或普通 Unicode／路徑錯誤一律為 ``False``。例外：``KeyboardInterrupt``、
+    ``SystemExit``、``GeneratorExit`` 等控制流程例外保持原物件傳出。
+    副作用：只配置短暫字串與 lexical path，不讀寫檔案系統，也不修改輸入。
+    """
+    try:
+        if (
+            type(值) is not str or not 值 or "\\" in 值 or 值.startswith("/")
+            or len(值.encode("utf-8")) > _清單參照最大位元組數
+            or unicodedata.normalize("NFC", 值) != 值
+        ):
+            return False
+        原始部件 = 值.split("/")
+        if len(原始部件) != 2 or any(部件 in ("", ".", "..") for 部件 in 原始部件):
+            return False
+        部件 = PurePosixPath(值).parts
+        return (
+            len(部件) == 2 and str(PurePosixPath(值)) == 值
+            and _技能套件識別碼格式.fullmatch(部件[0]) is not None
+            and 部件[1] == "manifest.json"
+        )
+    except (TypeError, ValueError, UnicodeError):
+        return False
 
 
 @dataclass(frozen=True, slots=True)

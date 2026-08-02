@@ -309,7 +309,7 @@ def _執行材料(*, 端點="endpoint-1", 版本="ver-2", 帳戶="sa-1", 提示=
         skill_bundle_hash=套件雜湊, tool_handler_release="release-7",
         tool_snapshot=(工具項目,),
         model_config=模型設定快照("fake", "model-1", 0, 100, 5, False, 1),
-        response_schema=None, manifest_reference="manifest-1",
+        response_schema=None, manifest_reference="bundle-1/manifest.json",
     )
     上下文 = ServiceAccountContext(
         service_account_id=帳戶, endpoint_version_id=版本,
