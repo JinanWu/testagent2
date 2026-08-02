@@ -2,6 +2,8 @@
 
 import ipaddress
 from dataclasses import dataclass
+from pathlib import Path
+from types import MappingProxyType
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI
@@ -19,6 +21,8 @@ from starlette.responses import JSONResponse
     "/api/admin",
     "/api/chat",
     "/api/auth",
+    "/api/sessions",
+    "/api/skills",
     "/v1/endpoints",
 )
 """後續 invoke、管理與認證能力可使用的 exact router prefixes。"""
@@ -38,18 +42,25 @@ from starlette.responses import JSONResponse
 網頁工作階段CookieSameSite = "lax"
 網頁CSRFHeader名稱 = "X-CSRF-Token"
 登入請求最大位元組 = 1024
+聊天請求最大位元組 = 16_384
+_本文上限政策 = MappingProxyType({
+    ("POST", "/api/auth/login"): 登入請求最大位元組,
+    ("POST", "/api/chat"): 聊天請求最大位元組,
+})
 
 
 class 限制登入請求Middleware:
-    """在 FastAPI JSON parser 前只 materialize bounded 的完整 login body。"""
+    """依 exact method/path 政策在 JSON parser 前限制瀏覽器本文。"""
 
     def __init__(self, 應用):
         """保存下一層 ASGI 應用。"""
         self.應用 = 應用
+        self._本文上限政策 = MappingProxyType(dict(_本文上限政策))
 
     async def __call__(self, 範圍, 接收, 傳送):
-        """只攔截 canonical login 並在轉交前限制完整 body 位元組。"""
-        if 範圍.get("type") != "http" or 範圍.get("method") != "POST" or 範圍.get("path") != "/api/auth/login":
+        """只攔截政策列出的 exact 操作並在轉交前限制完整 body 位元組。"""
+        上限 = self._本文上限政策.get((範圍.get("method"), 範圍.get("path")))
+        if 範圍.get("type") != "http" or 上限 is None:
             await self.應用(範圍, 接收, 傳送)
             return
         訊息清單 = []
@@ -58,7 +69,7 @@ class 限制登入請求Middleware:
             訊息 = await 接收()
             內容 = 訊息.get("body", b"")
             總量 += len(內容)
-            if 總量 > 登入請求最大位元組:
+            if 總量 > 上限:
                 回應 = JSONResponse({"detail": {"code": "request_invalid"}}, status_code=422)
                 await 回應(範圍, 接收, 傳送)
                 return
@@ -101,6 +112,74 @@ class 網頁安全設定:
             全為不安全loopback &= 來源.startswith("http://") and _是loopback(來源)
         if not self.Cookie安全 and not 全為不安全loopback:
             raise ValueError("Web安全設定無效")
+
+
+@dataclass(frozen=True, slots=True)
+class 生產設定:
+    """不可變的生產DB、瀏覽器來源與模型供應器設定。
+
+    參數:
+        資料庫路徑: 生產SQLite資料庫的絕對路徑。
+        允許來源: credentialed CORS 的 exact origin tuple。
+        模型供應器: ASCII模型供應器識別碼。
+        Cookie安全: 是否只經HTTPS傳送認證cookie。
+        工作階段有效秒數: Web工作階段TTL，範圍為60至604800秒。
+    返回:
+        建立完成的不可變設定值。
+    例外:
+        ValueError: 任一設定不符合生產或Web安全契約。
+    副作用:
+        無；不讀取環境、不連線資料庫，也不建立執行期資源。
+    """
+
+    資料庫路徑: Path
+    允許來源: tuple[str, ...]
+    模型供應器: str
+    模型名稱: str
+    Gemini專案識別碼: str | None = None
+    Gemini位置: str | None = None
+    Cookie安全: bool = True
+    工作階段有效秒數: int = 86_400
+
+    def __post_init__(self) -> None:
+        """驗證必要值並重用exact-origin與cookie安全契約。"""
+        if (
+            not isinstance(self.資料庫路徑, Path)
+            or not self.資料庫路徑.is_absolute()
+            or not self.資料庫路徑.name
+            or type(self.允許來源) is not tuple
+            or not self.允許來源
+            or self.模型供應器 not in {"fake", "gemini-adc"}
+            or type(self.模型名稱) is not str
+            or not 1 <= len(self.模型名稱) <= 128
+            or self.模型名稱.strip() != self.模型名稱
+            or (self.模型供應器 == "fake" and (
+                self.模型名稱 != "fake" or self.Gemini專案識別碼 is not None or self.Gemini位置 is not None
+            ))
+            or (self.模型供應器 == "gemini-adc" and not all(
+                type(值) is str and 1 <= len(值) <= 128 and 值.strip() == 值
+                for 值 in (self.Gemini專案識別碼, self.Gemini位置)
+            ))
+        ):
+            raise ValueError("生產設定無效")
+        try:
+            self.建立網頁安全設定()
+        except ValueError:
+            raise ValueError("生產設定無效") from None
+
+    def 建立網頁安全設定(self) -> 網頁安全設定:
+        """由已驗證的生產設定建立Web安全值。
+
+        參數:
+            無。
+        返回:
+            與本設定origin、cookie及TTL一致的不可變網頁安全設定。
+        例外:
+            ValueError: 儲存值已不符合Web安全契約。
+        副作用:
+            無；不讀取環境、不連線或建立資料庫。
+        """
+        return 網頁安全設定(self.允許來源, self.Cookie安全, self.工作階段有效秒數)
 
 
 def _是loopback(來源: str) -> bool:
