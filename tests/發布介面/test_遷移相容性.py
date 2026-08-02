@@ -129,16 +129,140 @@ def _建立工作階段與訊息(db: Path, user_id: str | None = None) -> str:
         _安全關閉(庫)
 
 
-def test_fresh_empty_db_apply_0001_to_0009_and_idempotent(tmp_path):
-    """空資料庫應依序套用九版，重跑保持無操作。"""
+def test_fresh_empty_db_apply_0001_to_0011_and_idempotent(tmp_path):
+    """空資料庫應依序套用十一版，重跑保持無操作。"""
     db = tmp_path / "fresh.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
     assert 初始化發布介面資料庫(db) == ()
     _assert_發布遷移完成(db)
     assert _q(db, "PRAGMA foreign_key_check") == []
     assert _q(db, "PRAGMA foreign_key_list(endpoint_redactions)")[0][2:5] == (
         "audit_events", "audit_event_id", "id"
     )
+
+
+def _套用前十版(db: Path) -> None:
+    """建立CP1完整legacy schema，保留0011供upgrade案例套用。"""
+    assert 執行遷移(db, 載入發布介面遷移()[:10]) == tuple(range(1, 11))
+
+
+def _建立端點與版本(連線: sqlite3.Connection) -> None:
+    """建立credential與invocation相容性案例所需的最小端點及版本。"""
+    連線.execute("INSERT INTO service_accounts(id,created_at) VALUES('sa_1',1)")
+    連線.execute(
+        "INSERT INTO published_endpoints("
+        "id,owner_user_id,service_account_id,slug,status,created_at,updated_at"
+        ") VALUES('ep_1','owner_1','sa_1','endpoint-one','active',1,1)"
+    )
+    連線.execute(
+        "INSERT INTO published_endpoint_versions("
+        "id,endpoint_id,version_number,original_requirement_text,system_prompt,allowed_skills_json,"
+        "allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,model_config_snapshot_json,"
+        "retry_policy_json,skill_bundle_manifest_json,input_schema_json,response_schema_json,"
+        "schema_changed,created_by_user_id,created_at) VALUES("
+        "'ver_1','ep_1',1,'requirement','prompt','[]','[]','{}','runtime','{}','{}','{}',"
+        "NULL,'{}',0,'owner_1',1)"
+    )
+
+
+def test_0011_fresh_schema只建立CRED憑證結構(tmp_path):
+    """fresh 1至11須得到CRED final credential欄位、索引及credential triggers。"""
+    db = tmp_path / "credential-final-fresh.sqlite3"
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
+    assert [列[1] for 列 in _q(db, "PRAGMA table_info(endpoint_credentials)")] == [
+        "id", "endpoint_id", "name", "purpose", "key_version", "key_nonce", "key_ciphertext",
+        "key_hash", "key_prefix", "key_last4", "expires_at", "last_used_at", "created_at",
+        "updated_at", "revoked_at", "ip_allowlist_json", "rate_limit_requests",
+        "created_by_user_id", "revision",
+    ]
+    assert {列[0] for 列 in _q(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='endpoint_credentials'",
+    )} >= {"idx_endpoint_credentials_endpoint_lifecycle", "uq_endpoint_credentials_id_endpoint"}
+    assert {列[0] for 列 in _q(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='endpoint_credentials'",
+    )} == {
+        "endpoint_credentials_allowlist_insert_check",
+        "endpoint_credentials_allowlist_update_check",
+        "finite_endpoint_credentials_insert",
+        "finite_endpoint_credentials_update",
+    }
+
+
+def test_0011_upgrade空legacy表可套用且重跑無操作(tmp_path):
+    """空CP1 credential table應套用0011，第二次由ledger idempotent skip。"""
+    db = tmp_path / "credential-final-upgrade.sqlite3"
+    _套用前十版(db)
+    assert 初始化發布介面資料庫(db) == (11,)
+    assert 初始化發布介面資料庫(db) == ()
+    assert _q(db, "SELECT version FROM published_api_schema_migrations ORDER BY version") == [
+        (版本,) for 版本 in range(1, 12)
+    ]
+
+
+def test_0011_nonempty_legacy憑證fail_closed且完整rollback(tmp_path):
+    """legacy表有任一row時須在drop前拒絕，不改row、schema或ledger。"""
+    db = tmp_path / "credential-nonempty.sqlite3"
+    _套用前十版(db)
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _建立端點與版本(連線)
+        連線.execute(
+            "INSERT INTO endpoint_credentials("
+            "id,endpoint_id,name,purpose,secret_ciphertext,encryption_key_id,verification_hash,"
+            "key_prefix,key_last4,expires_at,ip_allowlist_json,rate_limit_requests,"
+            "rate_limit_window_seconds,created_by_user_id,created_at) VALUES("
+            "'cred_old','ep_1','legacy','server',X'01','key-id',X'02','pk','1234',10,'[]',5,60,'owner_1',1)"
+        )
+    舊欄位 = _q(db, "PRAGMA table_info(endpoint_credentials)")
+    舊資料 = _q(db, "SELECT * FROM endpoint_credentials")
+
+    with pytest.raises(sqlite3.IntegrityError, match="CHECK constraint failed"):
+        初始化發布介面資料庫(db)
+
+    assert _q(db, "PRAGMA table_info(endpoint_credentials)") == 舊欄位
+    assert _q(db, "SELECT * FROM endpoint_credentials") == 舊資料
+    assert _q(db, "SELECT version FROM published_api_schema_migrations ORDER BY version") == [
+        (版本,) for 版本 in range(1, 11)
+    ]
+    assert _q(db, "SELECT name FROM sqlite_master WHERE name LIKE 'endpoint_credentials_0011_%'") == []
+
+
+def test_0011保留endpoint_invocations_incoming_fk且foreign_key_check為空(tmp_path):
+    """重建後incoming composite FK仍指向canonical credential table並可承載新row。"""
+    db = tmp_path / "credential-incoming-fk.sqlite3"
+    _套用前十版(db)
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        _建立端點與版本(連線)
+        連線.execute(
+            "INSERT INTO endpoint_invocations("
+            "id,endpoint_id,endpoint_version_id,credential_id,request_id,status,input_json,created_at"
+            ") VALUES('inv_1','ep_1','ver_1',NULL,'req_1','succeeded','{}',2)"
+        )
+    assert 初始化發布介面資料庫(db) == (11,)
+
+    with closing(sqlite3.connect(db)) as 連線, 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        連線.create_function("published_ip_allowlist_valid", 1, lambda value: int(value == "[]"))
+        連線.execute(
+            "INSERT INTO endpoint_credentials("
+            "id,endpoint_id,name,purpose,key_version,key_nonce,key_ciphertext,key_hash,key_prefix,"
+            "key_last4,expires_at,created_at,updated_at,ip_allowlist_json,rate_limit_requests,"
+            "created_by_user_id) VALUES("
+            "'cred_new','ep_1','production','server',1,zeroblob(12),zeroblob(62),"
+            "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','pk','1234',"
+            "10,1,1,'[]',5,'owner_1')"
+        )
+        連線.execute("UPDATE endpoint_invocations SET credential_id='cred_new' WHERE id='inv_1'")
+        assert 連線.execute(
+            "SELECT credential_id FROM endpoint_invocations WHERE id='inv_1'"
+        ).fetchall() == [("cred_new",)]
+        外鍵 = 連線.execute("PRAGMA foreign_key_list(endpoint_invocations)").fetchall()
+        assert any(列[2:5] == ("endpoint_credentials", "credential_id", "id") for 列 in 外鍵)
+        assert any(列[2:5] == ("endpoint_credentials", "endpoint_id", "endpoint_id") for 列 in 外鍵)
+        assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
 
 
 def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
@@ -179,7 +303,7 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
             "'legacy cleanup','system',NULL,'evt_legacy',0,3)"
         )
 
-    assert 初始化發布介面資料庫(db) == (6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(6, 12))
     assert _q(
         db,
         "SELECT event_id,resource_type,resource_id,occurred_at,outcome,invocation_id,created_at "
@@ -234,7 +358,7 @@ def test_users_auth_only_db_發布遷移不改legacy_user_tables(tmp_path):
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"] == {"present": False, "rows": None}
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -253,7 +377,7 @@ def test_sessions_messages_only_db_發布遷移不改legacy_session_tables(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -281,7 +405,7 @@ def test_shared_users_and_sessions_db_發布遷移不改任一legacy_table(tmp_p
     before = _legacy_table_snapshot(db, legacy_tables)
     assert before["schema_version"]["present"] is True
 
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
     assert 初始化發布介面資料庫(db) == ()
 
     after = _legacy_table_snapshot(db, legacy_tables)
@@ -339,7 +463,7 @@ def test_manifest_sorting_contiguous_duplicate_unknown_utf8_symlink_and_nonregul
 def test_loader_returns_only_pending_and_does_not_read_applied_sql(tmp_path, monkeypatch):
     """Loader只回傳pending版本，且不再讀取已套用SQL。"""
     db = tmp_path / "done.sqlite3"
-    assert 初始化發布介面資料庫(db) == (1, 2, 3, 4, 5, 6, 7, 8, 9)
+    assert 初始化發布介面資料庫(db) == tuple(range(1, 12))
 
     def fail_read(*_args, **_kwargs):
         """若測試期間再次讀取SQL便立即失敗。"""
@@ -355,7 +479,7 @@ def test_loader_missing_db_is_read_only_and_returns_all_pending(tmp_path):
     db = tmp_path / "missing.sqlite3"
     assert not db.exists()
     pending = 載入發布介面遷移(資料庫路徑=db)
-    assert [項目.版本 for 項目 in pending] == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    assert [項目.版本 for 項目 in pending] == list(range(1, 12))
     assert not db.exists()
 
 

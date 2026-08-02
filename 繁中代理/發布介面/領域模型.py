@@ -39,6 +39,7 @@ _AUDIT_SAFE_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
 _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk[-_]|bearer)")
 _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN = re.compile(r"(?i)[0-9a-f]{64}")
 _AUDIT_ACTOR_TYPES = frozenset(("user", "service_account", "system"))
+_WEB_OWNER_USER_ID_SENSITIVE_TOKENS = frozenset(("raw", "hash", "sha256", "full_hash"))
 
 
 class AuditMetadataError(ValueError):
@@ -55,6 +56,10 @@ class AuditEventError(ValueError):
 
 class AuditReceiptError(ValueError):
     """AuditAppendReceipt 不符合公開安全契約時使用的固定錯誤型別。"""
+
+
+class WebSessionContractError(ValueError):
+    """Web 工作階段 owner principal 不符合公開契約時使用的固定錯誤型別。"""
 
 
 class _公開DTO:
@@ -142,6 +147,47 @@ class AuditMetadata:
         內部不可變快照。
         """
         return dict(self._項目)
+
+
+@dataclass(frozen=True, init=False)
+class WebOwnerPrincipal:
+    """Web 工作階段 owner 的最小安全主體。
+
+    user_id 必須是 exact str，長度 1..128，先重用稽核安全 identifier 規則，再追加
+    Web 專用 token 拒絕 raw/hash/sha256/full_hash。因此合法 UUID 與 user_ 類識別值
+    可用；raw secret、hash、路徑、完整 digest、Unicode marker 與 str subclass 會
+    fail closed。
+    """
+
+    user_id: str
+
+    def __init__(self, user_id: str) -> None:
+        """驗證 user_id 並建立 frozen DTO。
+
+        任一 validation failure 都轉成固定 WebSessionContractError。錯誤路徑會先
+        將 self 放入安全預設值，再清除 raw 與 safe locals，且在 except 區塊外
+        raise，避免 production traceback frame locals 保留 marker。
+        """
+        錯誤 = False
+        安全user_id: str | None = None
+        object.__setattr__(self, "user_id", None)
+        try:
+            if _WebOwnerUserId合法(user_id):
+                安全user_id = user_id
+            else:
+                錯誤 = True
+        except Exception:
+            錯誤 = True
+
+        if 錯誤:
+            user_id = 安全user_id = None
+            raise WebSessionContractError("WebOwnerPrincipal 不符合公開契約") from None
+
+        object.__setattr__(self, "user_id", 安全user_id)
+
+    def to_json(self) -> JsonObject:
+        """回傳固定鍵序 owner principal JSON，且每次都是 ordinary new dict。"""
+        return {"user_id": self.user_id}
 
 
 @dataclass(frozen=True, init=False)
@@ -783,6 +829,15 @@ def _稽核Metadata值合法(值: Any) -> bool:
     if type(值) is float:
         return math.isfinite(值)
     return False
+
+
+def _WebOwnerUserId合法(值: Any) -> bool:
+    """檢查 Web owner user_id；在稽核 identifier 規則上追加 Web 專用 token 拒絕。"""
+    if not _稽核安全識別值合法(值):
+        return False
+    assert type(值) is str
+    token列 = re.split(r"[^a-z0-9]+", 值.lower())
+    return not any(token in _WEB_OWNER_USER_ID_SENSITIVE_TOKENS for token in token列)
 
 
 def _稽核安全識別值合法(值: Any) -> bool:
