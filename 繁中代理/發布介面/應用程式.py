@@ -1,4 +1,10 @@
-"""Canonical 發布介面 FastAPI application factory。"""
+"""Canonical 發布介面 FastAPI application factory。
+
+參數：由公開 factories 接收 immutable composition 與可選 Web 安全設定。
+返回值：路由政策與 lifespan ownership 均已固定的獨立 FastAPI app。
+例外：組裝、啟動與關閉 ordinary failures 分別固定化且不保留例外鏈。
+副作用：construction 不啟動資源；lifespan startup／shutdown 擁有資源生命週期。
+"""
 
 from __future__ import annotations
 
@@ -357,15 +363,30 @@ def _驗證應用路由(應用程式: FastAPI, 預期操作描述, 健康端點)
 
 
 def 建立生命週期(相依項: 發布介面相依項):
-    """建立只擁有 reconstructed factory tuple products 的 fail-closed lifespan。"""
+    """建立只擁有 reconstructed factory tuple products 的 fail-closed lifespan。
+
+    參數：已重建且由 application factory 擁有的 immutable composition。
+    返回值：每次呼叫都建立獨立 async context 的 lifespan callable。
+    例外：startup/shutdown ordinary failures 固定化；控制流程保留 identity。
+    副作用：closure 以 one-shot 相依項盒防止失敗後重跑資源 factories。
+    """
     相依項盒 = [相依項]
     del 相依項
 
     @asynccontextmanager
     async def 內層生命週期(應用程式: FastAPI) -> AsyncIterator[None]:
-        """全清理後依 body/control/ordinary 的固定優先序結束。"""
+        """全清理後依 body/control/ordinary 的固定優先序結束。
+
+        參數：本次啟停的 FastAPI app。
+        返回值：startup 成功後讓出一次控制，結束時不回傳資源。
+        例外：耗盡盒或 ordinary startup 均固定為發布介面啟動失敗。
+        副作用：建立、公開、反向關閉資源，並在失敗時永久清空 one-shot composition。
+        """
         已啟動資源: list[tuple[發布介面資源, Any]] = []
         啟動錯誤盒: list[BaseException] = []
+        if not 相依項盒:
+            del 應用程式
+            _拋出固定錯誤(啟動錯誤訊息)
         安全相依項 = 相依項盒[0]
         工廠清單 = 安全相依項.資源工廠清單
         try:
@@ -448,7 +469,13 @@ def 建立生命週期(相依項: 發布介面相依項):
             _拋出固定錯誤(關閉錯誤訊息)
 
     def 生命週期(應用程式: FastAPI):
-        """為每次 lifespan 呼叫建立會清除最終例外鏈的獨立 context。"""
+        """為每次 lifespan 呼叫建立會清除最終例外鏈的獨立 context。
+
+        參數：準備進入一次 lifespan 的 FastAPI app。
+        返回值：包裝內層 async context 的例外鏈清除器。
+        例外：本函式不啟動資源；context enter/exit 依內層契約傳出錯誤。
+        副作用：只建立單次 context wrapper。
+        """
         return _生命週期例外鏈清除器(內層生命週期(應用程式))
 
     return 生命週期

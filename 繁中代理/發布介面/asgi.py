@@ -1,4 +1,14 @@
-"""Canonical CP3 ASGI application factories；import時不讀環境或建立資料庫。"""
+"""Canonical CP3／CP4 ASGI application factories。
+
+參數：
+    公開工廠接受 exact immutable 設定；環境工廠只在被呼叫時讀取 process environment。
+返回值：
+    建立含 canonical routes 與 lifespan-owned resources 的 FastAPI app。
+例外：
+    設定違約固定為 ``ValueError``；startup 一般錯誤由 lifespan 固定映射。
+副作用：
+    import 不讀環境或建立資料庫；app construction 也不執行 migration 或 callbacks。
+"""
 
 from __future__ import annotations
 
@@ -48,10 +58,15 @@ def 建立ASGI應用程式(設定: 生產設定) -> FastAPI:
 def 建立CP4ASGI應用程式(設定: 生產設定, Published設定: Published生產設定) -> FastAPI:
     """由明確 executable 注入建立完整 CP4 Controller 應用程式。
 
-    參數：CP3 生產設定與 immutable ``Published生產設定``。
-    返回值：含 Web 與 exact ``POST /v1/endpoints/{slug}/invoke`` 的 FastAPI app。
-    例外：設定不合 exact production contract 時拋 ``ValueError``。
-    副作用：只組裝 app/router；installer、registry、DB 與 bundle FS 延至 lifespan。
+    參數：
+        設定: exact CP3 生產設定與 Web DB authority。
+        Published設定: immutable CP4 設定與獨立 Published DB authority。
+    返回值：
+        含 Web 與 exact ``POST /v1/endpoints/{slug}/invoke`` 的 FastAPI app。
+    例外：
+        設定不合 exact production contract 時拋 ``ValueError``。
+    副作用：
+        只組裝 app/router；FS identity、installer、registry、DB 與 bundle FS 延至 lifespan。
     """
     if type(設定) is not 生產設定 or type(Published設定) is not Published生產設定:
         raise ValueError("ASGI設定無效") from None
@@ -61,8 +76,14 @@ def 建立CP4ASGI應用程式(設定: 生產設定, Published設定: Published�
 def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
     """從明確環境mapping解析exact production settings。
 
-    必填DB path、JSON origins與provider；cookie只接受true/false，TTL只接受
-    2至6位ASCII decimal。此函數不建立路徑或連線。
+    參數：
+        環境: 提供必填 DB path、JSON origins、provider 與可選模型設定的 mapping。
+    返回值：
+        已 exact 驗證且不含 fallback 的不可變 ``生產設定``。
+    例外：
+        欄位缺失、額外型別行為或值域違約一律固定為 ``ValueError``；控制流程例外原樣傳出。
+    副作用：
+        只解析記憶體 mapping；不建立路徑、開啟連線或讀取 process environment。
     """
     if not isinstance(環境, Mapping):
         raise ValueError("ASGI設定無效")
@@ -111,7 +132,17 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
 
 
 def 建立環境應用程式() -> FastAPI:
-    """供``uvicorn --factory``使用；只在factory呼叫時讀取process environment。"""
+    """供 ``uvicorn --factory`` 使用並延遲讀取 process environment。
+
+    參數：
+        無；設定來源固定為目前 ``os.environ``。
+    返回值：
+        由已驗證環境設定建立的 CP3 FastAPI app。
+    例外：
+        環境設定違約時固定 ``ValueError``；app construction 例外原樣傳出。
+    副作用：
+        呼叫時讀取 process environment 並建立 app，不在此階段建立資料庫。
+    """
     return 建立ASGI應用程式(解析環境生產設定(os.environ))
 
 
