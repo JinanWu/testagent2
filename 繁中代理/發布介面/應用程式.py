@@ -20,6 +20,9 @@ from .設定 import (
     發布介面版本,
     路由設定錯誤訊息,
     關閉錯誤訊息,
+    網頁安全設定,
+    套用網頁CORS,
+    限制登入請求Middleware,
 )
 
 _控制流程錯誤 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -29,6 +32,11 @@ _最大資源工廠數 = 64
 _最大路由數 = 512
 _最大操作識別碼長度 = 256
 _健康狀態操作識別碼 = "取得健康狀態_healthz_get"
+_瀏覽器前綴 = ("/api/auth", "/api/chat", "/api/admin", "/api/published-endpoints")
+_變更方法 = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_認證操作 = frozenset({
+    ("POST", "/api/auth/login"), ("GET", "/api/auth/session"), ("POST", "/api/auth/logout"),
+})
 _路由器清單描述器 = 發布介面相依項.__dict__["路由器清單"]
 _資源工廠清單描述器 = 發布介面相依項.__dict__["資源工廠清單"]
 
@@ -446,10 +454,56 @@ def 建立生命週期(相依項: 發布介面相依項):
     return 生命週期
 
 
-def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
-    """由 exact reconstructed composition 建立隔離 app。"""
+def _驗證網頁安全composition(路由器清單, 設定) -> 網頁安全設定 | None:
+    """有 canonical auth router 時要求 exact config 並預檢所有 browser mutation。"""
+    操作集合 = set()
+    路由清單 = []
+    for 路由器 in 路由器清單:
+        for 路由 in 路由器.routes:
+            if type(路由) is APIRoute:
+                路由清單.append(路由)
+                for 方法 in 路由.methods:
+                    操作集合.add((方法, 路由.path))
+    有認證路由 = _認證操作.issubset(操作集合)
+    if 有認證路由 != (type(設定) is 網頁安全設定):
+        raise ValueError(路由設定錯誤訊息)
+    if not 有認證路由:
+        return None
+    from .路由.網頁認證 import 是模組CSRF相依項, 讀取網頁認證路由器TTL
+    if 有認證路由:
+        認證路由器 = next(
+            (路由器 for 路由器 in 路由器清單 if 路由器.prefix == "/api/auth"), None
+        )
+        if (
+            認證路由器 is None
+            or 讀取網頁認證路由器TTL(認證路由器) != 設定.工作階段有效秒數
+        ):
+            raise ValueError(路由設定錯誤訊息)
+    for 路由 in 路由清單:
+        if not 路由.path.startswith(_瀏覽器前綴) or not (_變更方法 & 路由.methods):
+            continue
+        計數 = 0
+        待查 = [路由.dependant]
+        while 待查:
+            節點 = 待查.pop()
+            if 是模組CSRF相依項(節點.call):
+                計數 += 1
+            待查.extend(節點.dependencies)
+        if 路由.path == "/api/auth/login" and 路由.methods == {"POST"}:
+            if 計數 != 0:
+                raise ValueError(路由設定錯誤訊息)
+        elif 計數 != 1:
+            raise ValueError(路由設定錯誤訊息)
+    return 設定
+
+
+def _建立應用程式(
+    相依項: 發布介面相依項, *, Web安全設定: 網頁安全設定 | None = None,
+) -> FastAPI:
+    """由 exact reconstructed composition 建立隔離 app 的共用實作。"""
     安全相依項 = _重建相依項(相依項)
     路由描述, 預期操作描述 = _讀取路由描述(安全相依項.路由器清單)
+    安全設定 = _驗證網頁安全composition(安全相依項.路由器清單, Web安全設定)
     政策清單 = tuple(擷取路由器政策(路由器) for 路由器 in 安全相依項.路由器清單)
     安全路由器清單 = tuple(建立安全路由器(政策) for 政策 in 政策清單)
     for 路由器, 政策, 安全路由器 in zip(安全相依項.路由器清單, 政策清單, 安全路由器清單):
@@ -464,6 +518,13 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
         redirect_slashes=False,
         lifespan=建立生命週期(安全相依項),
     )
+    if 安全設定 is not None:
+        from .路由.網頁認證 import 目前工作階段HTTP錯誤, _錯誤
+        @應用程式.exception_handler(目前工作階段HTTP錯誤)
+        async def 處理目前工作階段錯誤(請求, 錯誤):
+            """固定映射 current-session failure 並以 exact scope 清兩個 cookies。"""
+            del 請求
+            return _錯誤(錯誤.status_code, 錯誤.detail["code"], 安全設定)
 
     @應用程式.get("/healthz", status_code=200, operation_id=_健康狀態操作識別碼)
     def 取得健康狀態() -> dict[str, str]:
@@ -512,5 +573,20 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
     _重播路由描述(安全相依項.路由器清單, 路由描述, 預期操作描述)
     _驗證應用路由(應用程式, 預期操作描述, 取得健康狀態)
     驗證最終政策(應用程式.routes, 政策清單)
+    if 安全設定 is not None:
+        應用程式.add_middleware(限制登入請求Middleware)
+        套用網頁CORS(應用程式, 安全設定)
     del 相依項
     return 應用程式
+
+
+def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
+    """建立保留 A01 exact public signature 的非瀏覽器應用程式。"""
+    return _建立應用程式(相依項)
+
+
+def 建立網頁應用程式(
+    相依項: 發布介面相依項, Web安全設定: 網頁安全設定,
+) -> FastAPI:
+    """以 exact Web 安全設定整合 auth preflight、body bound 與 CORS。"""
+    return _建立應用程式(相依項, Web安全設定=Web安全設定)
