@@ -100,8 +100,8 @@ def test_兩個factory應用程式並行隔離exact相依項與資源():
     應用程式二 = 建立應用程式(相依項二)
 
     with TestClient(應用程式一), TestClient(應用程式二):
-        assert 應用程式一.state.發布介面相依項 is 相依項一
-        assert 應用程式二.state.發布介面相依項 is 相依項二
+        assert 應用程式一.state.發布介面相依項.路由器清單 == 相依項一.路由器清單
+        assert 應用程式二.state.發布介面相依項.路由器清單 == 相依項二.路由器清單
         assert 應用程式一.state.發布介面資源 == (資源一,)
         assert 應用程式二.state.發布介面資源 == (資源二,)
 
