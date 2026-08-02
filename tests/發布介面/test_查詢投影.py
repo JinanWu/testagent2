@@ -6,7 +6,12 @@ import traceback
 
 import pytest
 
-from 繁中代理.發布介面.治理.查詢投影 import 查詢投影錯誤, SQLite呼叫查詢投影
+from 繁中代理.發布介面.治理.查詢投影 import (
+    管理員原始資料稽核閘門,
+    查詢投影錯誤,
+    SQLite呼叫查詢投影,
+)
+from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 
@@ -158,17 +163,18 @@ def test_同名欄位與索引但缺少全域呼叫主鍵時兩種投影皆在pa
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='endpoint_invocations'"
         ).fetchone()[0]
         with 連線:
-            連線.execute("DROP TABLE endpoint_tool_calls")
-            連線.execute("DROP TABLE run_events")
-            連線.execute("ALTER TABLE endpoint_invocations RENAME TO genuine_invocations")
+            偽造語句 = 建表語句.replace(
+                "CREATE TABLE endpoint_invocations", "CREATE TABLE counterfeit_invocations", 1
+            ).replace("id TEXT PRIMARY KEY", "id TEXT", 1)
+            連線.execute(偽造語句)
             欄位 = ",".join(列[1] for 列 in 連線.execute(
-                "PRAGMA table_info(genuine_invocations)"
+                "PRAGMA table_info(endpoint_invocations)"
             ))
-            連線.execute(建表語句.replace("id TEXT PRIMARY KEY", "id TEXT", 1))
             連線.execute(
-                f"INSERT INTO endpoint_invocations({欄位}) SELECT {欄位} FROM genuine_invocations"
+                f"INSERT INTO counterfeit_invocations({欄位}) SELECT {欄位} FROM endpoint_invocations"
             )
-            連線.execute("DROP TABLE genuine_invocations")
+            連線.execute("DROP TABLE endpoint_invocations")
+            連線.execute("ALTER TABLE counterfeit_invocations RENAME TO endpoint_invocations")
             連線.execute("CREATE INDEX idx_endpoint_invocations_endpoint_created ON endpoint_invocations(endpoint_id,created_at)")
             連線.execute("CREATE INDEX idx_endpoint_invocations_status_created ON endpoint_invocations(status,created_at)")
             連線.execute("CREATE INDEX idx_endpoint_invocations_credential_created ON endpoint_invocations(credential_id,created_at)")
@@ -253,8 +259,10 @@ class _清理連線代理:
     def __init__(self, 連線, *, 主要=None, 回滾=None, 關閉=None):
         self.連線, self.主要, self.回滾, self.關閉 = 連線, 主要, 回滾, 關閉
         self.順序 = []
+        self.語句 = []
 
     def execute(self, sql, *args):
+        self.語句.append(sql)
         if self.主要 is not None and sql.startswith("SELECT version,name"):
             raise self.主要
         return self.連線.execute(sql, *args)
@@ -386,3 +394,162 @@ def test_管理員跨多列聚合JSON預算超限會失敗並關閉真實資源(
     assert 代理列[0].順序 == ["rollback", "close"]
     with pytest.raises(sqlite3.ProgrammingError):
         代理列[0].連線.execute("SELECT 1")
+
+
+@pytest.mark.parametrize("目標", ["invocation", "run_event"])
+def test_單一超大有效JSON只取長度且不執行任何payload查詢(
+    monkeypatch, 呼叫資料庫, 目標,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        if 目標 == "invocation":
+            連線.execute(
+                "UPDATE endpoint_invocations SET input_json="
+                "'{\"huge\":\"' || printf('%.*c',1100000,'x') || '\"}' WHERE id='inv-1'"
+            )
+        else:
+            連線.execute(
+                "UPDATE run_events SET payload_json="
+                "'{\"huge\":\"' || printf('%.*c',1100000,'x') || '\"}' WHERE id='run-1'"
+            )
+    真建立 = 查詢投影._建立連線
+    代理列 = []
+
+    def 建立代理(*引數, **關鍵字):
+        代理 = _清理連線代理(真建立(*引數, **關鍵字))
+        代理列.append(代理)
+        return 代理
+
+    monkeypatch.setattr(查詢投影, "_建立連線", 建立代理)
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+            True, "ep-1", "inv-1"
+        )
+    assert len(代理列) == 1
+    assert not any(語句.startswith("SELECT input_json") for 語句 in 代理列[0].語句)
+    assert not any(語句.startswith("SELECT payload_json") for 語句 in 代理列[0].語句)
+
+
+def test_管理員原始資料先提交安全稽核才呼叫detail且不保存raw(呼叫資料庫):
+    順序 = []
+
+    def detail(端點識別碼, 呼叫識別碼):
+        with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+            順序.append(連線.execute(
+                "SELECT event_id,action,outcome,actor_type,actor_id,request_id,endpoint_id,"
+                "invocation_id,metadata_json FROM audit_events"
+            ).fetchone())
+        return SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+            True, 端點識別碼, 呼叫識別碼
+        )
+
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0), detail
+    )
+    結果 = 閘門.查詢管理員原始資料(
+        True, "admin-1", "req-admin-1", "evt-admin-1", 100.0, "ep-1", "inv-1"
+    )
+
+    assert 結果["input"] == {"raw_input": "INPUT_SECRET"}
+    assert 順序 == [(
+        "evt-admin-1", "audit.detail.view", "success", "user", "admin-1", "req-admin-1",
+        "ep-1", "inv-1", "{}",
+    )]
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        稽核文字 = repr(連線.execute("SELECT * FROM audit_events").fetchall())
+    for 標記 in ("INPUT_SECRET", "METADATA_SECRET", "OUTPUT_SECRET", "ARG_SECRET", "RESULT_SECRET"):
+        assert 標記 not in 稽核文字
+        assert 標記 not in repr(閘門)
+
+
+@pytest.mark.parametrize("授權", [False, 0, 1, "admin", None])
+def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資料庫, 授權):
+    呼叫 = []
+
+    def detail(*_引數):
+        呼叫.append(1)
+        return {"raw": "不得取得"}
+
+    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
+    with pytest.raises(查詢投影錯誤) as 錯誤:
+        閘門.查詢管理員原始資料(
+            授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+            100.0, "ep-1", "inv-1",
+        )
+    assert 錯誤.value.args == ("呼叫紀錄不可取得",)
+    assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
+    assert 呼叫 == []
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        assert 連線.execute("SELECT outcome FROM audit_events").fetchone() == ("denied",)
+
+
+@pytest.mark.parametrize("偽造收據", [False, True])
+def test_稽核失敗或偽造收據都fail_closed且detail零呼叫(呼叫資料庫, 偽造收據):
+    from 繁中代理.發布介面 import AuditAppendReceipt
+
+    class 敵對Base(BaseException):
+        pass
+
+    class Sink:
+        def append_audit_event(self, event):
+            if not 偽造收據:
+                raise 敵對Base("SINK_PRIVATE")
+            收據 = AuditAppendReceipt(event.event_id, True, 1)
+            object.__setattr__(收據, "committed", False)
+            return 收據
+
+    呼叫 = []
+
+    def detail(*_引數):
+        呼叫.append(1)
+        return {"raw": "RAW_PRIVATE"}
+
+    閘門 = 管理員原始資料稽核閘門(Sink(), detail)
+    with pytest.raises(查詢投影錯誤) as 錯誤:
+        閘門.查詢管理員原始資料(
+            True, "admin-1", "req-fail", "evt-fail", 100.0, "ep-1", "inv-1"
+        )
+    assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
+    assert 呼叫 == []
+
+
+def test_detail只接受exact_function而不觸發敵對callable():
+    class 敵對Callable:
+        def __init__(self):
+            self.呼叫次數 = 0
+
+        def __call__(self, *_引數):
+            self.呼叫次數 += 1
+
+    detail = 敵對Callable()
+    with pytest.raises(查詢投影錯誤):
+        管理員原始資料稽核閘門(object(), detail)
+    assert detail.呼叫次數 == 0
+
+
+def test_detail自訂base固定失敗而KISG保留identity且清空閘門locals(呼叫資料庫):
+    class 敵對Base(BaseException):
+        pass
+
+    狀態 = [敵對Base("RAW_PRIVATE")]
+
+    def detail(*_引數):
+        raise 狀態[0]
+
+    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
+    with pytest.raises(查詢投影錯誤) as 固定:
+        閘門.查詢管理員原始資料(
+            True, "admin-1", "req-custom", "evt-custom", 100.0, "ep-1", "inv-1"
+        )
+    assert 固定.value.__cause__ is 固定.value.__context__ is None
+    for 索引, 類型 in enumerate((KeyboardInterrupt, SystemExit, GeneratorExit), 1):
+        控制 = 類型("RAW_PRIVATE")
+        狀態[0] = 控制
+        with pytest.raises(類型) as 捕捉:
+            閘門.查詢管理員原始資料(
+                True, "admin-1", f"req-control-{索引}", f"evt-control-{索引}",
+                100.0, "ep-1", "inv-1",
+            )
+        assert 捕捉.value is 控制
+        _assert投影框架無標記(捕捉.value, "RAW_PRIVATE")
