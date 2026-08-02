@@ -291,12 +291,12 @@ def test_M02發布只呼叫一個原子方法且初始金鑰成功時只出現�
 
 
 @pytest.mark.parametrize("管理者", [False, True])
-def test_M02版本把owner_admin授權交給單一原子切換操作(管理者):
-    """adapter 沒有舊版本 mutation callback，只提供完整新配置。"""
+def test_M02版本只傳權威使用者識別碼給單一原子切換操作(管理者):
+    """用戶端角色不是授權依據；服務以權威使用者識別碼重查權限。"""
     客戶端, 服務, _ = _建立整合客戶端(_身份(is_admin=管理者))
     回應 = 客戶端.post("/api/published-endpoints/endpoint-1/versions", json={"configuration": {"system_prompt": "new"}})
     assert (回應.status_code, 回應.json()) == (201, {"endpoint_id": "endpoint-1", "version_id": "version-2", "version_number": 2, "current_version_id": "version-2", "schema_changed": True})
-    assert 服務.版本呼叫 == [{"擁有者使用者識別碼": "owner-a", "是否管理者": 管理者, "端點識別碼": "endpoint-1", "配置": {"system_prompt": "new"}}]
+    assert 服務.版本呼叫 == [{"擁有者使用者識別碼": "owner-a", "端點識別碼": "endpoint-1", "配置": {"system_prompt": "new"}}]
 
 
 @pytest.mark.parametrize(
