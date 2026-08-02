@@ -5,16 +5,23 @@ from __future__ import annotations
 import math
 import re
 import struct
+import time
 from dataclasses import dataclass, field
 from functools import partial
 from inspect import signature
 from typing import Annotated, Any, Literal, Protocol, cast, get_type_hints
 
-from fastapi import APIRouter, Depends, HTTPException, Path
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, field_validator
 
 from 繁中代理.使用者 import 使用者上下文
+from ..網頁工作階段 import 網頁使用者
+from ..嚴格JSON import 解析嚴格JSON
+from ..規劃.權限協調 import 授權選擇錯誤
+from ..規劃.規劃器契約 import 規劃器不可用, 規劃器輸出無效
+from ..規劃.綱要 import 規劃草稿
 
 _識別格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _錯誤對照 = {
@@ -47,6 +54,68 @@ class 建立草稿請求(_嚴格請求):
 
     原始需求文字: Annotated[StrictStr, Field(alias="original_requirement_text", min_length=1, max_length=16_384)]
     規劃器內容: Annotated[dict[str, JsonValue], Field(alias="planner_content")]
+
+
+class 安全建立草稿請求(_嚴格請求):
+    """限制 CP4 客戶端只可提供建立草稿所需意圖。
+
+    欄位：``原始需求文字`` 是需求；``選擇技能`` 是排序且唯一的技能名稱；``回應模式`` 是文字或結構化模式。
+    回傳：驗證後得到不含工具、提示、規劃內容或限制設定的請求物件。
+    例外：欄位型別、界限、格式、排序或唯一性不符時由 Pydantic 回報驗證例外。
+    副作用：驗證只檢查輸入，無外部副作用。
+    """
+
+    原始需求文字: Annotated[StrictStr, Field(alias="original_requirement_text", min_length=1, max_length=16_384)]
+    選擇技能: Annotated[list[StrictStr], Field(alias="selected_skills", min_length=1, max_length=32)]
+    回應模式: Annotated[Literal["text", "structured"], Field(alias="response_mode")]
+
+    @field_validator("原始需求文字")
+    @classmethod
+    def 驗證需求(cls, 值: str) -> str:
+        """驗證需求文字的空白與 UTF-8 位元組界限。
+
+        參數：``值`` 是 Pydantic 已完成基本型別與字元數檢查的需求文字。
+        回傳：驗證後的原文字。
+        例外：空字串、首尾空白或超過 16,384 個 UTF-8 位元組時拋出 ``ValueError``。
+        副作用：無外部副作用，也不修改輸入。
+        """
+        if 值 != 值.strip() or not 值 or len(值.encode("utf-8")) > 16_384:
+            raise ValueError("需求無效")
+        return 值
+
+    @field_validator("選擇技能")
+    @classmethod
+    def 驗證技能(cls, 值: list[str]) -> list[str]:
+        """驗證技能名稱格式、排序與唯一性。
+
+        參數：``值`` 是 Pydantic 已完成基本型別與數量檢查的技能串列。
+        回傳：驗證後的原串列物件。
+        例外：名稱格式不符、未排序或含重複值時拋出 ``ValueError``。
+        副作用：無外部副作用，也不修改串列。
+        """
+        if any(_識別格式.fullmatch(名稱) is None for 名稱 in 值) or 值 != sorted(set(值)):
+            raise ValueError("技能選擇無效")
+        return 值
+
+
+class 安全草稿服務(Protocol):
+    """規範安全草稿路由唯一需要的伺服器端規劃服務。
+
+    方法：``建立草稿`` 接收擁有者、需求、技能、模式及時間，回傳 ``規劃草稿``。
+    例外：實作者可拋出授權、規劃器輸出或規劃器可用性例外。
+    副作用：協定本身無副作用；實作者會建立並持久化草稿。
+    """
+
+    def 建立草稿(self, 擁有者識別碼: str, 原始需求: str, 選擇技能: tuple[str, ...], 回應模式: str, *, 現在: float) -> 規劃草稿:
+        """建立伺服器端規劃草稿。
+
+        參數：``擁有者識別碼`` 是權限主體；``原始需求`` 是需求；``選擇技能`` 是技能元組；
+        ``回應模式`` 是回應模式；``現在`` 是建立時間。
+        回傳：已保存的 ``規劃草稿``。
+        例外：可能拋出 ``授權選擇錯誤``、``規劃器輸出無效``、``規劃器不可用`` 或控制流例外。
+        副作用：實作者會查詢權限、呼叫規劃器並持久化草稿。
+        """
+        ...
 
 
 class 發布端點請求(_嚴格請求):
@@ -149,6 +218,115 @@ def 建立規劃發布路由器(服務: 發布管理服務, 身份依賴) -> API
     路由器.post("/api/published-endpoints/{endpoint_id}/versions", status_code=201, response_model=版本建立結果)(版本處理器)
 
     return 路由器
+
+
+def 建立發布版本路由器(服務: 發布管理服務, 身份依賴) -> APIRouter:
+    """建立只含發布與版本處理器的路由器。
+
+    參數：``服務`` 是發布管理服務；``身份依賴`` 是工作階段身份相依項目。
+    回傳：已註冊發布與版本端點的 ``APIRouter``。
+    例外：處理器綁定或 FastAPI 路由註冊失敗時傳遞其例外。
+    副作用：建立路由器、捕捉兩項依賴並註冊兩條路由；不執行服務操作。
+    """
+    路由器 = APIRouter()
+    發布處理器 = _綁定處理器(_發布端點, 服務, 身份依賴, "發布端點", "只委派一次原子服務操作，回傳初始明文金鑰一次。")
+    版本處理器 = _綁定處理器(_建立不可變版本, 服務, 身份依賴, "建立不可變版本", "由服務一次完成 owner/admin 授權、create-only insert 與 pointer switch。")
+    路由器.post("/api/published-endpoints", status_code=201, response_model=端點發布結果)(發布處理器)
+    路由器.post("/api/published-endpoints/{endpoint_id}/versions", status_code=201, response_model=版本建立結果)(版本處理器)
+    return 路由器
+
+
+def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段相依, csrf相依, *, 時鐘=time.time) -> APIRouter:
+    """建立正規目前工作階段與單次 CSRF 相容的草稿路由。
+
+    參數：``服務`` 是安全草稿服務；``目前工作階段相依`` 提供身份；``csrf相依`` 驗證單次權杖；
+    ``時鐘`` 提供建立時間。
+    回傳：已註冊安全草稿端點的 ``APIRouter``。
+    例外：FastAPI 路由註冊失敗時傳遞其例外；註冊形狀漂移時拋出 ``RuntimeError``；
+    請求期間的例外由內部處理器映射。
+    副作用：建立路由器、捕捉四項依賴、註冊一條路由，並清除處理器的執行期文件字串以固定
+    OpenAPI 說明為空；不立即呼叫服務。
+    """
+    路由器 = APIRouter()
+
+    @路由器.post("/api/published-endpoints/draft", status_code=201, response_model=草稿建立結果)
+    async def 建立伺服器草稿(
+        請求: Request,
+        使用者: 網頁使用者 = Depends(目前工作階段相依),
+        _csrf使用者: 網頁使用者 = Depends(csrf相依),
+    ) -> JSONResponse:
+        """驗證目前工作階段請求並建立伺服器端草稿。
+
+        參數：``請求`` 提供待消耗的 HTTP 本文；``使用者`` 是目前工作階段身份；
+        ``_csrf使用者`` 是觸發單次 CSRF 驗證但不另行使用的身份結果。
+        回傳：狀態碼 201 且只含草稿識別碼、到期時間與預覽的 ``JSONResponse``。
+        例外：身份契約失效映射為 HTTP 500；未授權、輸出失效與服務不可用分別映射為 HTTP 403、502、503；
+        本文失效由解析器映射為 HTTP 422，控制流例外原樣傳遞。
+        副作用：消耗請求本文、讀取工作階段與 CSRF 相依結果、讀取時鐘，並呼叫服務持久化草稿。
+        """
+        本文 = await _解析安全草稿本文(請求)
+        if type(使用者) is not 網頁使用者:
+            raise HTTPException(status_code=500, detail={"code": "identity_contract_invalid"})
+        try:
+            草稿 = 服務.建立草稿(
+                使用者.識別碼, 本文.原始需求文字, tuple(本文.選擇技能), 本文.回應模式,
+                現在=時鐘(),
+            )
+            if type(草稿) is not 規劃草稿:
+                raise ValueError
+            return JSONResponse(status_code=201, content={
+                "draft_id": 草稿.草稿識別碼,
+                "expires_at": 草稿.到期時間,
+                "preview": 草稿.綱要,
+            })
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except 授權選擇錯誤:
+            raise HTTPException(status_code=403, detail={"code": "planning_not_authorized"}) from None
+        except 規劃器輸出無效:
+            raise HTTPException(status_code=502, detail={"code": "planner_output_invalid"}) from None
+        except 規劃器不可用:
+            raise HTTPException(status_code=503, detail={"code": "planner_unavailable"}) from None
+        except BaseException:
+            raise HTTPException(status_code=503, detail={"code": "planner_unavailable"}) from None
+
+    建立伺服器草稿.__doc__ = None
+    草稿路由 = 路由器.routes[-1]
+    if type(草稿路由) is not APIRoute:
+        raise RuntimeError("安全草稿路由註冊失敗")
+    草稿路由.description = ""
+    return 路由器
+
+
+async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求:
+    """在嚴格 JSON 解析前以串流限制 HTTP 本文位元組數。
+
+    參數：``請求`` 是待讀取且須宣告精確 ``application/json`` 內容型別的 FastAPI 請求。
+    回傳：通過嚴格解析與 Pydantic 驗證的 ``安全建立草稿請求``。
+    例外：內容型別、長度、編碼、JSON 或欄位驗證失敗映射為 HTTP 422；控制流例外原樣傳遞。
+    副作用：完整消耗請求串流；不呼叫規劃服務或持久化資料。
+    """
+    try:
+        if 請求.headers.get("content-type") != "application/json":
+            raise ValueError
+        宣告長度 = 請求.headers.get("content-length")
+        if 宣告長度 is not None and (not 宣告長度.isascii() or not 宣告長度.isdigit() or int(宣告長度) > 32_768):
+            raise ValueError
+        片段們 = []
+        長度 = 0
+        async for 片段 in 請求.stream():
+            長度 += len(片段)
+            if 長度 > 32_768:
+                raise ValueError
+            片段們.append(片段)
+        原始值 = 解析嚴格JSON(b"".join(片段們).decode("utf-8"))
+        if type(原始值) is not dict:
+            raise ValueError
+        return 安全建立草稿請求.model_validate(原始值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        raise HTTPException(status_code=422, detail={"code": "invalid_request"}) from None
 
 
 def _綁定處理器(處理器, 服務: 發布管理服務, 身份依賴, 名稱: str, 文件: str):
