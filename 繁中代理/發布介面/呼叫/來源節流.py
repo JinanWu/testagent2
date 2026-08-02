@@ -1,4 +1,10 @@
-"""以獨立 SQLite 領域計數無效憑證的權威來源 IP 與端點 slug。"""
+"""以獨立 SQLite 領域計數無效憑證的權威來源 IP 與端點 slug。
+
+參數／欄位：不適用；本模組定義來源節流資料型別、界限與 SQLite 操作。
+回傳：不適用；各節流操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、常數與函式，不開啟或修改資料庫。
+"""
 
 from dataclasses import dataclass
 import hashlib
@@ -11,6 +17,8 @@ import sqlite3
 import stat
 from typing import cast
 
+from ..資料庫結構契約 import 遷移帳本 as _預期帳本
+
 最大來源失敗上限 = 10_000
 最大來源視窗秒數 = 86_400
 最大安全時間戳記 = 253_402_300_799
@@ -18,19 +26,6 @@ from typing import cast
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _安全端點slug = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,127}").fullmatch
 _連接SQLite = sqlite3.connect
-_預期ledger = (
-    (1, "0001_建立發布端點核心.sql"),
-    (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"),
-    (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"),
-    (6, "0006_擴充稽核事件契約.sql"),
-    (7, "0007_建立不可逆遮蔽墓碑.sql"),
-    (8, "0008_建立五年保存候選索引.sql"),
-    (9, "0009_建立保存相依識別索引.sql"),
-    (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 _預期欄位 = [
     (0, "client_ip", "TEXT", 1, None, 1),
     (1, "endpoint_slug", "TEXT", 1, None, 2),
@@ -254,20 +249,27 @@ def _驗證有界結構盤點(連線) -> None:
 
 
 def _驗證結構(連線) -> None:
-    """在計數transaction內有界驗證migration ledger與來源節流結構。"""
+    """在計數交易內有界驗證遷移帳本與來源節流結構。
+
+    參數：``連線`` 是已開始計數交易且由呼叫端管理的 SQLite 連線。
+    回傳：帳本、資料表、索引與結構雜湊皆符合時回傳 ``None``。
+    例外：任何中繼資料、列形狀、型別、界限或內容不符時拋出 ``ValueError``；
+    SQLite 查詢失敗時原樣傳出其例外。
+    副作用：只在既有交易讀取有界結構中繼資料，不提交、回滾或關閉連線。
+    """
     遷移紀錄 = 連線.execute(
         "SELECT version,typeof(version),typeof(name),length(CAST(name AS BLOB)),"
-        "typeof(applied_at),applied_at FROM published_api_schema_migrations ORDER BY version LIMIT 12"
+        f"typeof(applied_at),applied_at FROM published_api_schema_migrations ORDER BY version LIMIT {len(_預期帳本) + 1}"
     ).fetchall()
-    if type(遷移紀錄) is not list or len(遷移紀錄) != len(_預期ledger):
+    if type(遷移紀錄) is not list or len(遷移紀錄) != len(_預期帳本):
         raise ValueError
     for 索引, 列 in enumerate(遷移紀錄):
-        if (type(列) is not tuple or len(列) != 6 or 列[:5] != (索引 + 1, "integer", "text", len(_預期ledger[索引][1].encode()), 列[4])
+        if (type(列) is not tuple or len(列) != 6 or 列[:5] != (索引 + 1, "integer", "text", len(_預期帳本[索引][1].encode()), 列[4])
                 or 列[4] not in ("real", "integer") or type(列[5]) not in (int, float)
                 or not math.isfinite(列[5]) or 列[5] < 0):
             raise ValueError
-    名稱 = 連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version LIMIT 12").fetchall()
-    if 名稱 != list(_預期ledger):
+    名稱 = 連線.execute(f"SELECT version,name FROM published_api_schema_migrations ORDER BY version LIMIT {len(_預期帳本) + 1}").fetchall()
+    if 名稱 != list(_預期帳本):
         raise ValueError
     _驗證有界結構盤點(連線)
     中繼 = 連線.execute(

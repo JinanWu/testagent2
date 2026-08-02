@@ -1,4 +1,10 @@
-"""依既有發布介面結構建立與結案呼叫紀錄。"""
+"""依既有發布介面結構建立與結案呼叫紀錄。
+
+參數／欄位：不適用；本模組定義呼叫收據、錯誤與 SQLite 儲存操作。
+回傳：不適用；各儲存操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、結構常數與函式，不建立或更新呼叫紀錄。
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 from ..嚴格JSON import 建立正規JSON
+from ..資料庫結構契約 import 遷移帳本 as _必要遷移
 
 
 class 呼叫儲存錯誤(RuntimeError):
@@ -24,19 +31,6 @@ class 呼叫儲存錯誤(RuntimeError):
 
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _Path具體型別 = type(Path())
-_必要遷移 = (
-    (1, "0001_建立發布端點核心.sql"),
-    (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"),
-    (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"),
-    (6, "0006_擴充稽核事件契約.sql"),
-    (7, "0007_建立不可逆遮蔽墓碑.sql"),
-    (8, "0008_建立五年保存候選索引.sql"),
-    (9, "0009_建立保存相依識別索引.sql"),
-    (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 _呼叫建表SQL = """CREATE TABLE endpoint_invocations (
   id TEXT PRIMARY KEY,
   endpoint_id TEXT NOT NULL REFERENCES published_endpoints(id) ON DELETE RESTRICT,

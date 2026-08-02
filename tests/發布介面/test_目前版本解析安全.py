@@ -31,8 +31,10 @@ def _資料庫(tmp_path):
 
 
 class _追蹤游標:
-    def __init__(self, cursor, owner): self._cursor, self._owner = cursor, owner
-    def fetchone(self): self._owner.fetches += 1; return self._cursor.fetchone()
+    def __init__(self, cursor, owner, sql): self._cursor, self._owner, self._sql = cursor, owner, sql
+    def fetchone(self):
+        self._owner.fetches += "published_endpoints e JOIN" in self._sql
+        return self._cursor.fetchone()
     def __iter__(self): return iter(self._cursor)
     def fetchall(self): return self._cursor.fetchall()
 
@@ -41,7 +43,7 @@ class _追蹤連線:
     def __init__(self, connection): self._connection, self.sql, self.fetches, self.close_calls = connection, [], 0, 0
     def execute(self, sql, parameters=()):
         self.sql.append((sql, parameters))
-        return _追蹤游標(self._connection.execute(sql, parameters), self)
+        return _追蹤游標(self._connection.execute(sql, parameters), self, sql)
     def close(self): self.close_calls += 1; return self._connection.close()
 
 
@@ -111,7 +113,7 @@ class _故障連線(_追蹤連線):
         self.sql.append((sql, parameters))
         if failure is not None and (kind == type(self).stage or kind == "rollback"):
             raise failure
-        return _追蹤游標(self._connection.execute(sql, parameters), self)
+        return _追蹤游標(self._connection.execute(sql, parameters), self, sql)
     def close(self):
         self.close_calls += 1
         if type(self).close_failure is not None: raise type(self).close_failure
