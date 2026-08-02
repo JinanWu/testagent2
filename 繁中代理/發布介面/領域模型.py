@@ -3,27 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-
 import math
-
 import re
-
 from types import MappingProxyType
-
 from typing import Any, Mapping
-
 import unicodedata
 
 from .嚴格JSON import 建立正規JSON, 解析嚴格JSON
 
+
 JsonObject = dict[str, Any]
-
 AuditMetadataScalar = bool | int | float | None
-
 _AUDIT_METADATA_KEY_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}")
-
 _AUDIT_RESOURCE_TYPE_PATTERN = re.compile(r"[a-z][a-z0-9_.]{0,63}")
-
 _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
     {
         "raw",
@@ -43,26 +35,27 @@ _AUDIT_METADATA_SENSITIVE_KEY_PARTS = frozenset(
         "schema_path",
     }
 )
-
 _AUDIT_SAFE_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
-
 _AUDIT_REFERENCE_SECRET_PREFIX_PATTERN = re.compile(r"(?i)(?:pk_|sk[-_]|bearer)")
-
 _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN = re.compile(r"(?i)[0-9a-f]{64}")
-
 _AUDIT_ACTOR_TYPES = frozenset(("user", "service_account", "system"))
+
 
 class AuditMetadataError(ValueError):
     """AuditMetadata 不符合公開安全契約時使用的固定錯誤型別。"""
 
+
 class AuditReferenceError(ValueError):
     """稽核參照不符合公開安全契約時使用的固定錯誤型別。"""
+
 
 class AuditEventError(ValueError):
     """AuditEvent 不符合公開安全契約時使用的固定錯誤型別。"""
 
+
 class AuditReceiptError(ValueError):
     """AuditAppendReceipt 不符合公開安全契約時使用的固定錯誤型別。"""
+
 
 class _公開DTO:
     """提供公開 DTO 共用的 JSON 輸出行為。"""
@@ -76,6 +69,8 @@ class _公開DTO:
         """
         return asdict(self)
 
+
+@dataclass(frozen=True, init=False)
 class AuditMetadata:
     """公開稽核 metadata 的安全快照。
 
@@ -143,6 +138,8 @@ class AuditMetadata:
         """
         return dict(self._資料)
 
+
+@dataclass(frozen=True, init=False)
 class AuditActorRef:
     """公開稽核事件 actor 的最小安全參照。
 
@@ -193,6 +190,8 @@ class AuditActorRef:
         """回傳固定鍵序 actor JSON，且每次都是 ordinary new dict。"""
         return {"actor_type": self.actor_type, "actor_id": self.actor_id}
 
+
+@dataclass(frozen=True, init=False)
 class AuditResourceRef:
     """公開稽核事件 resource 的最小安全參照。
 
@@ -236,6 +235,8 @@ class AuditResourceRef:
         """回傳固定鍵序 resource JSON，且每次都是 ordinary new dict。"""
         return {"resource_type": self.resource_type, "resource_id": self.resource_id}
 
+
+@dataclass(frozen=True, init=False)
 class AuditEvent:
     """公開稽核事件的安全不可變快照。
 
@@ -379,6 +380,8 @@ class AuditEvent:
             "metadata": self.metadata.to_json(),
         }
 
+
+@dataclass(frozen=True, init=False)
 class AuditAppendReceipt:
     """稽核事件 append 結果的公開安全 receipt。
 
@@ -443,6 +446,8 @@ class AuditAppendReceipt:
             "sequence": self.sequence,
         }
 
+
+@dataclass(frozen=True)
 class EndpointRef(_公開DTO):
     """公開端點版本的最小參照。"""
 
@@ -450,6 +455,8 @@ class EndpointRef(_公開DTO):
     slug: str
     version: int
 
+
+@dataclass(frozen=True)
 class InvocationRef(_公開DTO):
     """公開呼叫紀錄的最小參照。"""
 
@@ -457,17 +464,23 @@ class InvocationRef(_公開DTO):
     request_id: str
     session_id: str | None = None
 
+
+@dataclass(frozen=True)
 class PublishedUsage(_公開DTO):
     """公開回應中的用量摘要。"""
 
     total_tokens: int | None = None
 
+
+@dataclass(frozen=True)
 class PublishedWarning(_公開DTO):
     """公開回應中的非致命警告。"""
 
     code: str
     message: str
 
+
+@dataclass(frozen=True, init=False)
 class PublishedError(_公開DTO):
     """公開回應中的frozen錯誤摘要。
 
@@ -549,6 +562,8 @@ class PublishedError(_公開DTO):
             "details": 細節,
         }
 
+
+@dataclass(frozen=True, init=False)
 class InvokeEnvelope:
     """公開呼叫結果信封，固定成功與失敗回應的共同外部契約。"""
 
@@ -638,12 +653,15 @@ class InvokeEnvelope:
             "error": None if self.error is None else PublishedError.to_json(self.error),
         }
 
+
+@dataclass(frozen=True)
 class ServiceAccountSnapshotRef(_公開DTO):
     """服務帳號權限快照的公開參照。"""
 
     service_account_id: str
     endpoint_version_id: str
     permission_snapshot_digest: str
+
 
 def _建立不可變JSON快照(資料: Any) -> Any:
     """重用嚴格 JSON 審核後建立深層不可變快照。"""
@@ -657,6 +675,7 @@ def _建立不可變JSON快照(資料: Any) -> Any:
         資料 = 正規文字 = 解析結果 = None
         raise
 
+
 def _PublishedError文字合法(值: Any, 最大長度: int) -> bool:
     """確認 PublishedError 固定字串欄位為 bounded exact str 且無控制字元。"""
     return (
@@ -664,6 +683,7 @@ def _PublishedError文字合法(值: Any, 最大長度: int) -> bool:
         and 0 < len(值) <= 最大長度
         and not any(unicodedata.category(字元) == "Cc" for 字元 in 值)
     )
+
 
 def _PublishedError細節合法(
     值: Any,
@@ -710,6 +730,7 @@ def _PublishedError細節合法(
     finally:
         路徑.remove(容器id)
 
+
 def _重建PublishedError(原始錯誤: Any) -> PublishedError:
     """只從exact scalar與canonical JSON文字重建可信公開錯誤。"""
     try:
@@ -728,6 +749,7 @@ def _重建PublishedError(原始錯誤: Any) -> PublishedError:
         原始錯誤 = 代碼 = 訊息 = 正規文字 = 細節 = None
         raise ValueError("PublishedError 不符合公開契約") from None
 
+
 def _稽核Metadata鍵合法(鍵: Any) -> bool:
     """檢查單一metadata key是否安全。
 
@@ -739,6 +761,7 @@ def _稽核Metadata鍵合法(鍵: Any) -> bool:
     if _AUDIT_METADATA_KEY_PATTERN.fullmatch(鍵) is None:
         return False
     return not any(敏感片段 in 鍵 for 敏感片段 in _AUDIT_METADATA_SENSITIVE_KEY_PARTS)
+
 
 def _稽核Metadata值合法(值: Any) -> bool:
     """檢查單一metadata value是否為允許的exact scalar。
@@ -756,6 +779,7 @@ def _稽核Metadata值合法(值: Any) -> bool:
         return math.isfinite(值)
     return False
 
+
 def _稽核安全識別值合法(值: Any) -> bool:
     """檢查稽核參照 identifier 是否可公開保存。
 
@@ -769,11 +793,13 @@ def _稽核安全識別值合法(值: Any) -> bool:
         return False
     return not _稽核參照字串含不安全內容(值)
 
+
 def _稽核可空安全識別值合法(值: Any) -> bool:
     """檢查 optional 稽核 identifier；None 表示未綁定，其他值沿用安全規則。"""
     if 值 is None:
         return True
     return _稽核安全識別值合法(值)
+
 
 def _稽核資源型別合法(值: Any) -> bool:
     """檢查稽核 resource_type 是否為安全小寫公開 code。"""
@@ -782,6 +808,7 @@ def _稽核資源型別合法(值: Any) -> bool:
     if _AUDIT_RESOURCE_TYPE_PATTERN.fullmatch(值) is None:
         return False
     return not _稽核參照字串含不安全內容(值)
+
 
 def _稽核參照字串含不安全內容(值: str) -> bool:
     """回傳字串是否帶有 raw secret、digest、路徑或空白特徵。"""
@@ -793,6 +820,7 @@ def _稽核參照字串含不安全內容(值: str) -> bool:
         return True
     return _AUDIT_REFERENCE_FULL_HEX_DIGEST_PATTERN.search(值) is not None
 
+
 def _凍結JSON值(值: Any) -> Any:
     """將已審核 JSON value 轉為 tuple 與 read-only mapping 組成的快照。"""
     if isinstance(值, list):
@@ -800,6 +828,7 @@ def _凍結JSON值(值: Any) -> Any:
     if isinstance(值, dict):
         return MappingProxyType({鍵: _凍結JSON值(項目) for 鍵, 項目 in 值.items()})
     return 值
+
 
 def _解凍JSON值(值: Any) -> Any:
     """將內部不可變 JSON 快照轉回 ordinary dict、list 與 scalar。"""
