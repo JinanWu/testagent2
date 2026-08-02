@@ -27,6 +27,7 @@ from 繁中代理.技能索引器 import (
 
 _WEB來源 = "web"
 _最大訊息位元組 = 16_384
+_最大成功文字位元組 = 65_536
 _最大識別碼字元 = 128
 _最大技能檔案位元組 = 256 * 1024
 _最大工作階段訊息數量 = 10_000
@@ -199,7 +200,7 @@ class Web代理服務:
             回覆 = object.__getattribute__(結果, "最終回答")
             作用中識別碼 = object.__getattribute__(結果, "工作階段識別碼")
             _驗證識別碼(作用中識別碼)
-            if type(回覆) is not str:
+            if type(回覆) is not str or len(回覆.encode("utf-8")) > _最大成功文字位元組:
                 raise ValueError
             結果資料 = self._工作階段庫.檢查工作階段存取(
                 作用中識別碼, user_id=使用者識別碼, source=_WEB來源
@@ -307,7 +308,7 @@ class Web代理服務:
                 if 訊息.get("role") not in {"user", "assistant"}:
                     continue
                 角色 = 訊息.get("role")
-                if type(內容) is not str or len(內容.encode("utf-8")) > 1024 * 1024:
+                if type(內容) is not str or len(內容.encode("utf-8")) > _最大成功文字位元組:
                     raise ValueError
                 投影.append((角色, 內容))
             return 工作階段詳情(根工作階段識別碼, 標題, float(更新時間), tuple(投影))

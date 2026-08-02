@@ -17,6 +17,7 @@ from ..Web代理服務 import (
 )
 from ..網頁工作階段 import 網頁使用者
 from ..嚴格JSON import 解析嚴格JSON
+from .回應模型 import 聊天成功回應
 
 
 class 聊天服務(Protocol):
@@ -56,7 +57,7 @@ def 建立聊天路由器(服務: 聊天服務, 目前工作階段相依, csrf�
     """注入 caller 的 canonical session/CSRF dependencies 並建立 exact POST route。"""
     路由器 = APIRouter(prefix="/api/chat")
 
-    @路由器.post("")
+    @路由器.post("", response_model=聊天成功回應, responses={400: {}, 404: {}, 422: {}, 503: {}})
     async def 聊天(
         請求: Request,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
