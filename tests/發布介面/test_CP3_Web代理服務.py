@@ -221,6 +221,20 @@ def test_技能列表與詳情只使用授權roots且不洩漏path(tmp_path, mon
     assert "path" not in str(列表) and 詳情["content"] == 路徑.read_text(encoding="utf-8")
 
 
+def test_技能根直屬SKILL檔維持舊索引語意而排除(tmp_path, monkeypatch):
+    """R5 parity：相對片段為空的根直屬 SKILL.md 不得成為技能或重複候選。"""
+    根 = tmp_path / "skills"
+    正規檔 = _建立技能(根, "docs", "writer")
+    (根 / "SKILL.md").write_text(
+        "---\nname: writer\ndescription: 不應索引\n---\n\n# 根直屬內容\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+
+    assert [項.識別碼 for 項 in 服務.列出技能("user-1")] == ["writer"]
+    assert 服務.讀取技能("user-1", "writer").內容 == 正規檔.read_text(encoding="utf-8")
+
+
 def test_技能重複與symlink皆fail_closed(tmp_path, monkeypatch):
     """CP3-WEB-SKILL-02：duplicate 不任選第一個，symlink detail 統一 404。"""
     根一, 根二 = tmp_path / "one", tmp_path / "two"
@@ -268,8 +282,8 @@ def test_技能列表在解析前排除外部symlink與超大檔案(tmp_path, mo
     assert 外部標記 not in 回應文字 and 超大標記 not in 回應文字
 
 
-def test_技能合法與不安全同ID不得讓合法候選勝出(tmp_path, monkeypatch):
-    """Quality P1：valid + unsafe duplicate 在 list/detail 都必須 fail closed。"""
+def test_技能不安全候選不偽造declared_duplicate(tmp_path, monkeypatch):
+    """R2 parity：無法安全讀取的同目錄名候選不是 declared duplicate。"""
     根 = tmp_path / "skills"
     _建立技能(根, "docs", "same")
     外部檔 = _建立技能(tmp_path / "outside", "docs", "same")
@@ -278,14 +292,32 @@ def test_技能合法與不安全同ID不得讓合法候選勝出(tmp_path, monk
     連結.symlink_to(外部檔)
     monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
     服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
+    assert [項.識別碼 for 項 in 服務.列出技能("user-1")] == ["same"]
+    assert 服務.讀取技能("user-1", "same").項目.名稱 == "same"
+
+
+def test_技能以frontmatter_declared_name索引且只拒絕真正重複(tmp_path, monkeypatch):
+    """R2 parity：directory 可與 name 不同；兩個 declared name 相同才 fail closed。"""
+    根 = tmp_path / "skills"
+    一 = _建立技能(根, "docs", "folder-one")
+    一.write_text(一.read_text(encoding="utf-8").replace("name: folder-one", "name: public-one"), encoding="utf-8")
+    monkeypatch.setenv("AIAGENT_SKILL_SNAPSHOT_PATH", str(tmp_path / "cache.json"))
+    服務 = Web代理服務(
+        假工作階段庫(), 假使用者庫(skill_roots=[根], enabled_skills={"public-one"}), lambda **kwargs: None,
+    )
+    assert [項.識別碼 for 項 in 服務.列出技能("user-1")] == ["public-one"]
+    assert 服務.讀取技能("user-1", "public-one").內容 == 一.read_text(encoding="utf-8")
+
+    二 = _建立技能(根, "tools", "folder-two")
+    二.write_text(二.read_text(encoding="utf-8").replace("name: folder-two", "name: public-one"), encoding="utf-8")
     with pytest.raises(Web服務不可用):
         服務.列出技能("user-1")
     with pytest.raises(Web資源不存在):
-        服務.讀取技能("user-1", "same")
+        服務.讀取技能("user-1", "public-one")
 
 
-def test_技能讀取偵測parent_directory替換競態(tmp_path, monkeypatch):
-    """Quality P1：逐 component descriptor-relative open 後仍須偵測 parent replacement。"""
+def test_技能讀取以anchored_parent供應原內容而不跟隨替換路徑(tmp_path, monkeypatch):
+    """R3 parity：parent path 被替換後仍只可讀 anchored descriptor 的原內容。"""
     模組 = importlib.import_module("繁中代理.發布介面.Web代理服務")
     根 = tmp_path / "skills"
     _建立技能(根, "docs", "demo")
@@ -304,9 +336,8 @@ def test_技能讀取偵測parent_directory替換競態(tmp_path, monkeypatch):
 
     monkeypatch.setattr(模組.os, "open", 競態開啟)
     服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)
-    with pytest.raises(Web資源不存在):
-        服務.讀取技能("user-1", "demo")
-    assert 已替換
+    詳情 = 服務.讀取技能("user-1", "demo")
+    assert 已替換 and "替換內容" not in 詳情.內容
 
 
 def test_技能索引限制entries與aggregate_bytes(tmp_path, monkeypatch):
@@ -358,9 +389,13 @@ def test_技能索引巨大root只消耗走訪上限加一項目(tmp_path, monke
             已消耗root項目 += 1
             return 項目
 
+    根身分 = 根.stat()
+
     def 計數scandir(路徑):
         掃描器 = 原始scandir(路徑)
-        return 計數掃描器(掃描器) if os.fspath(路徑) == os.fspath(根) else 掃描器
+        是根 = (type(路徑) is int and (os.fstat(路徑).st_dev, os.fstat(路徑).st_ino)
+                 == (根身分.st_dev, 根身分.st_ino))
+        return 計數掃描器(掃描器) if 是根 else 掃描器
 
     monkeypatch.setattr(模組.os, "scandir", 計數scandir)
     服務 = Web代理服務(假工作階段庫(), 假使用者庫(skill_roots=[根]), lambda **kwargs: None)

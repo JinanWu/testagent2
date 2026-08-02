@@ -2,6 +2,11 @@
 
 本模組只重用既有使用者庫、工作階段庫、代理執行階段與技能索引器；不解析 HTTP，
 也不直接執行 SQL。所有回應都先重建為本模組的固定 allowlist DTO。
+
+參數：服務入口接受已驗證的使用者識別、查詢條件與明確依賴。
+回傳：回傳固定允許欄位的聊天、工作階段與技能資料物件。
+例外：輸入、資源與依賴失敗映射為固定 Web 服務例外。
+副作用：依操作查詢權威資料、執行代理或有界唯讀掃描技能檔案。
 """
 
 from __future__ import annotations
@@ -10,19 +15,17 @@ from dataclasses import dataclass
 import math
 import os
 from pathlib import Path
-import stat
-from typing import Any, Iterator, Protocol
+from typing import Any, Protocol
 
 from 繁中代理.基本工具 import 取得技能根目錄清單
 from 繁中代理.使用者 import 使用者上下文
-from 繁中代理.技能索引器 import (
-    取得目前平台名稱,
-    建立可用工具集名稱集合,
-    截斷摘要文字,
-    技能是否符合平台,
-    技能是否符合工具條件,
-    解析Markdown前置資料,
-    讀取停用技能名稱集合,
+from .安全技能目錄 import (
+    安全讀取技能 as _共用安全讀取技能,
+    建立錨定安全技能目錄,
+    技能目錄不存在,
+    技能目錄限制,
+    技能走訪預算 as _技能走訪預算,
+    走訪有界技能檔案 as _走訪有界技能索引檔案,
 )
 
 _WEB來源 = "web"
@@ -148,7 +151,13 @@ class 技能詳情:
 
 
 class Web代理服務:
-    """協調既有 runtime/repositories，並在 HTTP 前建立安全 DTO。"""
+    """協調既有執行階段與資料庫並建立安全資料物件。
+
+    參數：建構時接受工作階段庫、使用者庫與執行階段工廠。
+    回傳：公開方法回傳固定允許欄位的 Web 資料物件。
+    例外：依輸入、資源與依賴失敗拋固定 Web 服務例外。
+    副作用：依操作查詢資料庫、執行代理或唯讀掃描技能檔案。
+    """
 
     def __init__(
         self,
@@ -338,9 +347,11 @@ class Web代理服務:
     def 讀取技能(self, 使用者識別碼: str, 技能識別碼: str) -> 技能詳情:
         """只讀目前 user 唯一可見且位於授權 root 的 bounded regular SKILL.md。
 
-        參數為 current-session user ID 與 skill ID；返回完整內容安全 DTO。缺少、
-        未授權、重複、路徑逃逸、symlink、非 regular 或超過 256 KiB 均統一為
-        Web資源不存在；其他 I/O 失敗拋 Web服務不可用。
+        參數：目前工作階段使用者識別碼與技能識別碼。
+        回傳：回傳完整內容的安全技能詳情。
+        例外：缺少、未授權、重複、連結、非一般檔案或超限皆統一為資源不存在；
+        其他輸入輸出失敗拋服務不可用。
+        副作用：查詢使用者權威並有界唯讀掃描技能根。
         """
         _驗證識別碼(技能識別碼)
         try:
@@ -348,7 +359,7 @@ class Web代理服務:
             原始項目 = 索引.get(技能識別碼)
             if 原始項目 is None:
                 raise Web資源不存在
-            內容 = _安全讀取技能(Path(原始項目["path"]), 根目錄清單)
+            內容 = 原始項目["content"]
             return 技能詳情(_建立技能項目(技能識別碼, 原始項目), 內容)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -364,7 +375,13 @@ class Web代理服務:
     def _建立可見技能索引(
         self, 使用者識別碼: str, 重複視為不存在: bool = False,
     ) -> tuple[dict[str, dict[str, str]], list[Path]]:
-        """載入完整 user context 並以既有 indexer 建立唯一技能 ID map。"""
+        """載入完整使用者上下文並建立唯一技能索引。
+
+        參數：使用者識別碼與重複技能是否映射為不存在的政策。
+        回傳：回傳技能識別到安全欄位的索引及脫離設定的根路徑清單。
+        例外：使用者、設定或技能目錄資料無效時傳出對應例外。
+        副作用：查詢使用者權威並有界唯讀掃描技能根。
+        """
         _驗證識別碼(使用者識別碼)
         使用者 = self._使用者庫.建立使用者上下文(user_id=使用者識別碼)
         if type(使用者) is not 使用者上下文 or 使用者.user_id != 使用者識別碼:
@@ -373,99 +390,24 @@ class Web代理服務:
             取得技能根目錄清單({"_skill_roots": None})
             if 使用者.skill_roots is None else list(使用者.skill_roots)
         )
-        索引: dict[str, dict[str, str]] = {}
-        候選識別碼: set[str] = set()
-        索引總位元組 = 0
-        索引項目數量 = 0
-        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
-        for 根目錄 in 根目錄清單:
-            根路徑 = Path(根目錄)
-            剩餘候選上限 = _最大技能索引項目數量 + 1 - 索引項目數量
-            for 技能路徑 in _走訪有界技能索引檔案(
-                根路徑, "SKILL.md", 剩餘候選上限, 走訪預算,
-            ):
-                索引項目數量 += 1
-                if 索引項目數量 > _最大技能索引項目數量:
-                    raise ValueError
-                if 使用者.enabled_skills is not None and 技能路徑.parent.name not in 使用者.enabled_skills:
-                    continue
-                候選ID = 技能路徑.parent.name
-                if 候選ID in 候選識別碼:
-                    if 重複視為不存在:
-                        raise Web資源不存在
-                    raise ValueError
-                候選識別碼.add(候選ID)
-                try:
-                    內容 = _安全讀取技能(技能路徑, [根路徑])
-                except Web資源不存在:
-                    continue
-                索引總位元組 += len(內容.encode("utf-8"))
-                if 索引總位元組 > _最大技能索引總位元組:
-                    raise ValueError
-                項目 = _建立安全技能索引項目(技能路徑, 根路徑, 內容)
-                if 項目 is None:
-                    continue
-                識別碼 = 項目.get("skill_name")
-                _驗證識別碼(識別碼)
-                if 識別碼 in 索引:
-                    if 重複視為不存在:
-                        raise Web資源不存在
-                    raise ValueError
-                索引[識別碼] = 項目
-        return 索引, [Path(根目錄) for 根目錄 in 根目錄清單]
-
-
-@dataclass(slots=True)
-class _技能走訪預算:
-    """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
-
-    剩餘項目數量: int
-
-
-def _走訪有界技能索引檔案(
-    技能根目錄: Path,
-    檔名: str,
-    候選上限: int,
-    走訪預算: _技能走訪預算 | None = None,
-) -> Iterator[Path]:
-    """有界掃描每個 entry；僅完整讀完的 bounded directory batch 才排序。"""
-    if 候選上限 <= 0:
-        return
-    if 走訪預算 is None:
-        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
-    已產出 = 0
-
-    def 走訪目錄(目錄: Path) -> Iterator[Path]:
-        """依名稱走訪完整小批次，目錄、候選與其他 entry 均消耗共享預算。"""
-        nonlocal 已產出
-        if 已產出 >= 候選上限:
-            return
+        根們 = tuple(Path(根目錄) for 根目錄 in 根目錄清單)
+        啟用集合 = None if 使用者.enabled_skills is None else frozenset(使用者.enabled_skills)
         try:
-            with os.scandir(目錄) as 掃描器:
-                項目清單 = []
-                for 項目 in 掃描器:
-                    項目清單.append(項目)
-                    if len(項目清單) > 走訪預算.剩餘項目數量:
-                        走訪預算.剩餘項目數量 = 0
-                        raise ValueError("技能目錄走訪超過上限")
-        except FileNotFoundError:
-            return
-        走訪預算.剩餘項目數量 -= len(項目清單)
-        項目清單.sort(key=lambda 項目: 項目.name)
-        for 項目 in 項目清單:
-            if 已產出 >= 候選上限:
-                return
-            if 項目.name.startswith("."):
-                continue
-            路徑 = 目錄 / 項目.name
-            if 項目.name == 檔名:
-                已產出 += 1
-                yield 路徑
-                continue
-            if 項目.is_dir(follow_symlinks=False):
-                yield from 走訪目錄(路徑)
-
-    yield from 走訪目錄(技能根目錄)
+            目錄結果 = 建立錨定安全技能目錄(
+                根們, 啟用集合, 重複視為不存在=重複視為不存在,
+                上限=技能目錄限制(
+                    _最大技能檔案位元組, _最大技能索引項目數量,
+                    _最大技能索引總位元組, _最大技能走訪項目數量,
+                ),
+            )
+        except 技能目錄不存在:
+            raise Web資源不存在 from None
+        描述列 = 目錄結果.技能
+        索引 = {描述.名稱: {
+            "skill_name": 描述.名稱, "category": 描述.分類,
+            "description": 描述.摘要, "content": 描述.內容,
+        } for 描述 in 描述列}
+        return 索引, list(根們)
 
 
 def 序列化聊天回應(回應: 聊天回應) -> dict[str, object]:
@@ -530,74 +472,20 @@ def _建立技能項目(識別碼: str, 原始項目: dict[str, str]) -> 技能�
     return 技能項目(識別碼, 名稱, 分類, 描述)
 
 
-def _建立安全技能索引項目(技能路徑: Path, 根目錄: Path, 內容: str) -> dict[str, str] | None:
-    """只從已安全 bounded 讀取的內容解析既有索引 metadata。"""
-    相對路徑 = 技能路徑.relative_to(根目錄)
-    if len(相對路徑.parts) < 2 or any(片段.startswith(".") for 片段 in 相對路徑.parts):
-        return None
-    前置資料 = 解析Markdown前置資料(內容)
-    技能名稱 = str(前置資料.get("name") or 相對路徑.parts[-2])
-    停用技能 = 讀取停用技能名稱集合()
-    if 技能名稱 in 停用技能 or 相對路徑.parts[-2] in 停用技能:
-        return None
-    工具名稱: set[str] = set()
-    if not 技能是否符合平台(前置資料, 取得目前平台名稱()) or not 技能是否符合工具條件(
-        前置資料, 工具名稱, 建立可用工具集名稱集合(工具名稱)
-    ):
-        return None
-    分類 = "/".join(相對路徑.parts[:-2]) if len(相對路徑.parts) > 2 else "general"
-    return {
-        "skill_name": 技能名稱,
-        "category": 分類,
-        "description": 截斷摘要文字(前置資料.get("description", "")),
-        "path": str(技能路徑),
-    }
-
-
 def _安全讀取技能(來源路徑: Path, 根目錄清單: list[Path]) -> str:
-    """逐 component descriptor-relative 開啟，並限制 regular file 與大小。"""
-    解析來源 = 來源路徑.resolve(strict=True)
-    解析根清單 = [根.resolve(strict=True) for 根 in 根目錄清單]
-    符合根 = next((根 for 根 in 解析根清單 if 解析來源.is_relative_to(根)), None)
-    if 符合根 is None:
-        raise Web資源不存在
-    初始狀態 = 來源路徑.lstat()
-    if stat.S_ISLNK(初始狀態.st_mode) or not stat.S_ISREG(初始狀態.st_mode):
-        raise Web資源不存在
-    if 初始狀態.st_size > _最大技能檔案位元組:
-        raise Web資源不存在
-    相對片段 = 來源路徑.absolute().relative_to(符合根).parts
-    目錄flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    目錄描述符 = os.open(符合根, 目錄flags)
-    目前路徑 = 符合根
+    """以共用描述器安全讀取器讀取 Web 技能詳情。
+
+    參數：來源路徑與允許的技能根目錄清單。
+    回傳：回傳有界且通過來源驗證的技能文字。
+    例外：共用讀取器判定不存在時統一拋 Web 資源不存在。
+    副作用：執行有界唯讀檔案系統操作。
+    """
     try:
-        for 片段 in 相對片段[:-1]:
-            下一描述符 = os.open(片段, 目錄flags, dir_fd=目錄描述符)
-            os.close(目錄描述符)
-            目錄描述符 = 下一描述符
-            目前路徑 /= 片段
-        描述符 = os.open(
-            相對片段[-1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=目錄描述符,
+        return _共用安全讀取技能(
+            來源路徑, tuple(根目錄清單), 最大位元組=_最大技能檔案位元組,
         )
-        try:
-            開啟狀態 = os.fstat(描述符)
-            目前目錄狀態 = os.stat(目前路徑, follow_symlinks=False)
-            if (
-                not stat.S_ISREG(開啟狀態.st_mode) or 開啟狀態.st_size > _最大技能檔案位元組
-                or (初始狀態.st_dev, 初始狀態.st_ino) != (開啟狀態.st_dev, 開啟狀態.st_ino)
-                or (目前目錄狀態.st_dev, 目前目錄狀態.st_ino)
-                != (os.fstat(目錄描述符).st_dev, os.fstat(目錄描述符).st_ino)
-            ):
-                raise Web資源不存在
-            with os.fdopen(描述符, "rb", closefd=False) as 檔案:
-                原始內容 = 檔案.read(_最大技能檔案位元組 + 1)
-        finally:
-            os.close(描述符)
-    finally:
-        os.close(目錄描述符)
-    if len(原始內容) > _最大技能檔案位元組:
-        raise Web資源不存在
-    return 原始內容.decode("utf-8")
+    except 技能目錄不存在:
+        raise Web資源不存在 from None
 
 
 def _確認工作階段資料(資料: object, 識別碼: str, 使用者識別碼: str) -> None:
