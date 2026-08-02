@@ -1,20 +1,29 @@
-"""PUB P04 端點發布 DTO 與 SQLite 原子交易。"""
+"""PUB P04 端點發布資料傳輸物件與 SQLite 原子交易。
+
+參數：不適用；本模組定義發布快照、初始憑證、結果與交易服務。
+回傳：不適用；各資料型別與發布操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、常數與函式，不開啟資料庫或發布端點。
+"""
 
 from __future__ import annotations
 
 import json
-import hashlib
 import math
 import os
 
 import re
 import sqlite3
 import stat
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, NoReturn
 
 from ..憑證.儲存庫 import _allowlist_json有效
+from ..資料庫結構契約 import 驗證資料庫結構
+from ..技能套件.儲存庫 import 套件收據儲存庫
+from ..技能套件.發布器 import 套件發布收據
 from .綱要 import 發布值確認, 規劃草稿, _重建公開草稿
 
 _JSON_UTF8上限 = 1024 * 1024
@@ -30,15 +39,6 @@ _禁止秘密鍵 = re.compile(
 )
 _輸入錯誤訊息 = "端點發布輸入無效"
 _發布錯誤訊息 = "端點發布失敗"
-_schema指紋 = "3e33dee54d88e50cdd217a277087f692c6b4b341d9c7befbdd399af2fe957939"
-_遷移ledger = (
-    (1, "0001_建立發布端點核心.sql"), (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"), (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"), (6, "0006_擴充稽核事件契約.sql"),
-    (7, "0007_建立不可逆遮蔽墓碑.sql"), (8, "0008_建立五年保存候選索引.sql"),
-    (9, "0009_建立保存相依識別索引.sql"), (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 
 
 class 端點發布輸入錯誤(ValueError):
@@ -51,7 +51,15 @@ class 端點發布錯誤(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class 發布版本快照:
-    """完整對應 published v1 欄位的 detached 快照。"""
+    """完整對應已發布第一版欄位的脫離快照。
+
+    欄位：需求、系統提示詞、技能與工具、工具結構及修訂、模型與重試設定、技能套件
+    清單、輸入與回應結構，以及建立者識別碼共同描述待發布版本。
+    回傳：建立已重建可變 JSON 樹且通過固定契約驗證的不可變快照。
+    例外：欄位型別、界限、JSON 或契約無效時拋出 ``端點發布輸入錯誤``；
+    控制流程例外原樣傳出。
+    副作用：建構時以脫離副本取代可變欄位，不讀寫資料庫或其他外部資源。
+    """
 
     original_requirement_text: str = field(repr=False)
     system_prompt: str = field(repr=False)
@@ -67,7 +75,14 @@ class 發布版本快照:
     created_by_user_id: str
 
     def __post_init__(self) -> None:
-        """以單次 exact traversal 建立 module-owned JSON tree。"""
+        """以單次精確走訪驗證並建立模組自有的 JSON 樹。
+
+        參數：無額外參數；讀取目前快照實例的全部發布欄位。
+        回傳：重建與驗證成功時回傳 ``None``。
+        例外：輸入型別、界限、JSON 或欄位契約不符時傳出 ``端點發布輸入錯誤``；
+        控制流程例外原樣傳出。
+        副作用：以不可變欄位取代可變輸入的脫離副本，不執行外部輸入輸出。
+        """
         try:
             _重建版本快照(self, 建構中=True)
         except BaseException:
@@ -77,7 +92,15 @@ class 發布版本快照:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class 已準備初始憑證:
-    """只攜帶已加密憑證材料，結構上不可能接收 plaintext key。"""
+    """只攜帶已加密憑證材料，結構上不接受明文金鑰。
+
+    欄位：名稱、用途、金鑰版本、nonce、密文、摘要、前綴、末四碼、到期時間、
+    允許位址、速率上限與建立者識別碼描述已準備憑證。
+    回傳：建立已驗證密文材料與脫離允許清單的不可變憑證資料。
+    例外：欄位型別、密文、摘要、界限或允許清單無效時拋出 ``端點發布輸入錯誤``；
+    控制流程例外原樣傳出。
+    副作用：建構時重建可變允許清單，不讀寫資料庫或接觸明文金鑰。
+    """
 
     name: str
     purpose: str
@@ -93,12 +116,58 @@ class 已準備初始憑證:
     created_by_user_id: str
 
     def __post_init__(self) -> None:
-        """驗證已準備密文、hash、生命週期與 canonical allowlist。"""
+        """驗證已準備密文、摘要、生命週期與正規允許清單。
+
+        參數：無額外參數；讀取目前憑證實例的密文與公開中繼欄位。
+        回傳：重建與驗證成功時回傳 ``None``。
+        例外：輸入型別、密文、摘要、界限或允許清單不符時傳出
+        ``端點發布輸入錯誤``；控制流程例外原樣傳出。
+        副作用：以脫離副本取代可變允許清單，不存取資料庫或明文金鑰。
+        """
         try:
             _重建初始憑證(self, 建構中=True)
         except BaseException:
             del self
             raise
+
+
+@dataclass(frozen=True, slots=True)
+class 已準備發布識別:
+    """保存協調器一次預配的完整發布圖形、套件與稽核識別。
+
+    參數：四個既有圖形識別、套件識別、稽核識別與建立時間必須共同來自
+    同一次協調，且六個識別不得碰撞。
+    回傳：建立 exact、不可變且無實例字典的預配識別快照。
+    例外：欄位型別、格式、唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只驗證並保存不可變純量，不存取資料庫或呼叫外部工廠。
+    """
+
+    endpoint_id: str
+    version_id: str
+    credential_id: str
+    service_account_id: str
+    套件識別碼: str
+    稽核識別碼: str
+    created_at: float
+
+    def __post_init__(self) -> None:
+        """拒絕非 exact、碰撞或無效時間的預配識別集合。
+
+        參數：無額外參數；精確讀取目前實例的七個固定欄位。
+        回傳：全部欄位通過驗證時回傳 ``None``。
+        例外：實例型別、識別格式、唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+        副作用：只檢查不可變純量，不存取資料庫或其他外部資源。
+        """
+        if type(self) is not 已準備發布識別:
+            _拒絕輸入()
+        識別碼 = (
+            self.endpoint_id, self.version_id, self.credential_id,
+            self.service_account_id, self.套件識別碼, self.稽核識別碼,
+        )
+        if any(not _是識別(值) for 值 in 識別碼) or len(set(識別碼)) != 6:
+            _拒絕輸入()
+        if not _是有限非負(self.created_at):
+            _拒絕輸入()
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,7 +193,13 @@ class 端點發布結果:
 
 
 class SQLite端點發布服務:
-    """在既有完整遷移 SQLite 中原子建立 endpoint、v1、service account 與憑證。"""
+    """在既有完整遷移 SQLite 中原子建立端點、第一版、服務帳號與憑證。
+
+    參數：建構時接收資料庫路徑、四個識別工廠、時鐘與可替換連線工廠。
+    回傳：建立可重複呼叫的發布服務；各發布方法回傳不可變發布結果。
+    例外：建構只保存依賴；發布時依輸入或交易邊界傳出固定發布例外。
+    副作用：建構不開啟資源；發布方法會開啟資料庫、執行單一交易並關閉連線。
+    """
 
     def __init__(
         self, database_path: str | Path, endpoint_id_factory: Callable[[], str],
@@ -170,6 +245,121 @@ class SQLite端點發布服務:
             _拒絕發布()
         del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 發布失敗
         return 結果
+
+    def 發布已準備圖形(
+        self, owner_user_id: str, draft: 規劃草稿, version_snapshot: 發布版本快照,
+        prepared_credential: 已準備初始憑證, 預配識別: 已準備發布識別,
+        套件收據: 套件發布收據, *, 請求識別碼: str | None,
+        寫入前權威確認: Callable[[], object] | None = None,
+    ) -> 端點發布結果:
+        """重驗呼叫端預配關係，於同一立即交易寫入圖形、收據與發布稽核。
+
+        參數：擁有者、草稿、版本與憑證描述圖形；預配識別、套件收據及可空請求
+        識別碼描述協調結果；``寫入前權威確認`` 為可空且無參數 callback，會在
+        ``BEGIN IMMEDIATE`` 與 schema 驗證後、任何 INSERT 前呼叫。
+        回傳：提交成功後回傳只含四個圖形識別的 ``端點發布結果``。
+        例外：輸入與關係不符時拋出 ``端點發布輸入錯誤``；交易失敗時拋出
+        ``端點發布錯誤``；callback 的一般例外會固定映射為前述發布錯誤，三種
+        控制流程例外保留原物件 identity、``args``，並清除 cause/context/suppress。
+        副作用：完整預檢後開啟一條連線，以單一立即交易寫入圖形、套件收據與稽核列，
+        最後提交或回滾並關閉連線。
+        """
+        草稿副本 = 版本副本 = 憑證副本 = 確認 = 識別碼 = 收據 = 路徑 = 身分 = uri = 連線 = 結果 = None
+        發布失敗 = False
+        try:
+            識別碼 = _驗證預配識別(預配識別)
+            草稿副本, 版本副本, 憑證副本, 確認 = _發布前驗證(
+                owner_user_id, draft, version_snapshot, prepared_credential, 識別碼[6],
+            )
+            收據 = _驗證預配關係(識別碼, 版本副本, 套件收據, 請求識別碼)
+            if 寫入前權威確認 is not None and not callable(寫入前權威確認):
+                _拒絕輸入()
+            路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+            uri = 路徑.as_uri() + "?mode=rw"
+            連線 = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+            _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+            _驗證並寫入(
+                連線, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認,
+                識別碼, 識別碼[6], 收據, 識別碼[5], 請求識別碼,
+                寫入前權威確認,
+            )
+            結果 = 端點發布結果(*識別碼[:4])
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 寫入前權威確認, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except (端點發布輸入錯誤, 端點發布錯誤):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 寫入前權威確認, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except BaseException:
+            發布失敗 = True
+        if 發布失敗:
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 寫入前權威確認, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            _拒絕發布()
+        del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 寫入前權威確認, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 發布失敗
+        return 結果
+
+
+def _驗證預配識別(來源: Any) -> tuple[str, str, str, str, str, str, float]:
+    """重讀 exact DTO slots，避免信任 frozen instance identity。
+
+    參數：``來源`` 是不可信的預配識別候選物件。
+    回傳：依欄位宣告順序排列的六個識別與建立時間不可變 tuple。
+    例外：型別、欄位讀取、識別唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只讀取固定 slots 並配置新 tuple，不存取外部資源。
+    """
+    if type(來源) is not 已準備發布識別:
+        _拒絕輸入()
+    結果 = tuple(object.__getattribute__(來源, 欄位) for 欄位 in 已準備發布識別.__dataclass_fields__)
+    if (
+        len(結果) != 7 or any(not _是識別(值) for 值 in 結果[:6])
+        or len(set(結果[:6])) != 6 or not _是有限非負(結果[6])
+    ):
+        _拒絕輸入()
+    return 結果  # type: ignore[return-value]
+
+
+def _驗證預配關係(
+    識別碼: tuple[Any, ...], 快照: 發布版本快照,
+    收據: 套件發布收據, 請求識別碼: str | None,
+) -> 套件發布收據:
+    """建立脫離收據並重驗版本投影、路徑及預配識別關係。
+
+    參數：識別 tuple 與版本快照是已重建圖形；收據仍屬不可信呼叫端；請求識別碼
+    可為 ``None`` 或合法識別。
+    回傳：以一次精確 slots 讀取建立、由本模組持有的新 ``套件發布收據``。
+    例外：型別、欄位、摘要、路徑或跨物件關係不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只讀取不可信收據一次並配置脫離快照，不開啟資料庫或存取檔案系統。
+    """
+    if type(收據) is not 套件發布收據 or (請求識別碼 is not None and not _是識別(請求識別碼)):
+        _拒絕輸入()
+    try:
+        收據欄位 = tuple(
+            object.__getattribute__(收據, 欄位)
+            for 欄位 in 套件發布收據.__dataclass_fields__
+        )
+        收據快照 = 套件發布收據(*收據欄位)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 識別碼, 快照, 收據, 請求識別碼
+        raise
+    except BaseException:
+        _拒絕輸入()
+    清單投影 = 快照.skill_bundle_manifest
+    路徑 = 收據快照.路徑
+    if (
+        type(清單投影) is not dict or 收據快照.套件識別碼 != 識別碼[4]
+        or 清單投影.get("bundle_id") != 識別碼[4]
+        or 清單投影.get("manifest_reference") != 收據快照.清單參照
+        or 清單投影.get("manifest_digest") != 收據快照.清單摘要
+        or 清單投影.get("sha256") != 收據快照.套件雜湊
+        or type(收據快照.清單參照) is not str
+        or 收據快照.清單參照 != f"{識別碼[4]}/manifest.json"
+        or type(收據快照.清單摘要) is not str or re.fullmatch(r"[0-9a-f]{64}", 收據快照.清單摘要) is None
+        or type(收據快照.套件雜湊) is not str or re.fullmatch(r"[0-9a-f]{64}", 收據快照.套件雜湊) is None
+        or type(收據快照.總位元組數) is not int or not 0 <= 收據快照.總位元組數 <= 4 * 1024 * 1024
+        or type(路徑) is not type(Path()) or 路徑.name != 識別碼[4]
+    ):
+        _拒絕輸入()
+    return 收據快照
 
 
 def _發布前驗證(owner: Any, draft: Any, snapshot: Any, credential: Any, now: Any) -> tuple[Any, ...]:
@@ -315,7 +505,13 @@ def _驗證既有資料庫路徑(原路徑: Any) -> tuple[Path, tuple[int, int]]
 
 
 def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, 身分: tuple[int, int]) -> None:
-    """連線建立後驗證 inode；任何失敗均在傳播前恰關閉一次。"""
+    """連線建立後驗證資料庫 inode；任何失敗均在傳播前恰關閉一次。
+
+    參數：連線是剛開啟且尚未移交交易的 SQLite 連線；路徑與身分是開啟前釘選值。
+    回傳：連線所見主檔仍符合釘選身分時回傳 ``None``。
+    例外：查詢、解析或身分不符時拋出 ``端點發布錯誤``；控制流程例外原樣傳出。
+    副作用：查詢 SQLite 主檔路徑；任何失敗都會關閉目前連線。
+    """
     路徑狀態 = 資料庫列 = 列 = 主檔 = 主檔狀態 = None
     失敗 = False
     關閉控制: list[BaseException] = []
@@ -336,6 +532,7 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
             or (主檔狀態.st_dev, 主檔狀態.st_ino) != 身分
         )
     except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外框架(控制)
         _清除例外鏈(控制)
         關閉控制 = _安全關閉(連線)
         關閉控制.clear()
@@ -358,13 +555,27 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
 def _驗證並寫入(
     連線: sqlite3.Connection, owner: str, draft: 規劃草稿, snapshot: 發布版本快照,
     credential: 已準備初始憑證, confirmation: 發布值確認,
-    ids: tuple[Any, ...], created_at: float,
+    ids: tuple[Any, ...], created_at: float, 套件收據: 套件發布收據 | None = None,
+    稽核識別碼: str | None = None, 請求識別碼: str | None = None,
+    寫入前權威確認: Callable[[], object] | None = None,
 ) -> None:
-    """鎖住 schema 後驗證 fingerprint，並以明確狀態機完成單一交易。"""
+    """鎖住資料庫結構後驗證指紋，並以明確狀態機完成單一交易。
+
+        參數：連線由本函式完成交易及關閉；擁有者、草稿、快照、憑證、確認、
+        識別碼與建立時間共同描述待發布的固定第一版圖形；可空
+        ``寫入前權威確認`` 是無參數 callback。
+        回傳：成功提交並關閉連線後回傳 ``None``。
+        例外：callback、交易或結構失敗固定映射為 ``端點發布錯誤``；回滾或關閉
+        時的控制流程例外依清理契約原樣傳出，原始 callback traceback locals 會
+        被清除。
+        副作用：設定外鍵及驗證函式、開始 ``BEGIN IMMEDIATE``，先呼叫 callback
+        再寫入端點圖形、提交並關閉連線；失敗時回滾且關閉連線。
+    """
     已開始 = False
     已提交 = False
     交易失敗 = False
     ledger = rows = raw = endpoint_id = version_id = credential_id = account_id = None
+    收據儲存庫 = 中繼資料 = None
     回滾控制: list[BaseException] = []
     關閉控制: list[BaseException] = []
     try:
@@ -376,12 +587,16 @@ def _驗證並寫入(
         )
         連線.execute("BEGIN IMMEDIATE")
         已開始 = True
-        ledger = tuple(連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version"))
-        rows = list(連線.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
-        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
-        if ledger != _遷移ledger or hashlib.sha256(raw.encode("utf-8")).hexdigest() != _schema指紋:
-            raise sqlite3.DatabaseError
+        驗證資料庫結構(連線)
+        if 寫入前權威確認 is not None:
+            寫入前權威確認()
         endpoint_id, version_id, credential_id, account_id = ids[:4]
+        if 套件收據 is not None:
+            if 稽核識別碼 != ids[5]:
+                raise sqlite3.DatabaseError
+            套件收據 = _驗證預配關係(ids, snapshot, 套件收據, 請求識別碼)
+        elif 稽核識別碼 is not None or 請求識別碼 is not None:
+            raise sqlite3.DatabaseError
         _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (account_id, created_at))
         _執行一列(
             連線,
@@ -406,11 +621,26 @@ def _驗證並寫入(
              credential.key_last4, credential.expires_at, created_at, created_at,
              _正規JSON(credential.ip_allowlist), credential.rate_limit_requests, credential.created_by_user_id),
         )
+        if 套件收據 is not None:
+            收據儲存庫 = object.__new__(套件收據儲存庫)
+            收據儲存庫.連線 = 連線
+            收據儲存庫.新增(版本識別碼=version_id, 收據=套件收據, 發布時間=created_at)
+            中繼資料 = _正規JSON({
+                "version_id": version_id, "version_number": 1,
+                "bundle_id": ids[4], "bundle_hash": 套件收據.套件雜湊,
+                "credential_id": credential_id, "service_account_id": account_id,
+            })
+            _執行一列(
+                連線,
+                "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
+                (稽核識別碼, 稽核識別碼, created_at, "endpoint_published", "success", "user", owner,
+                 "published_endpoint", endpoint_id, 請求識別碼, endpoint_id, 中繼資料, created_at),
+            )
         連線.execute("COMMIT")
         已開始 = False
         已提交 = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
-        _清除例外鏈(控制)
+        _清除例外框架(控制)
         if 已開始:
             回滾控制 = _安全回滾(連線)
         關閉控制 = _安全關閉(連線)
@@ -418,15 +648,16 @@ def _驗證並寫入(
         關閉控制.clear()
         _清除例外鏈(控制)
         del 控制
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制, 關閉控制
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制, 關閉控制
         raise
-    except BaseException:
+    except BaseException as 錯誤:
+        _清除例外框架(錯誤)
         if 已開始:
             回滾控制 = _安全回滾(連線)
         關閉控制 = _安全關閉(連線)
         交易失敗 = True
     if 交易失敗:
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料
         if 回滾控制:
             關閉控制.clear()
             _拋出清理控制(回滾控制.pop())
@@ -435,7 +666,7 @@ def _驗證並寫入(
         del 回滾控制, 關閉控制
         _拒絕發布()
     關閉控制 = _安全關閉(連線)
-    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制
+    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制
     if 關閉控制:
         _拋出清理控制(關閉控制.pop())
     del 關閉控制
@@ -495,6 +726,24 @@ def _清除例外鏈(控制: BaseException) -> None:
     控制.__cause__ = None
     控制.__context__ = None
     控制.__suppress_context__ = True
+
+
+def _清除例外框架(錯誤: BaseException) -> None:
+    """清除 callback 失敗留下的 traceback locals 與例外鏈。
+
+    參數：``錯誤`` 是權威確認 callback 或交易步驟傳出的原始例外。
+    回傳：無。例外：清理本身的任何失敗皆抑制；原始例外仍由呼叫端處理。
+    副作用：清空可清除 traceback frame 的區域變數，並移除 cause、context 與
+    suppress 狀態；不改變例外類型、identity 或 ``args``。
+    """
+    try:
+        _清除例外鏈(錯誤)
+    except BaseException:
+        pass
+    try:
+        traceback.clear_frames(錯誤.__traceback__)
+    except BaseException:
+        pass
 
 
 def _拋出清理控制(控制: BaseException) -> NoReturn:

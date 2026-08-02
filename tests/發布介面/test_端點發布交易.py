@@ -5,6 +5,7 @@ import os
 import sqlite3
 import threading
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -16,11 +17,13 @@ from 繁中代理.發布介面.規劃 import 端點發布 as 發布模組
 from 繁中代理.發布介面.規劃.端點發布 import (
     SQLite端點發布服務,
     已準備初始憑證,
+    已準備發布識別,
     發布版本快照,
     端點發布結果,
     端點發布錯誤,
     端點發布輸入錯誤,
 )
+from 繁中代理.發布介面.技能套件.發布器 import 套件發布收據
 
 
 def _版本快照(**覆寫):
@@ -166,6 +169,218 @@ def _服務(path, *, ids=("endpoint-1", "version-1", "credential-1", "account-1"
         callbacks.append("clock")
         return 20.0
     return SQLite端點發布服務(path, *factories, clock, connection_factory)
+
+
+def _預配識別(**覆寫):
+    """建立可局部覆寫的預配識別。參數：關鍵字覆寫。回傳：合法 DTO。
+    例外：非法覆寫傳出輸入錯誤。副作用：無。
+    """
+    值 = dict(
+        endpoint_id="endpoint-ready", version_id="version-ready",
+        credential_id="credential-ready", service_account_id="account-ready",
+        套件識別碼="bundle-ready", 稽核識別碼="audit-ready", created_at=20.0,
+    )
+    值.update(覆寫)
+    return 已準備發布識別(**值)
+
+
+def _套件收據(**覆寫):
+    """建立可局部覆寫的套件收據。參數：關鍵字覆寫。回傳：收據 DTO。
+    例外：建構錯誤原樣傳出。副作用：無。
+    """
+    值 = dict(
+        套件識別碼="bundle-ready", 清單參照="bundle-ready/manifest.json",
+        清單摘要="b" * 64, 套件雜湊="c" * 64, 總位元組數=12,
+        路徑=Path("/published/bundle-ready"),
+    )
+    值.update(覆寫)
+    return 套件發布收據(**值)
+
+
+def _預配版本快照(**覆寫):
+    """建立釘選套件投影的版本快照。參數：關鍵字覆寫。回傳：版本快照。
+    例外：非法覆寫傳出輸入錯誤。副作用：無。
+    """
+    值 = dict(skill_bundle_manifest={
+        "bundle_id": "bundle-ready", "manifest_reference": "bundle-ready/manifest.json",
+        "manifest_digest": "b" * 64, "sha256": "c" * 64,
+    })
+    值.update(覆寫)
+    return _版本快照(**值)
+
+
+def test_已準備發布識別為exact不可變DTO且拒絕碰撞與非法時間():
+    """驗證預配 DTO。參數：無。回傳：無。例外：契約違反由 pytest 回報。
+    副作用：只配置記憶體物件。
+    """
+    識別 = _預配識別()
+    assert 識別.__slots__ and not hasattr(識別, "__dict__")
+    assert 識別.created_at == 20.0
+    with pytest.raises(端點發布輸入錯誤, match="^端點發布輸入無效$"):
+        _預配識別(稽核識別碼="endpoint-ready")
+    with pytest.raises(端點發布輸入錯誤, match="^端點發布輸入無效$"):
+        _預配識別(created_at=float("nan"))
+
+
+def test_預配發布單交易建立圖形收據稽核且零callback(tmp_path):
+    """驗證完整預配交易。參數：暫存目錄。回傳：無。例外：違約由 pytest 回報。
+    副作用：建立並查詢測試資料庫。
+    """
+    path = tmp_path / "prepared.db"
+    初始化發布介面資料庫(path)
+    calls = []
+    ciphertext = (b"PLAINTEXT-MARKER" + b"x" * 62)[:62]
+    result = _服務(path, calls=calls).發布已準備圖形(
+        "owner", _已確認草稿(), _預配版本快照(),
+        _已準備憑證(key_ciphertext=ciphertext),
+        _預配識別(), _套件收據(), 請求識別碼="request-1",
+    )
+
+    assert result == 端點發布結果("endpoint-ready", "version-ready", "credential-ready", "account-ready")
+    assert calls == []
+    connection = sqlite3.connect(path)
+    bundle = connection.execute(
+        "SELECT bundle_id,version_id,manifest_reference,manifest_digest,bundle_hash,published_at FROM published_skill_bundles"
+    ).fetchone()
+    audit = connection.execute(
+        "SELECT id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at FROM audit_events"
+    ).fetchone()
+    assert bundle == (
+        "bundle-ready", "version-ready", "bundle-ready/manifest.json", "b" * 64,
+        "c" * 64, 20.0,
+    )
+    assert audit[:12] == (
+        "audit-ready", "audit-ready", 20.0, "endpoint_published", "success", "user",
+        "owner", "published_endpoint", "endpoint-ready", "request-1", "endpoint-ready", None,
+    )
+    assert json.loads(audit[12]) == {
+        "bundle_hash": "c" * 64, "bundle_id": "bundle-ready",
+        "credential_id": "credential-ready", "service_account_id": "account-ready",
+        "version_id": "version-ready", "version_number": 1,
+    }
+    assert audit[13] == 20.0
+    forbidden = ("回答問題", "請精確回答", "1234", "pub_", "a" * 64, "PLAINTEXT-MARKER")
+    assert all(marker not in audit[12] for marker in forbidden)
+
+
+@pytest.mark.parametrize("kind", ["bundle-id", "reference", "digest", "hash", "path", "request"])
+def test_預配ID與receipt任何關係漂移皆零callback與零open(tmp_path, kind):
+    """驗證關係漂移前置拒絕。參數：暫存目錄與漂移種類。回傳：無。
+    例外：只接受固定輸入錯誤。副作用：不得開啟資料庫或呼叫工廠。
+    """
+    calls, opens = [], []
+    ids, snapshot, receipt, request_id = _預配識別(), _預配版本快照(), _套件收據(), "request-1"
+    if kind == "bundle-id": receipt = _套件收據(套件識別碼="bundle-other")
+    elif kind == "reference": receipt = _套件收據(清單參照="bundle-ready/other.json")
+    elif kind == "digest": receipt = _套件收據(清單摘要="d" * 64)
+    elif kind == "hash": receipt = _套件收據(套件雜湊="d" * 64)
+    elif kind == "path": receipt = _套件收據(路徑=Path("/published/other"))
+    else: request_id = " bad "
+    with pytest.raises(端點發布輸入錯誤, match="^端點發布輸入無效$"):
+        _服務(tmp_path / "absent.db", calls=calls, connection_factory=lambda *a, **k: opens.append(1)).發布已準備圖形(
+            "owner", _已確認草稿(), snapshot, _已準備憑證(), ids, receipt,
+            請求識別碼=request_id,
+        )
+    assert calls == [] and opens == []
+
+
+def test_連線工廠並行竄改原收據仍只寫入脫離快照(tmp_path, monkeypatch):
+    """鎖定開啟邊界後的 hostile receipt mutation 與交易內二次關係驗證。
+
+    參數：pytest 提供暫存目錄與模組替換工具。
+    回傳：無；斷言兩次驗證使用不同收據身分，且資料庫只保存開啟前快照。
+    例外：契約違反由 pytest 斷言回報；背景執行緒不得留下未處理例外。
+    副作用：建立測試資料庫與一條竄改執行緒，並暫時包裝關係驗證函式。
+    """
+    資料庫 = tmp_path / "hostile-receipt.db"
+    初始化發布介面資料庫(資料庫)
+    原收據 = _套件收據()
+    驗證呼叫 = []
+    原驗證 = 發布模組._驗證預配關係
+
+    def 記錄驗證(識別碼, 快照, 收據, 請求識別碼):
+        """記錄驗證身分。參數：原驗證四參數。回傳：脫離收據。
+        例外：原驗證例外原樣傳出。副作用：附加一筆記憶體紀錄。
+        """
+        驗證呼叫.append(收據)
+        return 原驗證(識別碼, 快照, 收據, 請求識別碼)
+
+    monkeypatch.setattr(發布模組, "_驗證預配關係", 記錄驗證)
+    開始竄改 = threading.Event()
+    完成竄改 = threading.Event()
+
+    def 竄改原收據():
+        """等待後竄改原收據。參數：無。回傳：無。例外：等待逾時由斷言回報。
+        副作用：跨執行緒改寫測試 DTO slots 並設定事件。
+        """
+        assert 開始竄改.wait(5)
+        object.__setattr__(原收據, "套件識別碼", "bundle-hostile")
+        object.__setattr__(原收據, "清單參照", "bundle-hostile/manifest.json")
+        object.__setattr__(原收據, "清單摘要", "d" * 64)
+        object.__setattr__(原收據, "套件雜湊", "e" * 64)
+        object.__setattr__(原收據, "總位元組數", 99)
+        object.__setattr__(原收據, "路徑", Path("/published/bundle-hostile"))
+        完成竄改.set()
+
+    執行緒 = threading.Thread(target=竄改原收據)
+    執行緒.start()
+
+    def 連線工廠(*參數, **選項):
+        """在開啟 SQLite 前等待竄改。參數：連線參數。回傳：SQLite 連線。
+        例外：等待逾時由斷言回報。副作用：同步執行緒並開啟測試資料庫。
+        """
+        開始竄改.set()
+        assert 完成竄改.wait(5)
+        return sqlite3.connect(*參數, **選項)
+
+    結果 = _服務(資料庫, connection_factory=連線工廠).發布已準備圖形(
+        "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+        _預配識別(), 原收據, 請求識別碼="request-1",
+    )
+    執行緒.join(5)
+
+    assert not 執行緒.is_alive() and 結果.version_id == "version-ready"
+    assert len(驗證呼叫) == 2 and 驗證呼叫[0] is 原收據 and 驗證呼叫[1] is not 原收據
+    assert 驗證呼叫[1] == _套件收據()
+    連線 = sqlite3.connect(資料庫)
+    assert 連線.execute(
+        "SELECT bundle_id,manifest_reference,manifest_digest,bundle_hash,total_bytes "
+        "FROM published_skill_bundles"
+    ).fetchone() == (
+        "bundle-ready", "bundle-ready/manifest.json", "b" * 64, "c" * 64, 12,
+    )
+    稽核 = 連線.execute("SELECT id,request_id,metadata_json FROM audit_events").fetchone()
+    assert 稽核[:2] == ("audit-ready", "request-1")
+    assert json.loads(稽核[2])["bundle_hash"] == "c" * 64
+
+
+def test_稽核末段失敗rollback全部新圖形與收據(tmp_path):
+    """驗證稽核碰撞回滾。參數：暫存目錄。回傳：無。例外：只接受發布錯誤。
+    副作用：建立資料庫、植入碰撞列並查詢回滾結果。
+    """
+    path = tmp_path / "audit-rollback.db"
+    初始化發布介面資料庫(path)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "INSERT INTO audit_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        ("audit-ready", "audit-ready", 1, "seed", "success", "system", None,
+         "seed", "seed", None, None, None, "{}", 1),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(端點發布錯誤, match="^端點發布失敗$"):
+        _服務(path).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼=None,
+        )
+    connection = sqlite3.connect(path)
+    for table in (
+        "service_accounts", "published_endpoints", "published_endpoint_versions",
+        "endpoint_credentials", "published_skill_bundles",
+    ):
+        assert connection.execute(f"SELECT count(*) FROM {table}").fetchone() == (0,)
+    assert connection.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("tools", [True, False])
@@ -387,7 +602,7 @@ def test_資料庫路徑與完整schema漂移拒絕且不建立不follow(tmp_pat
         connection.close()
     elif kind == "ledger-extra":
         connection = sqlite3.connect(real)
-        connection.execute("INSERT INTO published_api_schema_migrations VALUES(12,'0012_unknown.sql',0)")
+        connection.execute("INSERT INTO published_api_schema_migrations VALUES(13,'0013_unknown.sql',0)")
         connection.commit()
         connection.close()
     elif kind == "ledger-rename":
@@ -571,6 +786,41 @@ def test_commit後ordinary_close失敗仍回傳成功且資料durable(tmp_path):
     )
     assert result.endpoint_id == "endpoint-1" and _狀態連線.close_calls == 1
     assert sqlite3.connect(path).execute("SELECT count(*) FROM published_endpoints").fetchone() == (1,)
+
+
+def test_預配交易commit後ordinary_close失敗仍成功且全部durable(tmp_path):
+    """驗證提交後一般關閉失敗。參數：暫存目錄。回傳：無。例外：違約由 pytest 回報。
+    副作用：建立資料庫並注入一次關閉失敗。
+    """
+    path = tmp_path / "prepared-close-ordinary.db"
+    初始化發布介面資料庫(path)
+    result = _狀態服務(path, "CLOSE", RuntimeError("close-marker")).發布已準備圖形(
+        "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+        _預配識別(), _套件收據(), 請求識別碼=None,
+    )
+    assert result.endpoint_id == "endpoint-ready" and _狀態連線.close_calls == 1
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (1,)
+    assert connection.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+
+
+@pytest.mark.parametrize("control", [KeyboardInterrupt("prepared-K"), SystemExit("prepared-S"), GeneratorExit("prepared-G")])
+def test_預配交易commit後close控制保留exact身分與durable圖形(tmp_path, control):
+    """驗證提交後關閉控制流。參數：暫存目錄與控制例外。回傳：無。
+    例外：要求同一控制例外傳出。副作用：建立資料庫並注入關閉控制流。
+    """
+    path = tmp_path / f"prepared-close-{type(control).__name__}.db"
+    初始化發布介面資料庫(path)
+    with pytest.raises(type(control)) as caught:
+        _狀態服務(path, "CLOSE", control).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼=None,
+        )
+    assert caught.value is control and caught.value.args == control.args
+    connection = sqlite3.connect(path)
+    assert connection.execute("SELECT count(*) FROM published_endpoints").fetchone() == (1,)
+    assert connection.execute("SELECT count(*) FROM published_skill_bundles").fetchone() == (1,)
+    assert connection.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
 
 
 @pytest.mark.parametrize("control", [KeyboardInterrupt("close-K"), SystemExit("close-S"), GeneratorExit("close-G")])

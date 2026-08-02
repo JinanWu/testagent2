@@ -1,4 +1,10 @@
-"""發布介面共同公開契約。"""
+"""發布介面共同公開契約。
+
+參數／欄位：不適用；本模組彙整協定、資料型別、錯誤與工廠名稱。
+回傳：不適用；公開名稱各自提供其回傳契約。
+例外：必要子模組無法載入時原樣傳出匯入例外。
+副作用：匯入時載入共同契約；部分網頁工廠只在查詢名稱時延遲載入，不建立服務。
+"""
 
 from .協定 import (
     AuditEventSink,
@@ -13,6 +19,13 @@ from .契約 import AuditSinkError
 from .契約 import 建立失敗信封, 建立成功信封
 from .契約 import 附加稽核事件或失敗關閉
 from .嚴格JSON import 嚴格JSON錯誤, 建立正規JSON, 解析嚴格JSON, 計算正規JSON雜湊
+from .資料庫結構契約 import (
+    資料庫結構契約錯誤,
+    資料庫結構指紋,
+    計算資料庫結構指紋,
+    遷移帳本,
+    驗證資料庫結構,
+)
 
 from .領域模型 import (
     AuditActorRef,
@@ -55,23 +68,48 @@ __all__ = [
     "建立成功信封",
     "建立失敗信封",
     "附加稽核事件或失敗關閉",
+    "資料庫結構契約錯誤",
+    "資料庫結構指紋",
+    "計算資料庫結構指紋",
+    "遷移帳本",
+    "驗證資料庫結構",
     "建立目前工作階段相依項",
     "建立ASGI應用程式",
+    "建立CP4ASGI應用程式",
     "建立環境應用程式",
+    "Published生產設定",
+    "生產Published執行建構器",
+    "生產Controller建構器",
 ]
 
 
 def __getattr__(名稱: str):
-    """延遲公開網頁路由工廠，避免使用者模組初始化期間形成循環匯入。"""
+    """延遲公開網頁與 Published 工廠，避免模組初始化期間形成循環匯入。
+
+    參數：
+        名稱: 呼叫端查詢的 exact module attribute 名稱。
+    返回值：
+        白名單名稱對應的 canonical factory、設定類別或 builder identity。
+    例外：
+        名稱不在公開白名單時拋 ``AttributeError``；必要子模組匯入錯誤原樣傳出。
+    副作用：
+        首次查詢時延遲匯入對應子模組，不建立 app、資料庫或 lifespan resource。
+    """
     if 名稱 == "建立目前工作階段相依項":
         from .路由 import 建立目前工作階段相依項
 
         return 建立目前工作階段相依項
-    if 名稱 in {"建立ASGI應用程式", "建立環境應用程式"}:
-        from .asgi import 建立ASGI應用程式, 建立環境應用程式
+    if 名稱 in {"建立ASGI應用程式", "建立CP4ASGI應用程式", "建立環境應用程式"}:
+        from .asgi import 建立ASGI應用程式, 建立CP4ASGI應用程式, 建立環境應用程式
 
         return {
             "建立ASGI應用程式": 建立ASGI應用程式,
+            "建立CP4ASGI應用程式": 建立CP4ASGI應用程式,
             "建立環境應用程式": 建立環境應用程式,
         }[名稱]
+    if 名稱 in {"Published生產設定", "生產Published執行建構器", "生產Controller建構器"}:
+        from .生產Published執行 import Published生產設定, 生產Controller建構器, 生產Published執行建構器
+        return {"Published生產設定": Published生產設定,
+                "生產Published執行建構器": 生產Published執行建構器,
+                "生產Controller建構器": 生產Controller建構器}[名稱]
     raise AttributeError(名稱)

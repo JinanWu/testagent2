@@ -1,0 +1,421 @@
+"""CP4 lifespan-owned Published invocation production composition。
+
+參數：
+    本模組公開明確設定、lazy proxy、資源與 builder 類別，不讀取隱含設定。
+返回值：
+    工廠建立由 lifespan 擁有的 Web／Published 組裝與固定 invocation route。
+例外：
+    組裝一般錯誤由 lifespan 固定映射；控制流程例外保留 identity。
+副作用：
+    匯入與 app construction 無 I/O；SQLite、installer 與模型 registry 延至 startup。
+"""
+from __future__ import annotations
+import json
+import os
+from contextlib import contextmanager
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Condition, RLock
+from typing import Callable
+from starlette.concurrency import run_in_threadpool
+from .相依項 import 發布介面相依項
+from .設定 import 生產設定
+from .資料庫 import 初始化發布介面資料庫
+from .生產Web代理 import 生產Web代理建構器
+from .規劃.版本服務 import SQLite目前版本解析器, 已釘選版本, 目前版本不存在錯誤
+from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
+from .呼叫.儲存庫 import SQLite呼叫儲存庫
+from .呼叫.限流 import 限流決策
+from .呼叫.擷取政策 import 擷取階段, 準備呼叫擷取, 寫入呼叫擷取
+from .呼叫.編排器 import 外部呼叫編排器
+from .呼叫.生產橋接 import (
+    InvocationLedger橋接,
+    SQLite雙層限流器,
+    驗證釘選輸入結構,
+    驗證釘選輸出結構,
+)
+from .執行期.工具版本庫 import 計算工具修訂摘要
+from .執行期.工具發布庫 import 工具發布庫
+from .執行期.快照儲存庫 import SQLite發布快照儲存庫
+from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
+from .技能套件.載入器 import 已發布技能套件載入器
+from .路由.外部呼叫 import 建立外部呼叫路由
+_本機Path型別 = type(Path())
+_資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
+_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+def _驗證資料庫實體隔離(Web資料庫: Path, Published資料庫: Path) -> None:
+    """以 canonical path 與檔案系統 identity 拒絕兩個資料庫別名。
+
+    參數：
+        Web資料庫: CP3 Web 的 exact absolute ``Path``。
+        Published資料庫: CP4 Published 的 exact absolute ``Path``。
+    返回值：
+        ``None``；表示目前兩個路徑不是相同 canonical path 或既存 inode。
+    例外：
+        路徑契約、解析或 identity 查詢一般失敗皆固定為 ``ValueError``；控制流程例外原樣傳出。
+    副作用：
+        查詢路徑解析與檔案 metadata，不建立、開啟或修改資料庫。
+    """
+    try:
+        if (
+            type(Web資料庫) is not _本機Path型別
+            or type(Published資料庫) is not _本機Path型別
+            or not Web資料庫.is_absolute()
+            or not Published資料庫.is_absolute()
+        ):
+            raise ValueError
+        相同 = Web資料庫.resolve(strict=False) == Published資料庫.resolve(strict=False)
+        if not 相同 and Web資料庫.exists() and Published資料庫.exists():
+            相同 = os.path.samefile(Web資料庫, Published資料庫)
+        if 相同:
+            raise ValueError
+    except _控制流程例外:
+        raise
+    except BaseException:
+        raise ValueError(_資料庫隔離錯誤) from None
+
+
+@dataclass(frozen=True, slots=True)
+class Published生產設定:
+    """部署端必須明確提供的 CP4 executable dependencies。
+    參數：absolute Published DB、bundle root、exact-once 工具 installer 與模型 registry factory。
+    返回值：不可變設定。
+    例外：任一值不合 strict contract 時拋 ``ValueError``。
+    副作用：只驗證 lexical path 與 callable，不讀檔案系統或呼叫 callback。
+    """
+    發布資料庫路徑: Path
+    技能套件發布根: Path
+    工具發布安裝器: Callable[[工具發布庫], None]
+    模型供應商註冊表工廠: Callable[[], dict[str, object]]
+    def __post_init__(self) -> None:
+        """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
+        參數：無；讀取四個設定欄位。
+        返回值：``None``。
+        例外：設定無效時拋 ``ValueError``。
+        副作用：無 I/O。
+        """
+        資料庫 = object.__getattribute__(self, "發布資料庫路徑")
+        根 = object.__getattribute__(self, "技能套件發布根")
+        安裝器 = object.__getattribute__(self, "工具發布安裝器")
+        工廠 = object.__getattribute__(self, "模型供應商註冊表工廠")
+        if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
+                or type(根) is not _本機Path型別 or not 根.is_absolute()
+                or not callable(安裝器) or not callable(工廠)):
+            raise ValueError("Published生產設定無效") from None
+class 延遲外部呼叫編排器:
+    """固定 route identity，並以 active lease 支援 shutdown drain。
+
+    參數：
+        建構不接受參數，編排器只可由 ``安裝`` 提供。
+    返回值：
+        提供與真實 ``外部呼叫編排器`` 相同的同步 invocation 委派結果。
+    例外：
+        未安裝或 draining 時固定 ``RuntimeError``；安裝違約為 ``ValueError``。
+    副作用：
+        在條件鎖內追蹤 active leases 與本次 startup 編排器 identity。
+    """
+    def __init__(self) -> None:
+        """建立未安裝的 per-app slot。
+
+        參數：無。
+        返回值：``None``；Python 建構完成新 proxy。
+        例外：只有鎖配置的 runtime 錯誤可能原樣傳出。
+        副作用：配置條件鎖與空 slot，不執行外部 I/O。
+        """
+        self._條件 = Condition(RLock())
+        self._編排器: 外部呼叫編排器 | None = None
+        self._進行中 = 0
+        self._正在停止 = False
+    def 安裝(self, 編排器: 外部呼叫編排器) -> None:
+        """startup exact-once 安裝 genuine orchestrator。
+        參數：完整 production ``外部呼叫編排器``。
+        返回值：``None``。
+        例外：型別或 slot 狀態不符時拋 ``ValueError``。
+        副作用：啟用後續 route lease。
+        """
+        if type(編排器) is not 外部呼叫編排器:
+            raise ValueError("Published生產組裝無效") from None
+        with self._條件:
+            if self._編排器 is not None or self._進行中:
+                raise ValueError("Published生產組裝無效") from None
+            self._正在停止 = False
+            self._編排器 = 編排器
+    def 清除(self, 編排器: 外部呼叫編排器) -> None:
+        """先拒絕新 request，再等待本次 identity 的 active leases 歸零。
+        參數：本次 startup 安裝的 orchestrator。
+        返回值：``None``。
+        例外：無預期例外。
+        副作用：可能阻塞直到進行中委派完成。
+        """
+        with self._條件:
+            if self._編排器 is 編排器:
+                self._編排器 = None
+                self._正在停止 = True
+                while self._進行中:
+                    self._條件.wait()
+    @contextmanager
+    def _租借(self):
+        """在完整同步委派期間持有 lease；未啟動或 draining 時 fail closed。
+
+        參數：無。
+        返回值：yield 本次安裝的 exact 編排器。
+        例外：服務不可用時固定 ``RuntimeError``；委派端例外原樣傳出。
+        副作用：在鎖內增減 active lease，歸零時喚醒 shutdown waiter。
+        """
+        with self._條件:
+            編排器 = self._編排器
+            if 編排器 is None or self._正在停止:
+                raise RuntimeError("Published服務不可用") from None
+            self._進行中 += 1
+        try:
+            yield 編排器
+        finally:
+            with self._條件:
+                self._進行中 -= 1
+                if self._進行中 == 0:
+                    self._條件.notify_all()
+    def 執行(self, 短名: str, 請求識別: str, API金鑰: str,
+           輸入: object, 中繼資料: object | None, 時間: int | float):
+        """以一個 active lease 委派完整 transport-neutral invocation。
+
+        參數：短名、請求識別、API 金鑰、輸入、中繼資料與呼叫時間皆原樣傳給編排器。
+        返回值：真實編排器建立的 invocation response。
+        例外：服務不可用固定失敗，編排器例外保持 identity 傳出。
+        副作用：租借一次 proxy slot 並執行一次同步 invocation。
+        """
+        with self._租借() as 編排器:
+            return 編排器.執行(短名, 請求識別, API金鑰, 輸入, 中繼資料, 時間)
+class 生產Published執行資源:
+    """擁有 lazy installation 與 startup-created registries 的 lifespan resource。
+
+    參數：
+        由成功 startup 傳入 proxy、編排器、工具庫及 detached 模型表。
+    返回值：
+        提供 async ``關閉`` 的 lifespan resource。
+    例外：
+        shutdown control/ordinary drain 例外在完成 reference cleanup 後傳出。
+    副作用：
+        保存並於關閉時釋放本 composition 的所有 live handler/model authority。
+    """
+    def __init__(self, 代理: 延遲外部呼叫編排器, 編排器: 外部呼叫編排器,
+                 工具庫: 工具發布庫, 模型表: dict[str, object]) -> None:
+        """保存已成功安裝的資源參照。
+
+        參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
+        返回值：``None``；Python 建構完成 lifespan resource。
+        例外：只有鎖配置錯誤可能由 runtime 原樣傳出。
+        副作用：保存強參照與配置 exact-once 關閉鎖，不執行額外 I/O。
+        """
+        self._代理, self._編排器 = 代理, 編排器
+        self._工具庫, self._模型表 = 工具庫, 模型表
+        self._鎖, self._已關閉 = RLock(), False
+    async def 關閉(self) -> None:
+        """exact-once 清除 proxy、drain leases 並 detach registries。
+        參數：無。
+        返回值：``None``。
+        例外：drain 的控制流程例外原樣傳出。
+        副作用：不猜測 provider close protocol；只移除本 composition 的 references。
+        """
+        with self._鎖:
+            if self._已關閉:
+                return
+            self._已關閉 = True
+        編排器, 工具庫 = self._編排器, self._工具庫
+        清除錯誤 = None
+        try:
+            if 編排器 is not None:
+                await run_in_threadpool(self._代理.清除, 編排器)
+        except BaseException as 錯誤:
+            清除錯誤 = 錯誤
+        finally:
+            self._編排器 = None
+            self._模型表.clear()
+            if 工具庫 is not None:
+                工具庫.清除所有發布()
+            self._工具庫 = None
+        if 清除錯誤 is not None:
+            raise 清除錯誤
+class 生產Published執行建構器:
+    """建立 CP4 invoke router 與單一 Published lifespan resource factory。
+
+    參數：建構時只接受 exact ``Published生產設定``。
+    返回值：透過 ``建立附加相依項`` 回傳 router 與 resource factory。
+    例外：設定或 dependency 違約時固定 ``ValueError``。
+    副作用：app construction 只建立 proxy、router 與 closure，不執行 callback 或 I/O。
+    """
+    def __init__(self, 設定: Published生產設定) -> None:
+        """保存 exact immutable Published 設定。
+
+        參數：設定是 exact ``Published生產設定``。
+        返回值：``None``；完成 builder 建構。
+        例外：型別不符時固定 ``ValueError``。
+        副作用：只保存參照，不呼叫注入或讀取路徑。
+        """
+        if type(設定) is not Published生產設定:
+            raise ValueError("Published生產組裝無效") from None
+        self._設定 = 設定
+    def 建立附加相依項(self, 設定: 生產設定, 目前工作階段相依, CSRF相依) -> 發布介面相依項:
+        """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
+
+        參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
+        返回值：含 exact invocation router 與一個 async resource factory 的附加相依項。
+        例外：設定或 dependency 違約時固定 ``ValueError``。
+        副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
+        """
+        if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
+            raise ValueError("Published生產組裝無效") from None
+        代理 = 延遲外部呼叫編排器()
+        路由器 = 建立外部呼叫路由(代理)
+        async def 建立資源() -> 生產Published執行資源:
+            """在 threadpool 建立並安裝一次真實 Published composition。
+
+            參數：無；使用 immutable closure 內的三個 composition dependencies。
+            返回值：成功安裝的 ``生產Published執行資源``。
+            例外：startup 例外原樣傳給 lifespan 統一分類。
+            副作用：執行 migration、注入 callback 及完整 Published 組裝。
+            """
+            return await run_in_threadpool(_建立Published資源, 設定, self._設定, 代理)
+        return 發布介面相依項((路由器,), (建立資源,))
+class 生產Controller建構器:
+    """依序組合 CP3 Web 與 CP4 Published routers/resources。
+
+    參數：建構時接受 exact Published 生產設定。
+    返回值：建立含兩組 routers 與兩個 lifespan resources 的附加相依項。
+    例外：子 builder 的組裝契約錯誤原樣傳出。
+    副作用：只建立兩個 builder；實際 FS preflight 與資源建立延至 startup。
+    """
+    def __init__(self, 設定: Published生產設定) -> None:
+        """建立兩個彼此不知內部細節的 production builders。
+
+        參數：設定是 CP4 Published 的 exact immutable 設定。
+        返回值：``None``；完成 Controller builder 建構。
+        例外：Published builder 拒絕設定時傳出固定 ``ValueError``。
+        副作用：建立 Web 與 Published builder，不讀檔案系統。
+        """
+        self._Web = 生產Web代理建構器()
+        self._Published = 生產Published執行建構器(設定)
+    def 建立附加相依項(self, 設定: 生產設定, 目前工作階段相依, CSRF相依) -> 發布介面相依項:
+        """先驗證資料庫 identity，再保持 Web→Published startup 與反向 shutdown。
+
+        參數：
+            設定: 含 Web DB 的 exact CP3 生產設定。
+            目前工作階段相依: canonical current-session dependency。
+            CSRF相依: canonical single-use CSRF dependency。
+        返回值：
+            路由順序不變，且 Web factory 前具有同一 closure 內 preflight 的附加相依項。
+        例外：
+            組裝契約一般失敗傳出 ``ValueError``；控制流程例外原樣傳出。
+        副作用：
+            只建立 closure；檔案 identity 查詢與所有資源建立均延至 startup。
+        """
+        網頁 = self._Web.建立附加相依項(設定, 目前工作階段相依, CSRF相依)
+        發布 = self._Published.建立附加相依項(設定, 目前工作階段相依, CSRF相依)
+        Web工廠 = 網頁.資源工廠清單[0]
+
+        async def 建立已隔離Web資源():
+            """在任何 Web migration 前執行 CP4 DB identity preflight。
+
+            參數：
+                無；使用 immutable composition closure。
+            返回值：
+                原 Web factory 建立的 lifespan resource。
+            例外：
+                資料庫別名固定拒絕；原 Web factory 例外原樣傳出供 lifespan 映射。
+            副作用：
+                先在 threadpool 查詢 FS identity，再委派一次 Web resource factory。
+            """
+            await run_in_threadpool(
+                _驗證資料庫實體隔離, 設定.資料庫路徑, self._Published._設定.發布資料庫路徑,
+            )
+            return await Web工廠()
+
+        return 發布介面相依項(
+            網頁.路由器清單 + 發布.路由器清單,
+            (建立已隔離Web資源,) + 發布.資源工廠清單,
+        )
+def _工具摘要(name: str, revision: str, description: str, parameters_json: str) -> str:
+    """將快照庫 canonical JSON 轉接到唯一權威工具修訂摘要 helper。
+
+    參數：工具名稱、修訂、說明與 canonical parameters JSON 字串。
+    返回值：唯一權威 helper 計算的十六進位摘要。
+    例外：JSON 非 object 時固定 ``ValueError``；解析與摘要錯誤原樣傳出。
+    副作用：只解析記憶體字串與計算摘要。
+    """
+    參數 = json.loads(parameters_json)
+    if type(參數) is not dict:
+        raise ValueError("工具摘要無效") from None
+    return 計算工具修訂摘要(name=name, revision=revision, description=description, parameters=參數)
+def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
+                    代理: 延遲外部呼叫編排器) -> 生產Published執行資源:
+    """startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
+
+    參數：
+        生產: 含 Web DB authority 的 exact CP3 設定。
+        發布: 含 Published DB、installer 與 model factory 的 exact CP4 設定。
+        代理: 本 app 唯一、尚未安裝的延遲 invocation proxy。
+    返回值：
+        已安裝 proxy 且擁有 detached registries 的 lifespan resource。
+    例外：
+        資料庫別名或模型表違約為 ``ValueError``；callback/control 例外保留 identity 傳出。
+    副作用：
+        migration 前後查詢 FS identity，依序執行 initializer、installer、model factory 與 bridge 組裝。
+    """
+    資料庫 = 發布.發布資料庫路徑
+    _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
+    初始化發布介面資料庫(資料庫)
+    _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
+    解析器 = SQLite目前版本解析器(資料庫)
+    呼叫庫 = SQLite呼叫儲存庫(資料庫)
+    憑證 = SQLite憑證驗證服務(資料庫)
+    限流器 = SQLite雙層限流器(資料庫)
+    快照庫 = SQLite發布快照儲存庫(資料庫, _工具摘要)
+    套件載入器 = 已發布技能套件載入器(發布.技能套件發布根, 快照庫)
+    工具庫 = 工具發布庫()
+    模型表: dict[str, object] = {}
+    編排器 = None
+    try:
+        發布.工具發布安裝器(工具庫)
+        原模型表 = 發布.模型供應商註冊表工廠()
+        if type(原模型表) is not dict:
+            raise ValueError("模型供應商註冊表無效") from None
+        模型表.update(原模型表)
+        if not 模型表 or any(type(鍵) is not str or not 鍵 or 值 is None for 鍵, 值 in 模型表.items()):
+            raise ValueError("模型供應商註冊表無效") from None
+        Runtime橋接 = 建立發布執行嘗試橋接(
+            發布快照儲存庫=快照庫, 技能套件載入器=套件載入器,
+            工具發布庫=工具庫, 模型供應商註冊表=模型表,
+        )
+        台帳 = InvocationLedger橋接(呼叫庫)
+        編排器 = 外部呼叫編排器(
+            解析器, 呼叫庫, 憑證,
+            解析未找到型別=目前版本不存在錯誤, 釘選型別=已釘選版本,
+            驗證型別=憑證驗證結果, 驗證狀態型別=憑證驗證狀態,
+            階段型別=擷取階段, 準備擷取=準備呼叫擷取, 寫入擷取=寫入呼叫擷取,
+            限流決策型別=限流決策, 提交雙層計數=限流器.提交,
+            驗證輸入=驗證釘選輸入結構, 開始執行嘗試=台帳.開始執行嘗試,
+            執行嘗試=Runtime橋接, 驗證輸出=驗證釘選輸出結構,
+            記錄執行嘗試=台帳.記錄執行嘗試,
+        )
+        代理.安裝(編排器)
+        return 生產Published執行資源(代理, 編排器, 工具庫, 模型表)
+    except BaseException as 啟動錯誤:
+        try:
+            if 編排器 is not None:
+                代理.清除(編排器)
+        except BaseException:
+            pass
+        finally:
+            模型表.clear()
+            try:
+                工具庫.清除所有發布()
+            except BaseException:
+                pass
+        啟動錯誤.__cause__ = None
+        啟動錯誤.__context__ = None
+        raise
+__all__ = (
+    "Published生產設定", "延遲外部呼叫編排器", "生產Published執行資源",
+    "生產Published執行建構器", "生產Controller建構器",
+)

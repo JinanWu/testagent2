@@ -1,4 +1,10 @@
-"""PUB Planner 與 FND 權威權限查詢之安全協調邊界。"""
+"""PUB Planner 與 FND 權威權限查詢之安全協調邊界。
+
+參數／欄位：不適用；本模組定義權限摘要、協調器與資料庫協調操作。
+回傳：不適用；各協調操作的回傳契約由其文件字串分別說明。
+例外：匯入相依模組失敗時原樣傳出匯入例外。
+副作用：匯入時只定義型別、常數與函式，不查詢權限或修改資料庫。
+"""
 
 from __future__ import annotations
 
@@ -19,6 +25,7 @@ from ..協定 import (
     規劃權限查詢錯誤,
 )
 from ..嚴格JSON import 建立正規JSON, 解析嚴格JSON
+from ..資料庫結構契約 import 遷移帳本 as _發布遷移紀錄
 from ..連線隔離 import (
     標記發布連線污染 as _標記狀態連線污染,
     發布連線已污染 as _狀態連線已污染,
@@ -29,19 +36,6 @@ _識別規則 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _SHA256規則 = re.compile(r"[0-9a-f]{64}\Z")
 _固定錯誤 = "規劃能力未獲授權"
 _控制流 = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_發布遷移紀錄 = (
-    (1, "0001_建立發布端點核心.sql"),
-    (2, "0002_建立憑證與稽核.sql"),
-    (3, "0003_建立呼叫事件與工具紀錄.sql"),
-    (4, "0004_建立限流與遮蔽資料.sql"),
-    (5, "0005_建立網頁工作階段.sql"),
-    (6, "0006_擴充稽核事件契約.sql"),
-    (7, "0007_建立不可逆遮蔽墓碑.sql"),
-    (8, "0008_建立五年保存候選索引.sql"),
-    (9, "0009_建立保存相依識別索引.sql"),
-    (10, "0010_建立來源驗證失敗節流.sql"),
-    (11, "0011_重建空憑證為CRED結構.sql"),
-)
 _P07_SCHEMA指紋 = "6b27cff1307ecc1cbbd9ee4b7690eb0f26ed4bc775b636f9c99c4df3da2f4e62"
 
 
@@ -387,15 +381,46 @@ def _解析權限陣列(原始值: Any) -> tuple[str, ...]:
 
 
 def _驗證技能manifest(原始值: Any, 技能: tuple[str, ...]) -> None:
-    """驗證 P04 實際 manifest shape；不解析或讀取 live roots/filesystem。"""
-    manifest = 項目 = 技能項目 = None
+    """驗證 P04 的舊版或新版技能 manifest；不讀取即時來源目錄。
+
+    參數：``原始值`` 是資料庫保存的正規 JSON 文字；``技能`` 是版本快照的
+    exact 技能名稱 tuple。回傳：符合舊 exact 2-key 或新 exact 6-key 契約時回傳
+    ``None``。例外：型別、技能順序、SHA-256、套件識別或清單參照不符時拋出
+    ``ValueError``；三種控制流程例外維持原物件傳出。副作用：只配置有界 JSON
+    暫存物件，不讀取檔案系統、不修改資料庫。
+    """
+    manifest = 項目 = 技能項目 = bundle_id = reference = digest = bundle_hash = None
     名稱串列: list[Any] = []
     try:
-        manifest = 解析嚴格JSON(_驗證有界JSON(原始值))
-        if (type(manifest) is not dict
-                or set(manifest.keys()) != {"permission_revision", "skills"}
-                or not _合法識別(manifest.get("permission_revision"))):
+        if type(技能) is not tuple:
             raise ValueError
+        for 名稱 in 技能:
+            if not _合法識別(名稱):
+                raise ValueError
+        manifest = 解析嚴格JSON(_驗證有界JSON(原始值))
+        if type(manifest) is not dict:
+            raise ValueError
+        鍵集合 = set(manifest.keys())
+        if 鍵集合 not in (
+            {"permission_revision", "skills"},
+            {"permission_revision", "skills", "bundle_id", "manifest_reference", "manifest_digest", "sha256"},
+        ) or not _合法識別(manifest.get("permission_revision")):
+            raise ValueError
+        if len(鍵集合) == 6:
+            bundle_id = manifest.get("bundle_id")
+            reference = manifest.get("manifest_reference")
+            digest = manifest.get("manifest_digest")
+            bundle_hash = manifest.get("sha256")
+            if (
+                not _合法識別(bundle_id)
+                or type(reference) is not str
+                or reference != f"{bundle_id}/manifest.json"
+                or type(digest) is not str
+                or _SHA256規則.fullmatch(digest) is None
+                or type(bundle_hash) is not str
+                or _SHA256規則.fullmatch(bundle_hash) is None
+            ):
+                raise ValueError
         項目 = manifest.get("skills")
         if type(項目) is not list or len(項目) != len(技能):
             raise ValueError
@@ -415,7 +440,7 @@ def _驗證技能manifest(原始值: Any, 技能: tuple[str, ...]) -> None:
         if type(manifest) is dict:
             manifest.clear()
         名稱串列.clear()
-        del 原始值, 技能, manifest, 項目, 技能項目, 名稱串列
+        del 原始值, 技能, manifest, 項目, 技能項目, bundle_id, reference, digest, bundle_hash, 名稱串列
         raise
 
 
