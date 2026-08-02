@@ -8,12 +8,13 @@ from dataclasses import dataclass
 from enum import Enum
 from threading import Barrier, BrokenBarrierError, Event, Lock, Thread
 import traceback
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 import weakref
 
 import pytest
 
 import 繁中代理.發布介面.呼叫.編排器 as 編排器模組
+from 繁中代理.發布介面.呼叫.生產橋接 import 驗證釘選輸入結構
 
 from 繁中代理.發布介面.呼叫.編排器 import (
     執行嘗試結果,
@@ -51,6 +52,30 @@ class 釘選:
     version_id: str
     version_number: int
     service_account_id: str = "sa-default"
+
+
+class 生產結構釘選:
+    """可由 INV 重建且直接提供 production schema snapshot 的 exact pin。"""
+
+    __slots__ = ("endpoint_id", "service_account_id", "version_id", "version_number")
+    已驗證: list[object] = []
+
+    def __init__(self, endpoint_id, service_account_id, version_id, version_number):
+        self.endpoint_id = endpoint_id
+        self.service_account_id = service_account_id
+        self.version_id = version_id
+        self.version_number = version_number
+
+    def 取得版本快照(self):
+        """記錄 schema 讀取者並回傳 fresh input schema。"""
+        type(self).已驗證.append(self)
+        return SimpleNamespace(
+            input_schema={
+                "type": "object", "properties": {"q": {"type": "string"}},
+                "required": ["q"], "additionalProperties": False,
+            },
+            response_schema={"type": "object"},
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,23 +168,25 @@ class 假政策:
         self.限流呼叫.append((endpoint_id, credential_id, endpoint_limit, credential_limit, at))
         return 限流決策(True, 1, 1)
 
-    def 驗證輸入(self, input):
-        self.輸入呼叫.append(input)
+    def 驗證輸入(self, pinned_version, input):
+        self.輸入呼叫.append((pinned_version, input))
         return True
 
 
 def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=None, 記錄執行嘗試=None,
-        釘選類型: type = 釘選):
+        釘選類型: type = 釘選, 驗證輸入=None):
     if 記錄執行嘗試 is None:
         記錄執行嘗試 = lambda invocation, request, result, schema_valid: 執行嘗試紀錄收據(
             invocation.id, request.attempt, True, request.attempt,
         )
+    if 驗證輸入 is None:
+        驗證輸入 = 政策.驗證輸入
     return 外部呼叫編排器(
         解析器, object(), 憑證服務,
         解析未找到型別=LookupError,
         釘選型別=釘選類型, 驗證型別=驗證結果, 驗證狀態型別=狀態,
         階段型別=階段, 準備擷取=政策.準備, 寫入擷取=政策.寫入,
-        限流決策型別=限流決策, 提交雙層計數=政策.計數, 驗證輸入=政策.驗證輸入,
+        限流決策型別=限流決策, 提交雙層計數=政策.計數, 驗證輸入=驗證輸入,
         執行嘗試=執行嘗試, 驗證輸出=驗證輸出, 記錄執行嘗試=記錄執行嘗試,
     )
 
@@ -317,10 +344,10 @@ def test_exact_authenticated寫入後才刷新並進入主流程():
         順序.append("rate")
         return 原始計數(*args)
 
-    def 計數後輸入(input):
+    def 計數後輸入(pinned_version, input):
         assert 順序 == ["refresh", "rate"]
         順序.append("input")
-        return 原始輸入(input)
+        return 原始輸入(pinned_version, input)
 
     憑證服務.刷新已認證使用, 政策.計數, 政策.驗證輸入 = 寫入後刷新, 刷新後計數, 計數後輸入
     結果 = _編排(假解析器(釘選("ep-1", "ver-3", 3)), 憑證服務, 政策).開始(
@@ -332,7 +359,7 @@ def test_exact_authenticated寫入後才刷新並進入主流程():
     assert 政策.寫入呼叫[0][-1]["credential_id"] == "cred-1"
     assert 憑證服務.刷新呼叫 == [(authentication, 10.0)]
     assert 政策.限流呼叫 == [("ep-1", "cred-1", 60, 30, 10.0)]
-    assert 政策.輸入呼叫 == [{"q": 1}]
+    assert 政策.輸入呼叫 == [(結果.pinned_version, {"q": 1})]
     assert 順序 == ["refresh", "rate", "input"]
 
 
@@ -381,8 +408,8 @@ def test_input拒絕仍先提交雙層計數再映射422():
         順序.append(("rate", args))
         return 限流決策(True, 2, 2)
 
-    def 驗證輸入(input):
-        順序.append(("input", input))
+    def 驗證輸入(pinned_version, input):
+        順序.append(("input", pinned_version, input))
         return False
 
     政策.計數, 政策.驗證輸入 = 計數, 驗證輸入
@@ -393,6 +420,21 @@ def test_input拒絕仍先提交雙層計數再映射422():
     assert [項[0] for 項 in 順序] == ["rate", "input"]
     assert 結果.error.status_code == 422
     assert 結果.error.to_json()["envelope"]["error"]["code"] == "input_schema_invalid"
+
+
+def test_orchestrator直接呼叫production輸入schema且使用重建後private_pin():
+    """callback contract 是 (pin,input)，不靠 closure adapter，schema 讀取重建後 pin。"""
+    assert tuple(inspect.signature(驗證釘選輸入結構).parameters) == ("釘選版本", "輸入資料")
+    原始釘選 = 生產結構釘選("ep", "svc", "ver", 1)
+    生產結構釘選.已驗證.clear()
+    驗證 = 驗證結果(狀態.有效, "cred", "ep", "active", 30, 60)
+    結果 = _編排(
+        假解析器(原始釘選), 假憑證服務(驗證), 假政策(),
+        釘選類型=生產結構釘選, 驗證輸入=驗證釘選輸入結構,
+    ).開始("demo", "req", "raw", {"q": 7}, None, 1)
+    assert 結果.error.status_code == 422
+    assert 生產結構釘選.已驗證 == [結果.pinned_version]
+    assert 結果.pinned_version is not 原始釘選
 
 
 def test_capture_mutation不改變validation與runtime使用的canonical來源():
@@ -416,7 +458,7 @@ def test_capture_mutation不改變validation與runtime使用的canonical來源()
     ).執行("demo", "req", "raw", {"nested": ["original"]}, {"trace": "original"}, 1)
 
     assert result.status_code == 200
-    assert 政策.輸入呼叫 == [{"nested": ["original"]}]
+    assert 政策.輸入呼叫 == [(政策.輸入呼叫[0][0], {"nested": ["original"]})]
     assert requests[0].input == {"nested": ["original"]}
     assert requests[0].metadata == {"trace": "original"}
 
