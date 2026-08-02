@@ -137,6 +137,99 @@ class 發布管理服務(Protocol):
         ...
 
 
+def 建立規劃發布路由器(服務: 發布管理服務, 身份依賴) -> APIRouter:
+    """建立三條 session-identity 管理路由；成功 create 一律固定 201。"""
+    路由器 = APIRouter()
+
+    草稿處理器 = _綁定處理器(_建立發布草稿, 服務, 身份依賴, "建立發布草稿", "建立純草稿，不配置 endpoint、版本或憑證。")
+    發布處理器 = _綁定處理器(_發布端點, 服務, 身份依賴, "發布端點", "只委派一次原子服務操作，回傳初始明文金鑰一次。")
+    版本處理器 = _綁定處理器(_建立不可變版本, 服務, 身份依賴, "建立不可變版本", "由服務一次完成 owner/admin 授權、create-only insert 與 pointer switch。")
+    路由器.post("/api/published-endpoints/draft", status_code=201, response_model=草稿建立結果)(草稿處理器)
+    路由器.post("/api/published-endpoints", status_code=201, response_model=端點發布結果)(發布處理器)
+    路由器.post("/api/published-endpoints/{endpoint_id}/versions", status_code=201, response_model=版本建立結果)(版本處理器)
+
+    return 路由器
+
+
+def _綁定處理器(處理器, 服務: 發布管理服務, 身份依賴, 名稱: str, 文件: str):
+    """以 partial 隱藏服務參數，並保留原公開路由名稱與文件。"""
+    已綁定 = partial(處理器, 服務)
+    簽章 = signature(已綁定)
+    型別提示 = get_type_hints(處理器, include_extras=True)
+    參數 = [項目.replace(annotation=型別提示[項目.name], default=Depends(身份依賴) if 項目.name == "身份" else 項目.default) for 項目 in 簽章.parameters.values()]
+    setattr(已綁定, "__name__", 名稱)
+    setattr(已綁定, "__doc__", 文件)
+    setattr(已綁定, "__signature__", 簽章.replace(parameters=參數, return_annotation=型別提示["return"]))
+    return 已綁定
+
+
+def _建立發布草稿(
+    服務: 發布管理服務,
+    請求: 建立草稿請求,
+    身份: 使用者上下文,
+) -> JSONResponse:
+    """建立純草稿，並在離開公開處理器前清除所有傳遞參照。"""
+    使用者 = 規劃 = 結果 = 安全 = 內容 = 回應 = None
+    try:
+        使用者, _ = _重建身份(身份)
+        內容 = _複製JSON物件(請求.規劃器內容)
+        規劃 = 規劃內容(請求.原始需求文字, 內容)
+        結果 = _呼叫服務(服務, "建立草稿", _重建草稿結果, 擁有者使用者識別碼=使用者, 規劃=規劃)
+        if type(結果) is 管理操作錯誤:
+            _拋出錯誤(結果)
+        安全 = 結果
+        回應 = JSONResponse(status_code=201, content={"draft_id": 安全.草稿識別碼, "expires_at": 安全.到期時間, "preview": 安全.預覽})
+        return 回應
+    finally:
+        服務 = 請求 = 身份 = 使用者 = 規劃 = 結果 = 安全 = 內容 = 回應 = None
+
+
+def _發布端點(
+    服務: 發布管理服務,
+    請求: 發布端點請求,
+    身份: 使用者上下文,
+) -> JSONResponse:
+    """只委派一次原子操作，成功回應保留金鑰而處理器不保留。"""
+    使用者 = 確認 = 結果 = 安全 = 配置 = 金鑰 = 內容 = 回應 = None
+    try:
+        使用者, _ = _重建身份(身份)
+        配置 = _複製JSON物件(請求.配置確認)
+        確認 = 發布確認(請求.草稿識別碼, 請求.短名, 配置)
+        結果 = _呼叫服務(服務, "原子發布", _重建發布結果, 擁有者使用者識別碼=使用者, 確認=確認)
+        if type(結果) is 管理操作錯誤:
+            _拋出錯誤(結果)
+        安全 = 結果
+        金鑰 = 安全.初始API金鑰
+        內容 = {"endpoint_id": 安全.端點識別碼, "version_id": 安全.版本識別碼, "version_number": 1, "status": "active", "initial_api_key": 金鑰}
+        回應 = JSONResponse(status_code=201, content=內容)
+        return 回應
+    finally:
+        服務 = 請求 = 身份 = 使用者 = 確認 = 結果 = 安全 = 配置 = 金鑰 = 內容 = 回應 = None
+
+
+def _建立不可變版本(
+    服務: 發布管理服務,
+    請求: 建立版本請求,
+    端點識別碼: Annotated[str, Path(alias="endpoint_id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$")],
+    身份: 使用者上下文,
+) -> JSONResponse:
+    """委派原子版本切換，並清除 request、identity、配置與回執。"""
+    使用者 = 是否管理者 = 配置 = 結果 = 安全 = 內容 = 回應 = None
+    try:
+        使用者, 是否管理者 = _重建身份(身份)
+        配置 = _複製JSON物件(請求.配置)
+        結果 = _呼叫服務(服務, "原子建立並切換版本", _重建版本結果, (端點識別碼,), 擁有者使用者識別碼=使用者, 是否管理者=是否管理者, 端點識別碼=端點識別碼, 配置=配置)
+        if type(結果) is 管理操作錯誤:
+            _拋出錯誤(結果)
+        安全 = 結果
+        內容 = {"endpoint_id": 安全.端點識別碼, "version_id": 安全.版本識別碼, "version_number": 安全.版本編號, "current_version_id": 安全.目前版本識別碼, "schema_changed": 安全.結構已變更}
+        回應 = JSONResponse(status_code=201, content=內容)
+        return 回應
+    finally:
+        服務 = 請求 = 端點識別碼 = 身份 = 使用者 = 是否管理者 = None
+        配置 = 結果 = 安全 = 內容 = 回應 = None
+
+
 def _呼叫服務(服務: 發布管理服務, 方法名稱: str, 重建器=None, 重建參數=(), **參數):
     """在同一 totalized 邊界呼叫服務並重建不可信回執。"""
     結果 = 方法 = 安全結果 = None
