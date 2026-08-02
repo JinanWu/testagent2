@@ -146,6 +146,131 @@ class 技能詳情:
     內容: str
 
 
+class Web代理服務:
+    """協調既有 runtime/repositories，並在 HTTP 前建立安全 DTO。"""
+
+    def __init__(
+        self,
+        工作階段庫物件: Web工作階段庫,
+        使用者庫物件: 使用者上下文供應器,
+        執行階段工廠: Web執行階段工廠,
+    ) -> None:
+        """保存明確依賴；不建立資料庫、runtime 或 module-global mutable state。"""
+        if not callable(執行階段工廠):
+            raise ValueError("Web代理服務設定無效")
+        self._工作階段庫 = 工作階段庫物件
+        self._使用者庫 = 使用者庫物件
+        self._執行階段工廠 = 執行階段工廠
+
+    def 聊天(self, 使用者識別碼: str, 訊息: str, 工作階段識別碼: str | None = None) -> 聊天回應:
+        """以登入 user 的完整上下文執行 Web turn，並只回 logical root 與純文字回答。
+
+        參數：使用者識別碼為 current-session identity；訊息為使用者文字；工作階段
+        識別碼可省略以建立新對話。返回值為固定聊天 DTO。owner/source/缺少會拋
+        Web資源不存在；依賴失敗會拋 Web服務不可用；本方法不回傳工具或推理內容。
+        """
+        _驗證識別碼(使用者識別碼)
+        _驗證訊息(訊息)
+        預期根識別碼 = None
+        if 工作階段識別碼 is not None:
+            _驗證識別碼(工作階段識別碼)
+            try:
+                可見工作階段 = self._工作階段庫.檢查工作階段存取(
+                    工作階段識別碼, user_id=使用者識別碼, source=_WEB來源
+                )
+                _確認工作階段資料(可見工作階段, 工作階段識別碼, 使用者識別碼)
+                預期根識別碼 = _取得譜系根(
+                    self._工作階段庫.取得工作階段譜系(工作階段識別碼)
+                )
+            except PermissionError:
+                raise Web資源不存在 from None
+            except Web資源不存在:
+                raise
+            except Exception:
+                raise Web服務不可用 from None
+            if 預期根識別碼 != 工作階段識別碼:
+                raise Web資源不存在
+        try:
+            使用者 = self._使用者庫.建立使用者上下文(user_id=使用者識別碼)
+            if type(使用者) is not 使用者上下文 or 使用者.user_id != 使用者識別碼:
+                raise ValueError
+            執行階段 = self._執行階段工廠(使用者上下文物件=使用者, source=_WEB來源)
+            結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼)
+            回覆 = object.__getattribute__(結果, "最終回答")
+            作用中識別碼 = object.__getattribute__(結果, "工作階段識別碼")
+            _驗證識別碼(作用中識別碼)
+            if type(回覆) is not str:
+                raise ValueError
+            結果資料 = self._工作階段庫.檢查工作階段存取(
+                作用中識別碼, user_id=使用者識別碼, source=_WEB來源
+            )
+            _確認工作階段資料(結果資料, 作用中識別碼, 使用者識別碼)
+            根識別碼 = _取得譜系根(self._工作階段庫.取得工作階段譜系(作用中識別碼))
+            if 預期根識別碼 is not None and 根識別碼 != 預期根識別碼:
+                raise Web資源不存在
+            return 聊天回應(根識別碼, 回覆)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except Web資源不存在:
+            raise
+        except PermissionError:
+            raise Web資源不存在 from None
+        except Exception:
+            raise Web服務不可用 from None
+
+@dataclass(slots=True)
+class _技能走訪預算:
+    """跨所有授權 root 共享、會隨每個 directory entry 遞減的預算。"""
+
+    剩餘項目數量: int
+
+
+def _走訪有界技能索引檔案(
+    技能根目錄: Path,
+    檔名: str,
+    候選上限: int,
+    走訪預算: _技能走訪預算 | None = None,
+) -> Iterator[Path]:
+    """有界掃描每個 entry；僅完整讀完的 bounded directory batch 才排序。"""
+    if 候選上限 <= 0:
+        return
+    if 走訪預算 is None:
+        走訪預算 = _技能走訪預算(_最大技能走訪項目數量)
+    已產出 = 0
+
+    def 走訪目錄(目錄: Path) -> Iterator[Path]:
+        """依名稱走訪完整小批次，目錄、候選與其他 entry 均消耗共享預算。"""
+        nonlocal 已產出
+        if 已產出 >= 候選上限:
+            return
+        try:
+            with os.scandir(目錄) as 掃描器:
+                項目清單 = []
+                for 項目 in 掃描器:
+                    項目清單.append(項目)
+                    if len(項目清單) > 走訪預算.剩餘項目數量:
+                        走訪預算.剩餘項目數量 = 0
+                        raise ValueError("技能目錄走訪超過上限")
+        except FileNotFoundError:
+            return
+        走訪預算.剩餘項目數量 -= len(項目清單)
+        項目清單.sort(key=lambda 項目: 項目.name)
+        for 項目 in 項目清單:
+            if 已產出 >= 候選上限:
+                return
+            if 項目.name.startswith("."):
+                continue
+            路徑 = 目錄 / 項目.name
+            if 項目.name == 檔名:
+                已產出 += 1
+                yield 路徑
+                continue
+            if 項目.is_dir(follow_symlinks=False):
+                yield from 走訪目錄(路徑)
+
+    yield from 走訪目錄(技能根目錄)
+
+
 def 序列化聊天回應(回應: 聊天回應) -> dict[str, object]:
     """將自有 DTO 序列化為 frozen Chat JSON allowlist；不讀取其他屬性。"""
     if type(回應) is not 聊天回應:
