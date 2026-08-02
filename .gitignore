@@ -38,6 +38,14 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
+
+# Node / Vite
+node_modules/
+*.tsbuildinfo
+
+# Repository-local agent artifacts
+.hermes/
+
 .tox/
 .nox/
 .coverage
