@@ -108,6 +108,149 @@ class 規劃草稿:
     def 綱要(self) -> Any:
         """回傳草稿綱要的獨立 JSON 副本，避免外部修改 aggregate。"""
         return 解析嚴格JSON(self._綱要正規JSON)
+
+
+class 規劃服務:
+    """在記憶體中管理 owner-bound、具固定期限且不可執行的草稿。"""
+
+    def __init__(
+        self,
+        *,
+        存續秒數: float = 86400,
+        識別碼產生器: Callable[[], str] | None = None,
+    ) -> None:
+        """建立服務；期限必須為有限正數，識別碼工廠可供測試決定性注入。"""
+        if not _是有效時間(存續秒數) or 存續秒數 <= 0:
+            del 存續秒數, 識別碼產生器
+            _拒絕草稿輸入()
+        self._存續秒數 = float(存續秒數)
+        self._識別碼產生器 = 識別碼產生器 or (lambda: uuid.uuid4().hex)
+        self._草稿: dict[str, 規劃草稿] = {}
+        self._鎖 = threading.Lock()
+
+    def 建立草稿(
+        self,
+        擁有者識別碼: str,
+        原始需求: str,
+        綱要: Any,
+        *,
+        現在: float,
+    ) -> 規劃草稿:
+        """建立 owner-bound 草稿；維持 P01 的純草稿公開契約。"""
+        if not _是非空字串(擁有者識別碼) or not _是非空字串(原始需求) or not _是有效時間(現在):
+            del 擁有者識別碼, 原始需求, 綱要, 現在
+            _拒絕草稿輸入()
+        綱要快照 = _建立綱要快照(綱要)
+        if 綱要快照 is None:
+            del 擁有者識別碼, 原始需求, 綱要, 綱要快照
+            _拒絕草稿輸入()
+        工廠失敗 = False
+        草稿識別碼: Any = None
+        try:
+            草稿識別碼 = self._識別碼產生器()
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼
+            raise
+        except BaseException:
+            工廠失敗 = True
+        if 工廠失敗 or not _是非空字串(草稿識別碼):
+            del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼
+            _拒絕草稿輸入()
+        建立時間 = float(現在)
+        到期時間 = 建立時間 + self._存續秒數
+        if not math.isfinite(到期時間):
+            del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼
+            _拒絕草稿輸入()
+        草稿 = 規劃草稿(草稿識別碼, 擁有者識別碼, 原始需求, 綱要快照, 建立時間, 到期時間)
+        重複 = False
+        with self._鎖:
+            if 草稿識別碼 in self._草稿:
+                重複 = True
+            else:
+                self._草稿[草稿識別碼] = 草稿
+        if 重複:
+            del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼, 草稿
+            _拒絕草稿輸入()
+        回傳 = None
+        try:
+            回傳 = _必須重建公開草稿(草稿)
+        except BaseException:
+            del self, 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼, 草稿, 回傳
+            raise
+        del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼, 草稿
+        return 回傳
+
+    def 建立授權草稿(
+        self,
+        協調器: 權限協調器,
+        擁有者識別碼: str,
+        原始需求: str,
+        綱要: Any,
+        技能名稱: tuple[str, ...],
+        工具名稱: tuple[str, ...],
+        *,
+        現在: float,
+    ) -> 規劃草稿:
+        """先建立可信綱要，再經 exact 協調器查詢權威摘要並原子插入。"""
+        if type(協調器) is not 權限協調器 or not _是非空字串(擁有者識別碼) or not _是非空字串(原始需求) or not _是有效時間(現在):
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在
+            _拒絕草稿輸入()
+        綱要快照 = _建立綱要快照(綱要)
+        if 綱要快照 is None:
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照
+            _拒絕草稿輸入()
+        能力摘要: 釘選能力摘要 | None = None
+        try:
+            能力摘要 = 協調器.建立能力摘要(擁有者識別碼, 技能名稱, 工具名稱)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要
+            raise
+        except 授權選擇錯誤:
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要
+            raise
+        except BaseException:
+            能力摘要 = None
+            協調失敗 = True
+        else:
+            協調失敗 = False
+        if 協調失敗 or type(能力摘要) is not 釘選能力摘要:
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 協調失敗
+            raise 授權選擇錯誤("規劃能力未獲授權") from None
+        工廠失敗 = False
+        草稿識別碼: Any = None
+        try:
+            草稿識別碼 = self._識別碼產生器()
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼
+            raise
+        except BaseException:
+            工廠失敗 = True
+        if 工廠失敗 or not _是非空字串(草稿識別碼):
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼
+            _拒絕草稿輸入()
+        建立時間 = float(現在)
+        到期時間 = 建立時間 + self._存續秒數
+        if not math.isfinite(到期時間):
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼
+            _拒絕草稿輸入()
+        草稿 = 規劃草稿(草稿識別碼, 擁有者識別碼, 原始需求, 綱要快照, 建立時間, 到期時間, 能力摘要)
+        重複 = False
+        with self._鎖:
+            if 草稿識別碼 in self._草稿:
+                重複 = True
+            else:
+                self._草稿[草稿識別碼] = 草稿
+        if 重複:
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿
+            _拒絕草稿輸入()
+        回傳 = None
+        try:
+            回傳 = _必須重建公開草稿(草稿)
+        except BaseException:
+            del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿, 回傳
+            raise
+        del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿
+        return 回傳
 def _建立綱要快照(綱要: Any) -> str | None:
     """先遞迴建立可信副本，再 canonicalize；失敗不保留呼叫端物件。"""
     可信副本: Any = None
