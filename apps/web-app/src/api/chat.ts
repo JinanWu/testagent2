@@ -27,7 +27,8 @@ export async function sendChat(
   const outer = exactObject(value, ['session_id', 'reply'])
   const reply = outer && exactObject(outer.reply, ['role', 'content'])
   if (!outer || !reply || !boundedString(outer.session_id, 128) ||
-      reply.role !== 'assistant' || typeof reply.content !== 'string' || reply.content.length > 65_536) {
+      reply.role !== 'assistant' || typeof reply.content !== 'string' ||
+      reply.content.length > 65_536 || byteLength(reply.content) > 65_536) {
     throw new ApiFormatError()
   }
   return { sessionId: outer.session_id, reply: { role: 'assistant', content: reply.content } }

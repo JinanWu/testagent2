@@ -1,4 +1,4 @@
-import { ApiFormatError, apiRequest, boundedString, encodedRoute, exactObject, type ApiRoute } from './client'
+import { ApiFormatError, apiRequest, boundedString, byteLength, encodedRoute, exactObject, type ApiRoute } from './client'
 
 export interface SessionSummary {
   id: string
@@ -46,7 +46,8 @@ export async function getSessionDetail(id: string, signal?: AbortSignal): Promis
   }
   const messages = outer.messages.map((value): TranscriptMessage => {
     const item = exactObject(value, ['role', 'content'])
-    if (!item || (item.role !== 'user' && item.role !== 'assistant') || !text(item.content, 65_536)) {
+    if (!item || (item.role !== 'user' && item.role !== 'assistant') ||
+        !text(item.content, 65_536) || byteLength(item.content) > 65_536) {
       throw new ApiFormatError()
     }
     return { role: item.role, content: item.content }

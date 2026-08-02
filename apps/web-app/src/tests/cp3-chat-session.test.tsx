@@ -165,6 +165,34 @@ describe('CP3 安全 API clients', () => {
   })
 
   it.each([
+    ['ASCII', 'x'.repeat(65_536)],
+    ['multibyte', '界'.repeat(21_845) + 'x'],
+  ])('%s 65,536-byte chat 與 session 文字皆通過', async (_name, content) => {
+    expect(new TextEncoder().encode(content)).toHaveLength(65_536)
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      session_id: 'root', reply: { role: 'assistant', content },
+    })).mockResolvedValueOnce(jsonResponse({
+      session: sessionMetadata, messages: [{ role: 'user', content }],
+    }))
+    await expect(sendChat('hi', null, 'csrf')).resolves.toMatchObject({ reply: { content } })
+    await expect(getSessionDetail('root')).resolves.toMatchObject({ messages: [{ content }] })
+  })
+
+  it.each([
+    ['ASCII', 'x'.repeat(65_537)],
+    ['multibyte', '界'.repeat(21_845) + 'xx'],
+  ])('%s 65,537-byte chat 與 session 文字皆回 generalized format error', async (_name, content) => {
+    expect(new TextEncoder().encode(content)).toHaveLength(65_537)
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      session_id: 'root', reply: { role: 'assistant', content },
+    })).mockResolvedValueOnce(jsonResponse({
+      session: sessionMetadata, messages: [{ role: 'assistant', content }],
+    }))
+    await expect(sendChat('hi', null, 'csrf')).rejects.toBeInstanceOf(ApiFormatError)
+    await expect(getSessionDetail('root')).rejects.toBeInstanceOf(ApiFormatError)
+  })
+
+  it.each([
     ['chat reply', () => sendChat('hi', null, 'csrf'), {
       session_id: 'root', reply: { role: 'assistant', content: 'x'.repeat(65_537) },
     }],

@@ -199,3 +199,65 @@ def test_CP3_OpenAPI成功模型逐欄strict且巢狀型別完整(tmp_path):
     skill = 成功("/api/skills/{skill_id}", "get")
     strict(skill, {*skill_fields, "content"}, skill_fields | {"content": "string"})
 
+
+def test_fake_provider_clean_smoke_login_chat_session_resume_new與skills(tmp_path):
+    """真實SQLite與fake runtime完成CP3 browser垂直流程。"""
+    資料庫 = tmp_path / "smoke.sqlite3"
+    技能根 = tmp_path / "skills"
+    技能目錄 = 技能根 / "demo"
+    技能目錄.mkdir(parents=True)
+    (技能目錄 / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: deterministic demo\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    應用 = 建立ASGI應用程式(_設定(資料庫))
+    assert not 資料庫.exists()
+    with TestClient(應用) as 客戶端:
+        assert 資料庫.exists()
+        使用者 = 使用者庫(資料庫)
+        使用者.建立使用者(
+            "alice",
+            "correct horse",
+            roles=["user"],
+            enabled_tools=[],
+            enabled_skills=["demo"],
+            skill_roots=[str(技能根)],
+            allowed_workdirs=[str(tmp_path)],
+        )
+        使用者.連線.close()
+        登入 = 客戶端.post("/api/auth/login", json={"username": "alice", "password": "correct horse"})
+        assert 登入.status_code == 200
+        csrf = 登入.json()["csrf_token"]
+
+        新對話 = 客戶端.post("/api/chat", json={"message": "hello"}, headers={"X-CSRF-Token": csrf})
+        assert 新對話.status_code == 200
+        根識別碼 = 新對話.json()["session_id"]
+        assert 新對話.json()["reply"] == {"role": "assistant", "content": "假模型回覆：我可以運作。"}
+        csrf = 新對話.headers["X-CSRF-Token"]
+
+        列表 = 客戶端.get("/api/sessions")
+        assert 列表.status_code == 200
+        assert [項目["id"] for 項目 in 列表.json()["sessions"]] == [根識別碼]
+        詳情 = 客戶端.get(f"/api/sessions/{根識別碼}")
+        assert 詳情.status_code == 200
+        assert 詳情.json()["session"]["id"] == 根識別碼
+        assert [項目["role"] for 項目 in 詳情.json()["messages"]] == ["user", "assistant"]
+
+        恢復 = 客戶端.post(
+            "/api/chat",
+            json={"message": "resume", "session_id": 根識別碼},
+            headers={"X-CSRF-Token": csrf},
+        )
+        assert 恢復.status_code == 200 and 恢復.json()["session_id"] == 根識別碼
+        csrf = 恢復.headers["X-CSRF-Token"]
+        第二對話 = 客戶端.post("/api/chat", json={"message": "new"}, headers={"X-CSRF-Token": csrf})
+        assert 第二對話.status_code == 200
+        assert 第二對話.json()["session_id"] != 根識別碼
+
+        技能列表 = 客戶端.get("/api/skills")
+        assert 技能列表.status_code == 200
+        assert [項目["id"] for 項目 in 技能列表.json()["skills"]] == ["demo"]
+        技能詳情 = 客戶端.get("/api/skills/demo")
+        assert 技能詳情.status_code == 200
+        assert 技能詳情.json()["id"] == "demo"
+        assert "# Demo" in 技能詳情.json()["content"]
