@@ -169,6 +169,267 @@ class 版本配置結果:
             or not _是有限非負(self.created_at)
         ):
             _拒絕輸入()
+class SQLite版本配置服務:
+    """以 BEGIN IMMEDIATE 配置下一個 create-only immutable version。"""
+
+    def __init__(
+        self,
+        database_path: str | Path,
+        version_id_factory: Callable[[], str],
+        clock: Callable[[], float],
+        connection_factory: Callable[..., sqlite3.Connection] = sqlite3.connect,
+    ) -> None:
+        self._資料庫路徑 = database_path
+        self._版本識別工廠 = version_id_factory
+        self._時鐘 = clock
+        self._連線工廠 = connection_factory
+
+    def 配置(
+        self, owner_user_id: str, endpoint_id: str, prepared_snapshot: 發布版本快照,
+    ) -> 版本配置結果:
+        """重建 prepared DTO，再於單一鎖定交易授權、配置與提交。"""
+        snapshot = path = identity = uri = connection = result = None
+        輸入失敗 = 配置失敗 = False
+        try:
+            if not _是識別(owner_user_id) or not _是識別(endpoint_id):
+                輸入失敗 = True
+            else:
+                snapshot = _重建版本快照(prepared_snapshot)
+                if snapshot.created_by_user_id != owner_user_id:
+                    輸入失敗 = True
+            if not 輸入失敗:
+                path, identity = _驗證既有資料庫路徑(self._資料庫路徑)
+                uri = path.as_uri() + "?mode=rw"
+                connection = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+                _驗證已開啟資料庫路徑(connection, path, identity)
+                result = _配置交易(
+                    connection, owner_user_id, endpoint_id, snapshot,
+                    self._版本識別工廠, self._時鐘,
+                )
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, result, 輸入失敗, 配置失敗
+            raise
+        except 版本存取錯誤:
+            del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, result, 輸入失敗, 配置失敗
+            raise
+        except 端點發布輸入錯誤:
+            輸入失敗 = True
+        except BaseException:
+            配置失敗 = True
+        if 輸入失敗:
+            del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, result, 輸入失敗, 配置失敗
+            _拒絕輸入()
+        if 配置失敗 or result is None:
+            del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, result, 輸入失敗, 配置失敗
+            _拒絕配置()
+        del self, owner_user_id, endpoint_id, prepared_snapshot, snapshot, path, identity, uri, connection, 輸入失敗, 配置失敗
+        return result
+
+def _配置交易(
+    connection: sqlite3.Connection, owner: str, endpoint_id: str,
+    snapshot: 發布版本快照, id_factory: Callable[[], str], clock: Callable[[], float],
+) -> 版本配置結果:
+    """鎖後驗 schema/authority/序列，唯一 INSERT 後耐久提交。"""
+    begun = committed = ordinary_failure = access_failure = False
+    ledger = rows = raw = endpoint = aggregate = previous = version_id = created_at = result = None
+    count = minimum = maximum = number = input_json = response_json = parameters = cursor = None
+    input_equal = response_equal = changed = None
+    rollback_controls: list[BaseException] = []
+    close_controls: list[BaseException] = []
+    try:
+        connection.execute("PRAGMA foreign_keys=ON")
+        if connection.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            raise sqlite3.DatabaseError
+        connection.execute("BEGIN IMMEDIATE")
+        begun = True
+        ledger = tuple(connection.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version"))
+        rows = list(connection.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
+        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        if ledger != _遷移ledger or hashlib.sha256(raw.encode()).hexdigest() != _schema指紋:
+            raise sqlite3.DatabaseError
+        endpoint = connection.execute(
+            "SELECT owner_user_id,status FROM published_endpoints WHERE id=?", (endpoint_id,),
+        ).fetchone()
+        access_failure = endpoint is None or endpoint != (owner, "active")
+        if not access_failure:
+            aggregate = connection.execute(
+                "SELECT count(*),min(version_number),max(version_number) FROM published_endpoint_versions WHERE endpoint_id=?",
+                (endpoint_id,),
+            ).fetchone()
+            count, minimum, maximum = aggregate
+            if count and (minimum != 1 or maximum != count):
+                raise sqlite3.DatabaseError
+            number = count + 1
+            if count:
+                previous = connection.execute(
+                    "SELECT input_schema_json,response_schema_json FROM published_endpoint_versions WHERE endpoint_id=? AND version_number=?",
+                    (endpoint_id, count),
+                ).fetchone()
+                if type(previous) is not tuple or len(previous) != 2:
+                    raise sqlite3.DatabaseError
+            version_id = id_factory()
+            created_at = clock()
+            if not _是識別(version_id) or not _是有限非負(created_at):
+                raise ValueError
+            input_json = None if snapshot.input_schema is None else _正規JSON(snapshot.input_schema)
+            response_json = _正規JSON(snapshot.response_schema)
+            input_equal = _schema等價(previous[0], input_json) if count else True
+            response_equal = _schema等價(previous[1], response_json) if count else True
+            changed = bool(count) and not (input_equal and response_equal)
+            parameters = (
+                version_id, endpoint_id, number, snapshot.original_requirement_text, snapshot.system_prompt,
+                _正規JSON(snapshot.allowed_skills), _正規JSON(snapshot.allowed_tools),
+                _正規JSON(snapshot.tool_schema_snapshot), snapshot.tool_runtime_revision,
+                _正規JSON(snapshot.model_config_snapshot), _正規JSON(snapshot.retry_policy),
+                _正規JSON(snapshot.skill_bundle_manifest), input_json, response_json, int(changed),
+                snapshot.created_by_user_id, created_at,
+            )
+            cursor = connection.execute("INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", parameters)
+            if cursor.rowcount != 1:
+                raise sqlite3.DatabaseError
+            connection.execute("COMMIT")
+            begun = False
+            committed = True
+            result = 版本配置結果(version_id, endpoint_id, number, changed, created_at)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as control:
+        _清除例外鏈(control)
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+        rollback_controls.clear()
+        close_controls.clear()
+        _清除例外鏈(control)
+        del connection, owner, endpoint_id, snapshot, id_factory, clock
+        del begun, committed, ordinary_failure, access_failure, ledger, rows, raw, endpoint, aggregate, previous
+        del version_id, created_at, result, count, minimum, maximum, number, input_json, response_json
+        del parameters, cursor, input_equal, response_equal, changed, rollback_controls, close_controls
+        del control
+        raise
+    except BaseException:
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+        ordinary_failure = True
+    if access_failure:
+        if begun:
+            rollback_controls = _安全回滾(connection)
+        close_controls = _安全關閉(connection)
+    if ordinary_failure or access_failure:
+        denied = access_failure and not ordinary_failure
+        del connection, owner, endpoint_id, snapshot, id_factory, clock
+        del begun, committed, ordinary_failure, access_failure, ledger, rows, raw, endpoint, aggregate, previous
+        del version_id, created_at, result, count, minimum, maximum, number, input_json, response_json
+        del parameters, cursor, input_equal, response_equal, changed
+        if rollback_controls:
+            close_controls.clear()
+            _拋出清理控制(rollback_controls.pop())
+        if close_controls:
+            _拋出清理控制(close_controls.pop())
+        del rollback_controls, close_controls
+        if denied:
+            del denied
+            raise 版本存取錯誤("版本配置存取遭拒") from None
+        del denied
+        _拒絕配置()
+    close_controls = _安全關閉(connection)
+    del connection, owner, endpoint_id, snapshot, id_factory, clock
+    del begun, committed, ordinary_failure, access_failure, ledger, rows, raw, endpoint, aggregate, previous
+    del version_id, created_at, count, minimum, maximum, number, input_json, response_json
+    del parameters, cursor, input_equal, response_equal, changed, rollback_controls
+    if close_controls:
+        del result
+        _拋出清理控制(close_controls.pop())
+    del close_controls
+    assert type(result) is 版本配置結果
+    return result
+
+
+def _驗證schema(connection: sqlite3.Connection) -> None:
+    """在既有交易/read snapshot 驗證完整 migration ledger 與 schema。"""
+    ledger = rows = raw = None
+    try:
+        ledger = tuple(connection.execute(
+            "SELECT version,name FROM published_api_schema_migrations ORDER BY version"
+        ))
+        rows = list(connection.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"
+        ))
+        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        if ledger != _遷移ledger or hashlib.sha256(raw.encode()).hexdigest() != _schema指紋:
+            raise sqlite3.DatabaseError
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        if type(rows) is list:
+            rows.clear()
+        del connection, ledger, rows, raw
+        raise
+    del connection, ledger, rows, raw
+
+
+def _解析正規值(text: str) -> Any:
+    """有界解析 persisted canonical JSON，拒絕 duplicate/noncanonical。"""
+    value = None
+    try:
+        _驗證JSON文字界限(text)
+        value = json.loads(text, object_pairs_hook=_唯一物件, parse_constant=_拒絕JSON常數)
+        if _正規JSON(value) != text:
+            raise ValueError
+        return value
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        if type(value) in (dict, list):
+            value.clear()
+        del text, value
+        raise
+    except BaseException:
+        if type(value) in (dict, list):
+            value.clear()
+        del text, value
+        raise sqlite3.DatabaseError from None
+
+
+def _解析正規物件(text: str) -> dict[str, Any]:
+    """解析 canonical JSON object，並在控制流穿透前清除完整原文。"""
+    value: Any = None
+    try:
+        value = _解析正規值(text)
+        if type(value) is not dict:
+            if type(value) is list:
+                value.clear()
+            raise sqlite3.DatabaseError
+        return value
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        if type(value) in (dict, list):
+            value.clear()
+        del text, value
+        raise
+    except BaseException:
+        if type(value) in (dict, list):
+            value.clear()
+        del text, value
+        raise sqlite3.DatabaseError from None
+
+
+def _擷取呼叫目標(回呼: Callable[..., Any]) -> Callable[..., Any]:
+    """擷取當下 bound call target，避免之後重新 dispatch 可變的類別 descriptor。"""
+    描述器 = 目標 = None
+    try:
+        if isinstance(回呼, type):
+            描述器 = getattr(type(回呼), "__call__")
+            目標 = 描述器.__get__(回呼, type(回呼))
+        else:
+            目標 = getattr(回呼, "__call__")
+        if not callable(目標):
+            raise TypeError
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外鏈(控制)
+        del 回呼, 描述器, 目標, 控制
+        raise
+    except BaseException:
+        del 回呼, 描述器, 目標
+        raise
+    del 回呼, 描述器
+    return 目標
+
+
 def _schema等價(left: str | None, right: str | None) -> bool:
     """比較 JSON schema 語意；數值跨表示法等價且不犧牲 huge-int identity。"""
     if left is None or right is None:
