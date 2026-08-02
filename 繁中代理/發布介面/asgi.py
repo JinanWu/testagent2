@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from .嚴格JSON import 解析嚴格JSON
 from .生產Web代理 import 生產Web代理建構器
+from .生產Published執行 import Published生產設定, 生產Controller建構器
 from .生產組裝 import 建立生產應用程式
 from .設定 import 生產設定
 
@@ -42,6 +43,19 @@ def 建立ASGI應用程式(設定: 生產設定) -> FastAPI:
     if type(設定) is not 生產設定:
         raise ValueError("ASGI設定無效")
     return 建立生產應用程式(設定, 生產Web代理建構器())
+
+
+def 建立CP4ASGI應用程式(設定: 生產設定, Published設定: Published生產設定) -> FastAPI:
+    """由明確 executable 注入建立完整 CP4 Controller 應用程式。
+
+    參數：CP3 生產設定與 immutable ``Published生產設定``。
+    返回值：含 Web 與 exact ``POST /v1/endpoints/{slug}/invoke`` 的 FastAPI app。
+    例外：設定不合 exact production contract 時拋 ``ValueError``。
+    副作用：只組裝 app/router；installer、registry、DB 與 bundle FS 延至 lifespan。
+    """
+    if type(設定) is not 生產設定 or type(Published設定) is not Published生產設定:
+        raise ValueError("ASGI設定無效") from None
+    return 建立生產應用程式(設定, 生產Controller建構器(Published設定))
 
 
 def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
@@ -101,4 +115,4 @@ def 建立環境應用程式() -> FastAPI:
     return 建立ASGI應用程式(解析環境生產設定(os.environ))
 
 
-__all__ = ("建立ASGI應用程式", "建立環境應用程式", "解析環境生產設定")
+__all__ = ("建立ASGI應用程式", "建立CP4ASGI應用程式", "建立環境應用程式", "解析環境生產設定")
