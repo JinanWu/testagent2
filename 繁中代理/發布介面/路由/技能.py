@@ -16,6 +16,7 @@ from ..Web代理服務 import (
     序列化技能詳情,
 )
 from ..網頁工作階段 import 網頁使用者
+from .回應模型 import 技能列表回應, 技能詳情回應
 
 
 class 技能查詢服務(Protocol):
@@ -34,7 +35,7 @@ def 建立技能路由器(服務: 技能查詢服務, 目前工作階段相依) 
     """注入 caller 的 canonical current-session dependency 並建立兩個 GET routes。"""
     路由器 = APIRouter(prefix="/api/skills")
 
-    @路由器.get("")
+    @路由器.get("", response_model=技能列表回應, responses={503: {}})
     def 列出技能(使用者: 網頁使用者 = Depends(目前工作階段相依)) -> dict[str, object]:
         """列出 current-session user 的技能 metadata allowlist。"""
         try:
@@ -42,7 +43,7 @@ def 建立技能路由器(服務: 技能查詢服務, 目前工作階段相依) 
         except Web服務不可用:
             raise HTTPException(status_code=503, detail={"code": "skills_unavailable"}) from None
 
-    @路由器.get("/{skill_id}")
+    @路由器.get("/{skill_id}", response_model=技能詳情回應, responses={400: {}, 404: {}, 422: {}, 503: {}})
     def 讀取技能(
         技能路徑識別碼: Annotated[str, Path(alias="skill_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),

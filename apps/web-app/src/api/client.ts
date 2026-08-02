@@ -2,18 +2,34 @@ const API_ROUTES = {
   session: '/api/auth/session',
   login: '/api/auth/login',
   logout: '/api/auth/logout',
+  chat: '/api/chat',
+  sessions: '/api/sessions',
+  skills: '/api/skills',
 } as const
 
-export type ApiRoute = (typeof API_ROUTES)[keyof typeof API_ROUTES]
+export type ApiRoute = string & { readonly __apiRoute?: never }
 export { API_ROUTES }
 
 const MAX_RESPONSE_BYTES = 4096
-const MAX_STREAM_READS = MAX_RESPONSE_BYTES + 1
+const MAX_LARGE_RESPONSE_BYTES = 1024 * 1024
+const MAX_STREAM_READS = 4096
 const MAX_REQUEST_BYTES = 1024
+const MAX_CHAT_REQUEST_BYTES = 100 * 1024
 const JSON_CONTENT_TYPE = 'application/json'
 const ROUTES = new Set<string>(Object.values(API_ROUTES))
 
-function byteLength(value: string): number {
+function isAllowedRoute(route: string): boolean {
+  return ROUTES.has(route) ||
+    /^\/api\/sessions\?limit=(?:[1-9]|[1-4]\d|50)$/.test(route) ||
+    /^\/api\/(?:sessions|skills)\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/.test(route)
+}
+
+function responseLimit(route: string): number {
+  return route === API_ROUTES.chat || route.startsWith('/api/sessions') || route.startsWith('/api/skills')
+    ? MAX_LARGE_RESPONSE_BYTES : MAX_RESPONSE_BYTES
+}
+
+export function byteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength
 }
 
@@ -50,7 +66,7 @@ function throwIfAborted(signal?: AbortSignal): void {
   }
 }
 
-async function readBoundedResponse(response: Response, signal?: AbortSignal): Promise<string> {
+async function readBoundedResponse(response: Response, limit: number, signal?: AbortSignal): Promise<string> {
   let bytes: Uint8Array | null = null
   let text: string | null = null
   const body = response.body
@@ -58,7 +74,7 @@ async function readBoundedResponse(response: Response, signal?: AbortSignal): Pr
     throwIfAborted(signal)
     if (body === null) {
       const length = contentLength(response)
-      if (length === null || length > MAX_RESPONSE_BYTES) {
+      if (length === null || length > limit) {
         throw new ApiFormatError()
       }
       throwIfAborted(signal)
@@ -85,7 +101,7 @@ async function readBoundedResponse(response: Response, signal?: AbortSignal): Pr
     }
     const cancelOnAbort = () => { void cancel() }
     signal?.addEventListener('abort', cancelOnAbort, { once: true })
-    bytes = new Uint8Array(MAX_RESPONSE_BYTES)
+    bytes = new Uint8Array(limit)
     let count = 0
     let reads = 0
     try {
@@ -101,7 +117,7 @@ async function readBoundedResponse(response: Response, signal?: AbortSignal): Pr
         if (result.done) {
           break
         }
-        if (!(result.value instanceof Uint8Array) || count + result.value.byteLength > MAX_RESPONSE_BYTES) {
+        if (!(result.value instanceof Uint8Array) || count + result.value.byteLength > limit) {
           await cancel()
           throwIfAborted(signal)
           throw new ApiFormatError()
@@ -145,7 +161,8 @@ export async function apiRequest(
 ): Promise<unknown> {
   throwIfAborted(options.signal)
   const method = options.method ?? 'GET'
-  if (!ROUTES.has(route) || (options.body !== undefined && byteLength(options.body) > MAX_REQUEST_BYTES)) {
+  const requestLimit = route === API_ROUTES.chat ? MAX_CHAT_REQUEST_BYTES : MAX_REQUEST_BYTES
+  if (!isAllowedRoute(route) || (options.body !== undefined && byteLength(options.body) > requestLimit)) {
     throw new ApiFormatError()
   }
   const headers: Record<string, string> = { Accept: JSON_CONTENT_TYPE }
@@ -190,7 +207,7 @@ export async function apiRequest(
   }
 
   throwIfAborted(options.signal)
-  const text = await readBoundedResponse(response, options.signal)
+  const text = await readBoundedResponse(response, responseLimit(route), options.signal)
   throwIfAborted(options.signal)
   if (text.length === 0) {
     throw new ApiFormatError()
@@ -205,4 +222,33 @@ export async function apiRequest(
   }
   throwIfAborted(options.signal)
   return parsed
+}
+
+export function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
+  try {
+    if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) return null
+    const descriptors = Object.getOwnPropertyDescriptors(value)
+    if (Reflect.ownKeys(descriptors).length !== keys.length || !keys.every((key) => key in descriptors)) return null
+    const result: Record<string, unknown> = {}
+    for (const key of keys) {
+      const descriptor = descriptors[key]
+      if (!descriptor || !('value' in descriptor) || !descriptor.enumerable ||
+          !descriptor.configurable || !descriptor.writable) return null
+      result[key] = descriptor.value
+    }
+    return result
+  } catch {
+    return null
+  }
+}
+
+export function boundedString(value: unknown, maximum: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum
+}
+
+export function encodedRoute(prefix: '/api/sessions/' | '/api/skills/', id: string): ApiRoute {
+  if (!boundedString(id, 128)) throw new ApiFormatError()
+  const encoded = encodeURIComponent(id)
+  if (encoded.length > 384) throw new ApiFormatError()
+  return `${prefix}${encoded}`
 }

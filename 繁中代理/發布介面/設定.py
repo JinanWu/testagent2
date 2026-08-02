@@ -135,6 +135,9 @@ class 生產設定:
     資料庫路徑: Path
     允許來源: tuple[str, ...]
     模型供應器: str
+    模型名稱: str
+    Gemini專案識別碼: str | None = None
+    Gemini位置: str | None = None
     Cookie安全: bool = True
     工作階段有效秒數: int = 86_400
 
@@ -146,10 +149,17 @@ class 生產設定:
             or not self.資料庫路徑.name
             or type(self.允許來源) is not tuple
             or not self.允許來源
-            or type(self.模型供應器) is not str
-            or not 1 <= len(self.模型供應器) <= 128
-            or self.模型供應器.strip() != self.模型供應器
-            or any(not (字元.isascii() and (字元.isalnum() or 字元 in "._-")) for 字元 in self.模型供應器)
+            or self.模型供應器 not in {"fake", "gemini-adc"}
+            or type(self.模型名稱) is not str
+            or not 1 <= len(self.模型名稱) <= 128
+            or self.模型名稱.strip() != self.模型名稱
+            or (self.模型供應器 == "fake" and (
+                self.模型名稱 != "fake" or self.Gemini專案識別碼 is not None or self.Gemini位置 is not None
+            ))
+            or (self.模型供應器 == "gemini-adc" and not all(
+                type(值) is str and 1 <= len(值) <= 128 and 值.strip() == 值
+                for 值 in (self.Gemini專案識別碼, self.Gemini位置)
+            ))
         ):
             raise ValueError("生產設定無效")
         try:
