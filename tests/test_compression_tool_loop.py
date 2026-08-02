@@ -12,6 +12,11 @@ from 繁中代理.代理執行階段 import 代理執行階段
 from 繁中代理.模型供應商 import 假模型供應商, 模型回應
 
 
+def test_舊代理執行階段不會自動啟用發布路徑():
+    """未呼叫新 factory 時，舊 runtime 的公開執行契約完全不變。"""
+    assert not hasattr(代理執行階段, "執行發布輸入")
+
+
 def test_context_compression_threshold_floor():
     """確認 threshold 是 max(context_length * ratio, minimum floor)。
 

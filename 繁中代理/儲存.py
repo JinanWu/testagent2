@@ -64,4 +64,5 @@ def 建立使用者庫(資料庫路徑: str | Path):
     if 取得儲存後端() == "bigquery":
         from .BigQuery使用者庫 import BigQuery使用者庫
         return BigQuery使用者庫(資料庫路徑)
-    return 使用者庫(資料庫路徑)
+    from .發布介面.規劃.權限協調 import SQLite發布權限協調器
+    return 使用者庫(資料庫路徑, SQLite發布權限協調器())

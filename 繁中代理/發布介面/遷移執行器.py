@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import sqlite3
 import time
 from collections.abc import Sequence
+
+from .領域模型 import AuditMetadata
 
 
 @dataclass(frozen=True)
@@ -129,6 +132,7 @@ def 執行遷移(資料庫路徑: str | Path, 遷移清單: Sequence[遷移項�
             return ()
 
         連線 = sqlite3.connect(str(資料庫路徑), timeout=30.0, isolation_level=None)
+        _註冊發布遷移SQLite函式(連線)
         _啟用並確認外鍵(連線)
         for 項目 in 已驗證清單:
             if _套用單一遷移(連線, 項目):
@@ -196,6 +200,36 @@ def _啟用並確認外鍵(連線: sqlite3.Connection) -> None:
     連線.execute("PRAGMA foreign_keys = ON")
     if 連線.execute("PRAGMA foreign_keys").fetchone() != (1,):
         raise 遷移執行錯誤("資料庫連線不符合遷移契約")
+
+
+def _註冊發布遷移SQLite函式(連線: sqlite3.Connection) -> None:
+    """註冊 schema hardening migration 所需的 canonical metadata UDF。"""
+    連線.create_function(
+        "published_audit_metadata_canonical",
+        1,
+        _稽核MetadataJSON合法,
+        deterministic=True,
+    )
+
+
+def _稽核MetadataJSON合法(值: object) -> int:
+    """拒絕 duplicate key，並要求與 AuditMetadata writer 逐 byte 相同。"""
+    try:
+        if type(值) is not str:
+            return 0
+        項目列 = json.loads(值, object_pairs_hook=lambda 項目: 項目)
+        if type(項目列) is not list or any(type(項目) is not tuple or len(項目) != 2 for 項目 in 項目列):
+            return 0
+        if len({項目[0] for 項目 in 項目列}) != len(項目列):
+            return 0
+        正規文字 = json.dumps(
+            AuditMetadata(dict(項目列)).to_json(),
+            ensure_ascii=True,
+            separators=(",", ":"),
+        )
+        return int(正規文字 == 值)
+    except Exception:
+        return 0
 
 
 def _套用單一遷移(連線: sqlite3.Connection, 項目: 遷移項目) -> bool:

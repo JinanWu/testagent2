@@ -13,7 +13,9 @@ import logging
 from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from .上下文壓縮器 import 上下文壓縮器
 from .工作階段上下文 import 設定目前工作階段識別碼, 設定目前工作階段資料庫路徑, 設定目前使用者
@@ -29,6 +31,91 @@ from .儲存 import 建立使用者庫
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
 
 _logger = logging.getLogger(__name__)
+_發布相容固定錯誤 = "發布相容轉接不可用"
+_發布相容封印 = object()
+_發布相容狀態鎖 = Lock()
+_發布相容狀態: WeakKeyDictionary[object, tuple[object, Any, Any]] = WeakKeyDictionary()
+_發布相容控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+class 發布相容轉接錯誤(RuntimeError):
+    """legacy-module opt-in adapter 的固定、無內容錯誤。"""
+
+
+class 發布執行階段相容轉接器:
+    """只將 detached JSON 交給已封存 Published Runtime 的明確 opt-in 入口。"""
+
+    __slots__ = ()
+
+    def __new__(cls, *參數: object, **命名參數: object):
+        """禁止略過 factory 建構可攜帶發布能力的轉接器。"""
+        del cls, 參數, 命名參數
+        raise 發布相容轉接錯誤(_發布相容固定錯誤) from None
+
+    def 執行發布輸入(self, 輸入: Any):
+        """立即建立 exact 發布請求並回傳 U06 最終模型回應快照。"""
+        狀態 = 目標 = 請求類別 = 請求 = 回應 = None
+        失敗 = False
+        try:
+            if type(self) is not _發布相容轉接器實作:
+                raise ValueError
+            with _發布相容狀態鎖:
+                狀態 = _發布相容狀態.get(self)
+            if type(狀態) is not tuple or len(狀態) != 3 or 狀態[0] is not _發布相容封印:
+                raise ValueError
+            目標, 請求類別 = 狀態[1], 狀態[2]
+            if not callable(目標):
+                raise ValueError
+            請求 = 請求類別(輸入)
+            回應 = 目標(請求)
+            return 回應
+        except _發布相容控制流程:
+            self = 輸入 = 狀態 = 目標 = 請求類別 = 請求 = 回應 = None
+            raise
+        except BaseException:
+            self = 輸入 = 狀態 = 目標 = 請求類別 = 請求 = 回應 = None
+            失敗 = True
+        if 失敗:
+            raise 發布相容轉接錯誤(_發布相容固定錯誤) from None
+        raise AssertionError
+
+
+class _發布相容轉接器實作(發布執行階段相容轉接器):
+    """僅提供 weak-reference identity，不在物件上保存 trusted state。"""
+
+    __slots__ = ("__weakref__",)
+
+
+def 建立發布執行階段相容轉接器(發布執行器物件: Any) -> 發布執行階段相容轉接器:
+    """捕捉 U06 原始 bound 執行方法並原子發布 factory-sealed adapter。"""
+    模組 = 公開執行器 = 請求類別 = 描述子 = 目標 = 轉接器 = 狀態 = None
+    失敗 = False
+    try:
+        from .發布介面.執行期 import 執行器 as 模組
+
+        公開執行器, 請求類別 = 模組.發布執行器, 模組.發布執行請求
+        if type(發布執行器物件) is not 模組._發布執行器實作:
+            raise ValueError
+        描述子 = 公開執行器.執行
+        目標 = 描述子.__get__(發布執行器物件, type(發布執行器物件))
+        if not callable(目標):
+            raise ValueError
+        轉接器 = object.__new__(_發布相容轉接器實作)
+        狀態 = (_發布相容封印, 目標, 請求類別)
+        with _發布相容狀態鎖:
+            _發布相容狀態[轉接器] = 狀態
+        return 轉接器
+    except _發布相容控制流程:
+        del 發布執行器物件
+        模組 = 公開執行器 = 請求類別 = 描述子 = 目標 = 轉接器 = 狀態 = None
+        raise
+    except BaseException:
+        del 發布執行器物件
+        模組 = 公開執行器 = 請求類別 = 描述子 = 目標 = 轉接器 = 狀態 = None
+        失敗 = True
+    if 失敗:
+        raise 發布相容轉接錯誤(_發布相容固定錯誤) from None
+    raise AssertionError
 
 
 @dataclass
