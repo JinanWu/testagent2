@@ -251,6 +251,327 @@ class 規劃服務:
             raise
         del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿
         return 回傳
+
+    def 讀取草稿(self, 擁有者識別碼: str, 草稿識別碼: str, *, 現在: float) -> 規劃草稿:
+        """依 owner 讀取未到期草稿；缺少、跨 owner、過期或非法查詢皆丟固定錯誤。"""
+        if not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del 擁有者識別碼, 草稿識別碼, 現在
+            _拒絕草稿存取()
+        來源 = 回傳 = None
+        try:
+            來源 = self._取得有效草稿(擁有者識別碼, 草稿識別碼, 現在)
+            回傳 = _必須重建公開草稿(來源)
+        except BaseException:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 來源, 回傳
+            raise
+        del self, 擁有者識別碼, 草稿識別碼, 現在, 來源
+        return 回傳
+
+    def 確認發布值(
+        self,
+        擁有者識別碼: str,
+        草稿識別碼: str,
+        *,
+        slug: str,
+        response_schema: Any,
+        docs: str,
+        endpoint_limit: int,
+        credential_limit: int,
+        現在: float,
+    ) -> 發布值確認:
+        """在鎖外驗證值，再以草稿 identity/generation CAS 原子取代確認。"""
+        if not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在
+            _拒絕草稿存取()
+        if not _是有效發布純量(slug, docs, endpoint_limit, credential_limit):
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在
+            _拒絕發布值輸入()
+        目標 = 目標世代 = None
+        存取失敗 = False
+        with self._鎖:
+            try:
+                目標 = self._取得有效草稿_已鎖定(擁有者識別碼, 草稿識別碼, 現在)
+                目標世代 = 目標._世代
+            except 草稿存取錯誤:
+                存取失敗 = True
+        if 存取失敗 or type(目標世代) is not int:
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代, 存取失敗
+            _拒絕草稿存取()
+        try:
+            結構快照 = _建立回應結構快照(response_schema)
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代
+            raise
+        if 結構快照 is None:
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代, 結構快照
+            _拒絕發布值輸入()
+        確認 = 發布值確認(草稿識別碼, 目標世代, slug, 結構快照, docs, endpoint_limit, credential_limit)
+        目前 = 新草稿 = None
+        競態失敗 = False
+        with self._鎖:
+            目前 = self._草稿.get(草稿識別碼)
+            if (
+                目前 is not 目標
+                or 目前 is None
+                or 目前.擁有者識別碼 != 擁有者識別碼
+                or 目前._世代 != 目標世代
+                or 目前.狀態 != "draft"
+                or float(現在) >= 目前.到期時間
+            ):
+                競態失敗 = True
+            else:
+                新草稿 = replace(目前, 發布確認=確認)
+                object.__setattr__(新草稿, "_世代", 目標世代)
+                self._草稿[草稿識別碼] = 新草稿
+        if 競態失敗:
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代, 存取失敗, 結構快照, 確認, 目前, 新草稿, 競態失敗
+            _拒絕草稿存取()
+        回傳 = None
+        try:
+            回傳 = _必須重建公開確認(確認)
+        except BaseException:
+            del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代, 存取失敗, 結構快照, 確認, 目前, 新草稿, 競態失敗, 回傳
+            raise
+        del self, 擁有者識別碼, 草稿識別碼, slug, response_schema, docs, endpoint_limit, credential_limit, 現在, 目標, 目標世代, 存取失敗, 結構快照, 確認, 目前, 新草稿, 競態失敗
+        return 回傳
+
+    def 讀取已確認草稿(self, 擁有者識別碼: str, 草稿識別碼: str, *, 現在: float) -> 規劃草稿:
+        """鎖外重建確認草稿，再以 identity/generation/confirmation CAS 回傳。"""
+        if not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del self, 擁有者識別碼, 草稿識別碼, 現在
+            _拒絕草稿存取()
+        目標 = 確認 = 公開草稿 = 目前 = None
+        目標世代 = 確認草稿識別碼 = 確認草稿世代 = None
+        存取失敗 = False
+        with self._鎖:
+            目標 = self._草稿.get(草稿識別碼)
+            if 目標 is None or 目標.擁有者識別碼 != 擁有者識別碼:
+                存取失敗 = True
+            elif float(現在) >= 目標.到期時間:
+                self._草稿.pop(草稿識別碼, None)
+                存取失敗 = True
+            elif 目標.狀態 != "draft":
+                存取失敗 = True
+            else:
+                目標世代 = 目標._世代
+                確認 = 目標.發布確認
+                if type(確認) is not 發布值確認:
+                    存取失敗 = True
+                else:
+                    確認草稿識別碼 = 確認.草稿識別碼
+                    確認草稿世代 = 確認.草稿世代
+                    if 確認草稿識別碼 != 目標.草稿識別碼 or 確認草稿世代 != 目標世代:
+                        存取失敗 = True
+        if 存取失敗:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 目標, 確認, 公開草稿, 目前, 目標世代, 確認草稿識別碼, 確認草稿世代, 存取失敗
+            _拒絕草稿存取()
+        try:
+            公開草稿 = _重建公開草稿(目標)
+        except BaseException:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 目標, 確認, 公開草稿, 目前, 目標世代, 確認草稿識別碼, 確認草稿世代, 存取失敗
+            raise
+        if 公開草稿 is None:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 目標, 確認, 公開草稿, 目前, 目標世代, 確認草稿識別碼, 確認草稿世代, 存取失敗
+            _拒絕草稿存取()
+        with self._鎖:
+            目前 = self._草稿.get(草稿識別碼)
+            if (
+                目前 is not 目標
+                or 目前 is None
+                or 目前.擁有者識別碼 != 擁有者識別碼
+                or 目前._世代 != 目標世代
+                or 目前.發布確認 is not 確認
+                or 確認.草稿識別碼 != 確認草稿識別碼
+                or 確認.草稿世代 != 確認草稿世代
+                or 目前.狀態 != "draft"
+                or float(現在) >= 目前.到期時間
+            ):
+                存取失敗 = True
+        if 存取失敗:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 目標, 確認, 公開草稿, 目前, 目標世代, 確認草稿識別碼, 確認草稿世代, 存取失敗
+            _拒絕草稿存取()
+        del self, 擁有者識別碼, 草稿識別碼, 現在, 目標, 確認, 目前, 目標世代, 確認草稿識別碼, 確認草稿世代, 存取失敗
+        return 公開草稿
+
+    def 更新草稿(self, 擁有者識別碼: str, 草稿識別碼: str, 綱要: Any, *, 現在: float) -> 規劃草稿:
+        """更新 owner 的未到期 JSON 快照；保留草稿 identity、建立時間與期限。"""
+        if not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del 擁有者識別碼, 草稿識別碼, 綱要, 現在
+            _拒絕草稿存取()
+        綱要快照 = _建立綱要快照(綱要)
+        if 綱要快照 is None:
+            綱要 = 綱要快照 = None
+            raise ValueError(_草稿輸入錯誤訊息) from None
+        草稿 = 新草稿 = None
+        存取失敗 = False
+        with self._鎖:
+            try:
+                草稿 = self._取得有效草稿_已鎖定(擁有者識別碼, 草稿識別碼, 現在)
+            except 草稿存取錯誤:
+                存取失敗 = True
+            if not 存取失敗 and type(草稿) is 規劃草稿:
+                新草稿 = replace(草稿, _綱要正規JSON=綱要快照, 發布確認=None)
+                object.__setattr__(新草稿, "_世代", 草稿._世代 + 1)
+                self._草稿[草稿.草稿識別碼] = 新草稿
+            else:
+                存取失敗 = True
+        if 存取失敗 or type(新草稿) is not 規劃草稿:
+            del self, 擁有者識別碼, 草稿識別碼, 綱要, 現在, 綱要快照, 草稿, 新草稿, 存取失敗
+            _拒絕草稿存取()
+        回傳 = None
+        try:
+            回傳 = _必須重建公開草稿(新草稿)
+        except BaseException:
+            del self, 擁有者識別碼, 草稿識別碼, 綱要, 現在, 綱要快照, 草稿, 新草稿, 存取失敗, 回傳
+            raise
+        del self, 擁有者識別碼, 草稿識別碼, 綱要, 現在, 綱要快照, 草稿, 新草稿, 存取失敗
+        return 回傳
+
+    def 重驗授權草稿(
+        self,
+        協調器: 權限協調器,
+        擁有者識別碼: str,
+        草稿識別碼: str,
+        *,
+        現在: float,
+    ) -> 規劃草稿:
+        """封閉地擷取釘選選擇、查詢一次 FND，再以 identity/generation CAS 重驗。"""
+        目標 = 釘選摘要 = 目前摘要 = 項目 = None
+        目標世代 = None
+        技能名稱: list[str] = []
+        工具名稱: list[str] = []
+        if type(協調器) is not 權限協調器 or not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目
+            _拒絕草稿存取()
+        存取失敗 = False
+        try:
+            with self._鎖:
+                目標 = self._草稿.get(草稿識別碼)
+                if 目標 is None or 目標.擁有者識別碼 != 擁有者識別碼:
+                    存取失敗 = True
+                elif float(現在) >= 目標.到期時間:
+                    self._草稿.pop(目標.草稿識別碼, None)
+                    存取失敗 = True
+                elif 目標.狀態 != "draft" or type(目標.能力摘要) is not 釘選能力摘要:
+                    存取失敗 = True
+                else:
+                    目標世代 = 目標._世代
+                    釘選摘要 = 目標.能力摘要
+                    for 項目 in 釘選摘要.技能:
+                        技能名稱.append(項目.名稱)
+                        項目 = None
+                    for 項目 in 釘選摘要.工具:
+                        工具名稱.append(項目.名稱)
+                        項目 = None
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗
+            raise
+        except BaseException:
+            存取失敗 = True
+        if 存取失敗:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗
+            _拒絕草稿存取()
+        查詢失敗 = False
+        try:
+            目前摘要 = 協調器.建立能力摘要(擁有者識別碼, tuple(技能名稱), tuple(工具名稱))
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗
+            raise
+        except BaseException:
+            查詢失敗 = True
+        技能名稱.clear()
+        工具名稱.clear()
+        競態失敗 = 漂移 = False
+        過時草稿 = 結果 = None
+        try:
+            with self._鎖:
+                結果 = self._草稿.get(草稿識別碼)
+                if 結果 is None or 結果.擁有者識別碼 != 擁有者識別碼:
+                    競態失敗 = True
+                elif float(現在) >= 結果.到期時間:
+                    self._草稿.pop(結果.草稿識別碼, None)
+                    競態失敗 = True
+                elif 結果.狀態 != "draft":
+                    競態失敗 = True
+                elif 結果 is not 目標 or 結果._世代 != 目標世代 or 結果.能力摘要 != 釘選摘要:
+                    競態失敗 = True
+                elif 查詢失敗 or type(目前摘要) is not 釘選能力摘要 or 目前摘要.正規JSON != 釘選摘要.正規JSON:
+                    過時草稿 = replace(結果)
+                    object.__setattr__(過時草稿, "狀態", "stale")
+                    object.__setattr__(過時草稿, "_世代", 結果._世代 + 1)
+                    self._草稿[草稿識別碼] = 過時草稿
+                    漂移 = True
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果
+            raise
+        except BaseException:
+            競態失敗 = True
+        if 競態失敗:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果
+            _拒絕草稿存取()
+        if 漂移:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果
+            raise 規劃已過時錯誤("規劃權限已變更") from None
+        if 結果 is None:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果
+            _拒絕草稿存取()
+        回傳 = None
+        try:
+            回傳 = _重建公開草稿(結果)
+        except BaseException:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果, 回傳
+            raise
+        if 回傳 is None:
+            del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果, 回傳
+            _拒絕草稿存取()
+        del self, 協調器, 擁有者識別碼, 草稿識別碼, 現在, 目標, 目標世代, 釘選摘要, 目前摘要, 技能名稱, 工具名稱, 項目, 存取失敗, 查詢失敗, 競態失敗, 漂移, 過時草稿, 結果
+        return 回傳
+
+    def 呼叫草稿(self, 擁有者識別碼: str, 草稿識別碼: str, *, 現在: float) -> None:
+        """驗證 owner 與期限後固定拒絕 draft invoke，絕不建立執行階段。"""
+        if not _是有效草稿查詢(擁有者識別碼, 草稿識別碼, 現在):
+            del 擁有者識別碼, 草稿識別碼, 現在
+            _拒絕草稿存取()
+        self._取得有效草稿(擁有者識別碼, 草稿識別碼, 現在)
+        raise 草稿不可執行錯誤(_草稿不可執行訊息) from None
+
+    def _取得有效草稿(self, 擁有者識別碼: str, 草稿識別碼: str, 現在: float) -> 規劃草稿:
+        """執行共同 owner/expiry gate；任何失敗均以不可列舉固定錯誤拒絕。"""
+        草稿 = None
+        存取失敗 = False
+        with self._鎖:
+            try:
+                草稿 = self._取得有效草稿_已鎖定(擁有者識別碼, 草稿識別碼, 現在)
+            except 草稿存取錯誤:
+                存取失敗 = True
+        if 存取失敗 or type(草稿) is not 規劃草稿:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 草稿, 存取失敗
+            _拒絕草稿存取()
+        del self, 擁有者識別碼, 草稿識別碼, 現在, 存取失敗
+        return 草稿
+
+    def _取得有效草稿_已鎖定(self, 擁有者識別碼: str, 草稿識別碼: str, 現在: float) -> 規劃草稿:
+        """在持有服務鎖時執行共同 owner/expiry gate。"""
+        草稿 = None
+        存取失敗 = False
+        if not _是非空字串(擁有者識別碼) or not _是非空字串(草稿識別碼) or not _是有效時間(現在):
+            存取失敗 = True
+        else:
+            草稿 = self._草稿.get(草稿識別碼)
+        if 草稿 is None or (not 存取失敗 and 草稿.擁有者識別碼 != 擁有者識別碼):
+            存取失敗 = True
+        elif float(現在) >= 草稿.到期時間:
+            self._草稿.pop(草稿.草稿識別碼, None)
+            存取失敗 = True
+        elif 草稿.狀態 != "draft":
+            存取失敗 = True
+        if 存取失敗 or type(草稿) is not 規劃草稿:
+            del self, 擁有者識別碼, 草稿識別碼, 現在, 草稿, 存取失敗
+            _拒絕草稿存取()
+        del 擁有者識別碼, 草稿識別碼, 現在, 存取失敗
+        return 草稿
+
+
 def _建立綱要快照(綱要: Any) -> str | None:
     """先遞迴建立可信副本，再 canonicalize；失敗不保留呼叫端物件。"""
     可信副本: Any = None
