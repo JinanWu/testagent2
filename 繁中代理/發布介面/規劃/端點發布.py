@@ -1,6 +1,6 @@
 """PUB P04 端點發布資料傳輸物件與 SQLite 原子交易。
 
-參數／欄位：不適用；本模組定義發布快照、初始憑證、結果與交易服務。
+參數：不適用；本模組定義發布快照、初始憑證、結果與交易服務。
 回傳：不適用；各資料型別與發布操作的回傳契約由其文件字串分別說明。
 例外：匯入相依模組失敗時原樣傳出匯入例外。
 副作用：匯入時只定義型別、常數與函式，不開啟資料庫或發布端點。
@@ -21,6 +21,8 @@ from typing import Any, Callable, NoReturn
 
 from ..憑證.儲存庫 import _allowlist_json有效
 from ..資料庫結構契約 import 驗證資料庫結構
+from ..技能套件.儲存庫 import 套件收據儲存庫
+from ..技能套件.發布器 import 套件發布收據
 from .綱要 import 發布值確認, 規劃草稿, _重建公開草稿
 
 _JSON_UTF8上限 = 1024 * 1024
@@ -129,6 +131,45 @@ class 已準備初始憑證:
 
 
 @dataclass(frozen=True, slots=True)
+class 已準備發布識別:
+    """保存協調器一次預配的完整發布圖形、套件與稽核識別。
+
+    參數：四個既有圖形識別、套件識別、稽核識別與建立時間必須共同來自
+    同一次協調，且六個識別不得碰撞。
+    回傳：建立 exact、不可變且無實例字典的預配識別快照。
+    例外：欄位型別、格式、唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只驗證並保存不可變純量，不存取資料庫或呼叫外部工廠。
+    """
+
+    endpoint_id: str
+    version_id: str
+    credential_id: str
+    service_account_id: str
+    套件識別碼: str
+    稽核識別碼: str
+    created_at: float
+
+    def __post_init__(self) -> None:
+        """拒絕非 exact、碰撞或無效時間的預配識別集合。
+
+        參數：無額外參數；精確讀取目前實例的七個固定欄位。
+        回傳：全部欄位通過驗證時回傳 ``None``。
+        例外：實例型別、識別格式、唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+        副作用：只檢查不可變純量，不存取資料庫或其他外部資源。
+        """
+        if type(self) is not 已準備發布識別:
+            _拒絕輸入()
+        識別碼 = (
+            self.endpoint_id, self.version_id, self.credential_id,
+            self.service_account_id, self.套件識別碼, self.稽核識別碼,
+        )
+        if any(not _是識別(值) for 值 in 識別碼) or len(set(識別碼)) != 6:
+            _拒絕輸入()
+        if not _是有限非負(self.created_at):
+            _拒絕輸入()
+
+
+@dataclass(frozen=True, slots=True)
 class 端點發布結果:
     """只揭露新圖形的非敏感識別碼與固定 v1 狀態。"""
 
@@ -151,7 +192,13 @@ class 端點發布結果:
 
 
 class SQLite端點發布服務:
-    """在既有完整遷移 SQLite 中原子建立 endpoint、v1、service account 與憑證。"""
+    """在既有完整遷移 SQLite 中原子建立端點、第一版、服務帳號與憑證。
+
+    參數：建構時接收資料庫路徑、四個識別工廠、時鐘與可替換連線工廠。
+    回傳：建立可重複呼叫的發布服務；各發布方法回傳不可變發布結果。
+    例外：建構只保存依賴；發布時依輸入或交易邊界傳出固定發布例外。
+    副作用：建構不開啟資源；發布方法會開啟資料庫、執行單一交易並關閉連線。
+    """
 
     def __init__(
         self, database_path: str | Path, endpoint_id_factory: Callable[[], str],
@@ -197,6 +244,115 @@ class SQLite端點發布服務:
             _拒絕發布()
         del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 發布失敗
         return 結果
+
+    def 發布已準備圖形(
+        self, owner_user_id: str, draft: 規劃草稿, version_snapshot: 發布版本快照,
+        prepared_credential: 已準備初始憑證, 預配識別: 已準備發布識別,
+        套件收據: 套件發布收據, *, 請求識別碼: str | None,
+    ) -> 端點發布結果:
+        """重驗呼叫端預配關係，於同一立即交易寫入圖形、收據與發布稽核。
+
+        參數：擁有者、草稿、版本與憑證描述圖形；預配識別、套件收據及可空請求
+        識別碼描述協調結果。所有不可信 DTO 都在開啟資料庫前重建。
+        回傳：提交成功後回傳只含四個圖形識別的 ``端點發布結果``。
+        例外：輸入與關係不符時拋出 ``端點發布輸入錯誤``；交易失敗時拋出
+        ``端點發布錯誤``；控制流程例外依清理契約原樣傳出。
+        副作用：完整預檢後開啟一條連線，以單一立即交易寫入圖形、套件收據與稽核列，
+        最後提交或回滾並關閉連線。
+        """
+        草稿副本 = 版本副本 = 憑證副本 = 確認 = 識別碼 = 收據 = 路徑 = 身分 = uri = 連線 = 結果 = None
+        發布失敗 = False
+        try:
+            識別碼 = _驗證預配識別(預配識別)
+            草稿副本, 版本副本, 憑證副本, 確認 = _發布前驗證(
+                owner_user_id, draft, version_snapshot, prepared_credential, 識別碼[6],
+            )
+            收據 = _驗證預配關係(識別碼, 版本副本, 套件收據, 請求識別碼)
+            路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+            uri = 路徑.as_uri() + "?mode=rw"
+            連線 = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+            _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+            _驗證並寫入(
+                連線, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認,
+                識別碼, 識別碼[6], 收據, 識別碼[5], 請求識別碼,
+            )
+            結果 = 端點發布結果(*識別碼[:4])
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except (端點發布輸入錯誤, 端點發布錯誤):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except BaseException:
+            發布失敗 = True
+        if 發布失敗:
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            _拒絕發布()
+        del self, owner_user_id, draft, version_snapshot, prepared_credential, 預配識別, 套件收據, 請求識別碼, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 收據, 路徑, 身分, uri, 連線, 發布失敗
+        return 結果
+
+
+def _驗證預配識別(來源: Any) -> tuple[str, str, str, str, str, str, float]:
+    """重讀 exact DTO slots，避免信任 frozen instance identity。
+
+    參數：``來源`` 是不可信的預配識別候選物件。
+    回傳：依欄位宣告順序排列的六個識別與建立時間不可變 tuple。
+    例外：型別、欄位讀取、識別唯一性或時間不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只讀取固定 slots 並配置新 tuple，不存取外部資源。
+    """
+    if type(來源) is not 已準備發布識別:
+        _拒絕輸入()
+    結果 = tuple(object.__getattribute__(來源, 欄位) for 欄位 in 已準備發布識別.__dataclass_fields__)
+    if (
+        len(結果) != 7 or any(not _是識別(值) for 值 in 結果[:6])
+        or len(set(結果[:6])) != 6 or not _是有限非負(結果[6])
+    ):
+        _拒絕輸入()
+    return 結果  # type: ignore[return-value]
+
+
+def _驗證預配關係(
+    識別碼: tuple[Any, ...], 快照: 發布版本快照,
+    收據: 套件發布收據, 請求識別碼: str | None,
+) -> 套件發布收據:
+    """建立脫離收據並重驗版本投影、路徑及預配識別關係。
+
+    參數：識別 tuple 與版本快照是已重建圖形；收據仍屬不可信呼叫端；請求識別碼
+    可為 ``None`` 或合法識別。
+    回傳：以一次精確 slots 讀取建立、由本模組持有的新 ``套件發布收據``。
+    例外：型別、欄位、摘要、路徑或跨物件關係不符時拋出 ``端點發布輸入錯誤``。
+    副作用：只讀取不可信收據一次並配置脫離快照，不開啟資料庫或存取檔案系統。
+    """
+    if type(收據) is not 套件發布收據 or (請求識別碼 is not None and not _是識別(請求識別碼)):
+        _拒絕輸入()
+    try:
+        收據欄位 = tuple(
+            object.__getattribute__(收據, 欄位)
+            for 欄位 in 套件發布收據.__dataclass_fields__
+        )
+        收據快照 = 套件發布收據(*收據欄位)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 識別碼, 快照, 收據, 請求識別碼
+        raise
+    except BaseException:
+        _拒絕輸入()
+    清單投影 = 快照.skill_bundle_manifest
+    路徑 = 收據快照.路徑
+    if (
+        type(清單投影) is not dict or 收據快照.套件識別碼 != 識別碼[4]
+        or 清單投影.get("bundle_id") != 識別碼[4]
+        or 清單投影.get("manifest_reference") != 收據快照.清單參照
+        or 清單投影.get("manifest_digest") != 收據快照.清單摘要
+        or 清單投影.get("sha256") != 收據快照.套件雜湊
+        or type(收據快照.清單參照) is not str
+        or 收據快照.清單參照 != f"{識別碼[4]}/manifest.json"
+        or type(收據快照.清單摘要) is not str or re.fullmatch(r"[0-9a-f]{64}", 收據快照.清單摘要) is None
+        or type(收據快照.套件雜湊) is not str or re.fullmatch(r"[0-9a-f]{64}", 收據快照.套件雜湊) is None
+        or type(收據快照.總位元組數) is not int or not 0 <= 收據快照.總位元組數 <= 4 * 1024 * 1024
+        or type(路徑) is not type(Path()) or 路徑.name != 識別碼[4]
+    ):
+        _拒絕輸入()
+    return 收據快照
 
 
 def _發布前驗證(owner: Any, draft: Any, snapshot: Any, credential: Any, now: Any) -> tuple[Any, ...]:
@@ -385,7 +541,8 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
 def _驗證並寫入(
     連線: sqlite3.Connection, owner: str, draft: 規劃草稿, snapshot: 發布版本快照,
     credential: 已準備初始憑證, confirmation: 發布值確認,
-    ids: tuple[Any, ...], created_at: float,
+    ids: tuple[Any, ...], created_at: float, 套件收據: 套件發布收據 | None = None,
+    稽核識別碼: str | None = None, 請求識別碼: str | None = None,
 ) -> None:
     """鎖住資料庫結構後驗證指紋，並以明確狀態機完成單一交易。
 
@@ -401,6 +558,7 @@ def _驗證並寫入(
     已提交 = False
     交易失敗 = False
     ledger = rows = raw = endpoint_id = version_id = credential_id = account_id = None
+    收據儲存庫 = 中繼資料 = None
     回滾控制: list[BaseException] = []
     關閉控制: list[BaseException] = []
     try:
@@ -414,6 +572,12 @@ def _驗證並寫入(
         已開始 = True
         驗證資料庫結構(連線)
         endpoint_id, version_id, credential_id, account_id = ids[:4]
+        if 套件收據 is not None:
+            if 稽核識別碼 != ids[5]:
+                raise sqlite3.DatabaseError
+            套件收據 = _驗證預配關係(ids, snapshot, 套件收據, 請求識別碼)
+        elif 稽核識別碼 is not None or 請求識別碼 is not None:
+            raise sqlite3.DatabaseError
         _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (account_id, created_at))
         _執行一列(
             連線,
@@ -438,6 +602,21 @@ def _驗證並寫入(
              credential.key_last4, credential.expires_at, created_at, created_at,
              _正規JSON(credential.ip_allowlist), credential.rate_limit_requests, credential.created_by_user_id),
         )
+        if 套件收據 is not None:
+            收據儲存庫 = object.__new__(套件收據儲存庫)
+            收據儲存庫.連線 = 連線
+            收據儲存庫.新增(版本識別碼=version_id, 收據=套件收據, 發布時間=created_at)
+            中繼資料 = _正規JSON({
+                "version_id": version_id, "version_number": 1,
+                "bundle_id": ids[4], "bundle_hash": 套件收據.套件雜湊,
+                "credential_id": credential_id, "service_account_id": account_id,
+            })
+            _執行一列(
+                連線,
+                "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
+                (稽核識別碼, 稽核識別碼, created_at, "endpoint_published", "success", "user", owner,
+                 "published_endpoint", endpoint_id, 請求識別碼, endpoint_id, 中繼資料, created_at),
+            )
         連線.execute("COMMIT")
         已開始 = False
         已提交 = True
@@ -450,7 +629,7 @@ def _驗證並寫入(
         關閉控制.clear()
         _清除例外鏈(控制)
         del 控制
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制, 關閉控制
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制, 關閉控制
         raise
     except BaseException:
         if 已開始:
@@ -458,7 +637,7 @@ def _驗證並寫入(
         關閉控制 = _安全關閉(連線)
         交易失敗 = True
     if 交易失敗:
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料
         if 回滾控制:
             關閉控制.clear()
             _拋出清理控制(回滾控制.pop())
@@ -467,7 +646,7 @@ def _驗證並寫入(
         del 回滾控制, 關閉控制
         _拒絕發布()
     關閉控制 = _安全關閉(連線)
-    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制
+    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制
     if 關閉控制:
         _拋出清理控制(關閉控制.pop())
     del 關閉控制
