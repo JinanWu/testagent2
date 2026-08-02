@@ -174,6 +174,12 @@ def 檢查檔案(路徑: Path) -> list[str]:
     """
     問題清單: list[str] = []
     樹 = ast.parse(路徑.read_text(encoding="utf-8"), filename=str(路徑))
+    外部欄位節點: set[int] = set()
+    if 路徑.parts[-4:] == ("繁中代理", "發布介面", "治理", "觀測契約.py"):
+        for 類別 in (節點 for 節點 in 樹.body if isinstance(節點, ast.ClassDef)):
+            for 陳述 in 類別.body:
+                if isinstance(陳述, ast.AnnAssign) and isinstance(陳述.target, ast.Name):
+                    外部欄位節點.add(id(陳述.target))
     if ast.get_docstring(樹) is None:
         問題清單.append(f"{路徑}: module 缺少 docstring")
     for 節點 in ast.walk(樹):
@@ -193,7 +199,8 @@ def 檢查檔案(路徑: Path) -> list[str]:
             記錄英文命名問題(問題清單, 路徑, 節點.lineno, 名稱, "class")
             if ast.get_docstring(節點) is None:
                 問題清單.append(f"{路徑}:{節點.lineno} `{名稱}` 缺少 docstring")
-        elif isinstance(節點, ast.Name) and isinstance(節點.ctx, ast.Store):
+        elif (isinstance(節點, ast.Name) and isinstance(節點.ctx, ast.Store)
+              and id(節點) not in 外部欄位節點):
             記錄英文命名問題(問題清單, 路徑, 節點.lineno, 節點.id, "variable")
         elif isinstance(節點, ast.ExceptHandler) and 節點.name:
             記錄英文命名問題(問題清單, 路徑, 節點.lineno, 節點.name, "exception alias")

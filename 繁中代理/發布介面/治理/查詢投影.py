@@ -353,7 +353,7 @@ def _讀取管理員原始資料(
             raise ValueError
         _驗證管理員呼叫列(列, 預算)
         游標.close()
-        遮蔽列 = _讀取驗證遮蔽列(連線, 呼叫識別碼, 端點識別碼, 預算)
+        遮蔽中繼 = _預檢遮蔽中繼(連線, 呼叫識別碼, 預算)
         事件列 = []
         游標 = 連線.execute(
             "SELECT id,sequence_number,event_type,created_at,typeof(payload_json),"
@@ -390,6 +390,9 @@ def _讀取管理員原始資料(
             工具列.append(項)
             項 = 游標.fetchone()
         游標.close()
+        遮蔽列 = _讀取驗證遮蔽列(
+            連線, 呼叫識別碼, 端點識別碼, 遮蔽中繼
+        )
         游標 = 連線.execute(
             "SELECT input_json,metadata_json,output_json,error_json,usage_json "
             "FROM endpoint_invocations WHERE endpoint_id=? AND id=?",
@@ -462,7 +465,7 @@ def _讀取管理員原始資料(
         if 控制 is None and 清理控制:
             控制 = 清理控制.pop()
     路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = 內容列 = None
-    事件列 = 工具列 = 遮蔽列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
+    事件列 = 工具列 = 遮蔽中繼 = 遮蔽列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
     預算 = 清理控制 = 工具JSON = None
     if 控制 is not None:
         控制盒 = [控制]
@@ -491,10 +494,8 @@ def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
     return 連線
 
 
-def _讀取驗證遮蔽列(
-    連線: sqlite3.Connection, 呼叫識別碼: str, 端點識別碼: str, 預算: list[int]
-) -> tuple[tuple[Any, ...], ...]:
-    """先以 SQLite metadata gate 有界遮蔽列，再驗證 ledger、audit 與 target ownership。"""
+def _遮蔽中繼選取() -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+    """集中定義 redaction/audit metadata gate 與 payload 欄位順序。"""
     遮蔽文字欄 = ("id", "invocation_id", "target_type", "target_row_id", "json_path",
               "original_sha256", "reason", "actor_type", "actor_id", "audit_event_id")
     稽核文字欄 = ("id", "event_id", "action", "outcome", "actor_type", "actor_id",
@@ -508,43 +509,100 @@ def _讀取驗證遮蔽列(
     選取.extend(("typeof(r.is_tombstone)", "r.is_tombstone",
                "typeof(r.redacted_at)", "r.redacted_at", "typeof(a.occurred_at)",
                "a.occurred_at", "typeof(a.created_at)", "a.created_at"))
+    return ",".join(選取), 遮蔽文字欄, 稽核文字欄
+
+
+def _預檢遮蔽中繼(
+    連線: sqlite3.Connection, 呼叫識別碼: str, 預算: list[int]
+) -> tuple[tuple[Any, ...], ...]:
+    """保留每筆 ledger，先驗 metadata，再核對 audit 身分鏈結。"""
+    選取, _, _ = _遮蔽中繼選取()
     游標 = 連線.execute(
-        f"SELECT {','.join(選取)} FROM endpoint_redactions r JOIN audit_events a "
+        f"SELECT {選取} FROM endpoint_redactions r LEFT JOIN audit_events a "
         "ON a.id=r.audit_event_id WHERE r.invocation_id=? ORDER BY r.rowid LIMIT 9",
         (呼叫識別碼,),
     )
-    中繼列 = []
-    項 = 游標.fetchone()
-    while 項 is not None:
-        if len(中繼列) >= 8 or type(項) is not tuple or len(項) != 53 or type(項[0]) is not int:
+    try:
+        中繼列 = _讀取有限列(游標, 53)
+    finally:
+        游標.close()
+    if len(中繼列) > 8:
+        raise ValueError
+    結果 = []
+    for 項 in 中繼列:
+        if type(項[0]) is not int:
             raise ValueError
         for 索引 in range(1, 45, 2):
             _扣除JSON長度(項[索引], 項[索引 + 1], 預算, True)
         if (項[45:49] != ("integer", 1, "real", 項[48])
                 or 項[49] not in ("real", "integer") or 項[51] not in ("real", "integer")
-                or not _安全時間(項[48]) or not _安全時間(項[50])
-                or not _安全時間(項[52])):
+                or not all(_安全時間(項[索引]) for 索引 in (48, 50, 52))):
             raise ValueError
-        中繼列.append(項[0])
-        項 = 游標.fetchone()
-    游標.close()
+        身分 = _讀取遮蔽身分中繼(連線, 項[0], 呼叫識別碼)
+        規格 = ((1, 2), (3, 4), (19, 20), (21, 22), (23, 24), (41, 42))
+        if 身分[0] != 項[0]:
+            raise ValueError
+        for 值, (類型索引, 長度索引) in zip(身分[1:], 規格):
+            if (type(值) is not str or 項[類型索引] != "text"
+                    or len(值.encode("utf-8")) != 項[長度索引]):
+                raise ValueError
+        if (not all(_安全識別碼(值) for 值 in 身分[1:])
+                or 身分[2] != 呼叫識別碼 or 身分[3] != 身分[4]
+                or 身分[4] != 身分[5] or 身分[6] != 呼叫識別碼):
+            raise ValueError
+        結果.append((*項, *身分[1:]))
+    return tuple(結果)
+
+
+def _讀取遮蔽身分中繼(
+    連線: sqlite3.Connection, 資料列識別碼: int, 呼叫識別碼: str
+) -> tuple[Any, ...]:
+    """長度 gate 通過後取得 bounded redaction/audit IDs，不讀 JSON payload。"""
+    游標 = 連線.execute(
+        "SELECT r.rowid,r.id,r.invocation_id,r.audit_event_id,a.id,a.event_id,a.invocation_id "
+        "FROM endpoint_redactions r LEFT JOIN audit_events a ON a.id=r.audit_event_id "
+        "WHERE r.rowid=? AND r.invocation_id=?", (資料列識別碼, 呼叫識別碼),
+    )
+    try:
+        列 = 游標.fetchone()
+        if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 7:
+            raise ValueError
+        return 列
+    finally:
+        游標.close()
+
+
+def _讀取驗證遮蔽列(
+    連線: sqlite3.Connection, 呼叫識別碼: str, 端點識別碼: str,
+    中繼列: tuple[tuple[Any, ...], ...],
+) -> tuple[tuple[Any, ...], ...]:
+    """全投影 metadata gate 成功後，按 scoped rowid 取得、重驗 ledger/audit payload。"""
+    選取, _, _ = _遮蔽中繼選取()
+    payload欄 = (
+        "r.id", "r.invocation_id", "r.target_type", "r.target_row_id", "r.json_path",
+        "r.original_sha256", "r.reason", "r.actor_type", "r.actor_id", "r.audit_event_id",
+        "r.is_tombstone", "r.redacted_at", "a.id", "a.event_id", "a.occurred_at",
+        "a.action", "a.outcome", "a.actor_type", "a.actor_id", "a.resource_type",
+        "a.resource_id", "a.request_id", "a.endpoint_id", "a.invocation_id",
+        "a.metadata_json", "a.created_at",
+    )
     結果 = []
     已見 = set()
-    for 列序號 in 中繼列:
-        列 = 連線.execute(
-            "SELECT r.id,r.invocation_id,r.target_type,r.target_row_id,r.json_path,"
-            "r.original_sha256,r.reason,r.actor_type,r.actor_id,r.audit_event_id,"
-            "r.is_tombstone,r.redacted_at,a.id,a.event_id,a.occurred_at,a.action,a.outcome,"
-            "a.actor_type,a.actor_id,a.resource_type,a.resource_id,a.request_id,a.endpoint_id,"
-            "a.invocation_id,a.metadata_json,a.created_at FROM endpoint_redactions r "
+    for 中繼 in 中繼列:
+        游標 = 連線.execute(
+            f"SELECT {選取},{','.join(payload欄)} FROM endpoint_redactions r "
             "JOIN audit_events a ON a.id=r.audit_event_id WHERE r.rowid=? AND r.invocation_id=?",
-            (列序號, 呼叫識別碼),
-        ).fetchall()
-        if len(列) != 1:
+            (中繼[0], 呼叫識別碼),
+        )
+        try:
+            列 = 游標.fetchone()
+            if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 79:
+                raise ValueError
+        finally:
+            游標.close()
+        if 列[:53] != 中繼[:53]:
             raise ValueError
-        項 = 列[0]
-        if type(項) is not tuple or len(項) != 26:
-            raise ValueError
+        項 = 列[53:]
         _驗證遮蔽語意(連線, 項, 呼叫識別碼, 端點識別碼, 已見)
         結果.append(項[:12])
     return tuple(結果)
