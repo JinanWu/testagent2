@@ -1,4 +1,10 @@
-"""Published Runtime 的 immutable revision-pinned 工具版本庫。"""
+"""提供不可變、依修訂釘選的發布執行期工具版本庫。
+
+參數／欄位：公開物件接收工具定義、明確修訂及工具快照，不接受目前版或最新版指標。
+回傳／不適用：可建立脫離權威狀態的修訂副本、快照項目與版本釘選工具登錄器。
+例外：資料外形、摘要、複製或版本庫操作失敗會收斂為 ``工具快照錯誤``；控制流程例外原樣傳出。
+副作用：登錄與移除會在鎖內修改行程記憶體；使用過的工具名稱與修訂組合永久留在墓碑集合。
+"""
 
 from __future__ import annotations
 
@@ -288,7 +294,13 @@ def _有重複工具名稱(項目們: list[工具快照項目]) -> bool:
 
 
 def _建立修訂(修訂名稱: str, 工具: 工具定義) -> _工具修訂:
-    """驗證 legacy 工具定義並封存 handler 的 binding。"""
+    """驗證既有工具定義並封存處理函數綁定。
+
+    參數／欄位：``修訂名稱`` 是明確修訂識別；``工具`` 必須是 exact ``工具定義``。
+    回傳／不適用：回傳含正規參數結構、內容摘要及獨立處理函數綁定的內部修訂。
+    例外：識別、欄位、JSON、摘要或複製不合法時拋出固定 ``工具快照錯誤``；控制流程例外原樣傳出。
+    副作用：讀取輸入工具並配置脫離副本，不修改輸入工具或版本庫狀態。
+    """
     名稱 = 說明 = 參數結構 = 原處理函數 = None
     if type(工具) is not 工具定義:
         修訂名稱 = 工具 = 名稱 = 說明 = 參數結構 = 原處理函數 = None
@@ -314,7 +326,10 @@ def _建立修訂(修訂名稱: str, 工具: 工具定義) -> _工具修訂:
     處理函數 = None
     try:
         參數JSON = 建立正規JSON(_複製JSON物件(參數結構))
-        摘要 = _計算修訂摘要(名稱, 修訂名稱, 說明, 參數JSON)
+        摘要 = 計算工具修訂摘要(
+            name=名稱, revision=修訂名稱, description=說明,
+            parameters=解析嚴格JSON(參數JSON),
+        )
         處理函數 = _封存處理函數(原處理函數)
     except _控制流程例外:
         名稱 = 說明 = 參數結構 = 原處理函數 = 參數JSON = 摘要 = 處理函數 = None
@@ -342,7 +357,13 @@ def _重建已存修訂(欄位) -> _工具修訂:
 
 
 def _正規化提供者修訂(值: object) -> _工具修訂 | None:
-    """exact guard 後重建 module-owned detached revision。"""
+    """通過 exact 型別防線後重建模組自有的脫離修訂。
+
+    參數／欄位：``值`` 是不可信提供者所回傳的候選內部修訂。
+    回傳／不適用：欄位、正規 JSON 與摘要皆相符時回傳新修訂，普通驗證失敗則回傳 ``None``。
+    例外：鍵盤中斷、系統結束與產生器結束原樣傳出；其他讀取、驗證或複製例外收斂為 ``None``。
+    副作用：會重新計算摘要並複製處理函數綁定，不修改候選值或權威版本庫。
+    """
     if type(值) is not _工具修訂:
         return None
     try:
@@ -352,7 +373,10 @@ def _正規化提供者修訂(值: object) -> _工具修訂 | None:
             欄位清單.append(欄位值)
         欄位 = tuple(欄位清單)
         if not _修訂欄位合法(欄位) or not hmac.compare_digest(
-            欄位[2], _計算修訂摘要(欄位[0], 欄位[1], 欄位[3], 欄位[4])
+            欄位[2], 計算工具修訂摘要(
+                name=欄位[0], revision=欄位[1], description=欄位[3],
+                parameters=解析嚴格JSON(欄位[4]),
+            )
         ):
             return None
         處理函數 = _封存處理函數(欄位[5])
@@ -422,18 +446,26 @@ def _修訂欄位合法(欄位: tuple[object, ...]) -> bool:
     )
 
 
-def _計算修訂摘要(名稱: str, 修訂: str, 說明: str, 參數JSON: str) -> str:
-    """要求 canonical schema text 後計算 revision-addressed SHA-256。"""
+def 計算工具修訂摘要(
+    *, name: str, revision: str, description: str, parameters: dict[str, Any]
+) -> str:
+    """計算依修訂定址之正規內容的 SHA-256 權威摘要。
+
+    參數／欄位：``name``、``revision``、``description`` 與 ``parameters`` 分別是線路相容名稱、修訂、說明及待正規化參數結構。
+    回傳／不適用：回傳正規內容 UTF-8 位元組的小寫 SHA-256 十六進位字串。
+    例外：識別或 exact 型別不合法時拋出 ``工具快照錯誤``；JSON 複製與正規化錯誤原樣傳出。
+    副作用：只建立參數結構脫離副本及暫存摘要資料，不修改呼叫端物件或版本庫。
+    """
     參數 = 資料 = None
     try:
-        參數 = 解析嚴格JSON(參數JSON)
-        if 建立正規JSON(參數) != 參數JSON:
+        if not _是識別碼(name) or not _是識別碼(revision) or type(description) is not str or type(parameters) is not dict:
             raise 工具快照錯誤(_固定錯誤)
-        資料 = {"name": 名稱, "revision": 修訂, "description": 說明, "parameters": 參數}
+        參數 = _複製JSON物件(parameters)
+        資料 = {"name": name, "revision": revision, "description": description, "parameters": 參數}
         return hashlib.sha256(建立正規JSON(資料).encode("utf-8")).hexdigest()
     except BaseException:
         參數 = 資料 = None
-        del 名稱, 修訂, 說明, 參數JSON
+        del name, revision, description, parameters
         raise
 
 

@@ -63,7 +63,7 @@ def _材料(尾碼="1", *, 有工具=True):
         system_prompt=f"prompt-{尾碼}", permission_snapshot_digest=尾碼[0] * 64,
         skill_bundle_hash=套件雜湊, tool_handler_release=f"release-{尾碼}",
         tool_snapshot=工具們, model_config=模型設定快照(f"fake-{尾碼}", f"model-{尾碼}", 0, 100, 5, False, 1),
-        response_schema=None, manifest_reference=f"manifest-{尾碼}",
+        response_schema=None, manifest_reference=f"bundle-{尾碼}/manifest.json",
     )
     上下文 = ServiceAccountContext(
         service_account_id=帳戶, endpoint_version_id=版本,
@@ -72,7 +72,8 @@ def _材料(尾碼="1", *, 有工具=True):
         tool_handler_release=f"release-{尾碼}",
     )
     套件 = 技能套件快照(endpoint_version_id=版本, skill_bundle_hash=套件雜湊,
-                      manifest_digest=套件雜湊, files=檔案)
+                      manifest_digest=hashlib.sha256(b"{}").hexdigest(),
+                      清單原始資料=b"{}", files=檔案)
     return 快照, 上下文, 套件, 工具庫
 
 
