@@ -91,6 +91,7 @@ _索引指紋 = {
         "sqlite_autoindex_published_endpoints_1": (1, "pk", 0, ((0, "id"),)),
     },
     "endpoint_invocations": {
+        "idx_endpoint_invocations_retention_candidates": (0, "c", 0, ((17, "created_at"), (0, "id"))),
         "idx_endpoint_invocations_credential_created": (0, "c", 0, ((3, "credential_id"), (17, "created_at"))),
         "idx_endpoint_invocations_status_created": (0, "c", 0, ((7, "status"), (17, "created_at"))),
         "idx_endpoint_invocations_endpoint_created": (0, "c", 0, ((1, "endpoint_id"), (17, "created_at"))),
@@ -98,11 +99,13 @@ _索引指紋 = {
         "sqlite_autoindex_endpoint_invocations_1": (1, "pk", 0, ((0, "id"),)),
     },
     "run_events": {
+        "idx_run_events_retention_invocation_id": (0, "c", 0, ((1, "invocation_id"), (0, "id"))),
         "sqlite_autoindex_run_events_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
         "sqlite_autoindex_run_events_2": (1, "u", 0, ((1, "invocation_id"), (2, "sequence_number"))),
         "sqlite_autoindex_run_events_1": (1, "pk", 0, ((0, "id"),)),
     },
     "endpoint_tool_calls": {
+        "idx_endpoint_tool_calls_retention_invocation_id": (0, "c", 0, ((1, "invocation_id"), (0, "id"))),
         "idx_endpoint_tool_calls_invocation_created": (0, "c", 0, ((1, "invocation_id"), (11, "created_at"))),
         "sqlite_autoindex_endpoint_tool_calls_3": (1, "u", 0, ((0, "id"), (1, "invocation_id"))),
         "sqlite_autoindex_endpoint_tool_calls_2": (1, "u", 0, ((1, "invocation_id"), (3, "sequence_number"))),
@@ -492,24 +495,35 @@ def _讀取驗證遮蔽列(
     連線: sqlite3.Connection, 呼叫識別碼: str, 端點識別碼: str, 預算: list[int]
 ) -> tuple[tuple[Any, ...], ...]:
     """先以 SQLite metadata gate 有界遮蔽列，再驗證 ledger、audit 與 target ownership。"""
-    文字欄 = ("id", "invocation_id", "target_type", "target_row_id", "json_path",
-            "original_sha256", "reason", "actor_type", "actor_id", "audit_event_id")
-    選取 = ["rowid"]
-    for 欄位 in 文字欄:
-        選取.extend((f"typeof({欄位})", f"length(CAST({欄位} AS BLOB))"))
-    選取.extend(("typeof(is_tombstone)", "is_tombstone", "typeof(redacted_at)", "redacted_at"))
+    遮蔽文字欄 = ("id", "invocation_id", "target_type", "target_row_id", "json_path",
+              "original_sha256", "reason", "actor_type", "actor_id", "audit_event_id")
+    稽核文字欄 = ("id", "event_id", "action", "outcome", "actor_type", "actor_id",
+              "resource_type", "resource_id", "request_id", "endpoint_id", "invocation_id",
+              "metadata_json")
+    選取 = ["r.rowid"]
+    for 欄位 in 遮蔽文字欄:
+        選取.extend((f"typeof(r.{欄位})", f"length(CAST(r.{欄位} AS BLOB))"))
+    for 欄位 in 稽核文字欄:
+        選取.extend((f"typeof(a.{欄位})", f"length(CAST(a.{欄位} AS BLOB))"))
+    選取.extend(("typeof(r.is_tombstone)", "r.is_tombstone",
+               "typeof(r.redacted_at)", "r.redacted_at", "typeof(a.occurred_at)",
+               "a.occurred_at", "typeof(a.created_at)", "a.created_at"))
     游標 = 連線.execute(
-        f"SELECT {','.join(選取)} FROM endpoint_redactions WHERE invocation_id=? "
-        "ORDER BY rowid LIMIT 9", (呼叫識別碼,),
+        f"SELECT {','.join(選取)} FROM endpoint_redactions r JOIN audit_events a "
+        "ON a.id=r.audit_event_id WHERE r.invocation_id=? ORDER BY r.rowid LIMIT 9",
+        (呼叫識別碼,),
     )
     中繼列 = []
     項 = 游標.fetchone()
     while 項 is not None:
-        if len(中繼列) >= 8 or type(項) is not tuple or len(項) != 25 or type(項[0]) is not int:
+        if len(中繼列) >= 8 or type(項) is not tuple or len(項) != 53 or type(項[0]) is not int:
             raise ValueError
-        for 索引 in range(1, 21, 2):
+        for 索引 in range(1, 45, 2):
             _扣除JSON長度(項[索引], 項[索引 + 1], 預算, True)
-        if 項[21:25] != ("integer", 1, "real", 項[24]) or not _安全時間(項[24]):
+        if (項[45:49] != ("integer", 1, "real", 項[48])
+                or 項[49] not in ("real", "integer") or 項[51] not in ("real", "integer")
+                or not _安全時間(項[48]) or not _安全時間(項[50])
+                or not _安全時間(項[52])):
             raise ValueError
         中繼列.append(項[0])
         項 = 游標.fetchone()

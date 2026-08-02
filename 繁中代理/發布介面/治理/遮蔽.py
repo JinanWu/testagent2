@@ -385,6 +385,7 @@ def _驗證遮蔽schema(連線: sqlite3.Connection) -> None:
                        (1,0,"endpoint_invocations","invocation_id","id","NO ACTION","RESTRICT","NONE"))
         or 索引 != (("idx_endpoint_redactions_audit",0,"c",0,("audit_event_id",)),
                     ("idx_endpoint_redactions_invocation_time",0,"c",0,("invocation_id","redacted_at")),
+                    ("idx_endpoint_redactions_retention_invocation_id",0,"c",0,("invocation_id","id")),
                     ("sqlite_autoindex_endpoint_redactions_1",1,"pk",0,("id",)),
                     ("sqlite_autoindex_endpoint_redactions_2",1,"u",0,("target_type","target_row_id","json_path")))
         or 物件 != _遮蔽物件摘要):

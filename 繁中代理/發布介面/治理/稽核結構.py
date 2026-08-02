@@ -8,6 +8,8 @@ _LEDGER = (
     (5, "0005_建立網頁工作階段.sql"),
     (6, "0006_擴充稽核事件契約.sql"),
     (7, "0007_建立不可逆遮蔽墓碑.sql"),
+    (8, "0008_建立五年保存候選索引.sql"),
+    (9, "0009_建立保存相依識別索引.sql"),
 )
 _TABLE_INFO = (
     (0, "id", "TEXT", 0, None, 1),
@@ -33,6 +35,7 @@ _INDEXES = (
     ("idx_audit_events_endpoint_time", 0, "c", ("endpoint_id", "occurred_at")),
     ("idx_audit_events_invocation_time", 0, "c", ("invocation_id", "occurred_at")),
     ("idx_audit_events_resource_time", 0, "c", ("resource_type", "resource_id", "occurred_at")),
+    ("idx_audit_events_retention_invocation_id", 0, "c", ("invocation_id", "id")),
     ("sqlite_autoindex_audit_events_1", 1, "pk", ("id",)),
     ("sqlite_autoindex_audit_events_2", 1, "u", ("event_id",)),
 )
