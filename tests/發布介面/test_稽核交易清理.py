@@ -1,5 +1,6 @@
 """GOV G01 SQLite交易各階段的控制流程與cleanup precedence測試。"""
 
+from contextlib import closing
 import sqlite3
 import traceback
 
@@ -146,8 +147,8 @@ def test_connect控制流程保持identity且不產生cleanup_owner(資料庫, m
 
     monkeypatch.setattr(sqlite3, "connect", 失敗connect)
     with pytest.raises(KeyboardInterrupt) as 捕捉:
-        SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
-    _assert控制乾淨(捕捉, 原始, marker)
+        SQLite稽核服務(str(資料庫)).append_audit_event(_事件("EVENT_ID_PRIVATE"))
+    _assert控制乾淨(捕捉, 原始, marker, "EVENT_ID_PRIVATE")
 
 
 @pytest.mark.parametrize(
@@ -159,9 +160,11 @@ def test_各DB階段控制流程保持identity並依序cleanup(資料庫, monkey
     代理 = _注入連線(monkeypatch, 資料庫, 階段, 原始)
 
     with pytest.raises(KeyboardInterrupt) as 捕捉:
-        SQLite稽核服務(str(資料庫), 時鐘=lambda: 2.0).append_audit_event(_事件())
+        SQLite稽核服務(str(資料庫), 時鐘=lambda: 2.0).append_audit_event(
+            _事件("EVENT_ID_PRIVATE")
+        )
 
-    _assert控制乾淨(捕捉, 原始, marker)
+    _assert控制乾淨(捕捉, 原始, marker, "EVENT_ID_PRIVATE")
     if 階段 in ("acquire", "begin"):
         assert 代理.cleanup順序 == ["close"]
     else:
@@ -177,9 +180,11 @@ def test_primary控制優先於rollback與close控制(資料庫, monkeypatch):
     )
 
     with pytest.raises(KeyboardInterrupt) as 捕捉:
-        SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
+        SQLite稽核服務(str(資料庫)).append_audit_event(_事件("EVENT_ID_PRIVATE"))
 
-    _assert控制乾淨(捕捉, 主要, "PRIMARY_MARKER", "ROLLBACK_MARKER", "CLOSE_MARKER")
+    _assert控制乾淨(
+        捕捉, 主要, "PRIMARY_MARKER", "ROLLBACK_MARKER", "CLOSE_MARKER", "EVENT_ID_PRIVATE"
+    )
     assert 代理.cleanup順序 == ["rollback", "close"]
 
 
@@ -196,12 +201,14 @@ def test_ordinary_primary時cleanup控制winner與rollback_before_close(
     預期 = SystemExit if rollback_control else GeneratorExit
 
     with pytest.raises(預期) as 捕捉:
-        SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
+        SQLite稽核服務(str(資料庫)).append_audit_event(_事件("EVENT_ID_PRIVATE"))
 
     winner = 回滾 if rollback_control else 關閉
     winner_marker = "ROLLBACK_WINNER" if rollback_control else "CLOSE_WINNER"
     loser_marker = "CLOSE_WINNER" if rollback_control else "ROLLBACK_WINNER"
-    _assert控制乾淨(捕捉, winner, winner_marker, "ordinary primary", loser_marker)
+    _assert控制乾淨(
+        捕捉, winner, winner_marker, "ordinary primary", loser_marker, "EVENT_ID_PRIVATE"
+    )
     assert 代理.cleanup順序 == ["rollback", "close"]
 
 
@@ -213,13 +220,15 @@ def test_postcommit_close政策不誤報ordinary但傳遞控制(資料庫, monke
     )
     if 控制關閉:
         with pytest.raises(KeyboardInterrupt) as 捕捉:
-            SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
-        _assert控制乾淨(捕捉, 關閉錯誤, "POST_COMMIT_CLOSE")
+            SQLite稽核服務(str(資料庫)).append_audit_event(_事件("EVENT_ID_PRIVATE"))
+        _assert控制乾淨(捕捉, 關閉錯誤, "POST_COMMIT_CLOSE", "EVENT_ID_PRIVATE")
     else:
-        receipt = SQLite稽核服務(str(資料庫)).append_audit_event(_事件())
+        receipt = SQLite稽核服務(str(資料庫)).append_audit_event(_事件("EVENT_ID_PRIVATE"))
         assert receipt.committed is True
 
     assert 代理.cleanup順序 == ["close"]
     monkeypatch.undo()
-    with sqlite3.connect(資料庫) as 連線:
-        assert 連線.execute("SELECT event_id FROM audit_events").fetchall() == [("evt_phase",)]
+    with closing(sqlite3.connect(資料庫)) as 連線, 連線:
+        assert 連線.execute("SELECT event_id FROM audit_events").fetchall() == [
+            ("EVENT_ID_PRIVATE",)
+        ]

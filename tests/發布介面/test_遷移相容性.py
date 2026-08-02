@@ -1,5 +1,6 @@
 """發布介面資料庫 manifest discovery 與 fresh 初始化測試。"""
 
+from contextlib import closing
 import os
 import sqlite3
 from pathlib import Path
@@ -15,7 +16,7 @@ from 繁中代理.發布介面.遷移執行器 import 執行遷移, 遷移執行
 
 def _q(db: Path, sql: str):
     """執行唯讀查詢並回傳所有資料列。"""
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         return 連線.execute(sql).fetchall()
 
 
@@ -59,7 +60,7 @@ def _existing_legacy_tables(db: Path) -> tuple[str, ...]:
 
 def _legacy_table_snapshot(db: Path, 表名清單: tuple[str, ...]) -> dict[str, object]:
     """快照指定legacy表的欄位、rows、sqlite_master SQL與schema_version存在和值。"""
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         連線.row_factory = sqlite3.Row
         tables: dict[str, object] = {}
         for 表名 in 表名清單:
@@ -145,7 +146,7 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
     db = tmp_path / "audit-upgrade.sqlite3"
     前五版 = 載入發布介面遷移()[:5]
     assert 執行遷移(db, 前五版) == (1, 2, 3, 4, 5)
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         連線.execute(
             "INSERT INTO audit_events("
             "id,actor_type,actor_id,action,target_type,target_id,endpoint_id,request_id,metadata_json,created_at"
@@ -206,7 +207,7 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
     assert [列[2] for 列 in _q(db, f'PRAGMA index_info("{unique名稱}")')] == [
         "target_type", "target_row_id", "json_path"
     ]
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
             連線.execute(
                 "INSERT INTO endpoint_redactions("
@@ -216,7 +217,7 @@ def test_0006無損保留legacy_audit_row並升級完整事件欄位(tmp_path):
                 "original_sha256,reason,actor_type,actor_id,audit_event_id,is_tombstone,redacted_at "
                 "FROM endpoint_redactions WHERE id='red_1'"
             )
-    with sqlite3.connect(db) as 連線:
+    with closing(sqlite3.connect(db)) as 連線, 連線:
         with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):
             連線.execute("UPDATE audit_events SET outcome='success' WHERE event_id='evt_legacy'")
         with pytest.raises(sqlite3.IntegrityError, match="audit events are append only"):

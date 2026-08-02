@@ -80,6 +80,7 @@ class AuditMetadata:
     """
 
     _資料: Mapping[str, AuditMetadataScalar]
+    _項目: tuple[tuple[str, AuditMetadataScalar], ...]
 
     def __init__(self, metadata: Mapping[str, AuditMetadataScalar] | None = None) -> None:
         """驗證 metadata 並建立不可變 defensive snapshot。
@@ -94,6 +95,7 @@ class AuditMetadata:
         已見鍵: set[str] | None = None
         鍵: Any = None
         值: Any = None
+        object.__setattr__(self, "_項目", ())
         try:
             if metadata is None:
                 項目列 = ()
@@ -125,10 +127,13 @@ class AuditMetadata:
 
         if 錯誤:
             object.__setattr__(self, "_資料", MappingProxyType({}))
+            object.__setattr__(self, "_項目", ())
             metadata = 項目列 = 快照 = 已見鍵 = 鍵 = 值 = None
             raise AuditMetadataError("AuditMetadata 不符合公開契約")
 
-        object.__setattr__(self, "_資料", MappingProxyType(快照 if 快照 is not None else {}))
+        安全快照 = 快照 if 快照 is not None else {}
+        object.__setattr__(self, "_資料", MappingProxyType(安全快照))
+        object.__setattr__(self, "_項目", tuple(安全快照.items()))
 
     def to_json(self) -> dict[str, AuditMetadataScalar]:
         """回傳依原始順序建立的 ordinary new dict。
@@ -136,7 +141,7 @@ class AuditMetadata:
         此方法沒有參數與外部副作用；不會拋出contract例外，修改回傳dict也不會改變
         內部不可變快照。
         """
-        return dict(self._資料)
+        return dict(self._項目)
 
 
 @dataclass(frozen=True, init=False)

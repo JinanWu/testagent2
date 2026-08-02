@@ -6,10 +6,11 @@ import json
 import math
 import sqlite3
 import time
-from types import BuiltinFunctionType, FunctionType, MappingProxyType
+from types import BuiltinFunctionType, FunctionType
 from typing import Any
 
 from ..契約 import AuditSinkError
+from ..協定 import AuditEventSink
 from ..領域模型 import AuditActorRef, AuditAppendReceipt, AuditEvent
 from ..領域模型 import AuditMetadata, AuditResourceRef
 from .稽核資料庫 import _開啟既有資料庫, _驗證目前路徑, _驗證schema
@@ -20,7 +21,7 @@ _讀取metadata = AuditMetadata.to_json
 _固定錯誤訊息 = "稽核事件無法確認提交"
 
 
-class SQLite稽核服務:
+class SQLite稽核服務(AuditEventSink):
     """以既有 SQLite v6 檔案實作 AuditEventSink。"""
 
     __slots__ = ("_path", "_clock")
@@ -102,8 +103,10 @@ class SQLite稽核服務:
             _重拋控制(控制盒.pop())
         if 回滾控制盒:
             關閉控制盒.clear()
+            序號 = 事件識別碼 = None
             _重拋控制(回滾控制盒.pop())
         if 關閉控制盒:
+            序號 = 事件識別碼 = None
             _重拋控制(關閉控制盒.pop())
         if 一般失敗 or not 已提交 or type(序號) is not int or type(事件識別碼) is not str:
             序號 = 事件識別碼 = None
@@ -115,10 +118,10 @@ setattr(SQLite稽核服務, "append_audit_event", SQLite稽核服務.附加稽�
 
 
 def _建立canonical列(事件: AuditEvent) -> tuple[Any, ...]:
-    """只以 module-owned DTO constructors/serializer 重建所有 FND 欄位。"""
+    """只從module-owned canonical tuple重建所有FND欄位。"""
     失敗 = False
     控制 = 結果 = None
-    純量值 = 行為者 = 資源 = 中繼資料 = 中繼資料字典 = None
+    純量值 = 行為者 = 資源 = 中繼資料 = 中繼項目 = 中繼鍵 = 中繼資料字典 = None
     安全行為者 = 安全資源 = 安全中繼資料 = 安全事件 = 中繼資料JSON = None
     try:
         if type(事件) is not AuditEvent:
@@ -130,18 +133,30 @@ def _建立canonical列(事件: AuditEvent) -> tuple[Any, ...]:
         行為者, 資源, 中繼資料 = 事件.actor, 事件.resource, 事件.metadata
         if type(行為者) is not AuditActorRef or type(資源) is not AuditResourceRef:
             raise ValueError
-        if type(中繼資料) is not AuditMetadata or type(中繼資料._資料) is not MappingProxyType:
+        if type(中繼資料) is not AuditMetadata or type(中繼資料._項目) is not tuple:
+            raise ValueError
+        中繼項目 = 中繼資料._項目
+        if any(
+            type(項目) is not tuple
+            or len(項目) != 2
+            or type(項目[0]) is not str
+            or not _metadata純量合法(項目[1])
+            for 項目 in 中繼項目
+        ):
+            raise ValueError
+        中繼鍵 = tuple(項目[0] for 項目 in 中繼項目)
+        if len(frozenset(中繼鍵)) != len(中繼鍵):
             raise ValueError
         安全行為者 = AuditActorRef(行為者.actor_type, 行為者.actor_id)
         安全資源 = AuditResourceRef(資源.resource_type, 資源.resource_id)
-        中繼資料字典 = _讀取metadata(中繼資料)
+        中繼資料字典 = dict(中繼項目)
         安全中繼資料 = AuditMetadata(中繼資料字典)
         安全事件 = AuditEvent(
             event_id=純量值[0], occurred_at=純量值[1], action=純量值[2], outcome=純量值[3],
             actor=安全行為者, resource=安全資源, request_id=純量值[4],
             endpoint_id=純量值[5], invocation_id=純量值[6], metadata=安全中繼資料,
         )
-        事件 = 行為者 = 資源 = 中繼資料 = 純量值 = 中繼資料字典 = None
+        事件 = 行為者 = 資源 = 中繼資料 = 純量值 = 中繼項目 = 中繼鍵 = 中繼資料字典 = None
         中繼資料JSON = json.dumps(
             _讀取metadata(安全中繼資料), ensure_ascii=False, sort_keys=True,
             separators=(",", ":"), allow_nan=False,
@@ -158,7 +173,7 @@ def _建立canonical列(事件: AuditEvent) -> tuple[Any, ...]:
         捕捉控制 = None
     except BaseException:
         失敗 = True
-    事件 = 純量值 = 行為者 = 資源 = 中繼資料 = 中繼資料字典 = None
+    事件 = 純量值 = 行為者 = 資源 = 中繼資料 = 中繼項目 = 中繼鍵 = 中繼資料字典 = None
     安全行為者 = 安全資源 = 安全中繼資料 = 安全事件 = 中繼資料JSON = None
     if 控制 is not None:
         控制盒 = [控制]
@@ -168,6 +183,15 @@ def _建立canonical列(事件: AuditEvent) -> tuple[Any, ...]:
         結果 = None
         raise ValueError("invalid audit event") from None
     return 結果
+
+
+def _metadata純量合法(值: Any) -> bool:
+    """在任何hash/constructor操作前，只接受exact無callback scalar。"""
+    return (
+        值 is None
+        or type(值) in (bool, int)
+        or (type(值) is float and math.isfinite(值))
+    )
 
 
 def _讀取時鐘(時鐘: FunctionType | BuiltinFunctionType) -> float:
