@@ -6,13 +6,19 @@ import os
 
 import pytest
 
+import 繁中代理.發布介面.技能套件.清單 as 清單模組
 from 繁中代理.發布介面.技能套件.安全複製 import (
     技能套件安全錯誤,
     掃描技能,
     重驗檔案,
     限制,
 )
-from 繁中代理.發布介面.技能套件.清單 import 建立清單, 正規JSON, 計算套件雜湊
+from 繁中代理.發布介面.技能套件 import 載入器 as 載入器模組
+from 繁中代理.發布介面.技能套件.清單 import (
+    建立清單, 是合法技能套件清單參照, 正規JSON, 計算套件雜湊,
+)
+from 繁中代理.發布介面.執行期.模型契約 import 模型設定快照
+from 繁中代理.發布介面.執行期.執行器 import 發布執行快照, 發布執行錯誤
 
 
 def test_正規JSON與套件雜湊依UTF8路徑排序():
@@ -30,6 +36,52 @@ def test_正規JSON與套件雜湊依UTF8路徑排序():
     ).hexdigest()
     assert 計算套件雜湊(項目列) == 預期
     assert 正規JSON({"b": 1, "a": "繁中"}) == b'{"a":"\xe7\xb9\x81\xe4\xb8\xad","b":1}'
+
+
+@pytest.mark.parametrize("參照,合法", [
+    ("bundle-1/manifest.json", True),
+    ("../bundle-1/manifest.json", False),
+    ("bundle-1/../manifest.json", False),
+    ("bundle-1/./manifest.json", False),
+    ("/bundle-1/manifest.json", False),
+    ("bundle-1\\manifest.json", False),
+    ("bundle-1//manifest.json", False),
+    ("bundle-1/manifest.json/extra", False),
+    ("bundle-1/MANIFEST.json", False),
+    (1, False),
+])
+def test_manifest_reference共享authority三處同判定(參照, 合法):
+    """共享 validator、loader seam 與 runtime DTO 對 canonical/traversal 完全一致。"""
+    assert 是合法技能套件清單參照(參照) is 合法
+    assert 載入器模組._是清單參照(參照) is 合法
+    參數 = dict(
+        endpoint_id="ep-1", version_id="ver-1", service_account_id="sa-1",
+        system_prompt="prompt", permission_snapshot_digest="a" * 64,
+        skill_bundle_hash="b" * 64, tool_handler_release="release-1", tool_snapshot=(),
+        model_config=模型設定快照("fake", "model", 0, 10, 5, False, 1),
+        response_schema=None, manifest_reference=參照,
+    )
+    if 合法:
+        assert 發布執行快照(**參數).manifest_reference == 參照
+    else:
+        with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
+            發布執行快照(**參數)
+
+
+def test_manifest_reference共享authority保留控制流程identity(monkeypatch):
+    """共享 lexical authority 不把控制流程例外誤關閉成一般 False。"""
+    錯誤 = KeyboardInterrupt("停止")
+
+    def 中斷(*_):
+        raise 錯誤
+
+    monkeypatch.setattr(清單模組.unicodedata, "normalize", 中斷)
+    try:
+        with pytest.raises(KeyboardInterrupt) as 捕捉:
+            是合法技能套件清單參照("bundle-1/manifest.json")
+    finally:
+        monkeypatch.undo()
+    assert 捕捉.value is 錯誤
 
 
 def test_掃描固定排除但保留未列入規則的隱藏檔(tmp_path):

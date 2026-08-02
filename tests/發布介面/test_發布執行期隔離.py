@@ -1,6 +1,7 @@
 """發布執行期服務帳戶與 owner 資料隔離測試。"""
 
 from dataclasses import FrozenInstanceError, fields
+import hashlib
 
 import pytest
 
@@ -292,9 +293,11 @@ def _執行材料(*, 端點="endpoint-1", 版本="ver-2", 帳戶="sa-1", 提示=
         for 路徑, 內容 in 原檔案
     )
     套件雜湊 = 計算技能套件雜湊(檔案)
+    清單位元 = b"{}"
     套件 = 技能套件快照(
         endpoint_version_id=版本, skill_bundle_hash=套件雜湊,
-        manifest_digest=套件雜湊, files=檔案,
+        manifest_digest=hashlib.sha256(清單位元).hexdigest(),
+        清單原始資料=清單位元, files=檔案,
     )
     工具庫 = 工具版本庫()
     工具項目 = 工具庫.登錄修訂(
@@ -306,7 +309,7 @@ def _執行材料(*, 端點="endpoint-1", 版本="ver-2", 帳戶="sa-1", 提示=
         skill_bundle_hash=套件雜湊, tool_handler_release="release-7",
         tool_snapshot=(工具項目,),
         model_config=模型設定快照("fake", "model-1", 0, 100, 5, False, 1),
-        response_schema=None, manifest_reference="manifest-1",
+        response_schema=None, manifest_reference="bundle-1/manifest.json",
     )
     上下文 = ServiceAccountContext(
         service_account_id=帳戶, endpoint_version_id=版本,
@@ -617,7 +620,8 @@ def test_bundle拒絕失序重複與同長內容偽造():
     for 檔案們 in ((乙, 甲), (甲, 甲)):
         with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
             技能套件快照(endpoint_version_id="ver-2", skill_bundle_hash="a" * 64,
-                       manifest_digest="a" * 64, files=檔案們)
+                       manifest_digest=hashlib.sha256(b"{}").hexdigest(),
+                       清單原始資料=b"{}", files=檔案們)
     object.__setattr__(甲, "content", b"z")
     with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
         計算技能套件雜湊((甲, 乙))
@@ -631,3 +635,117 @@ def test_一次模型呼叫不執行工具且每次輸出輸入皆隔離():
     assert 回應.text == "完成" and len(模型.呼叫) == 1
     傳入 = 模型.呼叫[0]["messages"][1]["metadata"]["input_json"]
     assert 傳入 == {"value": [1]}
+
+
+def test_C3_清單摘要與套件雜湊可不同且各自錯配在模型前拒絕():
+    """鎖定兩種摘要互不相等合法，但任一 authority pin 損毀皆關閉失敗。
+
+    參數：無。回傳：無；結果由斷言表示。例外：錯配只接受固定發布執行錯誤。
+    副作用：建立隔離假模型並記錄呼叫，不存取檔案系統。
+    """
+    執行器, *_, 模型 = _建立測試執行器()
+    版本, _, 套件, _ = _執行材料()
+    assert 套件.manifest_digest != 套件.skill_bundle_hash
+    assert 執行器.執行(發布執行請求({"ok": True})).text == "完成"
+    assert len(模型.呼叫) == 1
+
+    for 欄位, 惡意值 in (
+        ("manifest_digest", "0" * 64),
+        ("清單原始資料", b'{"tampered":true}'),
+        ("skill_bundle_hash", "0" * 64),
+    ):
+        材料 = list(_執行材料())
+        object.__setattr__(材料[2], 欄位, 惡意值)
+        假模型 = _模型()
+        with pytest.raises(發布執行錯誤, match="^發布執行期不可用$") as 錯誤:
+            建立發布執行器(
+                endpoint_version_id="ver-2", service_account_id="sa-1",
+                發布快照提供者=_版本提供者(材料[0]), 服務帳戶載入器=_載入器(材料[1]),
+                技能套件載入器=_套件載入器(材料[2]), 工具修訂提供者=材料[3],
+                模型供應商註冊表={"fake": 假模型},
+            )
+        assert 假模型.呼叫 == []
+        assert 錯誤.value.__cause__ is None and 錯誤.value.__context__ is None
+
+
+def test_C3_執行期套件雜湊與BUNDLE三元組authority完全一致():
+    """確認執行期委派 canonical ordered ``(path, size, sha256)``，不沿用舊算法。
+
+    參數：無。回傳：無。例外：契約不符由 pytest 回報。
+    副作用：只建立記憶體檔案與摘要 projection。
+    """
+    from 繁中代理.發布介面.技能套件.清單 import 正規JSON, 計算套件雜湊
+
+    檔案們 = tuple(
+        技能套件檔案(path=路徑, sha256=hashlib.sha256(內容).hexdigest(), content=內容)
+        for 路徑, 內容 in (("alpha/SKILL.md", b"alpha"), ("beta/assets/icon.bin", b"icon"))
+    )
+    項目們 = [
+        {"path": 檔案.path, "size_bytes": len(檔案.content), "sha256": 檔案.sha256}
+        for 檔案 in 檔案們
+    ]
+    舊算法 = hashlib.sha256(正規JSON({
+        "version": 1,
+        "files": [{"path": 項["path"], "sha256": 項["sha256"], "size": 項["size_bytes"]}
+                  for 項 in 項目們],
+    })).hexdigest()
+    assert 計算技能套件雜湊(檔案們) == 計算套件雜湊(reversed(項目們))
+    assert 計算技能套件雜湊(檔案們) != 舊算法
+
+
+def test_C3_多技能提示固定納入說明參考模板並排除仍受驗證的其他檔案():
+    """驗證多技能 prompt allowlist 的順序與 scripts/assets 完整性邊界。
+
+    參數：無。回傳：無。例外：竄改非提示檔時只接受固定發布執行錯誤。
+    副作用：建立隔離執行器並呼叫一次假模型。
+    """
+    原檔案 = (
+        ("alpha/SKILL.md", b"ALPHA"), ("alpha/assets/secret.txt", b"ASSET_SECRET"),
+        ("alpha/references/guide.md", b"REFERENCE"),
+        ("alpha/templates/form.txt", b"TEMPLATE"), ("beta/SKILL.md", b"BETA"),
+        ("beta/scripts/run.py", b"SCRIPT_SECRET"),
+    )
+    檔案們 = tuple(
+        技能套件檔案(path=路徑, sha256=hashlib.sha256(內容).hexdigest(), content=內容)
+        for 路徑, 內容 in 原檔案
+    )
+    雜湊 = 計算技能套件雜湊(檔案們)
+    材料 = list(_執行材料())
+    object.__setattr__(材料[0], "skill_bundle_hash", 雜湊)
+    object.__setattr__(材料[1], "skill_bundle_hash", 雜湊)
+    套件 = 技能套件快照(
+        endpoint_version_id="ver-2", skill_bundle_hash=雜湊,
+        manifest_digest=hashlib.sha256(b"{}").hexdigest(), 清單原始資料=b"{}", files=檔案們,
+    )
+    材料[2] = 套件
+    執行器, *_, 模型 = _建立測試執行器(tuple(材料))
+    執行器.執行(發布執行請求({"multi": True}))
+    assert 模型.呼叫[0]["messages"][0]["content"] == (
+        "固定系統提示\n\n## 技能套件：alpha/SKILL.md\nALPHA"
+        "\n\n## 技能套件：alpha/references/guide.md\nREFERENCE"
+        "\n\n## 技能套件：alpha/templates/form.txt\nTEMPLATE"
+        "\n\n## 技能套件：beta/SKILL.md\nBETA"
+    )
+    assert "ASSET_SECRET" not in repr(模型.呼叫) and "SCRIPT_SECRET" not in repr(模型.呼叫)
+
+    object.__setattr__(套件.files[-1], "content", b"tampered")
+    假模型 = _模型()
+    with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
+        建立發布執行器(
+            endpoint_version_id="ver-2", service_account_id="sa-1",
+            發布快照提供者=_版本提供者(材料[0]), 服務帳戶載入器=_載入器(材料[1]),
+            技能套件載入器=_套件載入器(套件), 工具修訂提供者=材料[3],
+            模型供應商註冊表={"fake": 假模型},
+        )
+    assert 假模型.呼叫 == []
+
+
+@pytest.mark.parametrize("路徑", ["alpha/../SKILL.md", "alpha/" + "/".join(["層"] * 16)])
+def test_C3_多技能路徑拒絕traversal與錯誤深度(路徑):
+    """確認多技能前綴不放寬父層 traversal 或最大深度。
+
+    參數：``路徑`` 是敵對相對路徑。回傳：無。例外：只接受固定發布執行錯誤。
+    副作用：只嘗試建立記憶體 DTO。
+    """
+    with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
+        技能套件檔案(path=路徑, sha256=hashlib.sha256(b"x").hexdigest(), content=b"x")
