@@ -1,4 +1,10 @@
-"""Published Runtime 的版本快照、immutable 技能套件與 snapshot-only 執行器。"""
+"""建立只使用已發布快照的版本隔離執行期。
+
+參數：不適用；模組公開快照資料型別、驗證函式與執行器工廠。
+回傳：不適用；各公開函式依自身契約回傳不可變快照、摘要或執行器。
+例外：匯入依賴缺失時傳出標準匯入例外；執行期錯誤由各公開邊界固定化。
+副作用：匯入只建立型別、常數、鎖與弱參照狀態表，不載入版本或呼叫模型。
+"""
 
 from __future__ import annotations
 
@@ -13,6 +19,7 @@ from typing import Any, Protocol
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from ..技能套件.清單 import 計算套件雜湊 as 計算清單套件雜湊
 from .工具版本庫 import 工具快照項目
 from .模型契約 import 模型設定快照, 複製JSON, 重建設定
 
@@ -78,39 +85,67 @@ class 技能套件檔案:
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
 class 技能套件快照:
-    """loader 回傳的 ordered、text/binary 完整 immutable bundle。"""
+    """保存 loader 已驗證的兩種摘要與完整 immutable bundle。
+
+    欄位：``endpoint_version_id`` 釘選端點版本；``skill_bundle_hash`` 驗證 ordered
+    檔案三元組；``manifest_digest`` 識別 loader 已驗證的 canonical manifest bytes；
+    ``清單原始資料`` 保存對應的 canonical bytes；``files`` 保存依 UTF-8 路徑排序的
+    完整內容。回傳：不適用。
+    例外：欄位由建構器驗證，失敗時拋出固定 ``發布執行錯誤``。
+    副作用：只保存重新建立的不可變值，不存取檔案系統。
+    """
 
     endpoint_version_id: str
     skill_bundle_hash: str
     manifest_digest: str
+    清單原始資料: bytes
     files: tuple[技能套件檔案, ...]
 
     def __init__(
         self, *, endpoint_version_id: str, skill_bundle_hash: str,
-        manifest_digest: str, files: tuple[技能套件檔案, ...],
+        manifest_digest: str, 清單原始資料: bytes,
+        files: tuple[技能套件檔案, ...],
     ) -> None:
-        """重建每個檔案並驗證排序、資源上限與 canonical manifest digest。"""
+        """重建檔案並分別驗證 bundle identity 與 manifest digest 格式。
+
+        參數：端點版本、兩種摘要與 manifest bytes 來自已釘選 loader；``files`` 是
+        完整 ordered 檔案。
+        回傳：無。例外：型別、排序、額度、內容摘要、bundle hash 或 manifest digest
+        不合契約時拋出固定 ``發布執行錯誤``。副作用：只配置 immutable 複本。
+        """
         重建檔案 = None
         try:
             if not _是識別碼(endpoint_version_id) or type(files) is not tuple:
                 raise ValueError
             重建檔案 = _重建套件檔案(files)
             計算值 = 計算技能套件雜湊(重建檔案)
-            if type(skill_bundle_hash) is not str or type(manifest_digest) is not str:
+            if (not _是雜湊(skill_bundle_hash) or not _是雜湊(manifest_digest)
+                    or type(清單原始資料) is not bytes
+                    or len(清單原始資料) > _最大套件位元組
+                    or not hmac.compare_digest(
+                        hashlib.sha256(清單原始資料).hexdigest(), manifest_digest,
+                    )):
                 raise ValueError
             if not hmac.compare_digest(計算值, skill_bundle_hash):
-                raise ValueError
-            if not hmac.compare_digest(計算值, manifest_digest):
                 raise ValueError
             object.__setattr__(self, "endpoint_version_id", endpoint_version_id)
             object.__setattr__(self, "skill_bundle_hash", skill_bundle_hash)
             object.__setattr__(self, "manifest_digest", manifest_digest)
+            object.__setattr__(self, "清單原始資料", bytes(清單原始資料))
             object.__setattr__(self, "files", 重建檔案)
         except _控制流程:
-            self = endpoint_version_id = skill_bundle_hash = manifest_digest = files = 重建檔案 = None
+            self = None
+            endpoint_version_id = skill_bundle_hash = manifest_digest = ""
+            清單原始資料 = b""
+            files = ()
+            重建檔案 = None
             raise
         except BaseException:
-            self = endpoint_version_id = skill_bundle_hash = manifest_digest = files = 重建檔案 = None
+            self = None
+            endpoint_version_id = skill_bundle_hash = manifest_digest = ""
+            清單原始資料 = b""
+            files = ()
+            重建檔案 = None
             raise 發布執行錯誤(_固定錯誤) from None
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
@@ -237,8 +272,14 @@ class 發布執行請求:
         raise AssertionError
 
 def 計算技能套件雜湊(files: tuple[技能套件檔案, ...]) -> str:
-    """重建 canonical ordered manifest 後計算整體 SHA-256。"""
-    重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 清單 = 原文 = 原始位元 = 結果 = None
+    """依 BUNDLE canonical ordered file 三元組計算內容摘要。
+
+    參數：``files`` 是依 UTF-8 路徑排序的完整 immutable 檔案 tuple。
+    回傳：對 ``[path, size_bytes, sha256]`` ordered projection 計算的小寫 SHA-256。
+    例外：檔案型別、順序、內容或額度不合契約時拋出固定 ``發布執行錯誤``；
+    控制流程例外原樣傳出。副作用：只配置短暫 projection，不修改輸入。
+    """
+    重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 結果 = None
     失敗 = False
     try:
         重建檔案 = _重建套件檔案(files)
@@ -247,18 +288,16 @@ def 計算技能套件雜湊(files: tuple[技能套件檔案, ...]) -> str:
             路徑 = object.__getattribute__(項, "path")
             摘要 = object.__getattribute__(項, "sha256")
             內容 = object.__getattribute__(項, "content")
-            項目們.append({"path": 路徑, "sha256": 摘要, "size": len(內容)})
-        清單 = {"version": 1, "files": 項目們}
-        原文 = json.dumps(清單, ensure_ascii=False, sort_keys=True,
-                          separators=(",", ":"), allow_nan=False)
-        原始位元 = 原文.encode("utf-8")
-        結果 = hashlib.sha256(原始位元).hexdigest()
+            項目們.append({"path": 路徑, "size_bytes": len(內容), "sha256": 摘要})
+        結果 = 計算清單套件雜湊(項目們)
         return 結果
     except _控制流程:
-        files = 重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 清單 = 原文 = 原始位元 = 結果 = None
+        files = ()
+        重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 結果 = None
         raise
     except BaseException:
-        files = 重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 清單 = 原文 = 原始位元 = 結果 = None
+        files = ()
+        重建檔案 = 項目們 = 項 = 路徑 = 摘要 = 內容 = 結果 = None
         失敗 = True
     if 失敗:
         raise 發布執行錯誤(_固定錯誤) from None
@@ -797,7 +836,13 @@ def _重建發布快照(值: object) -> 發布執行快照:
 
 
 def _重建技能套件(值: object) -> 技能套件快照:
-    """從 loader exact DTO 重建完整 immutable bytes 與 manifest。"""
+    """從載入器的精確資料物件重建完整不可變技能套件。
+
+    參數：``值`` 是不可信載入器回傳的 ``技能套件快照``。
+    回傳：重新驗證並複製所有清單原始資料與檔案內容的新 ``技能套件快照``。
+    例外：型別、欄位身分、摘要、順序或內容不符時傳出驗證例外。
+    副作用：只配置不可變複本，不讀寫檔案系統、不呼叫載入器或模型。
+    """
     資料 = 結果 = None
     try:
         if type(值) is not 技能套件快照:
@@ -807,7 +852,7 @@ def _重建技能套件(值: object) -> 技能套件快照:
             資料.append(object.__getattribute__(值, 名稱))
         結果 = 技能套件快照(
             endpoint_version_id=資料[0], skill_bundle_hash=資料[1],
-            manifest_digest=資料[2], files=資料[3],
+            manifest_digest=資料[2], 清單原始資料=資料[3], files=資料[4],
         )
         for 索引, 名稱 in enumerate(技能套件快照.__dataclass_fields__):
             if object.__getattribute__(值, 名稱) is not 資料[索引]:
@@ -836,13 +881,40 @@ def _驗證交叉欄位(版本: 發布執行快照, 上下文: object) -> None:
         raise
 
 
+def _是提示檔案路徑(路徑: str) -> bool:
+    """判斷 canonical bundle 路徑是否可插入模型提示。
+
+    參數：``路徑`` 是已驗證的相對 POSIX 檔案路徑。回傳：根層舊契約或
+    ``<skill-name>`` 下的 ``SKILL.md``、``references/**``、``templates/**``
+    才為真。例外：不拋出例外。副作用：只配置短暫路徑元件。
+    """
+    部分 = 路徑.split("/")
+    if 路徑 == "SKILL.md":
+        return True
+    if len(部分) >= 2 and 部分[0] in ("references", "templates"):
+        return True
+    if len(部分) == 2 and _是識別碼(部分[0]) and 部分[1] == "SKILL.md":
+        return True
+    return (
+        len(部分) >= 3
+        and _是識別碼(部分[0])
+        and 部分[1] in ("references", "templates")
+    )
+
+
 def _建立提示(系統提示: str, 檔案們: tuple[技能套件檔案, ...]) -> str:
-    """只嵌入 manifest 內 allowlisted UTF-8 text；binary/scripts/assets 固定略過。"""
+    """依 bundle 順序嵌入 allowlisted UTF-8 text。
+
+    參數：``系統提示`` 是版本快照文字；``檔案們`` 是完整 hash-verified ordered
+    bundle。回傳：系統提示及多技能說明、參考與模板合成文字。
+    例外：提示超限或輸入狀態異常時傳出驗證例外；非 UTF-8 allowlisted 檔案略過。
+    副作用：只配置提示；scripts、assets 與任意 nested 路徑不會進入提示。
+    """
     區段 = 結果 = 文字 = None
     try:
         區段 = [系統提示]
         for 項 in 檔案們:
-            if 項.path != "SKILL.md" and not 項.path.startswith(("references/", "templates/")):
+            if not _是提示檔案路徑(項.path):
                 continue
             try:
                 文字 = 項.content.decode("utf-8", errors="strict")
