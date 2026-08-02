@@ -526,3 +526,333 @@ def _是識別碼(值: object) -> bool:
 def _是雜湊(值: object) -> bool:
     """判斷 exact lowercase SHA-256。"""
     return type(值) is str and _雜湊.fullmatch(值) is not None
+
+
+# 執行器狀態刻意外置；instance 沒有 prompt、owner、memory 或 provider data slots。
+import threading
+import weakref
+
+from .工具版本庫 import 建立版本釘選工具登錄器
+from .服務帳戶 import 載入服務帳戶上下文或失敗關閉
+from .模型契約 import 模型轉接請求
+from .模型轉接器 import 建立模型轉接器
+
+
+def _建立執行模型請求(狀態: tuple[object, ...], 輸入原文: str, 修正: bool) -> 模型轉接請求:
+    """每一回都從 sealed canonical state 重建 fresh messages、tools 與 schema。"""
+    輸入 = 訊息 = 工具 = 結構 = 結果 = None
+    try:
+        輸入 = _解析正規JSON(輸入原文, 500_000)
+        訊息 = [
+            {"role": "system", "content": 狀態[1]},
+            {"role": "user", "content": 輸入原文, "metadata": {"input_json": 輸入}},
+        ]
+        if 修正:
+            訊息.append({"role": "user", "content": _綱要修正訊息})
+        工具 = 狀態[2].列出工具結構()  # type: ignore[union-attr]
+        結構 = None if 狀態[4] is None else _解析正規JSON(狀態[4], 500_000)
+        結果 = 模型轉接請求(訊息, 工具, 結構)
+        return 結果
+    except BaseException:
+        狀態 = 輸入原文 = 修正 = 輸入 = 訊息 = 工具 = 結構 = 結果 = None
+        raise
+
+
+class 發布執行器:
+    """只可由 factory 建立、且只執行建立點已釘選狀態的 runtime。"""
+
+    __slots__ = ()
+
+    def __new__(cls, *參數: object, **命名參數: object) -> 發布執行器:
+        """拒絕 caller 直接建構或注入 trusted slots。"""
+        cls = 參數 = 命名參數 = None
+        raise 發布執行錯誤(_固定錯誤) from None
+
+    def 執行(self, 請求: 發布執行請求):
+        """非結構化呼叫一次；結構化輸出無效時恰好重試一次並只回傳最終回應。"""
+        狀態 = 輸入原值 = 模型請求 = 回應 = 回應文字 = None
+        失敗 = 兩次無效 = False
+        try:
+            if type(self) is not _發布執行器實作 or type(請求) is not 發布執行請求:
+                raise ValueError
+            with _執行器狀態鎖:
+                狀態 = _執行器狀態.get(self)
+            if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
+                raise ValueError
+            輸入原值 = object.__getattribute__(請求, "_input_json")
+            模型請求 = _建立執行模型請求(狀態, 輸入原值, False)
+            回應 = 狀態[3].產生回應(模型請求)
+            if 狀態[4] is None:
+                return 回應
+            回應文字 = object.__getattribute__(回應, "text")
+            if _模型輸出符合綱要(回應文字, 狀態[4]):
+                return 回應
+            回應 = 回應文字 = 模型請求 = None
+            模型請求 = _建立執行模型請求(狀態, 輸入原值, True)
+            回應 = 狀態[3].產生回應(模型請求)
+            回應文字 = object.__getattribute__(回應, "text")
+            if _模型輸出符合綱要(回應文字, 狀態[4]):
+                return 回應
+            兩次無效 = True
+        except _控制流程:
+            self = 請求 = 狀態 = 輸入原值 = 模型請求 = 回應 = 回應文字 = None
+            raise
+        except 發布執行錯誤:
+            self = 請求 = 狀態 = 輸入原值 = 模型請求 = 回應 = 回應文字 = None
+            raise
+        except BaseException:
+            self = 請求 = 狀態 = 輸入原值 = 模型請求 = 回應 = 回應文字 = None
+            失敗 = True
+        self = 請求 = 狀態 = 輸入原值 = 模型請求 = 回應 = 回應文字 = None
+        if 兩次無效:
+            raise 結構化輸出錯誤("模型輸出不符合回應綱要") from None
+        if 失敗:
+            raise 發布執行錯誤(_固定錯誤) from None
+        raise AssertionError
+
+
+class _發布執行器實作(發布執行器):
+    """module-private weak-referenceable implementation。"""
+
+    __slots__ = ("__weakref__",)
+
+
+class _方法代理:
+    """只保存建立前已捕捉 callable 的短生命週期 adapter。"""
+
+    __slots__ = ("__方法",)
+
+    def __init__(self, 方法: object) -> None:
+        object.__setattr__(self, "_方法代理__方法", 方法)
+
+    def 取得發布執行快照(self, endpoint_version_id: str) -> object:
+        """轉送 exact version lookup。"""
+        try:
+            return object.__getattribute__(self, "_方法代理__方法")(endpoint_version_id)  # type: ignore[operator]
+        except _控制流程:
+            self = endpoint_version_id = None
+            raise
+
+    def 載入服務帳戶上下文(self, service_account_id: str, endpoint_version_id: str, source: str) -> object:
+        """轉送 exact service-account snapshot lookup。"""
+        try:
+            return object.__getattribute__(self, "_方法代理__方法")(service_account_id, endpoint_version_id, source)  # type: ignore[operator]
+        except _控制流程:
+            self = service_account_id = endpoint_version_id = source = None
+            raise
+
+    def 載入技能套件快照(self, endpoint_version_id: str, skill_bundle_hash: str,
+                         清單參照: str, source: str) -> object:
+        """轉送 exact immutable bundle lookup。"""
+        try:
+            return object.__getattribute__(self, "_方法代理__方法")(
+                endpoint_version_id, skill_bundle_hash, 清單參照, source,
+            )  # type: ignore[operator]
+        except _控制流程:
+            self = endpoint_version_id = skill_bundle_hash = 清單參照 = source = None
+            raise
+
+    def 取得工具修訂(self, 名稱: str, 修訂名稱: str) -> object:
+        """轉送 exact revision lookup。"""
+        try:
+            return object.__getattribute__(self, "_方法代理__方法")(名稱, 修訂名稱)  # type: ignore[operator]
+        except _控制流程:
+            self = 名稱 = 修訂名稱 = None
+            raise
+
+    def 產生發布回應(self, **參數: Any) -> object:
+        """轉送 factory 前捕捉的 model provider method。"""
+        try:
+            return object.__getattribute__(self, "_方法代理__方法")(**參數)  # type: ignore[operator]
+        except _控制流程:
+            self = 參數 = None
+            raise
+
+
+_執行器封印 = object()
+_執行器狀態鎖 = threading.Lock()
+_執行器狀態: weakref.WeakKeyDictionary[發布執行器, tuple[object, str, object, object, object]] = weakref.WeakKeyDictionary()
+
+
+def 建立發布執行器(
+    *, endpoint_version_id: str, service_account_id: str,
+    發布快照提供者: object, 服務帳戶載入器: object, 技能套件載入器: object,
+    工具修訂提供者: object, 模型供應商註冊表: dict[str, object],
+) -> 發布執行器:
+    """先捕捉所有 callback，再依 version→SA→bundle→tool→model 階段封存。"""
+    版本方法 = 帳戶方法 = 套件方法 = 工具方法 = None
+    模型描述 = 版本原值 = 版本 = 上下文 = 套件原值 = 套件 = None
+    工具登錄器 = 模型轉接器 = 提示 = 執行器 = 結構 = None
+    失敗 = False
+    try:
+        if not _是識別碼(endpoint_version_id) or not _是識別碼(service_account_id):
+            raise ValueError
+        if type(發布快照提供者) is 發布執行快照:
+            版本原值 = 發布快照提供者
+        else:
+            版本方法 = getattr(發布快照提供者, "取得發布執行快照")
+        帳戶方法 = getattr(服務帳戶載入器, "載入服務帳戶上下文")
+        套件方法 = getattr(技能套件載入器, "載入技能套件快照")
+        工具方法 = getattr(工具修訂提供者, "取得工具修訂")
+        模型描述 = _捕捉模型註冊表(模型供應商註冊表)
+        if 版本原值 is None:
+            版本原值 = 版本方法(endpoint_version_id)  # type: ignore[operator]
+        版本 = _重建發布快照(版本原值)
+        if 版本.version_id != endpoint_version_id or 版本.service_account_id != service_account_id:
+            raise ValueError
+        結構 = object.__getattribute__(版本, "_response_schema_json")
+        _預檢回應綱要(結構)
+        上下文 = 載入服務帳戶上下文或失敗關閉(
+            _方法代理(帳戶方法), service_account_id, endpoint_version_id,
+        )
+        _驗證交叉欄位(版本, 上下文)
+        套件原值 = 套件方法(
+            endpoint_version_id, 版本.skill_bundle_hash,
+            版本.manifest_reference, _唯一來源,
+        )  # type: ignore[operator]
+        套件 = _重建技能套件(套件原值)
+        if 套件.endpoint_version_id != endpoint_version_id or not hmac.compare_digest(
+            套件.skill_bundle_hash, 版本.skill_bundle_hash,
+        ):
+            raise ValueError
+        提示 = _建立提示(版本.system_prompt, 套件.files)
+        工具登錄器 = 建立版本釘選工具登錄器(_方法代理(工具方法), 版本.tool_snapshot)
+        模型轉接器 = 建立模型轉接器(dict(模型描述), 版本.model_config)
+        執行器 = object.__new__(_發布執行器實作)
+        with _執行器狀態鎖:
+            _執行器狀態[執行器] = (_執行器封印, 提示, 工具登錄器, 模型轉接器, 結構)
+        return 執行器
+    except _控制流程:
+        endpoint_version_id = service_account_id = 發布快照提供者 = 服務帳戶載入器 = None
+        技能套件載入器 = 工具修訂提供者 = 模型供應商註冊表 = None
+        版本方法 = 帳戶方法 = 套件方法 = 工具方法 = 模型描述 = None
+        版本原值 = 版本 = 上下文 = 套件原值 = 套件 = 工具登錄器 = 模型轉接器 = 提示 = 執行器 = 結構 = None
+        raise
+    except BaseException:
+        endpoint_version_id = service_account_id = 發布快照提供者 = 服務帳戶載入器 = None
+        技能套件載入器 = 工具修訂提供者 = 模型供應商註冊表 = None
+        版本方法 = 帳戶方法 = 套件方法 = 工具方法 = 模型描述 = None
+        版本原值 = 版本 = 上下文 = 套件原值 = 套件 = 工具登錄器 = 模型轉接器 = 提示 = 執行器 = 結構 = None
+        失敗 = True
+    if 失敗:
+        raise 發布執行錯誤(_固定錯誤) from None
+    raise AssertionError
+
+
+def _捕捉模型註冊表(註冊表: object) -> tuple[tuple[str, object], ...]:
+    """在任何 provider callback 前捕捉 registry descriptor 與全部 model methods。"""
+    描述 = 結果 = None
+    try:
+        if type(註冊表) is not dict:
+            raise ValueError
+        描述 = []
+        for 名稱, 提供者 in dict.items(註冊表):
+            if type(名稱) is not str:
+                raise ValueError
+            描述.append((名稱, 提供者))
+        if len(描述) != len(註冊表):
+            raise ValueError
+        結果 = []
+        for 名稱, 提供者 in 描述:
+            方法 = getattr(提供者, "產生發布回應")
+            if not callable(方法):
+                raise ValueError
+            結果.append((名稱, _方法代理(方法)))
+        迭代器 = iter(dict.items(註冊表))
+        for 名稱, 提供者 in 描述:
+            現名, 現提供者 = next(迭代器)
+            if 現名 != 名稱 or 現提供者 is not 提供者:
+                raise ValueError
+        try:
+            next(迭代器)
+            raise ValueError
+        except StopIteration:
+            return tuple(結果)
+    except BaseException:
+        註冊表 = 描述 = 結果 = 名稱 = 提供者 = 方法 = 迭代器 = 現名 = 現提供者 = None
+        raise
+
+
+def _重建發布快照(值: object) -> 發布執行快照:
+    """從 exact untrusted DTO 捕捉全欄並重新執行 invariants。"""
+    資料 = 結構 = 結果 = None
+    try:
+        if type(值) is not 發布執行快照:
+            raise ValueError
+        資料 = []
+        for 名稱 in 發布執行快照.__dataclass_fields__:
+            資料.append(object.__getattribute__(值, 名稱))
+        結構 = None if 資料[9] is None else _解析正規JSON(資料[9], 500_000)
+        結果 = 發布執行快照(
+            endpoint_id=資料[0], version_id=資料[1], service_account_id=資料[2],
+            system_prompt=資料[3], permission_snapshot_digest=資料[4],
+            skill_bundle_hash=資料[5], tool_handler_release=資料[6],
+            tool_snapshot=資料[7], model_config=資料[8], response_schema=結構,
+            manifest_reference=資料[10],
+        )
+        return 結果
+    except BaseException:
+        值 = 資料 = 結構 = 結果 = 名稱 = None
+        raise
+
+
+def _重建技能套件(值: object) -> 技能套件快照:
+    """從 loader exact DTO 重建完整 immutable bytes 與 manifest。"""
+    資料 = 結果 = None
+    try:
+        if type(值) is not 技能套件快照:
+            raise ValueError
+        資料 = []
+        for 名稱 in 技能套件快照.__dataclass_fields__:
+            資料.append(object.__getattribute__(值, 名稱))
+        結果 = 技能套件快照(
+            endpoint_version_id=資料[0], skill_bundle_hash=資料[1],
+            manifest_digest=資料[2], files=資料[3],
+        )
+        for 索引, 名稱 in enumerate(技能套件快照.__dataclass_fields__):
+            if object.__getattribute__(值, 名稱) is not 資料[索引]:
+                raise ValueError
+        return 結果
+    except BaseException:
+        值 = 資料 = 結果 = 名稱 = None
+        raise
+
+
+def _驗證交叉欄位(版本: 發布執行快照, 上下文: object) -> None:
+    """在 bundle/tool/model callback 前比對所有 authority pins 與工具順序。"""
+    工具名稱 = []
+    try:
+        for 項 in 版本.tool_snapshot:
+            工具名稱.append(項.name)
+        if (版本.service_account_id != 上下文.service_account_id
+                or 版本.version_id != 上下文.endpoint_version_id
+                or not hmac.compare_digest(版本.permission_snapshot_digest, 上下文.permission_snapshot_digest)
+                or tuple(工具名稱) != 上下文.allowed_tools
+                or not hmac.compare_digest(版本.skill_bundle_hash, 上下文.skill_bundle_hash)
+                or 版本.tool_handler_release != 上下文.tool_handler_release):
+            raise ValueError
+    except BaseException:
+        版本 = 上下文 = 工具名稱 = 項 = None
+        raise
+
+
+def _建立提示(系統提示: str, 檔案們: tuple[技能套件檔案, ...]) -> str:
+    """只嵌入 manifest 內 allowlisted UTF-8 text；binary/scripts/assets 固定略過。"""
+    區段 = 結果 = 文字 = None
+    try:
+        區段 = [系統提示]
+        for 項 in 檔案們:
+            if 項.path != "SKILL.md" and not 項.path.startswith(("references/", "templates/")):
+                continue
+            try:
+                文字 = 項.content.decode("utf-8", errors="strict")
+            except UnicodeDecodeError:
+                continue
+            區段.append(f"## 技能套件：{項.path}\n{文字}")
+        結果 = "\n\n".join(區段)
+        if len(結果.encode()) > _最大提示位元組:
+            raise ValueError
+        return 結果
+    except BaseException:
+        系統提示 = 檔案們 = 區段 = 結果 = 文字 = 項 = None
+        raise
