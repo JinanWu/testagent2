@@ -381,15 +381,46 @@ def _解析權限陣列(原始值: Any) -> tuple[str, ...]:
 
 
 def _驗證技能manifest(原始值: Any, 技能: tuple[str, ...]) -> None:
-    """驗證 P04 實際 manifest shape；不解析或讀取 live roots/filesystem。"""
-    manifest = 項目 = 技能項目 = None
+    """驗證 P04 的舊版或新版技能 manifest；不讀取即時來源目錄。
+
+    參數：``原始值`` 是資料庫保存的正規 JSON 文字；``技能`` 是版本快照的
+    exact 技能名稱 tuple。回傳：符合舊 exact 2-key 或新 exact 6-key 契約時回傳
+    ``None``。例外：型別、技能順序、SHA-256、套件識別或清單參照不符時拋出
+    ``ValueError``；三種控制流程例外維持原物件傳出。副作用：只配置有界 JSON
+    暫存物件，不讀取檔案系統、不修改資料庫。
+    """
+    manifest = 項目 = 技能項目 = bundle_id = reference = digest = bundle_hash = None
     名稱串列: list[Any] = []
     try:
-        manifest = 解析嚴格JSON(_驗證有界JSON(原始值))
-        if (type(manifest) is not dict
-                or set(manifest.keys()) != {"permission_revision", "skills"}
-                or not _合法識別(manifest.get("permission_revision"))):
+        if type(技能) is not tuple:
             raise ValueError
+        for 名稱 in 技能:
+            if not _合法識別(名稱):
+                raise ValueError
+        manifest = 解析嚴格JSON(_驗證有界JSON(原始值))
+        if type(manifest) is not dict:
+            raise ValueError
+        鍵集合 = set(manifest.keys())
+        if 鍵集合 not in (
+            {"permission_revision", "skills"},
+            {"permission_revision", "skills", "bundle_id", "manifest_reference", "manifest_digest", "sha256"},
+        ) or not _合法識別(manifest.get("permission_revision")):
+            raise ValueError
+        if len(鍵集合) == 6:
+            bundle_id = manifest.get("bundle_id")
+            reference = manifest.get("manifest_reference")
+            digest = manifest.get("manifest_digest")
+            bundle_hash = manifest.get("sha256")
+            if (
+                not _合法識別(bundle_id)
+                or type(reference) is not str
+                or reference != f"{bundle_id}/manifest.json"
+                or type(digest) is not str
+                or _SHA256規則.fullmatch(digest) is None
+                or type(bundle_hash) is not str
+                or _SHA256規則.fullmatch(bundle_hash) is None
+            ):
+                raise ValueError
         項目 = manifest.get("skills")
         if type(項目) is not list or len(項目) != len(技能):
             raise ValueError
@@ -409,7 +440,7 @@ def _驗證技能manifest(原始值: Any, 技能: tuple[str, ...]) -> None:
         if type(manifest) is dict:
             manifest.clear()
         名稱串列.clear()
-        del 原始值, 技能, manifest, 項目, 技能項目, 名稱串列
+        del 原始值, 技能, manifest, 項目, 技能項目, bundle_id, reference, digest, bundle_hash, 名稱串列
         raise
 
 
