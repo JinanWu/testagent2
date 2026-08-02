@@ -123,6 +123,55 @@ class 端點發布結果:
             _拒絕輸入()
 
 
+class SQLite端點發布服務:
+    """在既有完整遷移 SQLite 中原子建立 endpoint、v1、service account 與憑證。"""
+
+    def __init__(
+        self, database_path: str | Path, endpoint_id_factory: Callable[[], str],
+        version_id_factory: Callable[[], str], credential_id_factory: Callable[[], str],
+        service_account_id_factory: Callable[[], str], clock: Callable[[], float],
+        connection_factory: Callable[..., sqlite3.Connection] = sqlite3.connect,
+    ) -> None:
+        """保存路徑與 callback；所有 callback 都會在交易開始前完成。"""
+        self._資料庫路徑 = database_path
+        self._識別工廠 = (endpoint_id_factory, version_id_factory, credential_id_factory, service_account_id_factory)
+        self._時鐘 = clock
+        self._連線工廠 = connection_factory
+
+    def 發布(
+        self, owner_user_id: str, draft: 規劃草稿, version_snapshot: 發布版本快照,
+        prepared_credential: 已準備初始憑證, now: float,
+    ) -> 端點發布結果:
+        """完整 preflight 後，以單一連線與 BEGIN IMMEDIATE 發布固定 v1 圖形。"""
+        草稿副本 = 版本副本 = 憑證副本 = 確認 = 識別碼 = 建立時間 = 路徑 = 身分 = uri = 連線 = 結果 = None
+        發布失敗 = False
+        try:
+            草稿副本, 版本副本, 憑證副本, 確認 = _發布前驗證(
+                owner_user_id, draft, version_snapshot, prepared_credential, now,
+            )
+            識別碼 = _呼叫發布callbacks(self._識別工廠, self._時鐘)
+            建立時間 = 識別碼[4]
+            路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+            uri = 路徑.as_uri() + "?mode=rw"
+            連線 = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
+            _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+            _驗證並寫入(連線, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間)
+            結果 = 端點發布結果(識別碼[0], 識別碼[1], 識別碼[2], 識別碼[3])
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except (端點發布輸入錯誤, 端點發布錯誤):
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            raise
+        except BaseException:
+            發布失敗 = True
+        if 發布失敗:
+            del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 結果, 發布失敗
+            _拒絕發布()
+        del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 發布失敗
+        return 結果
+
+
 def _發布前驗證(owner: Any, draft: Any, snapshot: Any, credential: Any, now: Any) -> tuple[Any, ...]:
     """不觸發 callback/DB 地重建 DTO，並精確投影釘選能力摘要。"""
     草稿副本 = 版本副本 = 憑證副本 = 確認 = 綱要 = 摘要 = 項目 = None
@@ -304,6 +353,271 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
         del 關閉控制
         _拒絕發布()
     del 連線, 路徑, 身分, 路徑狀態, 資料庫列, 列, 主檔, 主檔狀態, 失敗, 關閉控制
+
+
+def _驗證並寫入(
+    連線: sqlite3.Connection, owner: str, draft: 規劃草稿, snapshot: 發布版本快照,
+    credential: 已準備初始憑證, confirmation: 發布值確認,
+    ids: tuple[Any, ...], created_at: float,
+) -> None:
+    """鎖住 schema 後驗證 fingerprint，並以明確狀態機完成單一交易。"""
+    已開始 = False
+    已提交 = False
+    交易失敗 = False
+    ledger = rows = raw = endpoint_id = version_id = credential_id = account_id = None
+    回滾控制: list[BaseException] = []
+    關閉控制: list[BaseException] = []
+    try:
+        連線.execute("PRAGMA foreign_keys = ON")
+        if 連線.execute("PRAGMA foreign_keys").fetchone() != (1,):
+            raise sqlite3.DatabaseError
+        連線.create_function(
+            "published_ip_allowlist_valid", 1, _allowlist_json有效, deterministic=True,
+        )
+        連線.execute("BEGIN IMMEDIATE")
+        已開始 = True
+        ledger = tuple(連線.execute("SELECT version,name FROM published_api_schema_migrations ORDER BY version"))
+        rows = list(連線.execute("SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name"))
+        raw = json.dumps(rows, ensure_ascii=False, separators=(",", ":"))
+        if ledger != _遷移ledger or hashlib.sha256(raw.encode("utf-8")).hexdigest() != _schema指紋:
+            raise sqlite3.DatabaseError
+        endpoint_id, version_id, credential_id, account_id = ids[:4]
+        _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (account_id, created_at))
+        _執行一列(
+            連線,
+            "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at,rate_limit_requests,rate_limit_window_seconds) VALUES(?,?,?,?,?,NULL,?,?,?,?)",
+            (endpoint_id, owner, account_id, confirmation.slug, "active", created_at, created_at, confirmation.endpoint_limit, confirmation.window_seconds),
+        )
+        _執行一列(
+            連線,
+            "INSERT INTO published_endpoint_versions(id,endpoint_id,version_number,original_requirement_text,system_prompt,allowed_skills_json,allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,model_config_snapshot_json,retry_policy_json,skill_bundle_manifest_json,input_schema_json,response_schema_json,schema_changed,created_by_user_id,created_at) VALUES(?,?,1,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
+            (version_id, endpoint_id, snapshot.original_requirement_text, snapshot.system_prompt,
+             _正規JSON(snapshot.allowed_skills), _正規JSON(snapshot.allowed_tools), _正規JSON(snapshot.tool_schema_snapshot),
+             snapshot.tool_runtime_revision, _正規JSON(snapshot.model_config_snapshot), _正規JSON(snapshot.retry_policy),
+             _正規JSON(snapshot.skill_bundle_manifest), None if snapshot.input_schema is None else _正規JSON(snapshot.input_schema),
+             _正規JSON(snapshot.response_schema), snapshot.created_by_user_id, created_at),
+        )
+        _執行一列(連線, "UPDATE published_endpoints SET current_version_id=? WHERE id=? AND current_version_id IS NULL", (version_id, endpoint_id))
+        _執行一列(
+            連線,
+            "INSERT INTO endpoint_credentials(id,endpoint_id,name,purpose,key_version,key_nonce,key_ciphertext,key_hash,key_prefix,key_last4,expires_at,last_used_at,created_at,updated_at,revoked_at,ip_allowlist_json,rate_limit_requests,created_by_user_id,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL,?,?,?,0)",
+            (credential_id, endpoint_id, credential.name, credential.purpose, credential.key_version,
+             credential.key_nonce, credential.key_ciphertext, credential.key_hash, credential.key_prefix,
+             credential.key_last4, credential.expires_at, created_at, created_at,
+             _正規JSON(credential.ip_allowlist), credential.rate_limit_requests, credential.created_by_user_id),
+        )
+        連線.execute("COMMIT")
+        已開始 = False
+        已提交 = True
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外鏈(控制)
+        if 已開始:
+            回滾控制 = _安全回滾(連線)
+        關閉控制 = _安全關閉(連線)
+        回滾控制.clear()
+        關閉控制.clear()
+        _清除例外鏈(控制)
+        del 控制
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制, 關閉控制
+        raise
+    except BaseException:
+        if 已開始:
+            回滾控制 = _安全回滾(連線)
+        關閉控制 = _安全關閉(連線)
+        交易失敗 = True
+    if 交易失敗:
+        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id
+        if 回滾控制:
+            關閉控制.clear()
+            _拋出清理控制(回滾控制.pop())
+        if 關閉控制:
+            _拋出清理控制(關閉控制.pop())
+        del 回滾控制, 關閉控制
+        _拒絕發布()
+    關閉控制 = _安全關閉(連線)
+    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 回滾控制
+    if 關閉控制:
+        _拋出清理控制(關閉控制.pop())
+    del 關閉控制
+
+
+def _執行一列(連線: sqlite3.Connection, sql: str, parameters: tuple[Any, ...]) -> None:
+    """執行必須正好影響一列的交易 statement。"""
+    try:
+        if 連線.execute(sql, parameters).rowcount != 1:
+            raise sqlite3.DatabaseError
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 連線, sql, parameters
+        raise
+
+
+def _正規JSON(值: Any) -> str:
+    """只 canonicalize preflight 已重建的 module-owned exact JSON。"""
+    try:
+        return json.dumps(值, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 值
+        raise
+
+
+def _安全回滾(連線: sqlite3.Connection) -> list[BaseException]:
+    """忽略 ordinary rollback 錯誤，回傳已去鏈結的控制流。"""
+    結果: list[BaseException] = []
+    try:
+        連線.execute("ROLLBACK")
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外鏈(控制)
+        控制.__traceback__ = None
+        結果.append(控制)
+    except BaseException:
+        pass
+    del 連線
+    return 結果
+
+
+def _安全關閉(連線: sqlite3.Connection) -> list[BaseException]:
+    """忽略 ordinary close 錯誤，回傳已去鏈結的控制流。"""
+    結果: list[BaseException] = []
+    try:
+        連線.close()
+    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清除例外鏈(控制)
+        控制.__traceback__ = None
+        結果.append(控制)
+    except BaseException:
+        pass
+    del 連線
+    return 結果
+
+
+def _清除例外鏈(控制: BaseException) -> None:
+    """原地移除控制流既有與隱式 exception graph。"""
+    控制.__cause__ = None
+    控制.__context__ = None
+    控制.__suppress_context__ = True
+
+
+def _拋出清理控制(控制: BaseException) -> NoReturn:
+    """以 exact identity 重拋，且 helper frame 不保留控制流別名。"""
+    _清除例外鏈(控制)
+    try:
+        raise 控制.with_traceback(None)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        del 控制
+        raise
+
+
+def _重建版本快照(來源: 發布版本快照, *, 建構中: bool = False) -> 發布版本快照:
+    """讀取每個 fixed slot 並重建快照；不信任 frozen instance identity。"""
+    值: dict[str, Any] = {}
+    名稱 = 項目 = 結果 = None
+    失敗 = False
+    try:
+        if type(來源) is not 發布版本快照:
+            失敗 = True
+        else:
+            for 名稱 in 發布版本快照.__dataclass_fields__:
+                值[名稱] = object.__getattribute__(來源, 名稱)
+                名稱 = None
+            if not _是文字(值["original_requirement_text"]) or not _是文字(值["system_prompt"]):
+                失敗 = True
+            elif not _是識別(值["tool_runtime_revision"]) or not _是識別(值["created_by_user_id"]):
+                失敗 = True
+            else:
+                for 名稱 in ("allowed_skills", "allowed_tools", "tool_schema_snapshot", "retry_policy", "skill_bundle_manifest", "response_schema"):
+                    值[名稱] = _建立JSON副本(值[名稱])
+                    名稱 = None
+                值["model_config_snapshot"] = _建立JSON副本(值["model_config_snapshot"], 拒絕秘密鍵=True)
+                if 值["input_schema"] is not None:
+                    值["input_schema"] = _建立JSON副本(值["input_schema"])
+                if not _是字串陣列(值["allowed_skills"]) or not _是字串陣列(值["allowed_tools"]):
+                    失敗 = True
+                else:
+                    for 名稱 in ("tool_schema_snapshot", "model_config_snapshot", "retry_policy", "skill_bundle_manifest", "response_schema"):
+                        if type(值[名稱]) is not dict:
+                            失敗 = True
+                            break
+                        名稱 = None
+                if 值["input_schema"] is not None and type(值["input_schema"]) is not dict:
+                    失敗 = True
+        if not 失敗:
+            if 建構中:
+                for 名稱, 項目 in dict.items(值):
+                    object.__setattr__(來源, 名稱, 項目)
+                    名稱 = 項目 = None
+                結果 = 來源
+            else:
+                結果 = 發布版本快照(**值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        值.clear()
+        del 來源, 建構中, 值, 名稱, 項目, 結果, 失敗
+        raise
+    except BaseException:
+        失敗 = True
+    值.clear()
+    if 失敗 or 結果 is None:
+        del 來源, 建構中, 值, 名稱, 項目, 結果, 失敗
+        _拒絕輸入()
+    del 來源, 建構中, 值, 名稱, 項目, 失敗
+    return 結果
+
+
+def _重建初始憑證(來源: 已準備初始憑證, *, 建構中: bool = False) -> 已準備初始憑證:
+    """重讀 exact slots 並複製敏感 bytes 與 allowlist。"""
+    值: dict[str, Any] = {}
+    名稱 = 項目 = 結果 = None
+    失敗 = False
+    try:
+        if type(來源) is not 已準備初始憑證:
+            失敗 = True
+        else:
+            for 名稱 in 已準備初始憑證.__dataclass_fields__:
+                值[名稱] = object.__getattribute__(來源, 名稱)
+                名稱 = None
+            if not _是有限非負(值["expires_at"]):
+                失敗 = True
+            elif not _是正整數(值["key_version"]):
+                失敗 = True
+            elif type(值["key_nonce"]) is not bytes or len(值["key_nonce"]) != 12:
+                失敗 = True
+            elif type(值["key_ciphertext"]) is not bytes or len(值["key_ciphertext"]) != 62:
+                失敗 = True
+            elif type(值["key_hash"]) is not str or len(值["key_hash"]) != 64 or any(字元 not in "0123456789abcdef" for 字元 in 值["key_hash"]):
+                失敗 = True
+            elif not _是短文字(值["name"], 120) or not _是短文字(值["purpose"], 1000):
+                失敗 = True
+            elif not _是識別(值["created_by_user_id"]):
+                失敗 = True
+            elif not _是短文字(值["key_prefix"], 32) or type(值["key_last4"]) is not str or len(值["key_last4"]) != 4:
+                失敗 = True
+            elif not _是正整數(值["rate_limit_requests"]) or 值["rate_limit_requests"] > 10_000:
+                失敗 = True
+            else:
+                值["ip_allowlist"] = _建立JSON副本(值["ip_allowlist"])
+                if type(值["ip_allowlist"]) is not list:
+                    失敗 = True
+                值["key_nonce"] = bytes(值["key_nonce"])
+                值["key_ciphertext"] = bytes(值["key_ciphertext"])
+        if not 失敗:
+            if 建構中:
+                for 名稱, 項目 in dict.items(值):
+                    object.__setattr__(來源, 名稱, 項目)
+                    名稱 = 項目 = None
+                結果 = 來源
+            else:
+                結果 = 已準備初始憑證(**值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        值.clear()
+        del 來源, 建構中, 值, 名稱, 項目, 結果, 失敗
+        raise
+    except BaseException:
+        失敗 = True
+    值.clear()
+    if 失敗 or 結果 is None:
+        del 來源, 建構中, 值, 名稱, 項目, 結果, 失敗
+        _拒絕輸入()
+    del 來源, 建構中, 值, 名稱, 項目, 失敗
+    return 結果
 
 
 def _建立JSON副本(來源: Any, *, 拒絕秘密鍵: bool = False) -> Any:
