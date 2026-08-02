@@ -136,6 +136,208 @@ class 呼叫建立儲存庫(Protocol):
         message_id: str | None = None, metadata: object | None = None,
         metadata_size_bytes: int | None = None, metadata_sha256: str | None = None,
     ) -> str: ...
+
+
+def 準備呼叫擷取(階段: 擷取階段, input: object, metadata: object | None) -> 呼叫擷取命令 | None:
+    """slug miss 不取值；憑證前只留 metadata 摘要，驗證後保存全文。"""
+    input快照 = metadata快照 = input_json = metadata_json = metadata_bytes = None
+    計數器 = [0]
+    try:
+        if type(階段) is not 擷取階段:
+            raise ValueError
+        if 階段 is 擷取階段.SLUG_MISS:
+            return None
+        input快照 = _建立精確JSON快照(input, 0, 計數器)
+        input = None
+        input_json = 建立正規JSON(input快照)
+        if len(input_json.encode("utf-8")) > _最大輸入位元組:
+            raise ValueError
+        if metadata is not None:
+            計數器[0] = 0
+            metadata快照 = _建立精確JSON快照(metadata, 0, 計數器)
+            metadata = None
+            metadata_canonical = 建立正規JSON(metadata快照)
+            metadata_bytes = metadata_canonical.encode("utf-8")
+            if len(metadata_bytes) > _最大METADATA位元組:
+                raise ValueError
+            metadata_size = len(metadata_bytes)
+            metadata_sha = hashlib.sha256(metadata_bytes).hexdigest()
+            if 階段 is 擷取階段.AUTHENTICATED:
+                metadata_json = metadata_canonical
+        else:
+            metadata_size = metadata_sha = None
+        return 呼叫擷取命令(
+            階段, "user", input_json, metadata_json, metadata_size, metadata_sha,
+        )
+    except BaseException as 邊界錯誤:
+        是控制流程 = type(邊界錯誤) in _控制流程例外
+        階段 = input = metadata = input快照 = metadata快照 = input_json = metadata_json = None
+        metadata_bytes = metadata_canonical = metadata_size = metadata_sha = 計數器 = None
+        if 是控制流程:
+            raise
+    raise 呼叫擷取錯誤("呼叫擷取失敗") from None
+
+
+def 準備含敏感偵測的呼叫擷取(
+    階段: 擷取階段, input: object, metadata: object | None, *, response_data: object | None = None,
+) -> 敏感偵測擷取結果 | None:
+    """只從 L03 canonical 脫離值產生位置旁路，不寫入或修改管線物件。"""
+    命令 = input值 = metadata值 = response快照 = response值 = 命中們 = None
+    metadata文字 = response文字 = 計數器 = None
+    try:
+        命令 = 準備呼叫擷取(階段, input, metadata)
+        input = metadata = None
+        if 命令 is None:
+            response_data = None
+            return None
+        if response_data is not None and 階段 is not 擷取階段.AUTHENTICATED:
+            raise ValueError
+        命令 = _重建旁路命令(命令)
+        input值 = _解析正規JSON(object.__getattribute__(命令, "input_json"))
+        metadata文字 = object.__getattribute__(命令, "metadata_json")
+        metadata值 = None if metadata文字 is None else _解析正規JSON(metadata文字)
+        命中們 = list(_偵測目標("input", input值))
+        input值 = None
+        if metadata值 is not None:
+            命中們.extend(_偵測目標("metadata", metadata值))
+            metadata值 = None
+        if response_data is not None:
+            計數器 = [0]
+            response快照 = _建立精確JSON快照(response_data, 0, 計數器)
+            response_data = None
+            response文字 = 建立正規JSON(response快照)
+            if len(str.encode(response文字, "utf-8")) > _最大輸入位元組:
+                raise ValueError
+            response值 = _解析正規JSON(response文字)
+            response快照 = response文字 = 計數器 = None
+            命中們.extend(_偵測目標("response_data", response值))
+            response值 = None
+        命中們.sort(key=lambda x: (x.目標代碼, x.JSON路徑, x.開始, x.結束, x.類型代碼))
+        return 敏感偵測擷取結果(命令, tuple(命中們),
+                         ("sensitive_data_detected",) if 命中們 else ())
+    except BaseException as 錯誤:
+        是控制流程 = type(錯誤) in _控制流程例外
+        階段 = input = metadata = response_data = 命令 = input值 = metadata值 = None
+        response快照 = response值 = 命中們 = metadata文字 = response文字 = 計數器 = 錯誤 = None
+        if 是控制流程:
+            raise
+    raise 敏感旁路錯誤("敏感資料旁路建立失敗") from None
+
+
+def _偵測目標(目標, 值) -> tuple[目標敏感命中, ...]:
+    """轉成 target-qualified detached copies；清單以空鍵包裝後還原原路徑。"""
+    原命中們 = 結果 = 命中 = 路徑 = 包裝 = None
+    try:
+        包裝 = type(值) not in (str, dict)
+        原命中們 = 偵測敏感資料({"": 值} if 包裝 else 值)
+        結果 = []
+        for 命中 in 原命中們:
+            路徑 = object.__getattribute__(命中, "JSON路徑")
+            if 包裝:
+                路徑 = 路徑[1:]
+            結果.append(目標敏感命中(
+                目標, object.__getattribute__(命中, "類型代碼"), 路徑,
+                object.__getattribute__(命中, "開始"), object.__getattribute__(命中, "結束"),
+            ))
+        return tuple(結果)
+    except BaseException:
+        目標 = 值 = 原命中們 = 結果 = 命中 = 路徑 = 包裝 = None
+        raise
+
+
+def _重建目標命中(命中) -> 目標敏感命中:
+    """從已驗證固定槽位建立不共享副本。"""
+    try:
+        if type(命中) is not 目標敏感命中:
+            raise ValueError
+        return 目標敏感命中(
+            object.__getattribute__(命中, "目標代碼"), object.__getattribute__(命中, "類型代碼"),
+            object.__getattribute__(命中, "JSON路徑"), object.__getattribute__(命中, "開始"),
+            object.__getattribute__(命中, "結束"),
+        )
+    except BaseException:
+        命中 = None
+        raise
+
+
+def _重建旁路命令(命令) -> 呼叫擷取命令:
+    """完整讀取、驗證 canonical 與階段矩陣，再建立不共享的命令。"""
+    階段 = role = input文字 = metadata文字 = metadata大小 = metadata摘要 = 位元組 = 字元 = None
+    try:
+        if type(命令) is not 呼叫擷取命令:
+            raise ValueError
+        階段 = object.__getattribute__(命令, "階段")
+        role = object.__getattribute__(命令, "metadata_role")
+        input文字 = object.__getattribute__(命令, "input_json")
+        metadata文字 = object.__getattribute__(命令, "metadata_json")
+        metadata大小 = object.__getattribute__(命令, "metadata_size_bytes")
+        metadata摘要 = object.__getattribute__(命令, "metadata_sha256")
+        if (type(階段) is not 擷取階段 or 階段 is 擷取階段.SLUG_MISS
+                or type(role) is not str or role != "user" or type(input文字) is not str):
+            raise ValueError
+        if len(str.encode(input文字, "utf-8")) > _最大輸入位元組:
+            raise ValueError
+        _解析正規JSON(input文字)
+        if (metadata大小 is None) != (metadata摘要 is None):
+            raise ValueError
+        if metadata大小 is not None:
+            if (type(metadata大小) is not int or not 0 <= metadata大小 <= _最大METADATA位元組
+                    or type(metadata摘要) is not str or len(metadata摘要) != 64):
+                raise ValueError
+            for 字元 in metadata摘要:
+                if 字元 not in "0123456789abcdef":
+                    raise ValueError
+        if metadata文字 is None:
+            if 階段 is 擷取階段.AUTHENTICATED and metadata大小 is not None:
+                raise ValueError
+        else:
+            if 階段 is not 擷取階段.AUTHENTICATED or type(metadata文字) is not str:
+                raise ValueError
+            _解析正規JSON(metadata文字)
+            位元組 = str.encode(metadata文字, "utf-8")
+            if len(位元組) != metadata大小 or hashlib.sha256(位元組).hexdigest() != metadata摘要:
+                raise ValueError
+        return 呼叫擷取命令(階段, role, input文字, metadata文字, metadata大小, metadata摘要)
+    except BaseException:
+        命令 = 階段 = role = input文字 = metadata文字 = metadata大小 = metadata摘要 = None
+        位元組 = 字元 = None
+        raise
+
+
+def 寫入呼叫擷取(
+    儲存庫: 呼叫建立儲存庫, 命令: 呼叫擷取命令,
+    endpoint_id: str, endpoint_version_id: str, request_id: str, *,
+    credential_id: str | None = None, session_id: str | None = None,
+    message_id: str | None = None,
+) -> str:
+    """驗證完整不可變命令後，精確一次委派 L01 repository 寫入。"""
+    階段值 = role值 = input_json值 = metadata_json值 = None
+    metadata_size值 = metadata_sha值 = input值 = metadata值 = None
+    try:
+        (階段值, role值, input_json值, metadata_json值,
+         metadata_size值, metadata_sha值) = _驗證寫入值(
+            命令, endpoint_id, endpoint_version_id, request_id,
+            credential_id, session_id, message_id,
+        )
+        input值 = _解析正規JSON(input_json值)
+        metadata值 = None if metadata_json值 is None else _解析正規JSON(metadata_json值)
+        return 儲存庫.建立已解析呼叫(
+            endpoint_id, endpoint_version_id, request_id, input值,
+            credential_id=credential_id, session_id=session_id, message_id=message_id,
+            metadata=metadata值, metadata_size_bytes=metadata_size值,
+            metadata_sha256=metadata_sha值,
+        )
+    except BaseException as 邊界錯誤:
+        是控制流程 = type(邊界錯誤) in _控制流程例外
+        儲存庫 = 命令 = endpoint_id = endpoint_version_id = request_id = None
+        credential_id = session_id = message_id = input值 = metadata值 = None
+        階段值 = role值 = input_json值 = metadata_json值 = None
+        metadata_size值 = metadata_sha值 = None
+        if 是控制流程:
+            raise
+    raise 呼叫擷取錯誤("呼叫擷取寫入失敗") from None
+
+
 def _建立精確JSON快照(值: object, 深度: int, 計數器: list[int]) -> object:
     """單次遞迴建立 module-owned JSON 樹，並限制深度與節點數。"""
     結果串列 = 結果字典 = 項目 = 鍵 = None
@@ -249,3 +451,64 @@ def _驗證寫入值(命令, endpoint_id, endpoint_version_id, request_id,
     if 無效:
         raise ValueError
     raise AssertionError
+
+
+def _解析正規JSON(原始文字) -> object:
+    """本地嚴格解析並驗證 canonical，所有失敗都先清除原文與結果。"""
+    解析結果 = 精確結果 = 正規文字 = None
+    計數器 = [0]
+    無效 = False
+    try:
+        if type(原始文字) is not str:
+            raise ValueError
+        解析結果 = json.loads(
+            原始文字,
+            object_pairs_hook=_建立無重複鍵物件,
+            parse_constant=_拒絕非有限常數,
+        )
+        精確結果 = _建立精確JSON快照(解析結果, 0, 計數器)
+        解析結果 = None
+        正規文字 = json.dumps(
+            精確結果, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        )
+        if type(正規文字) is not str or 正規文字 != 原始文字:
+            raise ValueError
+        return 精確結果
+    except BaseException as 邊界錯誤:
+        是控制流程 = type(邊界錯誤) in _控制流程例外
+        原始文字 = 解析結果 = 精確結果 = 正規文字 = 計數器 = None
+        if 是控制流程:
+            raise
+        無效 = True
+    if 無效:
+        raise ValueError
+    raise AssertionError
+
+
+def _建立無重複鍵物件(鍵值對) -> dict[str, object]:
+    """供本地 decoder 建立 exact dict，拒絕重複鍵。"""
+    結果 = {}
+    已見 = set()
+    鍵 = 值 = None
+    try:
+        if type(鍵值對) is not list:
+            raise ValueError
+        for 鍵, 值 in list.__iter__(鍵值對):
+            if type(鍵) is not str or 鍵 in 已見:
+                raise ValueError
+            已見.add(鍵)
+            結果[鍵] = 值
+        return 結果
+    except BaseException as 邊界錯誤:
+        是控制流程 = type(邊界錯誤) in _控制流程例外
+        鍵值對 = 結果 = 已見 = 鍵 = 值 = None
+        if 是控制流程:
+            raise
+        raise
+
+
+def _拒絕非有限常數(常數) -> None:
+    """拒絕 JSON 規格外的 NaN 與 Infinity token。"""
+    常數 = None
+    raise ValueError
