@@ -25,6 +25,8 @@
 
 最終整合分支：`review/cp4-readable-integration`。
 
+原始98個正式commits完整保留於：`review/cp4-original-checkpoint`。一般審查先讀可讀分支；只有需要追查設計演進、測試補強或來源SHA時，才回到原始分支。
+
 ## 建議審查順序
 
 每個能力分支都建議依下列順序閱讀：
