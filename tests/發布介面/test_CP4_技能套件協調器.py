@@ -636,6 +636,50 @@ def test_129項投影不一致在任何unlink前拒絕且before等於after(
     連線.close()
 
 
+def test_孤兒刪除中斷後再次啟動明確FailClosed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """刪除已開始後若收到控制例外，下一輪不得把不完整孤兒靜默視為成功。
+
+    參數：
+        tmp_path: 建立真實到期孤兒及 Published DB。
+        monkeypatch: 在第一個真實 unlink 完成後注入同一個控制例外。
+    回傳：
+        首輪保留控制例外 identity，第二輪固定 fail closed 時回傳 ``None``。
+    例外：
+        測試捕捉注入的 ``KeyboardInterrupt`` 與下一輪固定協調錯誤。
+    副作用：
+        刪除孤兒樹的一個檔案，刻意留下可偵測的不完整 crash residue。
+    """
+    根, 協調器 = _發布大量孤兒(tmp_path, 額外檔案數=2)
+    _, 連線 = _資料庫(tmp_path)
+    原始unlink = 協調模組.os.unlink
+    原始控制 = KeyboardInterrupt("delete interrupted", 31)
+    已注入 = False
+
+    def 刪除後中斷(名稱, *參數, **關鍵字):
+        """完成第一個真實 unlink 後注入控制例外，後續呼叫原樣委派。"""
+        nonlocal 已注入
+        結果 = 原始unlink(名稱, *參數, **關鍵字)
+        if not 已注入:
+            已注入 = True
+            raise 原始控制
+        return 結果
+
+    monkeypatch.setattr(協調模組.os, "unlink", 刪除後中斷)
+    with pytest.raises(KeyboardInterrupt) as 捕捉:
+        協調器.啟動協調(10.0, 連線)
+    assert 捕捉.value is 原始控制 and 捕捉.value.args == ("delete interrupted", 31)
+    assert 已注入 and not 連線.in_transaction
+
+    monkeypatch.setattr(協調模組.os, "unlink", 原始unlink)
+    with pytest.raises(技能套件協調錯誤, match="^技能套件協調錯誤$"):
+        協調器.啟動協調(11.0, 連線)
+    assert (根 / ".orphaned" / "bundle-many").exists()
+    連線.close()
+
+
 def test_uuid失敗會回滾自建BEGIN並恢復原交易狀態(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
