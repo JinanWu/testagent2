@@ -7,7 +7,7 @@ import { useSession } from '../app/SessionProvider'
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
 export default function ChatPage() {
-  const { user, logout } = useSession()
+  const { user, logout, replaceSession } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
@@ -94,7 +94,12 @@ export default function ChatPage() {
     setError(null)
     try {
       const auth = await getSession(controller.signal)
-      if (!auth) throw new Error('anonymous')
+      if (epoch.current !== requestEpoch || controller.signal.aborted) return
+      if (!auth) {
+        replaceSession(null)
+        return
+      }
+      replaceSession(auth)
       const result = await sendChat(text, sessionId, auth.csrfToken, controller.signal)
       if (epoch.current !== requestEpoch || controller.signal.aborted) return
       setSessionId(result.sessionId)
