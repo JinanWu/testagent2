@@ -14,6 +14,7 @@ import sqlite3
 import stat
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, NoReturn, Protocol
 
@@ -226,6 +227,61 @@ class 版本配置結果:
             or not _是有限非負(self.created_at)
         ):
             _拒絕輸入()
+
+
+@dataclass(frozen=True, slots=True)
+class 下一版本準備:
+    """保存建立下一版前由 SQLite 權威讀取的 current 與序號快照。
+
+    參數：端點、擁有者、目前版本、下一版號與目前版本快照共同限定候選基準。
+    回傳：建立脫離資料庫連線且可供協調器預配 bundle 的不可變準備資料。
+    例外：識別、版號或快照關係不符時拋出 ``版本配置輸入錯誤``。
+    副作用：建構時重建 JSON 容器以脫離呼叫端，不讀寫資料庫。
+    """
+
+    endpoint_id: str
+    owner_user_id: str
+    current_version_id: str
+    next_version_number: int
+    current_snapshot: 發布版本快照
+
+    def __post_init__(self) -> None:
+        """驗證準備資料並重建目前版本快照。
+
+        參數：無額外參數；讀取本實例的五個欄位。
+        回傳：驗證成功時回傳 ``None``。
+        例外：欄位或快照無效時拋出 ``版本配置輸入錯誤``。
+        副作用：以脫離副本取代 ``current_snapshot``，不執行外部輸入輸出。
+        """
+        try:
+            if (
+                type(self) is not 下一版本準備 or not _是識別(self.endpoint_id)
+                or not _是識別(self.owner_user_id) or not _是識別(self.current_version_id)
+                or type(self.next_version_number) is not int or self.next_version_number < 2
+            ):
+                raise ValueError
+            object.__setattr__(self, "current_snapshot", _重建版本快照(self.current_snapshot))
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except BaseException:
+            raise 版本配置輸入錯誤("版本配置輸入無效") from None
+
+
+class 版本配置提交判定(Enum):
+    """表示控制流程後對 SQLite 耐久狀態的三態權威判定。
+
+    欄位：``已提交``、``未提交`` 與 ``無法判定`` 分別代表完整四投影、完全無候選
+    投影，以及任何部分、矛盾或不可讀狀態。
+    回傳：列舉成員供跨資源協調器以 identity 比較處理。
+    例外：列舉建構遵循 Python ``Enum`` 既有契約。
+    副作用：無外部副作用。
+    """
+
+    已提交 = "已提交"
+    未提交 = "未提交"
+    無法判定 = "無法判定"
+
+
 class SQLite版本配置服務:
     """以立即交易配置下一個只能建立一次的不可變版本。
 
@@ -254,6 +310,197 @@ class SQLite版本配置服務:
         self._版本識別工廠 = version_id_factory
         self._時鐘 = clock
         self._連線工廠 = connection_factory
+
+    def 準備下一版本(self, owner_user_id: str, endpoint_id: str) -> 下一版本準備:
+        """唯讀鎖定 authoritative current，供檔案發布前預配 exact 下一版號。
+
+        參數：``owner_user_id`` 來自 canonical session；``endpoint_id`` 來自受限路徑。
+        回傳：脫離連線的 ``下一版本準備``，包含 current 快照與連續下一版號。
+        例外：輸入無效拋 ``版本配置輸入錯誤``；端點不存在、非 owner 或非 active
+        拋 ``版本存取錯誤``；資料庫或結構失敗拋 ``版本配置錯誤``；控制流程原樣傳出。
+        副作用：開啟唯讀 SQLite 連線與 deferred transaction，完成後提交唯讀交易並關閉。
+        """
+        路徑 = 身分 = 位址 = 連線 = 端點列 = 聚合列 = 版本列 = 快照 = 結果 = None
+        已開始 = 輸入無效 = 存取失敗 = 執行失敗 = False
+        try:
+            if not _是識別(owner_user_id) or not _是識別(endpoint_id):
+                輸入無效 = True
+            else:
+                路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+                位址 = 路徑.as_uri() + "?mode=ro"
+                連線 = self._連線工廠(位址, uri=True, timeout=30.0, isolation_level=None)
+                if not isinstance(連線, sqlite3.Connection):
+                    raise TypeError
+                _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+                連線.execute("BEGIN")
+                已開始 = True
+                _驗證schema(連線)
+                端點列 = 連線.execute(
+                    "SELECT owner_user_id,status,current_version_id FROM published_endpoints WHERE id=?",
+                    (endpoint_id,),
+                ).fetchone()
+                存取失敗 = (
+                    type(端點列) is not tuple or len(端點列) != 3
+                    or 端點列 != (owner_user_id, "active", 端點列[2])
+                    or not _是識別(端點列[2])
+                )
+                if not 存取失敗:
+                    聚合列 = 連線.execute(
+                        "SELECT count(*),min(version_number),max(version_number) "
+                        "FROM published_endpoint_versions WHERE endpoint_id=?", (endpoint_id,),
+                    ).fetchone()
+                    if (
+                        type(聚合列) is not tuple or len(聚合列) != 3
+                        or type(聚合列[0]) is not int or 聚合列[0] <= 0
+                        or 聚合列[1] != 1 or 聚合列[2] != 聚合列[0]
+                    ):
+                        raise sqlite3.DatabaseError
+                    版本列 = 連線.execute(
+                        "SELECT version_number,original_requirement_text,system_prompt,allowed_skills_json,"
+                        "allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,"
+                        "model_config_snapshot_json,retry_policy_json,skill_bundle_manifest_json,"
+                        "input_schema_json,response_schema_json,created_by_user_id "
+                        "FROM published_endpoint_versions WHERE id=? AND endpoint_id=?",
+                        (端點列[2], endpoint_id),
+                    ).fetchone()
+                    if (
+                        type(版本列) is not tuple or len(版本列) != 13
+                        or 版本列[0] != 聚合列[0] or 版本列[12] != owner_user_id
+                    ):
+                        raise sqlite3.DatabaseError
+                    快照 = 發布版本快照(
+                        original_requirement_text=版本列[1], system_prompt=版本列[2],
+                        allowed_skills=_解析正規值(版本列[3]),
+                        allowed_tools=_解析正規值(版本列[4]),
+                        tool_schema_snapshot=_解析正規值(版本列[5]),
+                        tool_runtime_revision=版本列[6],
+                        model_config_snapshot=_解析正規值(版本列[7]),
+                        retry_policy=_解析正規值(版本列[8]),
+                        skill_bundle_manifest=_解析正規值(版本列[9]),
+                        input_schema=None if 版本列[10] is None else _解析正規值(版本列[10]),
+                        response_schema=_解析正規值(版本列[11]),
+                        created_by_user_id=版本列[12],
+                    )
+                    結果 = 下一版本準備(
+                        endpoint_id, owner_user_id, 端點列[2], 聚合列[0] + 1, 快照,
+                    )
+                    連線.execute("COMMIT")
+                    已開始 = False
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            if 已開始 and isinstance(連線, sqlite3.Connection):
+                _確保回滾(連線).clear()
+            if isinstance(連線, sqlite3.Connection):
+                _確保關閉(連線).clear()
+            raise
+        except BaseException:
+            執行失敗 = not 輸入無效 and not 存取失敗
+        if 已開始 and isinstance(連線, sqlite3.Connection):
+            _確保回滾(連線).clear()
+        if isinstance(連線, sqlite3.Connection):
+            _確保關閉(連線).clear()
+        if 輸入無效:
+            raise 版本配置輸入錯誤("版本配置輸入無效") from None
+        if 存取失敗:
+            raise 版本存取錯誤("版本配置存取遭拒") from None
+        if 執行失敗 or type(結果) is not 下一版本準備:
+            raise 版本配置錯誤("版本配置失敗") from None
+        return 結果
+
+    def 判定版本配置提交結果(
+        self, *, 執行者使用者識別碼: str, 執行者類型: str,
+        端點識別碼: str, 版本識別碼: str, 版本號碼: int,
+        套件收據: 套件發布收據, 稽核識別碼: str, 建立時間: float,
+    ) -> 版本配置提交判定:
+        """以唯讀 SQLite 快照判定候選四投影是否已完整耐久提交。
+
+        參數：執行者、端點、版本、版號、套件收據、稽核識別與建立時間共同描述
+        本次唯一候選；不得接受客戶端路徑或 owner claim。
+        回傳：四投影全數精確符合時回 ``已提交``；候選三列全不存在且 current 未指向
+        候選時回 ``未提交``；任何部分、矛盾、不可讀或次要控制流程回 ``無法判定``。
+        例外：不向呼叫端傳出例外；所有失敗均安全收斂為 ``無法判定``。
+        副作用：開啟唯讀 SQLite 快照並關閉連線，不修改資料庫或檔案系統。
+        """
+        路徑 = 身分 = 位址 = 連線 = 端點列 = 版本列 = 收據列 = 稽核列 = None
+        已開始 = False
+        判定 = 版本配置提交判定.無法判定
+        try:
+            if (
+                not _是識別(執行者使用者識別碼)
+                or 執行者類型 not in ("user", "admin")
+                or not _是識別(端點識別碼) or not _是識別(版本識別碼)
+                or type(版本號碼) is not int or 版本號碼 < 2
+                or type(套件收據) is not 套件發布收據
+                or not _是識別(稽核識別碼) or not _是有限非負(建立時間)
+            ):
+                raise ValueError
+            路徑, 身分 = _驗證既有資料庫路徑(self._資料庫路徑)
+            位址 = 路徑.as_uri() + "?mode=ro"
+            連線 = self._連線工廠(位址, uri=True, timeout=30.0, isolation_level=None)
+            if not isinstance(連線, sqlite3.Connection):
+                raise TypeError
+            _驗證已開啟資料庫路徑(連線, 路徑, 身分)
+            連線.execute("BEGIN")
+            已開始 = True
+            _驗證schema(連線)
+            端點列 = 連線.execute(
+                "SELECT owner_user_id,status,current_version_id FROM published_endpoints WHERE id=?",
+                (端點識別碼,),
+            ).fetchone()
+            版本列 = 連線.execute(
+                "SELECT id,endpoint_id,version_number,created_by_user_id,created_at "
+                "FROM published_endpoint_versions WHERE id=?", (版本識別碼,),
+            ).fetchone()
+            收據列 = 連線.execute(
+                "SELECT bundle_id,version_id,manifest_reference,manifest_digest,bundle_hash,"
+                "total_bytes,state,published_at FROM published_skill_bundles WHERE bundle_id=?",
+                (套件收據.套件識別碼,),
+            ).fetchone()
+            稽核列 = 連線.execute(
+                "SELECT id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,"
+                "resource_id,request_id,endpoint_id,created_at FROM audit_events WHERE id=?",
+                (稽核識別碼,),
+            ).fetchone()
+            連線.execute("COMMIT")
+            已開始 = False
+            預期端點 = (執行者使用者識別碼, "active", 版本識別碼)
+            預期版本 = (
+                版本識別碼, 端點識別碼, 版本號碼,
+                執行者使用者識別碼, 建立時間,
+            )
+            預期收據 = (
+                套件收據.套件識別碼, 版本識別碼, 套件收據.清單參照,
+                套件收據.清單摘要, 套件收據.套件雜湊, 套件收據.總位元組數,
+                "published", 建立時間,
+            )
+            預期稽核 = (
+                稽核識別碼, 稽核識別碼, 建立時間,
+                "endpoint_version_activated", "success", 執行者類型,
+                執行者使用者識別碼, "published_endpoint_version", 版本識別碼,
+                None, 端點識別碼, 建立時間,
+            )
+            if (
+                端點列 == 預期端點 and 版本列 == 預期版本
+                and 收據列 == 預期收據 and 稽核列 == 預期稽核
+            ):
+                判定 = 版本配置提交判定.已提交
+            elif (
+                type(端點列) is tuple and len(端點列) == 3
+                and 端點列[0:2] == (執行者使用者識別碼, "active")
+                and 端點列[2] != 版本識別碼
+                and 版本列 is None and 收據列 is None and 稽核列 is None
+            ):
+                判定 = 版本配置提交判定.未提交
+        except BaseException as 次要錯誤:
+            _清除例外鏈(次要錯誤)
+            判定 = 版本配置提交判定.無法判定
+        if 已開始 and isinstance(連線, sqlite3.Connection):
+            _確保回滾(連線).clear()
+        if isinstance(連線, sqlite3.Connection):
+            關閉控制 = _確保關閉(連線)
+            if 關閉控制:
+                關閉控制.clear()
+                判定 = 版本配置提交判定.無法判定
+        return 判定
 
     def 配置(
         self, owner_user_id: str, endpoint_id: str, prepared_snapshot: 發布版本快照,
@@ -310,6 +557,7 @@ class SQLite版本配置服務:
         副作用：預檢後開啟資料庫，完整交易提交或回滾，最後恰關閉一次連線。
         """
         快照 = 收據 = 驗證器 = 路徑 = 身分 = 位址 = 連線 = 結果 = None
+
         輸入無效 = 執行失敗 = 連線已擁有 = False
         try:
             輸入無效 = (
@@ -334,6 +582,8 @@ class SQLite版本配置服務:
                     raise TypeError("connection_factory 必須回傳 sqlite3.Connection")
                 _驗證已開啟資料庫路徑(連線, 路徑, 身分)
                 連線已擁有 = False
+                assert type(快照) is 發布版本快照
+                assert type(收據) is 套件發布收據
                 結果 = _配置並啟用交易(
                     連線, 執行者使用者識別碼, 執行者類型, 端點識別碼,
                     快照, 已準備版本識別碼, 已準備時間, 收據,
