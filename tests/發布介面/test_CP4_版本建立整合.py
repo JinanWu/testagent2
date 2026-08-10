@@ -1,9 +1,8 @@
 """A6-03：凍結 v1／v2 per-version 技能套件契約。
 
 本檔把 Acceptance #6「每個 Endpoint Version 都有自己的不可變 Bundle」寫成不可偷改的
-契約。v1 路徑已實作，相關案例應為 GREEN；v2 路徑尚未實作，
-``發布管理協調器.原子建立並切換版本()`` 目前固定回 ``管理操作錯誤("invalid")``，
-因此 v2 案例為 RED，且 RED 原因必須精確指向該協調器，而非 fixture 或環境。
+契約。v1 與 v2 路徑均已實作，相關案例皆應為 GREEN；v2 透過正式版本配置服務
+建立新 Bundle、Version 與 Receipt，並原子切換 current pointer。
 """
 from __future__ import annotations
 
@@ -30,6 +29,7 @@ from 繁中代理.發布介面.技能套件.載入器 import (
 )
 from 繁中代理.發布介面.規劃.擁有者能力 import 擁有者能力轉接器
 from 繁中代理.發布介面.規劃.發布管理 import 發布管理協調器
+from 繁中代理.發布介面.規劃.版本服務 import SQLite版本配置服務
 from 繁中代理.發布介面.規劃.端點發布 import SQLite端點發布服務
 from 繁中代理.發布介面.規劃.權限協調 import 權限協調器
 from 繁中代理.發布介面.規劃.綱要 import 規劃服務
@@ -107,11 +107,14 @@ def _建立環境(tmp_path: Path) -> dict:
     端點服務 = SQLite端點發布服務(
         資料庫, 未使用識別, 未使用識別, 未使用識別, 未使用識別, lambda: 20.0,
     )
+    版本服務 = SQLite版本配置服務(資料庫, 未使用識別, lambda: 20.0)
+    協調器 = 技能套件協調器(套件根, 孤兒保留秒數=3600, 時鐘=lambda: 20.0)
     服務 = 發布管理協調器(
         草稿服務=草稿服務, 擁有者解析器=解析器,
         套件發布器物件=技能套件發布器(套件根),
-        套件協調器物件=技能套件協調器(套件根, 孤兒保留秒數=3600, 時鐘=lambda: 20.0),
-        端點發布服務=端點服務, 憑證封套=封套, 時鐘=lambda: 20.0,
+        套件協調器物件=協調器,
+        端點發布服務=端點服務, 版本配置服務=版本服務,
+        憑證封套=封套, 時鐘=lambda: 20.0,
         識別碼產生器=識別碼, 隨機位元組=lambda 長度: bytes(range(長度)),
     )
     return {
@@ -133,13 +136,17 @@ def _第二版配置() -> dict:
     """建立 v2 應套用的新配置，只改行為文字不改身分。"""
     綱要 = _綱要()
     return {
-        "system_prompt": "只根據技能回答，並附出處", "response_schema": 綱要["response_schema"],
-        "rate_limit": 綱要["rate_limit"],
+        "original_requirement_text": "建立 Alpha API 第二版",
+        "system_prompt": "只根據技能回答，並附出處",
+        "model_config_snapshot": {"model": "published-v2", "temperature": 0},
+        "retry_policy": {"max_attempts": 2},
+        "input_schema": 綱要["input_schema"],
+        "response_schema": 綱要["response_schema"],
     }
 
 
 def _建立第二版(環境: dict, 結果: 端點發布結果):
-    """呼叫尚未完成的 v2 協調入口。"""
+    """呼叫正式 v2 協調入口建立下一版並切換 current pointer。"""
     return 環境["服務"].原子建立並切換版本(
         擁有者使用者識別碼=環境["擁有者"], 端點識別碼=結果.端點識別碼,
         配置=_第二版配置(),
