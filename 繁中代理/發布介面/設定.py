@@ -52,9 +52,15 @@ _本文上限政策 = MappingProxyType({
 class 限制登入請求Middleware:
     """依 exact method/path 政策在 JSON parser 前限制瀏覽器本文。"""
 
-    def __init__(self, 應用):
-        """保存下一層 ASGI 應用。"""
-        self.應用 = 應用
+    def __init__(self, app):
+        """保存 Starlette 傳入的下一層 ASGI 應用。
+
+        參數：``app`` 是 Starlette Middleware 建構契約要求的下一層 ASGI callable。
+        回傳：建構式正常完成後不回傳值。
+        例外：複製固定本文上限政策失敗時原樣傳出例外。
+        副作用：保存下一層應用，並建立本實例專用的唯讀本文上限政策。
+        """
+        self.應用 = app
         self._本文上限政策 = MappingProxyType(dict(_本文上限政策))
 
     async def __call__(self, 範圍, 接收, 傳送):

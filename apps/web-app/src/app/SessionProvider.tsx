@@ -26,6 +26,7 @@ export interface SessionContextValue {
   user: AuthUser | null
   login(username: string, password: string): Promise<void>
   logout(): Promise<void>
+  replaceSession(session: AuthSession | null): void
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null)
@@ -140,15 +141,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     const { controller, epoch } = beginOperation()
-    if (mounted.current && operationEpoch.current === epoch) {
-      setState({ status: 'anonymous' })
-    }
+    const shouldRevoke = state.status === 'authenticated'
     try {
-      if (state.status === 'authenticated') {
-        await requestLogout(state.session.csrfToken, controller.signal)
+      if (shouldRevoke) {
+        const fresh = await getSession(controller.signal)
         assertCurrentOperation(controller, epoch)
+        if (fresh !== null) {
+          await requestLogout(fresh.csrfToken, controller.signal)
+          assertCurrentOperation(controller, epoch)
+        }
       }
       assertCurrentOperation(controller, epoch)
+      if (mounted.current && operationEpoch.current === epoch) {
+        setState({ status: 'anonymous' })
+      }
     } catch (error) {
       try {
         assertCurrentOperation(controller, epoch)
@@ -162,14 +168,20 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [state, assertCurrentOperation, beginOperation, finishOperation])
 
+  const replaceSession = useCallback((session: AuthSession | null) => {
+    if (!mounted.current) return
+    setState(session === null ? { status: 'anonymous' } : { status: 'authenticated', session })
+  }, [])
+
   const value = useMemo<SessionContextValue>(
     () => ({
       status: state.status,
       user: state.status === 'authenticated' ? state.session.user : null,
       login,
       logout,
+      replaceSession,
     }),
-    [state, login, logout],
+    [state, login, logout, replaceSession],
   )
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>

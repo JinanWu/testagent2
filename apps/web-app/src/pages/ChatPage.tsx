@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { getSession } from '../api/auth'
+import { AUTH_ERROR_MESSAGE, getSession } from '../api/auth'
 import { CHAT_ERROR_MESSAGE, sendChat } from '../api/chat'
 import { getSessionDetail, listSessions, type SessionSummary, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
@@ -7,7 +7,7 @@ import { useSession } from '../app/SessionProvider'
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
 export default function ChatPage() {
-  const { user, logout } = useSession()
+  const { user, logout, replaceSession } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
@@ -26,6 +26,9 @@ export default function ChatPage() {
     submitOwnerEpochRef.current = null
     for (const controller of controllers.current) controller.abort()
     controllers.current.clear()
+    detailPendingRef.current = false
+    setDetailPending(false)
+    setPending(false)
     return epoch.current
   }, [])
 
@@ -64,6 +67,7 @@ export default function ChatPage() {
     controllers.current.add(controller)
     setError(null)
     setPending(false)
+    setMessages([])
     detailPendingRef.current = true
     setDetailPending(true)
     try {
@@ -94,7 +98,12 @@ export default function ChatPage() {
     setError(null)
     try {
       const auth = await getSession(controller.signal)
-      if (!auth) throw new Error('anonymous')
+      if (epoch.current !== requestEpoch || controller.signal.aborted) return
+      if (!auth) {
+        replaceSession(null)
+        return
+      }
+      replaceSession(auth)
       const result = await sendChat(text, sessionId, auth.csrfToken, controller.signal)
       if (epoch.current !== requestEpoch || controller.signal.aborted) return
       setSessionId(result.sessionId)
@@ -119,7 +128,10 @@ export default function ChatPage() {
         <p className="eyebrow">TestAgent2</p>
         <h1 id="chat-title">開始對話</h1>
         <p>已登入為 {user?.username}。系統會自動選擇適合的執行方式。</p>
-        <button type="button" onClick={() => { invalidate(); void logout().catch(() => undefined) }}>登出</button>
+        <button type="button" onClick={() => {
+          invalidate()
+          void logout().catch(() => { setError(AUTH_ERROR_MESSAGE) })
+        }}>登出</button>
         <nav aria-label="工作階段">
           <button type="button" onClick={newConversation}>新增對話</button>
           {sessions.map((session) => {
