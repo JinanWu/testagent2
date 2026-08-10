@@ -227,6 +227,28 @@ describe('safe auth API', () => {
     await act(async () => { renderer!.unmount() })
   })
 
+  it('redirects an already-authenticated unknown path to the default chat', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(sessionBody))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    const replaceState = vi.fn()
+    vi.stubGlobal('window', {
+      location: { pathname: '/untrusted' },
+      history: { replaceState },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+
+    let renderer: ReactTestRenderer
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    expect(replaceState).toHaveBeenCalledWith(null, '', DEFAULT_APP_ROUTE)
+    expect(renderer!.root.findByProps({ id: 'chat-title' }).children.join('')).toContain('對話')
+    expect(renderer!.root.findAllByProps({ id: 'route-error-title' })).toHaveLength(0)
+    await act(async () => { renderer!.unmount() })
+  })
+
   it('renders login anonymously and replaces the route with the default chat after login', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({}, 401))

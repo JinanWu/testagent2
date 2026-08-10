@@ -35,9 +35,12 @@ export default function LoginPage({ onAuthenticated }: LoginPageProps) {
     setError(null)
     try {
       await login(username, password)
-      if (mounted.current && operationEpoch.current === epoch) {
-        flushSync(() => setPassword(''))
-        if (mounted.current && operationEpoch.current === epoch) {
+      // Session status may unmount this page during flushSync; still navigate after success.
+      if (operationEpoch.current === epoch) {
+        if (mounted.current) {
+          flushSync(() => setPassword(''))
+        }
+        if (operationEpoch.current === epoch) {
           onAuthenticated?.()
         }
       }

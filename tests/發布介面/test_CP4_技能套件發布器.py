@@ -520,3 +520,120 @@ def test_C4_框架清理故障不覆蓋普通或控制流程原結果(tmp_path: 
     with pytest.raises(KeyboardInterrupt) as 控制錯誤:
         驗證已發布技能套件清單(原始資料)
     assert 控制錯誤.value is 中斷 and 控制錯誤.value.args == ("ORIGINAL_CONTROL",)
+
+
+def test_改名前暫存根保持可寫且最終目錄尚未出現(tmp_path: Path) -> None:
+    """釘選封存只鎖內容，暫存根維持 0700 使原子改名可行且成果尚未可見。
+
+    參數：``tmp_path`` 是 pytest 隔離目錄。回傳：無。
+    例外：只接受固定發布錯誤。副作用：在改名失敗點觀察暫存樹與最終路徑。
+    """
+    根目錄 = tmp_path / "bundles"
+    最終目錄 = 根目錄 / "bundle-1"
+    觀察: dict[str, object] = {}
+
+    def 失敗點(名稱: str) -> None:
+        """在改名前記錄暫存樹狀態後中止發布。
+
+        參數：``名稱`` 是線上失敗點。回傳：無。例外：命中改名時拋出 ``OSError``。
+        副作用：只讀取暫存樹模式，不修改檔案系統。
+        """
+        if 名稱 != "rename":
+            return
+        暫存列 = list(根目錄.glob(".stage-*"))
+        暫存根 = 暫存列[0]
+        觀察["最終已存在"] = 最終目錄.exists()
+        觀察["暫存根模式"] = stat.S_IMODE(暫存根.lstat().st_mode)
+        觀察["技能目錄模式"] = stat.S_IMODE((暫存根 / "demo").lstat().st_mode)
+        觀察["清單模式"] = stat.S_IMODE((暫存根 / "manifest.json").lstat().st_mode)
+        raise OSError("rename")
+
+    with pytest.raises(套件發布錯誤):
+        _發布(技能套件發布器(根目錄, 失敗點=失敗點), _建立來源(tmp_path))
+    assert 觀察["最終已存在"] is False
+    assert 觀察["暫存根模式"] == 0o700
+    assert 觀察["技能目錄模式"] == 0o555
+    assert 觀察["清單模式"] == 0o444
+    assert list(根目錄.glob(".stage-*")) == []
+    assert not 最終目錄.exists()
+
+
+def test_父目錄同步失敗仍保留完整且唯讀的最終套件(tmp_path: Path) -> None:
+    """確認父同步未知時成果已封存為 0555 並保有可驗證內容。
+
+    參數：``tmp_path`` 是 pytest 隔離目錄。回傳：無。
+    例外：只接受 ``套件耐久性未知``。副作用：發布並在父目錄同步前注入失敗。
+    """
+    def 失敗點(名稱: str) -> None:
+        """只在父目錄同步步驟注入系統錯誤。
+
+        參數：``名稱`` 是線上失敗點。回傳：無。例外：命中時拋出 ``OSError``。
+        副作用：不修改檔案系統。
+        """
+        if 名稱 == "parent_fsync":
+            raise OSError("parent_fsync")
+
+    根目錄 = tmp_path / "bundles"
+    with pytest.raises(套件耐久性未知) as 捕捉:
+        _發布(技能套件發布器(根目錄, 失敗點=失敗點), _建立來源(tmp_path))
+    成果 = 捕捉.value.收據.路徑
+    assert stat.S_IMODE(成果.lstat().st_mode) == 0o555
+    assert (成果 / "demo" / "nested" / "x.txt").read_text() == "content"
+    assert json.loads((成果 / "manifest.json").read_bytes())["bundle_hash"] == 捕捉.value.收據.套件雜湊
+    assert list(根目錄.glob(".stage-*")) == []
+
+
+def test_安全清除移除已封存暫存樹且不跟隨符號連結(tmp_path: Path) -> None:
+    """確認清理能刪除唯讀暫存樹，且只解除連結本身而不動連結目標。
+
+    參數：``tmp_path`` 是 pytest 隔離目錄。回傳：無。
+    例外：清理契約違反由 pytest 回報。副作用：建立含敵對連結的暫存樹後清理。
+    """
+    外部目錄 = tmp_path / "outside"
+    外部目錄.mkdir()
+    外部檔案 = 外部目錄 / "keep.txt"
+    外部檔案.write_text("keep")
+    os.chmod(外部檔案, 0o640)
+    os.chmod(外部目錄, 0o750)
+    暫存根 = tmp_path / ".stage-x"
+    (暫存根 / "demo" / "nested").mkdir(parents=True)
+    (暫存根 / "demo" / "SKILL.md").write_text("# demo")
+    (暫存根 / "demo" / "nested" / "x.txt").write_text("content")
+    os.symlink(外部目錄, 暫存根 / "demo" / "dir-link")
+    os.symlink(外部檔案, 暫存根 / "demo" / "file-link")
+    os.chmod(暫存根 / "demo" / "SKILL.md", 0o444)
+    os.chmod(暫存根 / "demo" / "nested" / "x.txt", 0o444)
+    os.chmod(暫存根 / "demo" / "nested", 0o555)
+    os.chmod(暫存根 / "demo", 0o555)
+
+    發布器模組._安全清除(暫存根)
+
+    assert not 暫存根.exists()
+    assert 外部目錄.is_dir()
+    assert 外部檔案.read_text() == "keep"
+    assert stat.S_IMODE(外部目錄.lstat().st_mode) == 0o750
+    assert stat.S_IMODE(外部檔案.lstat().st_mode) == 0o640
+
+
+def test_安全清除不刪除暫存根外項目且拒絕連結根(tmp_path: Path) -> None:
+    """確認清理只作用於自有暫存根，連結指向的樹一律不被刪除。
+
+    參數：``tmp_path`` 是 pytest 隔離目錄。回傳：無。
+    例外：清理契約違反由 pytest 回報。副作用：以符號連結假冒暫存根後呼叫清理。
+    """
+    受害目錄 = tmp_path / "victim"
+    (受害目錄 / "inner").mkdir(parents=True)
+    (受害目錄 / "inner" / "data.txt").write_text("data")
+    os.chmod(受害目錄, 0o750)
+    鄰居 = tmp_path / "bundles" / "bundle-1"
+    鄰居.mkdir(parents=True)
+    (鄰居 / "manifest.json").write_text("{}")
+    連結根 = tmp_path / "bundles" / ".stage-link"
+    os.symlink(受害目錄, 連結根)
+
+    發布器模組._安全清除(連結根)
+
+    assert 連結根.is_symlink()
+    assert (受害目錄 / "inner" / "data.txt").read_text() == "data"
+    assert stat.S_IMODE(受害目錄.lstat().st_mode) == 0o750
+    assert (鄰居 / "manifest.json").read_text() == "{}"

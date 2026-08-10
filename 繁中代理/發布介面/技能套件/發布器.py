@@ -16,7 +16,6 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import stat
 import sys
 import tempfile
@@ -343,9 +342,10 @@ def _封存不可變並同步(根目錄: Path) -> None:
 
     參數：``根目錄`` 是已完成內容寫入的同層暫存樹。回傳：無。
     例外：列舉、chmod、開啟或同步錯誤原樣傳出。
-    副作用：一般檔改為 0444、目錄改為 0555，並逐一 fsync。
+    副作用：一般檔改為 0444、根以下目錄改為 0555，並逐一 fsync；暫存根本身只同步
+    而不封存，因為改名一個目錄需要對該目錄自身的寫入權限，且孤兒暫存根依契約為 0700。
     """
-    目錄列 = [根目錄]
+    目錄列: list[Path] = []
     檔案列: list[Path] = []
     for 目前根, 子目錄列, 子檔案列 in os.walk(根目錄, followlinks=False):
         目前 = Path(目前根)
@@ -366,29 +366,88 @@ def _封存不可變並同步(根目錄: Path) -> None:
             raise OSError
         os.chmod(路徑, 0o555, follow_symlinks=False)
         _同步目錄(路徑)
+    if not stat.S_ISDIR(根目錄.lstat().st_mode):
+        raise OSError
+    _同步目錄(根目錄)
+
+
+def _封存最終根並同步(最終目錄: Path, 預期身分: tuple[int, int]) -> None:
+    """在原子改名後把已釘選的成果根轉為唯讀並同步。
+
+    參數：``最終目錄`` 是剛改名完成的成果根；``預期身分`` 是改名前暫存根的
+    ``(st_dev, st_ino)``。回傳：無。
+    例外：種類或身分不符、chmod 與同步失敗時拋出 ``OSError``。
+    副作用：以不跟隨描述元將成果根改為 0555 並 ``fsync``，最後一律關閉描述元。
+    """
+    描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    try:
+        資訊 = os.fstat(描述元)
+        if not stat.S_ISDIR(資訊.st_mode) or (資訊.st_dev, 資訊.st_ino) != 預期身分:
+            raise OSError
+        os.fchmod(描述元, 0o555)
+        os.fsync(描述元)
+    finally:
+        os.close(描述元)
+
+
+def _清除目錄內容(目錄描述元: int, 剩餘深度: int) -> None:
+    """盡力清空一個已釘選目錄描述元底下的所有項目。
+
+    參數：``目錄描述元`` 由呼叫端持有且保證未跟隨符號連結；``剩餘深度`` 限制遞迴層數。
+    回傳：無。例外：個別項目錯誤一律抑制，不中斷其餘清理。
+    副作用：先放寬該目錄自身寫入權限，再以描述元相對操作刪除其中項目；只跟隨
+    以 ``O_NOFOLLOW`` 開啟並經 inode 釘選的子目錄，因此絕不越出這棵樹。
+    """
+    if 剩餘深度 <= 0:
+        return
+    try:
+        os.fchmod(目錄描述元, 0o700)
+    except OSError:
+        pass
+    try:
+        名稱列 = os.listdir(目錄描述元)
+    except OSError:
+        return
+    for 名稱 in 名稱列:
+        try:
+            資訊 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
+            if not stat.S_ISDIR(資訊.st_mode):
+                os.unlink(名稱, dir_fd=目錄描述元)
+                continue
+            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+            try:
+                釘選 = os.fstat(子描述元)
+                if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
+                    continue
+                _清除目錄內容(子描述元, 剩餘深度 - 1)
+            finally:
+                os.close(子描述元)
+            os.rmdir(名稱, dir_fd=目錄描述元)
+        except OSError:
+            continue
 
 
 def _安全清除(路徑: Path | None) -> None:
     """盡力清除可能已轉為唯讀的暫存目錄且不傳出例外。
 
     參數：``路徑`` 是待清除暫存目錄或 ``None``。回傳：無。例外：所有清理錯誤皆被抑制。
-    副作用：若路徑仍存在，放寬其目錄權限並遞迴刪除。
+    副作用：以不跟隨描述元開啟該樹，逐層恢復自有目錄寫入權限後刪除其中項目，最後
+    移除暫存根；路徑本身是符號連結時直接放棄，絕不刪除樹外項目。
     """
     if 路徑 is None:
         return
-    def 修復權限(_函式: Callable[..., Any], 失敗路徑: str, _資訊: Any) -> None:
-        """放寬清理期間遇到的唯讀路徑後重試刪除。
-
-        參數：``失敗路徑`` 是 shutil 回報位置，其餘參數只符合 callback。回傳：無。
-        例外：錯誤由外層清理抑制。副作用：chmod 後刪除該位置。
-        """
-        os.chmod(失敗路徑, 0o700)
-        if os.path.isdir(失敗路徑) and not os.path.islink(失敗路徑):
-            shutil.rmtree(失敗路徑, onerror=修復權限)
-        else:
-            os.unlink(失敗路徑)
     try:
-        shutil.rmtree(路徑, onerror=修復權限)
+        描述元 = os.open(路徑, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    except BaseException:
+        return
+    try:
+        _清除目錄內容(描述元, 限制().最大深度 + 1)
+    except BaseException:
+        pass
+    finally:
+        os.close(描述元)
+    try:
+        os.rmdir(路徑)
     except BaseException:
         pass
 
@@ -659,6 +718,7 @@ class 技能套件發布器:
             _封存不可變並同步(暫存目錄)
             self._失敗點("stage_fsync")
             _同步目錄(暫存目錄)
+            暫存資訊 = 暫存目錄.lstat()
             self._失敗點("rename")
             try:
                 _不可覆寫改名(暫存目錄, 最終目錄)
@@ -672,6 +732,7 @@ class 技能套件發布器:
                 清單["bundle_hash"], 清單["total_bytes"], 最終目錄,
             )
             try:
+                _封存最終根並同步(最終目錄, (暫存資訊.st_dev, 暫存資訊.st_ino))
                 self._失敗點("parent_fsync")
                 _同步目錄(self.根目錄)
             except Exception:
