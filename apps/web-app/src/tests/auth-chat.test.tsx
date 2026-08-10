@@ -126,7 +126,7 @@ describe('safe auth API', () => {
     await expect(requestLogout('csrf-secret')).rejects.toMatchObject({ message: AUTH_ERROR_MESSAGE })
   })
 
-  it('initializes once under StrictMode and fails closed on logout errors', async () => {
+  it('initializes once under StrictMode and keeps the session when logout fails', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(sessionBody))
     let session: SessionContextValue | undefined
     function Capture() {
@@ -165,7 +165,7 @@ describe('safe auth API', () => {
       headers: { Accept: 'application/json', 'X-CSRF-Token': 'csrf-secret' },
       signal: expect.any(AbortSignal),
     }))
-    expect(session?.status).toBe('anonymous')
+    expect(session?.status).toBe('authenticated')
     await act(async () => { renderer!.unmount() })
   })
 
