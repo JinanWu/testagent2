@@ -208,7 +208,7 @@ describe('SessionProvider operation ordering', () => {
       logoutPromise = current.logout()
       logoutResult = logoutPromise.catch((error: unknown) => error)
     })
-    expect(current.status).toBe('anonymous')
+    expect(current.status).toBe('authenticated')
     let loginPromise!: Promise<void>
     await act(async () => {
       loginPromise = current.login('later', 'secret')

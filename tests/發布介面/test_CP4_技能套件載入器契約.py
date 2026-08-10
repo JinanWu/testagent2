@@ -19,7 +19,7 @@ from 繁中代理.發布介面.技能套件.載入器 import (
 @pytest.fixture
 def 本機根() -> Path:
     """在非 symlink 的使用者目錄建立隔離樹，並修復唯讀發布樹後清除。"""
-    根 = Path(tempfile.mkdtemp(prefix="loader-test-", dir="/Users/wujinan"))
+    根 = Path(tempfile.mkdtemp(prefix="loader-test-", dir=Path.home()))
     yield 根
     for 目前, 目錄們, _檔案們 in os.walk(根):
         os.chmod(目前, 0o700)

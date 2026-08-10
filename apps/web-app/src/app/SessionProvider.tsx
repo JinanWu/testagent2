@@ -142,9 +142,6 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(async () => {
     const { controller, epoch } = beginOperation()
     const shouldRevoke = state.status === 'authenticated'
-    if (mounted.current && operationEpoch.current === epoch) {
-      setState({ status: 'anonymous' })
-    }
     try {
       if (shouldRevoke) {
         const fresh = await getSession(controller.signal)
@@ -155,6 +152,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
         }
       }
       assertCurrentOperation(controller, epoch)
+      if (mounted.current && operationEpoch.current === epoch) {
+        setState({ status: 'anonymous' })
+      }
     } catch (error) {
       try {
         assertCurrentOperation(controller, epoch)
