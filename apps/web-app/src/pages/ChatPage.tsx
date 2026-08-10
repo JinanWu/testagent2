@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { getSession } from '../api/auth'
+import { AUTH_ERROR_MESSAGE, getSession } from '../api/auth'
 import { CHAT_ERROR_MESSAGE, sendChat } from '../api/chat'
 import { getSessionDetail, listSessions, type SessionSummary, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
@@ -64,6 +64,7 @@ export default function ChatPage() {
     controllers.current.add(controller)
     setError(null)
     setPending(false)
+    setMessages([])
     detailPendingRef.current = true
     setDetailPending(true)
     try {
@@ -124,7 +125,10 @@ export default function ChatPage() {
         <p className="eyebrow">TestAgent2</p>
         <h1 id="chat-title">開始對話</h1>
         <p>已登入為 {user?.username}。系統會自動選擇適合的執行方式。</p>
-        <button type="button" onClick={() => { invalidate(); void logout().catch(() => undefined) }}>登出</button>
+        <button type="button" onClick={() => {
+          invalidate()
+          void logout().catch(() => { setError(AUTH_ERROR_MESSAGE) })
+        }}>登出</button>
         <nav aria-label="工作階段">
           <button type="button" onClick={newConversation}>新增對話</button>
           {sessions.map((session) => {
