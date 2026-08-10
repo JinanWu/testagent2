@@ -26,6 +26,9 @@ export default function ChatPage() {
     submitOwnerEpochRef.current = null
     for (const controller of controllers.current) controller.abort()
     controllers.current.clear()
+    detailPendingRef.current = false
+    setDetailPending(false)
+    setPending(false)
     return epoch.current
   }, [])
 
