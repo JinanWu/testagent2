@@ -275,7 +275,184 @@ def test_真實啟動補寫缺失收據且重新啟動保持冪等(tmp_path: Pat
     assert type(收據資料列[0][3]) is float and 收據資料列[0][3] > 0
 
 
-@pytest.mark.parametrize("孤兒保留秒數", (-1.0, float("nan"), float("inf"), "60"))
+def test_敵對rollback與close覆寫不會攔截基底清理或留下寫入鎖(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """協調 body 失敗後必須保留原錯誤並以基底 primitive 釋放 writer authority。
+
+    參數：
+        tmp_path: 提供真實 Published DB 與空技能套件根。
+        monkeypatch: 令 connect 回傳覆寫 rollback／close 的敵對連線 subclass。
+    返回值：
+        原錯誤 identity、覆寫零呼叫及第二 writer 成功時回傳 ``None``。
+    例外：
+        捕捉測試注入的 ``LookupError``；其他例外使案例失敗。
+    副作用：
+        開啟真實寫入交易後失敗，再由第二條連線取得並釋放寫鎖。
+    """
+    _, 發布設定 = _建立測試設定(tmp_path, lambda _工具庫: None, lambda: {"fake": object()})
+    初始化發布介面資料庫(發布設定.發布資料庫路徑)
+    真實連線工廠 = 生產組裝.sqlite3.connect
+    覆寫呼叫 = {"rollback": 0, "close": 0}
+    原始錯誤 = LookupError("body failed")
+
+    class 敵對連線(sqlite3.Connection):
+        """若 production 動態委派 cleanup，便拒絕釋放 transaction authority。"""
+
+        def rollback(self) -> None:
+            """記錄並拒絕動態 rollback；基底 primitive 不會呼叫本方法。"""
+            覆寫呼叫["rollback"] += 1
+            raise OSError("hostile rollback")
+
+        def close(self) -> None:
+            """記錄並拒絕動態 close；基底 primitive 不會呼叫本方法。"""
+            覆寫呼叫["close"] += 1
+            raise OSError("hostile close")
+
+    class 寫入後失敗協調器:
+        """持有真實 IMMEDIATE writer lock 後拋出原始錯誤。"""
+
+        def __init__(self, _根目錄: Path, *, 孤兒保留秒數: float) -> None:
+            """驗證保存期限並建立無狀態測試協調器。"""
+            assert 孤兒保留秒數 == 60.0
+
+        def 啟動協調(self, _現在: float, 資料庫: sqlite3.Connection):
+            """建立 writer transaction、修改資料後拋出固定錯誤。"""
+            資料庫.execute("BEGIN IMMEDIATE")
+            資料庫.execute("UPDATE service_accounts SET disabled_at=disabled_at WHERE id='missing'")
+            raise 原始錯誤
+
+    monkeypatch.setattr(生產組裝, "技能套件協調器", 寫入後失敗協調器)
+    monkeypatch.setattr(
+        生產組裝,
+        "_回滾協調資料庫",
+        lambda _資料庫: (_ for _ in ()).throw(OSError("rollback primitive failed")),
+    )
+    monkeypatch.setattr(
+        生產組裝.sqlite3,
+        "connect",
+        lambda 路徑: 真實連線工廠(路徑, factory=敵對連線),
+    )
+
+    with pytest.raises(LookupError) as 捕捉:
+        生產組裝._執行技能套件啟動協調(發布設定)
+
+    assert 捕捉.value is 原始錯誤 and 捕捉.value.args == ("body failed",)
+    assert 覆寫呼叫 == {"rollback": 0, "close": 0}
+    with 真實連線工廠(發布設定.發布資料庫路徑, timeout=0) as 第二寫入者:
+        第二寫入者.execute("BEGIN IMMEDIATE")
+        第二寫入者.rollback()
+
+
+def test_commit確認遺失會用新連線重驗並保持單一耐久結果(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """第一次 commit 已完成但回報錯誤時，第二次冪等協調應驗證 durable state。
+
+    參數：
+        tmp_path: 提供真實 Published DB 與空技能套件根。
+        monkeypatch: 令第一次提交先成功再拋出 acknowledgment error。
+    返回值：
+        第二次協調成功且資料列保持唯一時回傳 ``None``。
+    例外：
+        若重驗、提交或資料一致性失敗，例外原樣使案例失敗。
+    副作用：
+        以兩條短連線執行兩次協調，第一次實際提交一筆測試修復資料。
+    """
+    _, 發布設定 = _建立測試設定(tmp_path, lambda _工具庫: None, lambda: {"fake": object()})
+    初始化發布介面資料庫(發布設定.發布資料庫路徑)
+    協調次數 = 0
+    提交次數 = 0
+
+    class 冪等協調器:
+        """以唯一鍵模擬可安全重入的 canonical receipt repair。"""
+
+        def __init__(self, _根目錄: Path, *, 孤兒保留秒數: float) -> None:
+            """驗證保存期限並建立無狀態測試協調器。"""
+            assert 孤兒保留秒數 == 60.0
+
+        def 啟動協調(self, _現在: float, 資料庫: sqlite3.Connection):
+            """建立唯一修復列；重跑時不重複新增。"""
+            nonlocal 協調次數
+            協調次數 += 1
+            資料庫.execute("CREATE TABLE IF NOT EXISTS reconciliation_probe(id TEXT PRIMARY KEY)")
+            資料庫.execute("INSERT OR IGNORE INTO reconciliation_probe VALUES('repair-1')")
+            return object()
+
+    def 第一次提交後遺失確認(資料庫: sqlite3.Connection) -> None:
+        """第一次先真實提交再回報錯誤，第二次正常提交。"""
+        nonlocal 提交次數
+        提交次數 += 1
+        sqlite3.Connection.commit(資料庫)
+        if 提交次數 == 1:
+            raise sqlite3.OperationalError("commit acknowledgment lost")
+
+    monkeypatch.setattr(生產組裝, "技能套件協調器", 冪等協調器)
+    monkeypatch.setattr(生產組裝, "_提交協調資料庫", 第一次提交後遺失確認)
+
+    生產組裝._執行技能套件啟動協調(發布設定)
+
+    assert 協調次數 == 2 and 提交次數 == 2
+    with sqlite3.connect(發布設定.發布資料庫路徑) as 驗證資料庫:
+        assert 驗證資料庫.execute("SELECT id FROM reconciliation_probe").fetchall() == [("repair-1",)]
+
+
+def test_控制流程例外經基底回滾關閉後保持identity且不留寫入鎖(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """協調控制例外必須保持同一物件，同時讓第二 writer 立即取得 authority。
+
+    參數：
+        tmp_path: 提供真實 Published DB 與空技能套件根。
+        monkeypatch: 注入持鎖後拋出 ``KeyboardInterrupt`` 的協調器。
+    返回值：
+        identity／args／例外鏈與 writer lock 釋放皆成立時回傳 ``None``。
+    例外：
+        捕捉測試建立的控制例外；其他例外使案例失敗。
+    副作用：
+        開啟並回滾一個真實 IMMEDIATE transaction。
+    """
+    _, 發布設定 = _建立測試設定(tmp_path, lambda _工具庫: None, lambda: {"fake": object()})
+    初始化發布介面資料庫(發布設定.發布資料庫路徑)
+    原始控制 = KeyboardInterrupt("startup interrupted", 47)
+
+    class 控制失敗協調器:
+        """取得真實 writer lock 後拋出同一個控制例外物件。"""
+
+        def __init__(self, _根目錄: Path, *, 孤兒保留秒數: float) -> None:
+            """驗證保存期限並建立無狀態測試協調器。"""
+            assert 孤兒保留秒數 == 60.0
+
+        def 啟動協調(self, _現在: float, 資料庫: sqlite3.Connection):
+            """建立 writer transaction 後拋出同一個控制例外。"""
+            資料庫.execute("BEGIN IMMEDIATE")
+            raise 原始控制
+
+    monkeypatch.setattr(生產組裝, "技能套件協調器", 控制失敗協調器)
+    monkeypatch.setattr(
+        生產組裝,
+        "_回滾協調資料庫",
+        lambda _資料庫: (_ for _ in ()).throw(OSError("control rollback failed")),
+    )
+
+    with pytest.raises(KeyboardInterrupt) as 捕捉:
+        生產組裝._執行技能套件啟動協調(發布設定)
+
+    assert 捕捉.value is 原始控制 and 捕捉.value.args == ("startup interrupted", 47)
+    assert 捕捉.value.__cause__ is None and 捕捉.value.__context__ is None
+    with sqlite3.connect(發布設定.發布資料庫路徑, timeout=0) as 第二寫入者:
+        第二寫入者.execute("BEGIN IMMEDIATE")
+        第二寫入者.rollback()
+
+
+@pytest.mark.parametrize(
+    "孤兒保留秒數",
+    (-1.0, float("nan"), float("inf"), "60", False, 10**10_000, -(10**10_000)),
+    ids=("negative", "nan", "infinity", "string", "boolean", "huge-positive", "huge-negative"),
+)
 def test_發布設定拒絕不安全孤兒保存期限(
     tmp_path: Path,
     孤兒保留秒數: object,

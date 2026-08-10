@@ -112,7 +112,8 @@ class Published生產設定:
                 or type(根) is not _本機Path型別 or not 根.is_absolute()
                 or not callable(安裝器) or not callable(工廠)
                 or type(保留秒數) not in (int, float)
-                or not math.isfinite(保留秒數) or 保留秒數 < 0):
+                or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
+                or (type(保留秒數) is float and not math.isfinite(保留秒數))):
             raise ValueError("Published生產設定無效") from None
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
@@ -359,6 +360,52 @@ def _工具摘要(name: str, revision: str, description: str, parameters_json: s
     return 計算工具修訂摘要(name=name, revision=revision, description=description, parameters=參數)
 
 
+def _提交協調資料庫(協調資料庫: sqlite3.Connection) -> None:
+    """直接使用 SQLite 基底 primitive 提交協調交易。
+
+    參數：
+        協調資料庫: 目前持有協調交易的 SQLite 連線。
+    返回值：
+        提交成功後回傳 ``None``。
+    例外：
+        SQLite 提交或耐久確認失敗時原樣傳出。
+    副作用：
+        提交目前交易；不委派可能覆寫 ``commit`` 的連線 subclass 方法。
+    """
+    sqlite3.Connection.commit(協調資料庫)
+
+
+def _回滾協調資料庫(協調資料庫: sqlite3.Connection) -> None:
+    """直接使用 SQLite 基底 primitive 回滾仍存在的協調交易。
+
+    參數：
+        協調資料庫: 可能仍持有協調交易的 SQLite 連線。
+    返回值：
+        無交易或回滾完成後回傳 ``None``。
+    例外：
+        SQLite 回滾失敗時原樣傳出。
+    副作用：
+        必要時回滾目前交易；不委派可能覆寫 ``rollback`` 的 subclass 方法。
+    """
+    if 協調資料庫.in_transaction:
+        sqlite3.Connection.rollback(協調資料庫)
+
+
+def _關閉協調資料庫(協調資料庫: sqlite3.Connection) -> None:
+    """直接使用 SQLite 基底 primitive 釋放協調連線 authority。
+
+    參數：
+        協調資料庫: 本次 startup 獨占擁有的短生命週期連線。
+    返回值：
+        連線成功關閉後回傳 ``None``。
+    例外：
+        SQLite 基底關閉失敗時原樣傳出。
+    副作用：
+        關閉連線並釋放其交易與檔案鎖；不委派可能覆寫 ``close`` 的 subclass 方法。
+    """
+    sqlite3.Connection.close(協調資料庫)
+
+
 def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協調結果:
     """以獨立短連線完成技能套件啟動協調並提交修復結果。
 
@@ -369,32 +416,37 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協�
     例外：
         連線、協調或提交失敗原樣傳出；控制流程例外保持原物件。
     副作用：
-        開啟一條短生命週期 SQLite 連線，可能修復收據、隔離或刪除套件；
-        成功時提交，失敗時回滾，最後一定盡力關閉連線。
+        每次嘗試開啟一條短生命週期 SQLite 連線，可能修復收據、隔離或刪除套件；
+        成功時提交，普通提交錯誤以新連線重驗一次，其他失敗回滾後關閉。
     """
-    協調資料庫 = sqlite3.connect(發布.發布資料庫路徑)
-    try:
-        協調資料庫.execute("PRAGMA foreign_keys=ON")
-        協調器 = 技能套件協調器(
-            發布.技能套件發布根,
-            孤兒保留秒數=發布.孤兒保留秒數,
-        )
-        協調結果 = 協調器.啟動協調(time.time(), 協調資料庫)
-        協調資料庫.commit()
-        return 協調結果
-    except BaseException:
+    協調器 = 技能套件協調器(
+        發布.技能套件發布根,
+        孤兒保留秒數=發布.孤兒保留秒數,
+    )
+    for 嘗試次數 in range(2):
+        協調資料庫 = sqlite3.connect(發布.發布資料庫路徑)
         try:
-            協調資料庫.rollback()
-        except BaseException:
-            pass
-        raise
-    finally:
-        正在處理錯誤 = sys.exception()
-        try:
-            協調資料庫.close()
-        except BaseException:
-            if 正在處理錯誤 is None:
+            協調資料庫.execute("PRAGMA foreign_keys=ON")
+            協調結果 = 協調器.啟動協調(time.time(), 協調資料庫)
+            try:
+                _提交協調資料庫(協調資料庫)
+            except _控制流程例外:
                 raise
+            except BaseException:
+                if 嘗試次數 == 0:
+                    continue
+                raise
+            return 協調結果
+        except BaseException:
+            try:
+                _回滾協調資料庫(協調資料庫)
+            except BaseException:
+                # 基底 close 仍會釋放未提交交易；清理錯誤不得替換第一個失敗。
+                pass
+            raise
+        finally:
+            _關閉協調資料庫(協調資料庫)
+    raise AssertionError
 
 
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
