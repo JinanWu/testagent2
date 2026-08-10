@@ -7,7 +7,6 @@ from pathlib import Path
 import shutil
 import sqlite3
 import stat
-import sys
 
 import pytest
 
@@ -99,43 +98,62 @@ def test_開安全絕對目錄close釋放後失敗不重關舊fd且不洩漏next
 def test_開安全絕對目錄舊close成功後下一opcode控制仍清理next(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """old close 回傳後、下一 opcode 前注入控制，outer owned slot 必須已持有 next。"""
+    """驗證舊描述元關閉後的控制例外仍由外層清理新描述元。
+
+    參數：``tmp_path`` 提供真實目錄樹；``monkeypatch`` 安裝描述元事件探針。
+    回傳：所有權轉移、例外身分與關閉次數皆符合契約時回傳 ``None``。
+    例外：測試刻意注入原始 ``KeyboardInterrupt``，並由 ``pytest`` 捕捉驗證。
+    副作用：開啟測試目錄描述元，記錄每次關閉，並在舊描述元關閉返回後注入控制例外。
+    """
     目標 = tmp_path / "parent" / "target"
     目標.mkdir(parents=True)
     原開啟 = 協調模組.os.open
     原關閉 = 協調模組._系統關閉
+    原關閉描述元 = 協調模組._關閉描述元
     原控制 = KeyboardInterrupt("after-old-close-before-next-opcode", 23)
     已開啟: list[int] = []
     關閉紀錄: list[int] = []
-    舊關閉已回傳 = False
 
     def 記錄開啟(*參數, **關鍵字):
+        """開啟目錄並記錄成功取得的描述元。
+
+        參數：位置參數與關鍵字參數完整轉交既有 ``os.open`` 邊界。
+        回傳：底層成功開啟的整數描述元。
+        例外：原樣傳出底層開啟錯誤。
+        副作用：新增一筆成功開啟紀錄。
+        """
         描述元 = 原開啟(*參數, **關鍵字)
         已開啟.append(描述元)
         return 描述元
 
-    def 記錄關閉(描述元: int):
-        nonlocal 舊關閉已回傳
+    def 記錄關閉(描述元: int) -> None:
+        """記錄並執行一次真實描述元關閉。
+
+        參數：``描述元`` 是本次應釋放的整數 fd。
+        回傳：底層關閉成功後回傳 ``None``。
+        例外：原樣傳出底層關閉錯誤。
+        副作用：新增關閉紀錄並釋放描述元。
+        """
         關閉紀錄.append(描述元)
         原關閉(描述元)
-        if len(關閉紀錄) == 1:
-            舊關閉已回傳 = True
 
-    def opcode追蹤(框架, 事件, 參數):
-        if 框架.f_code is 協調模組._開安全絕對目錄.__code__:
-            框架.f_trace_opcodes = True
-            if 事件 == "opcode" and 舊關閉已回傳:
-                raise 原控制
-        return opcode追蹤
+    def 關閉舊描述元後注入控制(描述元: int) -> None:
+        """在第一次完整關閉返回後、呼叫端繼續執行前注入控制例外。
+
+        參數：``描述元`` 是協調器目前要求關閉的 owned fd。
+        回傳：第二次以後關閉成功時回傳 ``None``；第一次不正常回傳。
+        例外：第一次真實關閉成功後拋出同一個 ``原控制`` 物件。
+        副作用：透過正式清理函式關閉描述元，第一次另中斷呼叫端控制流程。
+        """
+        原關閉描述元(描述元)
+        if len(關閉紀錄) == 1:
+            raise 原控制
 
     monkeypatch.setattr(協調模組.os, "open", 記錄開啟)
     monkeypatch.setattr(協調模組, "_系統關閉", 記錄關閉)
-    sys.settrace(opcode追蹤)
-    try:
-        with pytest.raises(KeyboardInterrupt) as 捕捉:
-            協調模組._開安全絕對目錄(目標)
-    finally:
-        sys.settrace(None)
+    monkeypatch.setattr(協調模組, "_關閉描述元", 關閉舊描述元後注入控制)
+    with pytest.raises(KeyboardInterrupt) as 捕捉:
+        協調模組._開安全絕對目錄(目標)
 
     assert 捕捉.value is 原控制 and 捕捉.value.args == ("after-old-close-before-next-opcode", 23)
     assert len(已開啟) == 2

@@ -143,6 +143,7 @@ describe('safe auth API', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(session?.status).toBe('authenticated')
 
+    fetchMock.mockResolvedValueOnce(jsonResponse(sessionBody))
     fetchMock.mockRejectedValueOnce(new Error('private network detail'))
     let logoutFailed = false
     await act(async () => {
@@ -153,6 +154,11 @@ describe('safe auth API', () => {
       }
     })
     expect(logoutFailed).toBe(true)
+    expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/auth/session', expect.objectContaining({
+      method: 'GET',
+      credentials: 'include',
+      signal: expect.any(AbortSignal),
+    }))
     expect(fetchMock).toHaveBeenLastCalledWith('/api/auth/logout', expect.objectContaining({
       method: 'POST',
       credentials: 'include',
@@ -270,6 +276,10 @@ describe('safe auth API', () => {
         reply: { role: 'assistant', content: '您好，我能幫忙。' },
       }))
       .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+      .mockResolvedValueOnce(jsonResponse({
+        user: { id: 'user-1', username: 'alice', role: 'member' },
+        csrf_token: 'csrf-after-chat',
+      }))
       .mockResolvedValueOnce(noContentResponse())
     vi.stubGlobal('window', {
       location: { pathname: '/' },
@@ -325,7 +335,42 @@ describe('safe auth API', () => {
       await flush()
     })
     expect(renderer!.root.findByProps({ id: 'login-title' })).toBeDefined()
-    expect(fetchMock).toHaveBeenCalledTimes(6)
+    expect(fetchMock).toHaveBeenCalledTimes(7)
+    expect(fetchMock).toHaveBeenNthCalledWith(6, '/api/auth/session', expect.objectContaining({
+      method: 'GET',
+      credentials: 'include',
+      signal: expect.any(AbortSignal),
+    }))
+    expect(fetchMock).toHaveBeenNthCalledWith(7, '/api/auth/logout', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-after-chat' }),
+    }))
+    await act(async () => { renderer!.unmount() })
+  })
+
+  it('returns to login when chat discovers an expired session', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(sessionBody))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+    vi.stubGlobal('window', {
+      location: { pathname: '/' },
+      history: { replaceState: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })
+    let renderer: ReactTestRenderer
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+    await act(async () => {
+      renderer!.root.findByType('textarea').props.onChange({ currentTarget: { value: '你好' } })
+    })
+    await act(async () => {
+      await renderer!.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() })
+    })
+    expect(renderer!.root.findByProps({ id: 'login-title' })).toBeDefined()
+    expect(renderer!.root.findAllByType('textarea')).toHaveLength(0)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
     await act(async () => { renderer!.unmount() })
   })
 
