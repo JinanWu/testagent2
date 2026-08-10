@@ -25,6 +25,16 @@ function RouteShell() {
     }
   }
 
+  // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
+  useEffect(() => {
+    if (status !== 'authenticated' || route === DEFAULT_APP_ROUTE) {
+      return
+    }
+    if (replaceAppRoute(DEFAULT_APP_ROUTE)) {
+      setRoute(DEFAULT_APP_ROUTE)
+    }
+  }, [status, route])
+
   if (status === 'initializing') {
     return (
       <main className="app-shell">

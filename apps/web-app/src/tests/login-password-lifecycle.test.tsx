@@ -1,8 +1,17 @@
+import type { ReactNode } from 'react'
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CREDENTIALS_ERROR_MESSAGE } from '../api/auth'
-import { SessionProvider } from '../app/SessionProvider'
+import { SessionProvider, useSession } from '../app/SessionProvider'
 import LoginPage from '../pages/LoginPage'
+
+function UnmountLoginWhenAuthenticated({ children }: { children: ReactNode }) {
+  const { status } = useSession()
+  if (status === 'authenticated') {
+    return null
+  }
+  return children
+}
 
 type Deferred<T> = { promise: Promise<T>; resolve(value: T): void; reject(reason: unknown): void }
 
@@ -117,6 +126,27 @@ describe('LoginPage password lifecycle', () => {
 
     expect(passwordInput(renderer.root).props.value).toBe('')
     expect(JSON.stringify(renderer.toJSON())).not.toContain(marker)
+  })
+
+  it('still calls onAuthenticated when auth status unmounts the page', async () => {
+    const marker = 'PASSWORD-MARKER-UNMOUNT-RACE'
+    const authenticated = vi.fn()
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({}, 401))
+      .mockResolvedValueOnce(jsonResponse(successfulSession))
+    await act(async () => {
+      renderer = create(
+        <SessionProvider>
+          <UnmountLoginWhenAuthenticated>
+            <LoginPage onAuthenticated={authenticated} />
+          </UnmountLoginWhenAuthenticated>
+        </SessionProvider>,
+      )
+    })
+
+    await enterAndSubmit(renderer.root, marker)
+
+    expect(authenticated).toHaveBeenCalledOnce()
   })
 
   it('does not update state when success synchronously unmounts the page', async () => {
