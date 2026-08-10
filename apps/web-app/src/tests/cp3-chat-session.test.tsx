@@ -384,4 +384,46 @@ describe('CP3 真實對話工作流程', () => {
     expect(renderer.root.findByType('textarea').props.value).toBe('保留我')
     expect(JSON.stringify(renderer.toJSON())).not.toContain('你：保留我')
   })
+
+  it('登出失敗後不會讓被中斷的傳送卡住 pending', async () => {
+    await openChat()
+    let rejectAuth!: (reason?: unknown) => void
+    fetchMock.mockImplementationOnce((_input, init) => new Promise<Response>((_resolve, reject) => {
+      rejectAuth = reject
+      init?.signal?.addEventListener('abort', () => {
+        reject(new DOMException('aborted', 'AbortError'))
+      }, { once: true })
+    }))
+    await act(async () => renderer.root.findByType('textarea').props.onChange({
+      currentTarget: { value: '傳送中斷後仍可送' },
+    }))
+    let send!: Promise<void>
+    await act(async () => {
+      send = renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() })
+    })
+    expect(renderer.root.findByProps({ type: 'submit' }).props.children).toBe('傳送中…')
+    expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(true)
+
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(auth))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'private' }), { status: 500 }))
+    await act(async () => {
+      renderer.root.findByProps({ children: '登出' }).props.onClick()
+      await send.catch(() => undefined)
+      rejectAuth?.(new DOMException('aborted', 'AbortError'))
+      await Promise.resolve()
+    })
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('驗證服務暫時無法使用')
+    expect(renderer.root.findByProps({ id: 'chat-title' })).toBeDefined()
+    const submit = renderer.root.findByProps({ type: 'submit' })
+    expect(submit.props.children).toBe('傳送')
+    expect(submit.props.disabled).toBe(false)
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({
+      session_id: 'root', reply: { role: 'assistant', content: '恢復後回覆' },
+    })).mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
+    expect(JSON.stringify(renderer.toJSON())).toContain('恢復後回覆')
+  })
 })
