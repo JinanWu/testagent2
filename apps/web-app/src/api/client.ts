@@ -12,19 +12,27 @@ export { API_ROUTES }
 
 const MAX_RESPONSE_BYTES = 4096
 const MAX_LARGE_RESPONSE_BYTES = 1024 * 1024
-const MAX_STREAM_READS = 4096
+// 後端允許 16 MiB transcript；JSON control-character escaping 最壞可膨脹六倍，
+// 再保留 messages envelope 與 metadata 空間。此上限只套用 session detail。
+const MAX_SESSION_DETAIL_RESPONSE_BYTES = 97 * 1024 * 1024
+const MAX_EMPTY_STREAM_READS = 4096
 const MAX_REQUEST_BYTES = 1024
 const MAX_CHAT_REQUEST_BYTES = 100 * 1024
 const JSON_CONTENT_TYPE = 'application/json'
 const ROUTES = new Set<string>(Object.values(API_ROUTES))
+const SESSION_DETAIL_ROUTE = /^\/api\/sessions\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
+const RESOURCE_DETAIL_ROUTE = /^\/api\/(?:sessions|skills)\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
 
 function isAllowedRoute(route: string): boolean {
   return ROUTES.has(route) ||
     /^\/api\/sessions\?limit=(?:[1-9]|[1-4]\d|50)$/.test(route) ||
-    /^\/api\/(?:sessions|skills)\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/.test(route)
+    RESOURCE_DETAIL_ROUTE.test(route)
 }
 
 function responseLimit(route: string): number {
+  if (SESSION_DETAIL_ROUTE.test(route)) {
+    return MAX_SESSION_DETAIL_RESPONSE_BYTES
+  }
   return route === API_ROUTES.chat || route.startsWith('/api/sessions') || route.startsWith('/api/skills')
     ? MAX_LARGE_RESPONSE_BYTES : MAX_RESPONSE_BYTES
 }
@@ -67,7 +75,6 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 async function readBoundedResponse(response: Response, limit: number, signal?: AbortSignal): Promise<string> {
-  let bytes: Uint8Array | null = null
   let text: string | null = null
   const body = response.body
   try {
@@ -101,29 +108,47 @@ async function readBoundedResponse(response: Response, limit: number, signal?: A
     }
     const cancelOnAbort = () => { void cancel() }
     signal?.addEventListener('abort', cancelOnAbort, { once: true })
-    bytes = new Uint8Array(limit)
+    let bytes = new Uint8Array(Math.min(64 * 1024, limit))
     let count = 0
-    let reads = 0
+    let emptyReads = 0
     try {
       while (true) {
         throwIfAborted(signal)
-        if (++reads > MAX_STREAM_READS) {
-          await cancel()
-          throwIfAborted(signal)
-          throw new ApiFormatError()
-        }
         const result = await reader.read()
         throwIfAborted(signal)
         if (result.done) {
           break
         }
-        if (!(result.value instanceof Uint8Array) || count + result.value.byteLength > limit) {
+        if (!(result.value instanceof Uint8Array)) {
           await cancel()
           throwIfAborted(signal)
           throw new ApiFormatError()
         }
+        if (result.value.byteLength === 0) {
+          if (++emptyReads > MAX_EMPTY_STREAM_READS) {
+            await cancel()
+            throwIfAborted(signal)
+            throw new ApiFormatError()
+          }
+          continue
+        }
+        const nextCount = count + result.value.byteLength
+        if (nextCount > limit) {
+          await cancel()
+          throwIfAborted(signal)
+          throw new ApiFormatError()
+        }
+        if (nextCount > bytes.byteLength) {
+          let capacity = bytes.byteLength
+          while (capacity < nextCount) {
+            capacity = Math.min(limit, Math.max(nextCount, capacity * 2))
+          }
+          const grown = new Uint8Array(capacity)
+          grown.set(bytes.subarray(0, count))
+          bytes = grown
+        }
         bytes.set(result.value, count)
-        count += result.value.byteLength
+        count = nextCount
       }
       throwIfAborted(signal)
       text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, count))
@@ -142,7 +167,6 @@ async function readBoundedResponse(response: Response, limit: number, signal?: A
     }
     throw new ApiFormatError()
   } finally {
-    bytes = null
     text = null
   }
 }

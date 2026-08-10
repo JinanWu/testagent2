@@ -164,6 +164,44 @@ describe('CP3 安全 API clients', () => {
     await expect(sendChat('hi', null, 'csrf')).rejects.toThrow(ApiFormatError)
   })
 
+  it('接受超過 1 MiB、但仍符合後端契約的 session detail', async () => {
+    const messages = Array.from({ length: 17 }, () => ({
+      role: 'assistant', content: 'x'.repeat(65_536),
+    }))
+    const body = { session: sessionMetadata, messages }
+    expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeGreaterThan(1024 * 1024)
+    fetchMock.mockResolvedValueOnce(jsonResponse(body))
+
+    await expect(getSessionDetail('root')).resolves.toMatchObject({
+      messages: expect.arrayContaining([{ role: 'assistant', content: 'x'.repeat(65_536) }]),
+    })
+  })
+
+  it('接受超過 4096 個非空 chunks 組成的合法 session detail', async () => {
+    const bytes = new TextEncoder().encode(JSON.stringify({
+      session: sessionMetadata,
+      messages: [{ role: 'assistant', content: 'x'.repeat(5_000) }],
+    }))
+    let offset = 0
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (offset === bytes.byteLength) {
+          controller.close()
+          return
+        }
+        controller.enqueue(bytes.subarray(offset, ++offset))
+      },
+    }, { highWaterMark: 0 })
+    fetchMock.mockResolvedValueOnce(new Response(stream, {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }))
+
+    await expect(getSessionDetail('root')).resolves.toMatchObject({
+      messages: [{ role: 'assistant', content: 'x'.repeat(5_000) }],
+    })
+  })
+
   it.each([
     ['ASCII', 'x'.repeat(65_536)],
     ['multibyte', '界'.repeat(21_845) + 'x'],
