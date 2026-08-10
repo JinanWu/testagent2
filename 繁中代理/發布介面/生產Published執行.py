@@ -445,7 +445,12 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協�
                 pass
             raise
         finally:
-            _關閉協調資料庫(協調資料庫)
+            原始錯誤 = sys.exception()
+            try:
+                _關閉協調資料庫(協調資料庫)
+            except BaseException:
+                if 原始錯誤 is None:
+                    raise
     raise AssertionError
 
 

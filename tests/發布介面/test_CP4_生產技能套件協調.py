@@ -205,11 +205,15 @@ def test_協調失敗使正式應用啟動失敗且不執行執行期回呼(
     assert 事件清單 == []
 
 
-def test_真實啟動補寫缺失收據且重新啟動保持冪等(tmp_path: Path) -> None:
+def test_真實啟動在commit確認遺失後補寫收據且重新啟動保持冪等(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """正式 Startup 應提交 receipt repair，下一次啟動不得重複新增。
 
     參數：
         tmp_path: 提供真實技能來源、Bundle、Published DB 與 Web DB 路徑。
+        monkeypatch: 令第一次提交成功後回報 acknowledgment 遺失。
     返回值：
         首次補據、重新啟動及關閉皆成功且資料列唯一時回傳 ``None``。
     例外：
@@ -260,6 +264,17 @@ def test_真實啟動補寫缺失收據且重新啟動保持冪等(tmp_path: Pat
         lambda: {"fake": object()},
         60.0,
     )
+    提交次數 = 0
+
+    def 第一次提交後遺失確認(資料庫: sqlite3.Connection) -> None:
+        """第一次先真實提交再拋錯，後續提交正常完成。"""
+        nonlocal 提交次數
+        提交次數 += 1
+        sqlite3.Connection.commit(資料庫)
+        if 提交次數 == 1:
+            raise sqlite3.OperationalError("real coordinator commit acknowledgment lost")
+
+    monkeypatch.setattr(生產組裝, "_提交協調資料庫", 第一次提交後遺失確認)
 
     for _啟動次數 in range(2):
         代理 = 生產組裝.延遲外部呼叫編排器()
@@ -271,6 +286,7 @@ def test_真實啟動補寫缺失收據且重新啟動保持冪等(tmp_path: Pat
             "SELECT version_id,bundle_id,state,reconciled_at FROM published_skill_bundles"
         ).fetchall()
     assert len(收據資料列) == 1
+    assert 提交次數 == 3
     assert 收據資料列[0][:3] == ("version-1", "bundle-1", "reconciled")
     assert type(收據資料列[0][3]) is float and 收據資料列[0][3] > 0
 
@@ -446,6 +462,112 @@ def test_控制流程例外經基底回滾關閉後保持identity且不留寫入
     with sqlite3.connect(發布設定.發布資料庫路徑, timeout=0) as 第二寫入者:
         第二寫入者.execute("BEGIN IMMEDIATE")
         第二寫入者.rollback()
+
+
+@pytest.mark.parametrize(
+    "原始錯誤",
+    (
+        LookupError("ordinary primary", 11),
+        KeyboardInterrupt("keyboard primary", 13),
+        SystemExit("system primary", 17),
+        GeneratorExit("generator primary", 19),
+    ),
+    ids=("ordinary", "keyboard", "system-exit", "generator-exit"),
+)
+def test_close釋放後失敗不覆蓋主要例外且第二writer可立即取得鎖(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    原始錯誤: BaseException,
+) -> None:
+    """close 已釋放 authority 後的次要錯誤不得覆蓋 ordinary／control primary。
+
+    參數：
+        tmp_path: 提供真實 Published DB 與空技能套件根。
+        monkeypatch: 注入持鎖主要失敗，以及先關閉再拋錯的 cleanup seam。
+        原始錯誤: 依序覆蓋普通錯誤與三種控制流程例外。
+    返回值：
+        identity、args、例外鏈及第二 writer authority 全部成立時回傳 ``None``。
+    例外：
+        捕捉參數指定的同一主要例外；其他例外使案例失敗。
+    副作用：
+        建立真實 IMMEDIATE transaction，關閉短連線後由第二 writer 立即取鎖。
+    """
+    _, 發布設定 = _建立測試設定(tmp_path, lambda _工具庫: None, lambda: {"fake": object()})
+    初始化發布介面資料庫(發布設定.發布資料庫路徑)
+    真實關閉 = 生產組裝._關閉協調資料庫
+
+    class 持鎖失敗協調器:
+        """取得真實 writer lock 後拋出測試指定的主要例外。"""
+
+        def __init__(self, _根目錄: Path, *, 孤兒保留秒數: float) -> None:
+            """驗證保存期限並建立無狀態測試協調器。"""
+            assert 孤兒保留秒數 == 60.0
+
+        def 啟動協調(self, _現在: float, 資料庫: sqlite3.Connection):
+            """建立 writer transaction 後拋出同一個主要例外物件。"""
+            資料庫.execute("BEGIN IMMEDIATE")
+            資料庫.execute("UPDATE service_accounts SET disabled_at=disabled_at WHERE id='missing'")
+            raise 原始錯誤
+
+    def 關閉後回報次要失敗(資料庫: sqlite3.Connection) -> None:
+        """先透過 production 基底 primitive 真實關閉，再模擬 cleanup acknowledgment 失敗。"""
+        真實關閉(資料庫)
+        raise OSError("close cleanup failed after release")
+
+    monkeypatch.setattr(生產組裝, "技能套件協調器", 持鎖失敗協調器)
+    monkeypatch.setattr(生產組裝, "_關閉協調資料庫", 關閉後回報次要失敗)
+
+    with pytest.raises(type(原始錯誤)) as 捕捉:
+        生產組裝._執行技能套件啟動協調(發布設定)
+
+    assert 捕捉.value is 原始錯誤 and 捕捉.value.args == 原始錯誤.args
+    assert 捕捉.value.__cause__ is None and 捕捉.value.__context__ is None
+    with sqlite3.connect(發布設定.發布資料庫路徑, timeout=0) as 第二寫入者:
+        第二寫入者.execute("BEGIN IMMEDIATE")
+        第二寫入者.rollback()
+
+
+def test_成功協調後close失敗仍使startup關閉失敗(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """沒有主要錯誤時，close cleanup 失敗不得被靜默忽略。
+
+    參數：
+        tmp_path: 提供真實 Published DB 與空技能套件根。
+        monkeypatch: 令 close 先真實釋放連線後再拋固定錯誤。
+    返回值：
+        Startup 固定傳出 cleanup 錯誤後回傳 ``None``。
+    例外：
+        捕捉預期的 ``OSError``；錯誤遭抑制或被轉換時使案例失敗。
+    副作用：
+        執行一次無資料變更的協調與真實連線關閉。
+    """
+    _, 發布設定 = _建立測試設定(tmp_path, lambda _工具庫: None, lambda: {"fake": object()})
+    初始化發布介面資料庫(發布設定.發布資料庫路徑)
+    真實關閉 = 生產組裝._關閉協調資料庫
+
+    class 成功協調器:
+        """回傳成功結果且不建立額外交易狀態。"""
+
+        def __init__(self, _根目錄: Path, *, 孤兒保留秒數: float) -> None:
+            """驗證保存期限並建立無狀態測試協調器。"""
+            assert 孤兒保留秒數 == 60.0
+
+        def 啟動協調(self, _現在: float, _資料庫: sqlite3.Connection):
+            """不寫入資料並回傳成功結果。"""
+            return object()
+
+    def 關閉後回報失敗(資料庫: sqlite3.Connection) -> None:
+        """先真實關閉短連線，再回報固定 cleanup failure。"""
+        真實關閉(資料庫)
+        raise OSError("successful startup close failed")
+
+    monkeypatch.setattr(生產組裝, "技能套件協調器", 成功協調器)
+    monkeypatch.setattr(生產組裝, "_關閉協調資料庫", 關閉後回報失敗)
+
+    with pytest.raises(OSError, match="^successful startup close failed$"):
+        生產組裝._執行技能套件啟動協調(發布設定)
 
 
 @pytest.mark.parametrize(
