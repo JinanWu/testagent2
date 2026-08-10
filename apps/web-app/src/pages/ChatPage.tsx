@@ -64,6 +64,7 @@ export default function ChatPage() {
     controllers.current.add(controller)
     setError(null)
     setPending(false)
+    setMessages([])
     detailPendingRef.current = true
     setDetailPending(true)
     try {
