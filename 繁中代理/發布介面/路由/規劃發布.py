@@ -17,7 +17,7 @@ from functools import partial
 from inspect import signature
 from typing import Annotated, Any, Literal, Protocol, cast, get_type_hints
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from jsonschema import Draft202012Validator
@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictStr, field_v
 from starlette.concurrency import run_in_threadpool
 
 from 繁中代理.使用者 import 使用者上下文
+from ..設定 import 網頁CSRFHeader名稱
 from ..網頁工作階段 import 網頁使用者
 from ..嚴格JSON import 解析嚴格JSON
 from ..規劃.權限協調 import 授權選擇錯誤
@@ -362,11 +363,14 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
         請求: Request,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(csrf相依),
+        回應: Response = None,
     ) -> JSONResponse:
         """驗證目前工作階段請求並建立伺服器端草稿。
 
         參數：``請求`` 提供待消耗的 HTTP 本文；``使用者`` 是目前工作階段身份；
-        ``_csrf使用者`` 是觸發單次 CSRF 驗證但不另行使用的身份結果。
+        ``_csrf使用者`` 是觸發單次 CSRF 驗證但不另行使用的身份結果；``回應`` 是 FastAPI
+        注入、承載單次 CSRF 接續權杖的回應（標註必須是 exact ``Response`` 才會被注入，
+        預設 ``None`` 只服務直接呼叫處理器的測試路徑）。
         回傳：狀態碼 201 且只含草稿識別碼、到期時間與預覽的 ``JSONResponse``。
         例外：身份契約失效映射為 HTTP 500；未授權、輸出失效與服務不可用分別映射為 HTTP 403、502、503；
         本文失效由解析器映射為 HTTP 422，控制流例外原樣傳遞。
@@ -381,11 +385,11 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
             )
             if type(草稿) is not 規劃草稿:
                 raise ValueError
-            return JSONResponse(status_code=201, content={
+            return _傳遞CSRF接續(回應, JSONResponse(status_code=201, content={
                 "draft_id": 草稿.草稿識別碼,
                 "expires_at": 草稿.到期時間,
                 "preview": 草稿.綱要,
-            })
+            }))
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except 授權選擇錯誤:
@@ -433,22 +437,28 @@ def 建立安全規劃發布路由器(
         請求: Request,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(csrf相依),
+        回應: Response = None,
     ) -> JSONResponse:
         """以權威工作階段使用者識別碼執行單一原子發布。
 
-        參數：接收原始請求，以及目前工作階段與跨站防護相依回傳的身份。
+        參數：接收原始請求，目前工作階段與跨站防護相依回傳的身份，以及 FastAPI 注入、
+        承載單次 CSRF 接續權杖的 ``回應``（標註必須是 exact ``Response`` 才會被注入，
+        預設 ``None`` 只服務直接呼叫處理器的測試路徑）。
         回傳：成功時回傳狀態碼 201 與發布收據。
         例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
         副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次發布服務。
         """
-        本文 = 使用者識別碼 = 回應 = None
+        本文 = 使用者識別碼 = 結果回應 = None
         try:
             本文 = await _解析管理本文(請求, 發布端點請求)
             使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
-            回應 = await run_in_threadpool(_安全發布端點, 發布服務, 本文, 使用者識別碼)
-            return 回應
+            結果回應 = await run_in_threadpool(
+                _安全發布端點, 發布服務, 本文, 使用者識別碼,
+            )
+            return _傳遞CSRF接續(回應, 結果回應)
         finally:
-            請求 = 使用者 = _csrf使用者 = 本文 = 使用者識別碼 = 回應 = None
+            請求 = 使用者 = _csrf使用者 = 回應 = None
+            本文 = 使用者識別碼 = 結果回應 = None
 
     @路由器.post(
         "/{endpoint_id}/versions", status_code=201,
@@ -463,25 +473,28 @@ def 建立安全規劃發布路由器(
         ],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(csrf相依),
+        回應: Response = None,
     ) -> JSONResponse:
         """只傳使用者識別碼，讓服務重查權限後建立版本。
 
-        參數：接收原始請求、受限端點識別碼，以及兩個相依項回傳的身份。
+        參數：接收原始請求、受限端點識別碼、兩個相依項回傳的身份，以及 FastAPI 注入、
+        承載單次 CSRF 接續權杖的 ``回應``（標註必須是 exact ``Response`` 才會被注入，
+        預設 ``None`` 只服務直接呼叫處理器的測試路徑）。
         回傳：成功時回傳狀態碼 201 與新版本及目前版本指標收據。
         例外：本文、身份或服務結果失效時映射為固定 HTTP 錯誤。
         副作用：消耗本文、驗證兩份身份，並在工作執行緒呼叫一次版本服務。
         """
-        本文 = 使用者識別碼 = 回應 = None
+        本文 = 使用者識別碼 = 結果回應 = None
         try:
             本文 = await _解析管理本文(請求, 建立版本請求)
             使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
-            回應 = await run_in_threadpool(
+            結果回應 = await run_in_threadpool(
                 _安全建立版本, 發布服務, 本文, 端點識別碼, 使用者識別碼,
             )
-            return 回應
+            return _傳遞CSRF接續(回應, 結果回應)
         finally:
-            請求 = 端點識別碼 = 使用者 = _csrf使用者 = None
-            本文 = 使用者識別碼 = 回應 = None
+            請求 = 端點識別碼 = 使用者 = _csrf使用者 = 回應 = None
+            本文 = 使用者識別碼 = 結果回應 = None
 
     return 路由器
 
@@ -594,6 +607,29 @@ async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求
         raise
     except BaseException:
         raise HTTPException(status_code=422, detail={"code": "invalid_request"}) from None
+
+
+def _傳遞CSRF接續(來源: Response | None, 目標: JSONResponse) -> JSONResponse:
+    """把 CSRF 相依項寫在注入 ``Response`` 上的接續權杖轉貼到實際回傳的回應。
+
+    參數：``來源`` 是 FastAPI 注入且由 CSRF 相依項寫入接續權杖的回應，處理器被直接呼叫
+    （非經 ASGI）時為 ``None``；``目標`` 是處理器自行建立的最終回應。
+    回傳：已補齊接續 header 與 ``Set-Cookie`` 的 ``目標``。
+    例外：無預期例外。
+    副作用：只複製單次 CSRF 接續 header 與 cookie；不修改其他 header 或本文。
+
+    處理器自行回傳 ``Response`` 時 FastAPI 不會合併注入回應的 header 與 cookie，
+    因此單次 CSRF 輪替後的接續權杖會遺失，客戶端將無法送出第二個管理寫入請求。
+    """
+    if 來源 is None:
+        return 目標
+    接續 = 來源.headers.get(網頁CSRFHeader名稱)
+    if 接續 is not None:
+        目標.headers[網頁CSRFHeader名稱] = 接續
+    for 鍵, 值 in 來源.headers.raw:
+        if 鍵.lower() == b"set-cookie":
+            目標.headers.append(鍵.decode("latin-1"), 值.decode("latin-1"))
+    return 目標
 
 
 async def _解析管理本文(請求: Request, 模型: type[_嚴格請求]) -> _嚴格請求:
