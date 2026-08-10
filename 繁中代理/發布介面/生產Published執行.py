@@ -11,7 +11,11 @@
 """
 from __future__ import annotations
 import json
+import math
 import os
+import sqlite3
+import sys
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +43,7 @@ from .執行期.工具發布庫 import 工具發布庫
 from .執行期.快照儲存庫 import SQLite發布快照儲存庫
 from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
 from .技能套件.載入器 import 已發布技能套件載入器
+from .技能套件.協調器 import 啟動協調結果, 技能套件協調器
 from .路由.外部呼叫 import 建立外部呼叫路由
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
@@ -80,7 +85,8 @@ def _驗證資料庫實體隔離(Web資料庫: Path, Published資料庫: Path) -
 @dataclass(frozen=True, slots=True)
 class Published生產設定:
     """部署端必須明確提供的 CP4 executable dependencies。
-    參數：absolute Published DB、bundle root、exact-once 工具 installer 與模型 registry factory。
+    參數：absolute Published DB、bundle root、exact-once 工具 installer、模型 registry factory
+    與孤兒保存期限。
     返回值：不可變設定。
     例外：任一值不合 strict contract 時拋 ``ValueError``。
     副作用：只驗證 lexical path 與 callable，不讀檔案系統或呼叫 callback。
@@ -89,9 +95,10 @@ class Published生產設定:
     技能套件發布根: Path
     工具發布安裝器: Callable[[工具發布庫], None]
     模型供應商註冊表工廠: Callable[[], dict[str, object]]
+    孤兒保留秒數: float = 86_400.0
     def __post_init__(self) -> None:
         """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
-        參數：無；讀取四個設定欄位。
+        參數：無；讀取五個設定欄位。
         返回值：``None``。
         例外：設定無效時拋 ``ValueError``。
         副作用：無 I/O。
@@ -100,9 +107,12 @@ class Published生產設定:
         根 = object.__getattribute__(self, "技能套件發布根")
         安裝器 = object.__getattribute__(self, "工具發布安裝器")
         工廠 = object.__getattribute__(self, "模型供應商註冊表工廠")
+        保留秒數 = object.__getattribute__(self, "孤兒保留秒數")
         if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
                 or type(根) is not _本機Path型別 or not 根.is_absolute()
-                or not callable(安裝器) or not callable(工廠)):
+                or not callable(安裝器) or not callable(工廠)
+                or type(保留秒數) not in (int, float)
+                or not math.isfinite(保留秒數) or 保留秒數 < 0):
             raise ValueError("Published生產設定無效") from None
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
@@ -347,6 +357,46 @@ def _工具摘要(name: str, revision: str, description: str, parameters_json: s
     if type(參數) is not dict:
         raise ValueError("工具摘要無效") from None
     return 計算工具修訂摘要(name=name, revision=revision, description=description, parameters=參數)
+
+
+def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協調結果:
+    """以獨立短連線完成技能套件啟動協調並提交修復結果。
+
+    參數：
+        發布: 提供 Published DB、技能套件根與孤兒保存期限的不可變設定。
+    返回值：
+        本輪補收據、隔離及刪除結果的不可變 ``啟動協調結果``。
+    例外：
+        連線、協調或提交失敗原樣傳出；控制流程例外保持原物件。
+    副作用：
+        開啟一條短生命週期 SQLite 連線，可能修復收據、隔離或刪除套件；
+        成功時提交，失敗時回滾，最後一定盡力關閉連線。
+    """
+    協調資料庫 = sqlite3.connect(發布.發布資料庫路徑)
+    try:
+        協調資料庫.execute("PRAGMA foreign_keys=ON")
+        協調器 = 技能套件協調器(
+            發布.技能套件發布根,
+            孤兒保留秒數=發布.孤兒保留秒數,
+        )
+        協調結果 = 協調器.啟動協調(time.time(), 協調資料庫)
+        協調資料庫.commit()
+        return 協調結果
+    except BaseException:
+        try:
+            協調資料庫.rollback()
+        except BaseException:
+            pass
+        raise
+    finally:
+        正在處理錯誤 = sys.exception()
+        try:
+            協調資料庫.close()
+        except BaseException:
+            if 正在處理錯誤 is None:
+                raise
+
+
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                     代理: 延遲外部呼叫編排器) -> 生產Published執行資源:
     """startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
@@ -360,12 +410,14 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     例外：
         資料庫別名或模型表違約為 ``ValueError``；callback/control 例外保留 identity 傳出。
     副作用：
-        migration 前後查詢 FS identity，依序執行 initializer、installer、model factory 與 bridge 組裝。
+        migration 前後查詢 FS identity，依序執行 initializer、技能套件協調與提交、
+        installer、model factory 與 bridge 組裝。
     """
     資料庫 = 發布.發布資料庫路徑
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
     初始化發布介面資料庫(資料庫)
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
+    _執行技能套件啟動協調(發布)
     解析器 = SQLite目前版本解析器(資料庫)
     呼叫庫 = SQLite呼叫儲存庫(資料庫)
     憑證 = SQLite憑證驗證服務(資料庫)

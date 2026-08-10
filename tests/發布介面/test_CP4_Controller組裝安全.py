@@ -178,6 +178,7 @@ def test_模型工廠一般失敗會移除installer持有庫的所有live_handle
         建立後立即清除一個行程內工具發布。
     """
     monkeypatch.setattr(組裝, "初始化發布介面資料庫", lambda _路徑: None)
+    monkeypatch.setattr(組裝, "_執行技能套件啟動協調", lambda _設定: None)
     盒, 原始錯誤 = {}, LookupError("model failed")
     生產, 發布 = _設定(
         tmp_path / "web.sqlite3", tmp_path / "published.sqlite3", _安裝可觀測發布(盒),
@@ -203,6 +204,7 @@ def test_橋接控制流程失敗保持identity參數且清空模型與工具(tm
         建立後清除工具發布及 detached 模型表。
     """
     monkeypatch.setattr(組裝, "初始化發布介面資料庫", lambda _路徑: None)
+    monkeypatch.setattr(組裝, "_執行技能套件啟動協調", lambda _設定: None)
     盒, 中斷 = {}, KeyboardInterrupt("stop", "opaque")
 
     def 橋接失敗(**參數):
@@ -236,6 +238,7 @@ def test_正常resource關閉也清除工具庫live_handler(tmp_path, monkeypatc
         建立並關閉一次 Published lifespan resource。
     """
     monkeypatch.setattr(組裝, "初始化發布介面資料庫", lambda _路徑: None)
+    monkeypatch.setattr(組裝, "_執行技能套件啟動協調", lambda _設定: None)
     盒 = {}
     生產, 發布 = _設定(
         tmp_path / "web.sqlite3", tmp_path / "published.sqlite3", _安裝可觀測發布(盒),

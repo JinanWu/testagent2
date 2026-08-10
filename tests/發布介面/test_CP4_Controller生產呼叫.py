@@ -122,6 +122,7 @@ def test_startup安裝器與模型工廠exact_once並在shutdown清除(tmp_path)
         db, bundles, lambda _: calls.append("installer"),
         lambda: calls.append("models") or {"fake": object()},
     )
+    bundles.mkdir()
     app = 建立CP4ASGI應用程式(production, published)
     with TestClient(app) as client:
         assert client.get("/openapi.json").status_code == 200
