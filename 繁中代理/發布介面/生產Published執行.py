@@ -38,7 +38,9 @@ from .生產Published管理 import (
 from .憑證.加密 import AESGCM憑證封套
 from .規劃.發布管理 import 發布管理協調器
 from .規劃.端點發布 import SQLite端點發布服務
-from .規劃.版本服務 import SQLite目前版本解析器, 已釘選版本, 目前版本不存在錯誤
+from .規劃.版本服務 import (
+    SQLite目前版本解析器, SQLite版本配置服務, 已釘選版本, 目前版本不存在錯誤,
+)
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
 from .呼叫.儲存庫 import SQLite呼叫儲存庫
 from .呼叫.限流 import 限流決策
@@ -58,7 +60,9 @@ from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 技能套件協調器
 from .技能套件.發布器 import 技能套件發布器
 from .路由.外部呼叫 import 建立外部呼叫路由
-from .路由.規劃發布 import 建立安全草稿端點建立路由器, 建立安全草稿路由器
+from .路由.規劃發布 import (
+    建立安全規劃發布路由器, 建立安全草稿端點建立路由器, 建立安全草稿路由器,
+)
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -507,7 +511,7 @@ class 生產Published執行建構器:
                 self._草稿規劃代理, 目前工作階段相依, CSRF相依,
             )
         else:
-            管理路由器 = 建立安全草稿端點建立路由器(
+            管理路由器 = 建立安全規劃發布路由器(
                 self._草稿規劃代理, self._發布管理代理,
                 目前工作階段相依, CSRF相依,
             )
@@ -771,6 +775,9 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 lambda: f"service-account-{uuid.uuid4().hex}",
                 time.time,
             )
+            版本服務 = SQLite版本配置服務(
+                資料庫, lambda: f"version-{uuid.uuid4().hex}", time.time,
+            )
             憑證封套 = 發布.憑證封套工廠()
             if type(憑證封套) is not AESGCM憑證封套:
                 raise ValueError("Published憑證封套無效") from None
@@ -781,6 +788,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 套件協調器物件=套件協調器,
                 端點發布服務=端點發布服務,
                 憑證封套=憑證封套,
+                版本配置服務=版本服務,
                 模型設定={
                     "provider": 生產.模型供應器,
                     "model": 生產.模型名稱,
