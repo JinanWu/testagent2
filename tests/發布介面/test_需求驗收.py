@@ -21,7 +21,7 @@ from 繁中代理.發布介面.規劃.規劃器契約 import 文字回應結構
 from test_CP4_規劃草稿E2E import (
     _建立草稿, _建立環境, _登入, _草稿路徑, _草稿聚合, _發布面快照, _斷言零發布副作用,
     _使用者識別碼, _技能名稱, _帳號, _帳號二, _密碼二, _回應頂層鍵, _結構化回應結構,
-    _預覽鍵,
+    _預覽鍵, _建立合法Published基準, _草稿代理,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,29 +62,113 @@ _預期草稿請求綱要 = {
     },
 }
 
-_預期回應頂層屬性 = ("draft_id", "expires_at", "preview")
-_預期預覽屬性 = (
-    "behavior_summary", "endpoint_name", "human_docs", "input_schema",
-    "rate_limit", "recommended_tools", "response_schema", "selected_skills",
-    "suggested_slug", "system_prompt", "tool_capabilities", "warnings",
-)
-_預期限流屬性 = ("credential_per_minute", "endpoint_per_minute")
+_預期草稿請求 = {
+    "content": {"application/json": {"schema": _預期草稿請求綱要}},
+    "required": True,
+}
+
+_預期草稿201回應 = {
+    "description": "Successful Response",
+    "content": {
+        "application/json": {
+            "schema": {
+                "additionalProperties": False,
+                "description": "安全草稿 Route 對外公開的 exact 三鍵建立結果。",
+                "properties": {
+                    "draft_id": {"title": "Draft Id", "type": "string"},
+                    "expires_at": {"title": "Expires At", "type": "number"},
+                    "preview": {
+                        "additionalProperties": False,
+                        "description": "安全草稿 Route 對外公開的 exact 十二鍵預覽資料傳輸物件。",
+                        "properties": {
+                            "behavior_summary": {"title": "Behavior Summary", "type": "string"},
+                            "endpoint_name": {"title": "Endpoint Name", "type": "string"},
+                            "human_docs": {"title": "Human Docs", "type": "string"},
+                            "input_schema": {
+                                "anyOf": [
+                                    {
+                                        "additionalProperties": {},
+                                        "type": "object",
+                                    },
+                                    {"type": "null"},
+                                ],
+                                "title": "Input Schema",
+                            },
+                            "rate_limit": {
+                                "additionalProperties": False,
+                                "description": "安全草稿預覽中的 exact 兩鍵限流資料傳輸物件。",
+                                "properties": {
+                                    "credential_per_minute": {
+                                        "title": "Credential Per Minute", "type": "integer",
+                                    },
+                                    "endpoint_per_minute": {
+                                        "title": "Endpoint Per Minute", "type": "integer",
+                                    },
+                                },
+                                "required": ["endpoint_per_minute", "credential_per_minute"],
+                                "title": "安全草稿限流預覽",
+                                "type": "object",
+                            },
+                            "recommended_tools": {
+                                "items": {"type": "string"},
+                                "title": "Recommended Tools", "type": "array",
+                            },
+                            "response_schema": {
+                                "additionalProperties": {},
+                                "title": "Response Schema", "type": "object",
+                            },
+                            "selected_skills": {
+                                "items": {"type": "string"},
+                                "title": "Selected Skills", "type": "array",
+                            },
+                            "suggested_slug": {"title": "Suggested Slug", "type": "string"},
+                            "system_prompt": {"title": "System Prompt", "type": "string"},
+                            "tool_capabilities": {
+                                "additionalProperties": {"type": "string"},
+                                "title": "Tool Capabilities", "type": "object",
+                            },
+                            "warnings": {
+                                "items": {"type": "string"},
+                                "title": "Warnings", "type": "array",
+                            },
+                        },
+                        "required": [
+                            "endpoint_name", "suggested_slug", "behavior_summary",
+                            "selected_skills", "recommended_tools", "tool_capabilities",
+                            "system_prompt", "input_schema", "response_schema", "human_docs",
+                            "rate_limit", "warnings",
+                        ],
+                        "title": "安全草稿預覽",
+                        "type": "object",
+                    },
+                },
+                "required": ["draft_id", "expires_at", "preview"],
+                "title": "安全草稿建立結果",
+                "type": "object",
+            },
+        },
+    },
+}
 
 
-def _解析參照(規格: dict, 綱要: dict) -> dict:
-    """解析單層 ``$ref``，讓斷言直接針對實際結構而非參照名稱。"""
-    if "$ref" not in 綱要:
-        return 綱要
-    區段 = 綱要["$ref"].split("/")
-    assert 區段[:3] == ["#", "components", "schemas"], 綱要["$ref"]
-    return 規格["components"]["schemas"][區段[3]]
+def _解析參照(規格: dict, 值):
+    """只展開 local schema refs；期望 snapshot 始終是本檔案中的人工 literal。"""
+    if type(值) is list:
+        return [_解析參照(規格, 項目) for 項目 in 值]
+    if type(值) is not dict:
+        return 值
+    if set(值) == {"$ref"}:
+        區段 = 值["$ref"].split("/")
+        assert 區段[:3] == ["#", "components", "schemas"], 值["$ref"]
+        return _解析參照(規格, 規格["components"]["schemas"][區段[3]])
+    return {鍵: _解析參照(規格, 項目) for 鍵, 項目 in 值.items()}
 
 
 @pytest.fixture()
 def 規格(tmp_path: Path) -> dict:
     """建立 canonical app 並取得其 live OpenAPI 規格。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     return 應用.openapi()
 
 
@@ -102,29 +186,14 @@ def test_snapshot_gate_canonical路由清單完全相符(規格: dict):
 def test_snapshot_gate_草稿請求契約完全相符(規格: dict):
     """草稿 request schema 必須是 exact 三鍵且禁止額外欄位。"""
     請求 = 規格["paths"][_草稿路徑]["post"]["requestBody"]
-    assert 請求["required"] is True
-    assert tuple(請求["content"]) == ("application/json",)
-    assert 請求["content"]["application/json"]["schema"] == _預期草稿請求綱要
+    assert 請求 == _預期草稿請求
 
 
 def test_snapshot_gate_草稿回應契約完全相符(規格: dict):
-    """草稿 response schema 必須是 exact 三鍵、十二鍵預覽與兩鍵限流，且全部禁止額外欄位。"""
+    """201 response/media type 與所有 nested schema 必須逐欄 exact 相符。"""
     操作 = 規格["paths"][_草稿路徑]["post"]
-    assert sorted(操作["responses"]) == ["201"]
-
-    結果 = _解析參照(規格, 操作["responses"]["201"]["content"]["application/json"]["schema"])
-    assert 結果["additionalProperties"] is False
-    assert tuple(sorted(結果["properties"])) == _預期回應頂層屬性
-    assert tuple(sorted(結果["required"])) == _預期回應頂層屬性
-
-    預覽 = _解析參照(規格, 結果["properties"]["preview"])
-    assert 預覽["additionalProperties"] is False
-    assert tuple(sorted(預覽["properties"])) == _預期預覽屬性
-    assert tuple(sorted(預覽["required"])) == _預期預覽屬性
-
-    限流 = _解析參照(規格, 預覽["properties"]["rate_limit"])
-    assert 限流["additionalProperties"] is False
-    assert tuple(sorted(限流["properties"])) == _預期限流屬性
+    assert set(操作["responses"]) == {"201"}
+    assert _解析參照(規格, 操作["responses"]["201"]) == _預期草稿201回應
 
 
 def test_snapshot_gate_不得公開legacy規劃內容契約(規格: dict):
@@ -156,7 +225,7 @@ def test_snapshot_gate_UI仍明確Deferred(規格: dict):
 def test_驗收_真Login與單次CSRF流程通過(tmp_path):
     """真 Login、Cookie 與 single-use CSRF 必須構成草稿建立的唯一入口。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         assert _建立草稿(客戶端, "x" * 32, "text").status_code == 401
@@ -164,13 +233,15 @@ def test_驗收_真Login與單次CSRF流程通過(tmp_path):
         assert _建立草稿(客戶端, "y" * 32, "text").status_code == 403
         成功 = _建立草稿(客戶端, csrf, "text")
         assert 成功.status_code == 201, 成功.text
+        重放之前 = _發布面快照(環境)
         assert _建立草稿(客戶端, csrf, "text").status_code == 403
+        _斷言零發布副作用(環境, 重放之前)
 
 
 def test_驗收_兩種模式各一個201且契約固定(tmp_path):
     """Text 與 Structured 各至少一個 201，頂層三鍵、預覽十二鍵。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
@@ -191,7 +262,7 @@ def test_驗收_擁有者與期限正確且跨擁有者不可存取(tmp_path):
     from 繁中代理.發布介面.規劃.綱要 import 草稿不可執行錯誤, 草稿存取錯誤
 
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者一 = _使用者識別碼(環境, _帳號)
     擁有者二 = _使用者識別碼(環境, _帳號二)
 
@@ -214,11 +285,12 @@ def test_驗收_擁有者與期限正確且跨擁有者不可存取(tmp_path):
 
 
 def test_驗收_全流程零發布副作用(tmp_path):
-    """整段驗收流程結束後，發布面必須逐列、逐位元組維持空白。"""
+    """整段驗收流程結束後，發布面必須逐列、逐位元組維持 baseline。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
+        API金鑰 = _建立合法Published基準(環境)
         之前 = _發布面快照(環境)
         _, csrf = _登入(客戶端)
         文字 = _建立草稿(客戶端, csrf, "text")
@@ -226,11 +298,14 @@ def test_驗收_全流程零發布副作用(tmp_path):
         結構 = _建立草稿(客戶端, 文字.headers["X-CSRF-Token"], "structured")
         assert 結構.status_code == 201, 結構.text
         草稿識別碼 = 結構.json()["draft_id"]
+        呼叫之前 = _發布面快照(環境)
         呼叫 = 客戶端.post(
             f"/v1/endpoints/{草稿識別碼}/invoke", json={"input": {}},
-            headers={"X-API-Key": "not-a-real-key"},
+            headers={"Authorization": f"Bearer {API金鑰}"},
         )
-        assert 呼叫.status_code == 401
+        assert 呼叫.status_code == 404, 呼叫.text
+        assert 呼叫.json()["error"]["code"] == "endpoint_not_found"
+        _斷言零發布副作用(環境, 呼叫之前)
 
     _斷言零發布副作用(環境, 之前)
 
@@ -243,18 +318,23 @@ def test_驗收_Restart與Shutdown契約(tmp_path):
     環境 = _建立環境(tmp_path)
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
-    第一應用, 第一代理 = 環境["建立應用"]()
+    第一應用 = 環境["建立應用"]()
     with TestClient(第一應用) as 客戶端:
         _, csrf = _登入(客戶端)
         本文 = _建立草稿(客戶端, csrf, "structured").json()
+        第一代理 = _草稿代理(第一應用)
+        關閉之前 = _發布面快照(環境)
 
     assert 第一代理._服務 is None
     with pytest.raises(草稿規劃服務不可用):
         第一代理.建立草稿(擁有者識別碼, "建立 Alpha API", (_技能名稱,), "text", 現在=0.0)
+    _斷言零發布副作用(環境, 關閉之前)
 
-    第二應用, _ = 環境["建立應用"]()
+    重啟之前 = _發布面快照(環境)
+    第二應用 = 環境["建立應用"]()
     with TestClient(第二應用):
         第二聚合 = _草稿聚合(第二應用)
         assert 第二聚合._草稿 == {}
         with pytest.raises(草稿存取錯誤):
             第二聚合.讀取草稿(擁有者識別碼, 本文["draft_id"], 現在=本文["expires_at"] - 1)
+    _斷言零發布副作用(環境, 重啟之前)

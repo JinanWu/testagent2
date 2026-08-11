@@ -1,7 +1,7 @@
 """A3-05：Canonical Production App 的規劃草稿 Live Product E2E。
 
-前四張卡分別證明零件與安全邊界；本檔案改由真正的 canonical composition
-（``生產Controller建構器`` 搭配 ``建立生產應用程式``，即 ``建立CP4ASGI應用程式`` 的內部組裝）
+前四張卡分別證明零件與安全邊界；本檔案直接呼叫公開
+``建立CP4ASGI應用程式`` canonical factory
 啟動完整應用，走真 Login、Cookie、單次 CSRF、Owner Authority 與 Planner Composition
 建立草稿，並證明草稿不可 Invoke、跨擁有者不可存取，且完全沒有發布副作用。
 
@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
@@ -19,17 +20,20 @@ from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布庫, 工具發布描述, 工具發布註冊
-from 繁中代理.發布介面.生產Published執行 import Published生產設定, 生產Controller建構器
+from 繁中代理.發布介面.生產Published執行 import Published生產設定
 from 繁中代理.發布介面.生產Published管理 import (
     Planner生產設定, 延遲草稿規劃服務, 草稿規劃服務不可用,
 )
-from 繁中代理.發布介面.生產組裝 import 建立生產應用程式
+
 from 繁中代理.發布介面.規劃.綱要 import 規劃服務, 草稿不可執行錯誤, 草稿存取錯誤
 from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
 from 繁中代理.發布介面.規劃.規劃器契約 import 文字回應結構
 from 繁中代理.發布介面.設定 import (
     生產設定, 網頁CSRFHeader名稱, 網頁工作階段Cookie名稱, 網頁CSRFCookie名稱,
 )
+from 繁中代理.發布介面.憑證.儲存庫 import SQLite憑證儲存庫
+from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.領域模型 import WebOwnerPrincipal
 
 _草稿路徑 = "/api/published-endpoints/draft"
 _技能名稱 = "alpha"
@@ -114,10 +118,8 @@ def _建立環境(tmp_path: Path) -> dict:
     )
 
     def 建立應用():
-        """以 canonical 生產組裝建立一次完整 app，並交出同一個 per-app proxy。"""
-        建構器 = 生產Controller建構器(發布設定)
-        應用 = 建立生產應用程式(網頁設定, 建構器)
-        return 應用, 建構器._Published.取得草稿規劃代理()
+        """只透過公開 canonical CP4 factory 建立一次完整 app。"""
+        return 建立CP4ASGI應用程式(網頁設定, 發布設定)
 
     return {
         "建立應用": 建立應用, "網頁設定": 網頁設定, "發布設定": 發布設定,
@@ -163,6 +165,18 @@ def _Planner資源(應用):
     return 應用.state.發布介面資源[1].取得Planner資源()
 
 
+def _Published資源(應用):
+    """取得 canonical startup 安裝的 Published lifespan resource。"""
+    return 應用.state.發布介面資源[1]
+
+
+def _草稿代理(應用) -> 延遲草稿規劃服務:
+    """從 canonical app state 取得 startup-owned Planner proxy。"""
+    代理 = _Planner資源(應用)._代理
+    assert type(代理) is 延遲草稿規劃服務
+    return 代理
+
+
 def _草稿聚合(應用) -> 規劃服務:
     """取得 canonical startup 建立的唯一 Draft Aggregate。"""
     聚合 = _Planner資源(應用).取得規劃服務()
@@ -200,8 +214,29 @@ def _斷言零發布副作用(環境: dict, 之前: dict) -> None:
     """證明整段 E2E 沒有建立任何 Endpoint／Version／憑證／Bundle／Invocation。"""
     之後 = _發布面快照(環境)
     assert 之後 == 之前
-    assert 之後["bundle_tree"] == ()
-    assert all(之後["tables"][表] == () for 表 in _發布副作用資料表)
+    if 之前["bundle_tree"] == () and all(之前["tables"][表] == () for 表 in _發布副作用資料表):
+        assert 之後["bundle_tree"] == ()
+        assert all(之後["tables"][表] == () for 表 in _發布副作用資料表)
+
+
+def _建立合法Published基準(環境: dict) -> str:
+    """建立與 Draft 無關的 active endpoint 與 genuine credential，供 authenticated miss 使用。"""
+    with sqlite3.connect(環境["發布資料庫"]) as 連線:
+        連線.execute("INSERT INTO service_accounts(id,created_at) VALUES('baseline-sa',1)")
+        連線.execute(
+            "INSERT INTO published_endpoints("
+            "id,owner_user_id,service_account_id,slug,status,created_at,updated_at"
+            ") VALUES('baseline-endpoint','baseline-owner','baseline-sa','published-baseline','active',1,1)"
+        )
+    現在 = time.time()
+    return SQLite憑證儲存庫(
+        環境["發布資料庫"], AESGCM憑證封套({1: b"a" * 32}, 1),
+        clock=lambda: 現在, id_factory=lambda: "baseline-credential",
+    ).建立(
+        "baseline-endpoint", WebOwnerPrincipal("baseline-owner"),
+        name="A3-05 baseline", purpose="authenticated resolver probe",
+        expires_at=現在 + 3600, rate_limit_requests=60,
+    ).api_key
 
 
 # ---------------------------------------------------------------------------
@@ -212,13 +247,13 @@ def _斷言零發布副作用(環境: dict, 之前: dict) -> None:
 def test_canonical_app以Fake_Planner啟動並公開草稿路由(tmp_path):
     """完整 canonical app 必須啟動成功，且 live OpenAPI 公開 exact 草稿 route。"""
     環境 = _建立環境(tmp_path)
-    應用, 代理 = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
-    assert type(代理) is 延遲草稿規劃服務
     assert tuple(應用.openapi()["paths"][_草稿路徑]) == ("post",)
 
     with TestClient(應用) as 客戶端:
         assert 客戶端.get("/healthz").status_code == 200
+        代理 = _草稿代理(應用)
         資源 = _Planner資源(應用)
         assert 資源._代理 is 代理
         assert type(資源.取得規劃服務()) is 規劃服務
@@ -226,9 +261,9 @@ def test_canonical_app以Fake_Planner啟動並公開草稿路由(tmp_path):
 
 
 def test_canonical工廠與生產組裝產生同一草稿路由(tmp_path):
-    """``建立CP4ASGI應用程式`` 與本檔案使用的組裝必須公開同一份 route inventory。"""
+    """主要 fixture 與直接呼叫皆只走公開 ``建立CP4ASGI應用程式``。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     工廠應用 = 建立CP4ASGI應用程式(環境["網頁設定"], 環境["發布設定"])
 
     assert set(工廠應用.openapi()["paths"]) == set(應用.openapi()["paths"])
@@ -243,7 +278,7 @@ def test_canonical工廠與生產組裝產生同一草稿路由(tmp_path):
 def test_真Login發出工作階段Cookie與單次CSRF(tmp_path):
     """真實帳密登入必須同時發出 session cookie、CSRF cookie 與 CSRF 權杖。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         回應, csrf = _登入(客戶端)
@@ -262,13 +297,19 @@ def test_真Login發出工作階段Cookie與單次CSRF(tmp_path):
 def test_未登入與錯誤密碼皆無法取得草稿(tmp_path):
     """沒有真 session 就不可能走到 Planner。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
-        assert _建立草稿(客戶端, "x" * 32, "text").status_code == 401
+        未登入之前 = _發布面快照(環境)
+        未登入 = _建立草稿(客戶端, "x" * 32, "text")
+        _斷言零發布副作用(環境, 未登入之前)
+        assert 未登入.status_code == 401
+
+        錯密碼之前 = _發布面快照(環境)
         錯誤 = 客戶端.post(
             "/api/auth/login", json={"username": _帳號, "password": "wrong"},
         )
+        _斷言零發布副作用(環境, 錯密碼之前)
         assert 錯誤.status_code == 401
         assert _草稿聚合(應用)._草稿 == {}
 
@@ -285,7 +326,7 @@ def test_未登入與錯誤密碼皆無法取得草稿(tmp_path):
 def test_兩種回應模式各建立一個草稿並回201(tmp_path, 回應模式: str, 期望回應結構: dict):
     """Text 與 Structured 模式都必須回 201、exact 三鍵與 exact 十二鍵預覽。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
@@ -307,7 +348,7 @@ def test_兩種回應模式各建立一個草稿並回201(tmp_path, 回應模式
 def test_同一工作階段可連續建立兩種模式草稿(tmp_path):
     """兩種模式在同一 session 下必須各自產生獨立草稿 identity。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
@@ -331,7 +372,7 @@ def test_同一工作階段可連續建立兩種模式草稿(tmp_path):
 def test_內部Store_readback擁有者_TTL_快照與世代(tmp_path):
     """草稿必須綁 canonical principal、固定 TTL、與回應同一份快照且世代為零。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
     with TestClient(應用) as 客戶端:
@@ -359,7 +400,7 @@ def test_內部Store_readback擁有者_TTL_快照與世代(tmp_path):
 def test_草稿在到期後不可讀取(tmp_path):
     """TTL 是硬邊界：到期時間之後同一擁有者也讀不到。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
     with TestClient(應用) as 客戶端:
@@ -367,8 +408,10 @@ def test_草稿在到期後不可讀取(tmp_path):
         本文 = _建立草稿(客戶端, csrf, "text").json()
         聚合 = _草稿聚合(應用)
 
+        到期讀取之前 = _發布面快照(環境)
         with pytest.raises(草稿存取錯誤):
             聚合.讀取草稿(擁有者識別碼, 本文["draft_id"], 現在=本文["expires_at"])
+        _斷言零發布副作用(環境, 到期讀取之前)
 
 
 # ---------------------------------------------------------------------------
@@ -379,15 +422,22 @@ def test_草稿在到期後不可讀取(tmp_path):
 def test_第二位使用者不得存取第一位使用者草稿(tmp_path):
     """跨擁有者存取必須以不可列舉的固定錯誤拒絕。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者一 = _使用者識別碼(環境, _帳號)
     擁有者二 = _使用者識別碼(環境, _帳號二)
     assert 擁有者一 != 擁有者二
 
     with TestClient(應用) as 客戶端:
         _, csrf一 = _登入(客戶端)
-        草稿一 = _建立草稿(客戶端, csrf一, "structured").json()
-        客戶端.post("/api/auth/logout", headers={網頁CSRFHeader名稱: csrf一})
+        草稿回應一 = _建立草稿(客戶端, csrf一, "structured")
+        assert 草稿回應一.status_code == 201, 草稿回應一.text
+        草稿一 = 草稿回應一.json()
+        登出 = 客戶端.post(
+            "/api/auth/logout",
+            headers={網頁CSRFHeader名稱: 草稿回應一.headers[網頁CSRFHeader名稱]},
+        )
+        assert 登出.status_code == 204, 登出.text
+        assert 網頁工作階段Cookie名稱 not in 客戶端.cookies
 
         _, csrf二 = _登入(客戶端, _帳號二, _密碼二)
         草稿二 = _建立草稿(客戶端, csrf二, "structured").json()
@@ -396,12 +446,20 @@ def test_第二位使用者不得存取第一位使用者草稿(tmp_path):
         聚合 = _草稿聚合(應用)
         現在 = 草稿一["expires_at"] - 1
 
+        跨擁有者讀一之前 = _發布面快照(環境)
         with pytest.raises(草稿存取錯誤):
             聚合.讀取草稿(擁有者二, 草稿一["draft_id"], 現在=現在)
+        _斷言零發布副作用(環境, 跨擁有者讀一之前)
+
+        跨擁有者讀二之前 = _發布面快照(環境)
         with pytest.raises(草稿存取錯誤):
             聚合.讀取草稿(擁有者一, 草稿二["draft_id"], 現在=現在)
+        _斷言零發布副作用(環境, 跨擁有者讀二之前)
+
+        跨擁有者呼叫之前 = _發布面快照(環境)
         with pytest.raises(草稿存取錯誤):
             聚合.呼叫草稿(擁有者二, 草稿一["draft_id"], 現在=現在)
+        _斷言零發布副作用(環境, 跨擁有者呼叫之前)
 
         assert 聚合.讀取草稿(擁有者一, 草稿一["draft_id"], 現在=現在).擁有者識別碼 == 擁有者一
         assert 聚合.讀取草稿(擁有者二, 草稿二["draft_id"], 現在=現在).擁有者識別碼 == 擁有者二
@@ -410,7 +468,7 @@ def test_第二位使用者不得存取第一位使用者草稿(tmp_path):
 def test_canonical_app沒有任何讀取草稿的HTTP路由(tmp_path):
     """草稿只在伺服器端存在；live OpenAPI 不得公開任何草稿讀取或列舉路由。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     路徑們 = 應用.openapi()["paths"]
     assert tuple(路徑們[_草稿路徑]) == ("post",)
@@ -424,49 +482,70 @@ def test_canonical_app沒有任何讀取草稿的HTTP路由(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_草稿識別碼不可經由外部呼叫路由執行(tmp_path):
-    """以草稿識別碼當 slug 呼叫 invoke 必須不可達，且不留任何呼叫紀錄。"""
+def test_草稿識別碼不可經由外部呼叫路由執行(tmp_path, monkeypatch):
+    """有效 Bearer 必須抵達 production orchestrator，三種未知 slug 固定不可達。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
         本文 = _建立草稿(客戶端, csrf, "structured").json()
         草稿識別碼 = 本文["draft_id"]
+        API金鑰 = _建立合法Published基準(環境)
+        編排器 = _Published資源(應用)._編排器
+        原執行 = 編排器.執行
+        已委派短名 = []
 
+        def 委派探針(短名, *參數):
+            已委派短名.append(短名)
+            return 原執行(短名, *參數)
+
+        monkeypatch.setattr(編排器, "執行", 委派探針)
+        無金鑰之前 = _發布面快照(環境)
         無金鑰 = 客戶端.post(
             f"/v1/endpoints/{草稿識別碼}/invoke", json={"input": {}},
         )
-        有金鑰 = 客戶端.post(
+        _斷言零發布副作用(環境, 無金鑰之前)
+
+        草稿識別之前 = _發布面快照(環境)
+        草稿識別呼叫 = 客戶端.post(
             f"/v1/endpoints/{草稿識別碼}/invoke", json={"input": {}},
-            headers={"X-API-Key": "not-a-real-key"},
+            headers={"Authorization": f"Bearer {API金鑰}"},
         )
+        _斷言零發布副作用(環境, 草稿識別之前)
+
+        建議短名之前 = _發布面快照(環境)
         建議短名呼叫 = 客戶端.post(
             f"/v1/endpoints/{本文['preview']['suggested_slug']}/invoke",
-            json={"input": {}}, headers={"X-API-Key": "not-a-real-key"},
+            json={"input": {}}, headers={"Authorization": f"Bearer {API金鑰}"},
         )
+        _斷言零發布副作用(環境, 建議短名之前)
+
+        不存在短名之前 = _發布面快照(環境)
         不存在短名呼叫 = 客戶端.post(
             "/v1/endpoints/no-such-endpoint/invoke", json={"input": {}},
-            headers={"X-API-Key": "not-a-real-key"},
+            headers={"Authorization": f"Bearer {API金鑰}"},
         )
+        _斷言零發布副作用(環境, 不存在短名之前)
 
-    回應們 = (無金鑰, 有金鑰, 建議短名呼叫, 不存在短名呼叫)
+    assert 無金鑰.status_code == 401
+    assert 無金鑰.json()["error"]["code"] == "invalid_api_key"
+    回應們 = (草稿識別呼叫, 建議短名呼叫, 不存在短名呼叫)
     for 回應 in 回應們:
-        assert 回應.status_code == 401, 回應.text
+        assert 回應.status_code == 404, 回應.text
         assert 回應.json()["ok"] is False
-        assert 回應.json()["error"]["code"] == "invalid_api_key"
+        assert 回應.json()["error"]["code"] == "endpoint_not_found"
         assert 回應.json()["invocation"] is None
         assert 草稿識別碼 not in 回應.text
 
-    # 草稿識別碼、已存在短名與根本不存在的短名必須逐字節相同，invoke 邊界不可用來列舉草稿。
+    assert 已委派短名 == [草稿識別碼, 本文["preview"]["suggested_slug"], "no-such-endpoint"]
     assert len({回應.text for 回應 in 回應們}) == 1
-    _斷言零發布副作用(環境, _發布面快照(環境))
 
 
 def test_草稿Aggregate固定拒絕執行草稿(tmp_path):
     """即使是合法擁有者，草稿在 Aggregate 層也永遠不可執行。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
     with TestClient(應用) as 客戶端:
@@ -474,8 +553,10 @@ def test_草稿Aggregate固定拒絕執行草稿(tmp_path):
         本文 = _建立草稿(客戶端, csrf, "structured").json()
         聚合 = _草稿聚合(應用)
 
+        Aggregate拒絕之前 = _發布面快照(環境)
         with pytest.raises(草稿不可執行錯誤):
             聚合.呼叫草稿(擁有者識別碼, 本文["draft_id"], 現在=本文["expires_at"] - 1)
+        _斷言零發布副作用(環境, Aggregate拒絕之前)
 
         assert 聚合.讀取草稿(
             擁有者識別碼, 本文["draft_id"], 現在=本文["expires_at"] - 1,
@@ -490,7 +571,7 @@ def test_草稿Aggregate固定拒絕執行草稿(tmp_path):
 def test_完整E2E流程零發布副作用(tmp_path):
     """成功建立多個草稿後，發布面必須逐列、逐位元組與之前完全相同。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         之前 = _發布面快照(環境)
@@ -516,7 +597,7 @@ def test_完整E2E流程零發布副作用(tmp_path):
 def test_單次CSRF重放被拒且不建立第二份草稿(tmp_path):
     """同一枚 CSRF 權杖用第二次必須 403，並且不得產生副作用。"""
     環境 = _建立環境(tmp_path)
-    應用, _ = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
@@ -525,15 +606,17 @@ def test_單次CSRF重放被拒且不建立第二份草稿(tmp_path):
         接續 = 首次.headers[網頁CSRFHeader名稱]
         assert 接續 != csrf
 
+        重放之前 = _發布面快照(環境)
         重放 = _建立草稿(客戶端, csrf, "structured")
         assert 重放.status_code == 403
         assert len(_草稿聚合(應用)._草稿) == 1
+        _斷言零發布副作用(環境, 重放之前)
 
+        接續之前 = _發布面快照(環境)
         接續成功 = _建立草稿(客戶端, 接續, "structured")
         assert 接續成功.status_code == 201, 接續成功.text
         assert len(_草稿聚合(應用)._草稿) == 2
-
-    _斷言零發布副作用(環境, _發布面快照(環境))
+        _斷言零發布副作用(環境, 接續之前)
 
 
 # ---------------------------------------------------------------------------
@@ -546,7 +629,7 @@ def test_草稿Aggregate為記憶體且Restart後不保留(tmp_path):
     環境 = _建立環境(tmp_path)
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
-    第一應用, _ = 環境["建立應用"]()
+    第一應用 = 環境["建立應用"]()
     with TestClient(第一應用) as 客戶端:
         _, csrf = _登入(客戶端)
         本文 = _建立草稿(客戶端, csrf, "structured").json()
@@ -555,7 +638,8 @@ def test_草稿Aggregate為記憶體且Restart後不保留(tmp_path):
             擁有者識別碼, 本文["draft_id"], 現在=本文["expires_at"] - 1,
         ).草稿識別碼 == 本文["draft_id"]
 
-    第二應用, _ = 環境["建立應用"]()
+    重啟之前 = _發布面快照(環境)
+    第二應用 = 環境["建立應用"]()
     with TestClient(第二應用) as 客戶端:
         第二聚合 = _草稿聚合(第二應用)
         assert 第二聚合 is not 第一聚合
@@ -569,7 +653,7 @@ def test_草稿Aggregate為記憶體且Restart後不保留(tmp_path):
         assert 重啟後.status_code == 201, 重啟後.text
         assert 重啟後.json()["draft_id"] != 本文["draft_id"]
 
-    _斷言零發布副作用(環境, _發布面快照(環境))
+    _斷言零發布副作用(環境, 重啟之前)
 
 
 # ---------------------------------------------------------------------------
@@ -580,7 +664,7 @@ def test_草稿Aggregate為記憶體且Restart後不保留(tmp_path):
 def test_Shutdown後直接呼叫Proxy固定Fail_Closed(tmp_path):
     """lifespan 結束後 proxy 必須撤銷 authority，直接呼叫也不得建立草稿。"""
     環境 = _建立環境(tmp_path)
-    應用, 代理 = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
     擁有者識別碼 = _使用者識別碼(環境, _帳號)
 
     with TestClient(應用) as 客戶端:
@@ -588,6 +672,8 @@ def test_Shutdown後直接呼叫Proxy固定Fail_Closed(tmp_path):
         assert _建立草稿(客戶端, csrf, "structured").status_code == 201
         聚合 = _草稿聚合(應用)
         資源 = _Planner資源(應用)
+        代理 = _草稿代理(應用)
+        關閉之前 = _發布面快照(環境)
 
     assert 代理._服務 is None
     assert 資源.取得規劃服務() is None
@@ -599,18 +685,21 @@ def test_Shutdown後直接呼叫Proxy固定Fail_Closed(tmp_path):
         )
 
     assert len(聚合._草稿) == 1
-    _斷言零發布副作用(環境, _發布面快照(環境))
+    _斷言零發布副作用(環境, 關閉之前)
 
 
 def test_Shutdown後草稿路由不再建立草稿(tmp_path):
     """關閉後的 app 不得再經由 HTTP 建立任何草稿。"""
     環境 = _建立環境(tmp_path)
-    應用, 代理 = 環境["建立應用"]()
+    應用 = 環境["建立應用"]()
 
     with TestClient(應用) as 客戶端:
         _, csrf = _登入(客戶端)
         assert _建立草稿(客戶端, csrf, "structured").status_code == 201
+        代理 = _草稿代理(應用)
+        關閉之前 = _發布面快照(環境)
 
     assert 代理._服務 is None
     with pytest.raises(草稿規劃服務不可用):
         代理.建立草稿("1", "建立 Alpha API", (_技能名稱,), "text", 現在=0.0)
+    _斷言零發布副作用(環境, 關閉之前)
