@@ -1186,3 +1186,106 @@ def test_修改確認由genuine_coordinator恰一次拒絕且保留Draft與零�
         assert 重試.status_code == 201
 
 
+@pytest.mark.parametrize("缺少鍵", sorted(_建立Server確認({
+    "system_prompt": "p", "input_schema": None, "response_schema": {},
+    "human_docs": "d", "rate_limit": {},
+})))
+def test_partial_confirmation每個缺失鍵皆422且genuine一次與完整零副作用(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 缺少鍵: str,
+):
+    """逐一刪除 canonical confirmation 五鍵，固定 genuine 一次且所有 pre-write 邊界為零。
+
+    參數：隔離目錄、pytest monkeypatch 與本案刪除的 canonical 鍵。
+    回傳值：無；HTTP 422、coordinator 因果、DB／Bundle 零副作用及 owner readback 均固定。
+    例外：Production 接受任何非完整 confirmation 或提早進入發布 primitive 時測試失敗。
+    重要副作用：建立一份 Draft 並送出一次 partial Create；不得建立 publication。
+    """
+    應用程式 = _建立正式應用程式(tmp_path)
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        擁有者 = _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, csrf)
+        assert 草稿回應.status_code == 201
+        草稿本文 = 草稿回應.json()
+        草稿識別碼 = 草稿本文["draft_id"]
+        基準草稿 = _取得Planner聚合(應用程式).讀取草稿(
+            擁有者, 草稿識別碼, 現在=time.time(),
+        )
+        partial = _建立Server確認(草稿本文["preview"])
+        partial.pop(缺少鍵)
+        之前 = _建立完整副作用快照(tmp_path, 應用程式)
+        管理服務 = _取得管理服務(應用程式)
+        原發布 = 管理服務.原子發布
+        呼叫次數 = 0
+
+        def 記錄後委派(*參數, **關鍵字):
+            """記錄 genuine coordinator 一次並委派 partial confirmation 真判斷。"""
+            nonlocal 呼叫次數
+            呼叫次數 += 1
+            return 原發布(*參數, **關鍵字)
+
+        monkeypatch.setattr(管理服務, "原子發布", 記錄後委派)
+        prewrite次數 = _安裝PreWrite零進入探針(monkeypatch, 管理服務)
+        回應 = _建立Endpoint(
+            客戶端, 草稿回應.headers[網頁CSRFHeader名稱], 草稿本文, 確認=partial,
+        )
+        之後 = _建立完整副作用快照(tmp_path, 應用程式)
+
+        assert 呼叫次數 == 1
+        assert prewrite次數 == {"identifier": 0, "entropy": 0, "bundle": 0, "p04": 0}
+        assert (回應.status_code, 回應.json()) == (422, {"detail": "管理操作輸入無效"})
+        _斷言Owner可讀且Draft語意保留(應用程式, 擁有者, 草稿識別碼, 基準草稿)
+        assert 之後["tables"] == 之前["tables"]
+        assert 之後["bundle_tree"] == 之前["bundle_tree"] == ()
+
+
+@pytest.mark.parametrize("案例", ["Foreign", "Expired", "Missing"])
+def test_不可用Draft的canonical_Create固定不可枚舉且完整發布狀態不變(tmp_path, 案例: str):
+    """固定 Foreign／Expired／Missing Draft Create 同一 404，並保持完整 Published DB／FS。
+
+    參數：``tmp_path`` 隔離狀態；``案例`` 選跨 owner、過期或不存在 Draft。
+    回傳值：無。
+    例外：錯誤可枚舉、可用 Draft 語意漂移或任何 publication side effect 時測試失敗。
+    重要副作用：建立一份 Draft；Foreign 另登入第二 owner；expired lookup 依 aggregate 契約淘汰過期項目。
+    """
+    存續 = 0.001 if 案例 == "Expired" else 3600.0
+    應用程式 = _建立正式應用程式(tmp_path, 草稿存續秒數=存續)
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        擁有者 = _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, csrf)
+        assert 草稿回應.status_code == 201
+        草稿本文 = 草稿回應.json()
+        原草稿識別碼 = 草稿本文["draft_id"]
+        基準草稿 = None if 案例 == "Expired" else _取得Planner聚合(應用程式).讀取草稿(
+            擁有者, 原草稿識別碼, 現在=time.time(),
+        )
+        建立csrf = 草稿回應.headers[網頁CSRFHeader名稱]
+        if 案例 == "Foreign":
+            登出 = 客戶端.post("/api/auth/logout", headers={網頁CSRFHeader名稱: 建立csrf})
+            assert 登出.status_code == 204
+            _建立Owner技能與使用者(tmp_path, "bob", "another horse")
+            _, 建立csrf = _登入Owner(客戶端, "bob", "another horse")
+        elif 案例 == "Expired":
+            time.sleep(0.02)
+        else:
+            草稿本文 = dict(草稿本文)
+            草稿本文["draft_id"] = "missing-draft"
+        之前 = _建立完整副作用快照(tmp_path, 應用程式)
+        回應 = _建立Endpoint(客戶端, 建立csrf, 草稿本文)
+        之後 = _建立完整副作用快照(tmp_path, 應用程式)
+        if 案例 != "Expired":
+            _斷言Owner可讀且Draft語意保留(
+                應用程式, 擁有者, 原草稿識別碼, 基準草稿,
+            )
+
+    assert (回應.status_code, 回應.json()) == (404, {"detail": "找不到發布草稿"})
+    _斷言固定錯誤且不洩漏(回應, tmp_path)
+    if 案例 == "Expired":
+        assert len(之前["drafts"]) == 1 and 之後["drafts"] == ()
+    else:
+        _斷言Draft語意保留(之前, 之後)
+    assert 之後["tables"] == 之前["tables"]
+    assert 之後["bundle_tree"] == 之前["bundle_tree"] == ()
+
+
