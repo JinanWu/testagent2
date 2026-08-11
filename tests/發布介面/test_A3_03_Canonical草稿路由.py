@@ -138,9 +138,10 @@ def test_canonical_app_route_inventory含草稿路由(tmp_path):
     assert tuple(路徑們[_草稿路徑]) == ("post",)
 
 
-def test_草稿路由未配置Planner時不公開(tmp_path):
-    """未配置 Planner 組裝的部署不得公開無法服務的草稿 route。"""
+def test_草稿路由未配置Planner時固定公開且服務503關閉(tmp_path):
+    """Planner 未配置時 Route 仍可被探索，但 POST 必須以 503 fail closed。"""
     tmp_path = tmp_path.resolve()
+    _建立技能與使用者(tmp_path)
     套件根 = tmp_path / "bundles"
     套件根.mkdir()
     網頁設定 = 生產設定(
@@ -152,9 +153,19 @@ def test_草稿路由未配置Planner時不公開(tmp_path):
         lambda: {"fake": object()}, 60.0,
     )
 
-    路徑們 = 建立CP4ASGI應用程式(網頁設定, 發布設定).openapi()["paths"]
+    應用 = 建立CP4ASGI應用程式(網頁設定, 發布設定)
+    路徑們 = 應用.openapi()["paths"]
 
-    assert _草稿路徑 not in 路徑們
+    assert tuple(路徑們[_草稿路徑]) == ("post",)
+    with TestClient(應用) as 客戶端:
+        csrf = _登入(客戶端)
+        失敗 = 客戶端.post(
+            _草稿路徑, json=_草稿本文(), headers={"X-CSRF-Token": csrf},
+        )
+        assert 失敗.status_code == 503
+        assert 失敗.json() == {"detail": {"code": "planner_unavailable"}}
+        for 方法 in ("get", "put", "patch", "delete"):
+            assert getattr(客戶端, 方法)(_草稿路徑).status_code == 405
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +201,11 @@ def test_草稿路由POST在真Session與CSRF下建立草稿(tmp_path):
 
     assert 回應.status_code == 201, 回應.text
     assert set(回應.json()) == {"draft_id", "expires_at", "preview"}
+    assert set(回應.json()["preview"]) == {
+        "endpoint_name", "suggested_slug", "behavior_summary", "selected_skills",
+        "recommended_tools", "tool_capabilities", "system_prompt", "input_schema",
+        "response_schema", "human_docs", "rate_limit", "warnings",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +379,7 @@ def test_Legacy規劃內容請求在canonical_app不可達(tmp_path):
 
 
 def test_OpenAPI草稿Response為固定三鍵契約(tmp_path):
-    """response schema 必須是 exact 的 draft_id／expires_at／preview。"""
+    """response schema 必須是 exact 三鍵，且 preview 固定十二鍵並拒絕額外欄位。"""
     tmp_path = tmp_path.resolve()
     _建立技能與使用者(tmp_path)
     應用, _ = _建立應用(tmp_path)
@@ -374,7 +390,22 @@ def test_OpenAPI草稿Response為固定三鍵契約(tmp_path):
     參照 = 操作["responses"]["201"]["content"]["application/json"]["schema"]["$ref"]
     名稱 = 參照.rsplit("/", 1)[-1]
     綱要 = 規格["components"]["schemas"][名稱]
-    assert set(綱要["properties"]) == {"draft_id", "expires_at", "preview"}
+    頂層鍵 = {"draft_id", "expires_at", "preview"}
+    assert set(綱要["properties"]) == 頂層鍵
+    assert set(綱要["required"]) == 頂層鍵
+    assert 綱要["additionalProperties"] is False
+
+    預覽參照 = 綱要["properties"]["preview"]["$ref"]
+    預覽名稱 = 預覽參照.rsplit("/", 1)[-1]
+    預覽綱要 = 規格["components"]["schemas"][預覽名稱]
+    預覽鍵 = {
+        "endpoint_name", "suggested_slug", "behavior_summary", "selected_skills",
+        "recommended_tools", "tool_capabilities", "system_prompt", "input_schema",
+        "response_schema", "human_docs", "rate_limit", "warnings",
+    }
+    assert set(預覽綱要["properties"]) == 預覽鍵
+    assert set(預覽綱要["required"]) == 預覽鍵
+    assert 預覽綱要["additionalProperties"] is False
 
 
 # ---------------------------------------------------------------------------

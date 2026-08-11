@@ -425,19 +425,20 @@ class 生產Published執行建構器:
         """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
 
         參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
-        返回值：含 exact invocation router、僅在配置 Planner 時加掛的安全草稿 router，
-        以及一個 async resource factory 的附加相依項。
+        返回值：含 exact invocation router、安全草稿 router，以及一個 async resource factory
+        的附加相依項；Planner 尚未配置時，草稿 proxy 仍以 503 fail closed。
         例外：設定或 dependency 違約時固定 ``ValueError``。
         副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
         """
         if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
             raise ValueError("Published生產組裝無效") from None
         代理 = 延遲外部呼叫編排器()
-        路由器清單 = (建立外部呼叫路由(代理),)
-        if self._設定.Planner設定 is not None:
-            路由器清單 = (*路由器清單, 建立安全草稿路由器(
+        路由器清單 = (
+            建立外部呼叫路由(代理),
+            建立安全草稿路由器(
                 self._草稿規劃代理, 目前工作階段相依, CSRF相依,
-            ))
+            ),
+        )
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
