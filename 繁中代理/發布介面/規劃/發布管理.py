@@ -29,7 +29,7 @@ from .版本服務 import (
 )
 from .端點發布 import (
     SQLite端點發布服務, 已準備初始憑證, 已準備發布識別, 發布版本快照,
-    端點發布耐久性未知, 端點發布輸入錯誤,
+    端點發布耐久性未知, 端點發布衝突, 端點發布輸入錯誤,
 )
 from .綱要 import 發布值確認, 草稿存取錯誤, 規劃服務, 規劃草稿
 from .權限協調 import 授權選擇錯誤, 能力摘要, 權限協調器
@@ -198,6 +198,13 @@ class 發布管理協調器:
             if 收據 is not None:
                 self._盡力標記孤兒(收據)
             return 管理操作錯誤("draft_not_found")
+        except 端點發布衝突 as 主要:
+            新金鑰 = 明文 = None
+            self._清空敏感緩衝(熵, 明文緩衝)
+            self._清除秘密框架(主要)
+            if 收據 is not None:
+                self._盡力標記孤兒(收據)
+            return 管理操作錯誤("status_conflict")
         except BaseException as 主要:
             新金鑰 = 明文 = None
             self._清空敏感緩衝(熵, 明文緩衝)

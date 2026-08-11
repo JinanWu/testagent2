@@ -49,6 +49,10 @@ class 端點發布錯誤(RuntimeError):
     """代表資料庫發布無法原子完成。"""
 
 
+class 端點發布衝突(端點發布錯誤):
+    """代表唯一鍵或主鍵已由另一個發布圖形占用。"""
+
+
 class 端點發布耐久性未知(端點發布錯誤):
     """代表 COMMIT 結果無法由 fresh exact postcondition 安全判定。"""
 
@@ -584,7 +588,7 @@ def _驗證並寫入(
     已開始 = False
     已提交 = False
     提交待判定 = False
-    交易失敗 = False
+    交易失敗 = 交易衝突 = False
     ledger = rows = raw = 端點識別碼 = 版本識別碼 = 憑證識別碼 = 服務帳戶識別碼 = None
     收據儲存庫 = 中繼資料 = None
     回滾控制: list[BaseException] = []
@@ -608,6 +612,10 @@ def _驗證並寫入(
             套件收據 = _驗證預配關係(識別碼, 快照, 套件收據, 請求識別碼)
         elif 稽核識別碼 is not None or 請求識別碼 is not None:
             raise sqlite3.DatabaseError
+        if 連線.execute(
+            "SELECT 1 FROM published_endpoints WHERE slug=? LIMIT 1", (確認.slug,),
+        ).fetchone() is not None:
+            _拒絕衝突()
         _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (服務帳戶識別碼, 建立時間))
         _執行一列(
             連線,
@@ -680,6 +688,7 @@ def _驗證並寫入(
         del 連線, 資料庫路徑, 資料庫身分, 擁有者識別碼, 草稿, 快照, 憑證, 確認, 識別碼, 建立時間, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 提交待判定, 交易失敗, ledger, rows, raw, 端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼, 收據儲存庫, 中繼資料, 回滾控制, 關閉控制
         raise
     except BaseException as 錯誤:
+        交易衝突 = type(錯誤) is 端點發布衝突
         _清除例外框架(錯誤)
         if 已開始:
             回滾控制 = _安全回滾(連線)
@@ -693,6 +702,10 @@ def _驗證並寫入(
         if 關閉控制:
             _拋出清理控制(關閉控制.pop())
         del 回滾控制, 關閉控制
+        if 交易衝突:
+            del 交易衝突
+            _拒絕衝突()
+        del 交易衝突
         _拒絕發布()
     if 提交待判定 and 已開始:
         回滾控制 = _安全回滾(連線)
@@ -1191,3 +1204,8 @@ def _拒絕輸入() -> NoReturn:
 def _拒絕發布() -> NoReturn:
     """建立固定、fresh 且不鏈結底層 SQLite/callback 錯誤的發布錯誤。"""
     raise 端點發布錯誤(_發布錯誤訊息) from None
+
+
+def _拒絕衝突() -> NoReturn:
+    """建立固定、fresh 且不鏈結 SQLite 約束細節的發布衝突。"""
+    raise 端點發布衝突(_發布錯誤訊息) from None
