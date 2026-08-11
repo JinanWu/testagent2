@@ -372,6 +372,63 @@ def test_相同識別碼並行建立只會原子插入一次():
     assert len(服務._草稿) == 1
 
 
+@pytest.mark.parametrize("錯誤", [RuntimeError("INSERT-MARKER", 7), KeyboardInterrupt("INSERT-CONTROL", 9)])
+def test_backing_mapping_insert失敗不殘留且保留例外identity_args(錯誤):
+    """Backing mapping 自身拒絕 insert 時，不得留下半成品或改寫原例外。"""
+    class _插入失敗字典(dict):
+        def __setitem__(self, key, value):
+            raise 錯誤
+
+    服務 = 規劃服務(識別碼產生器=lambda: "insert-failure")
+    服務._草稿 = _插入失敗字典()
+
+    with pytest.raises(type(錯誤)) as 捕捉:
+        服務.建立草稿("owner", "需求", {"safe": True}, 現在=1)
+
+    assert 捕捉.value is 錯誤
+    assert 捕捉.value.args == 錯誤.args
+    assert 服務._草稿 == {}
+
+
+@pytest.mark.parametrize("錯誤", [RuntimeError("REBUILD-MARKER", 3), KeyboardInterrupt("REBUILD-CONTROL", 5)])
+def test_insert後公開重建失敗會identity安全回滾且保留例外(monkeypatch, 錯誤):
+    """公開 DTO 重建失敗時，剛插入的 exact aggregate 必須在方法返回前移除。"""
+    服務 = 規劃服務(識別碼產生器=lambda: "rebuild-failure")
+
+    def 重建失敗(_草稿):
+        raise 錯誤
+
+    monkeypatch.setattr(綱要模組, "_必須重建公開草稿", 重建失敗)
+    with pytest.raises(type(錯誤)) as 捕捉:
+        服務.建立草稿("owner", "需求", {"safe": True}, 現在=1)
+
+    assert 捕捉.value is 錯誤
+    assert 捕捉.value.args == 錯誤.args
+    assert 服務._草稿 == {}
+
+
+def test_insert後重建失敗rollback不刪除並行replacement(monkeypatch):
+    """Rollback 必須以 object identity 作 CAS，不能只憑相同 draft id 刪除別人的 replacement。"""
+    服務 = 規劃服務(識別碼產生器=lambda: "replaced-draft")
+    替代 = []
+    原錯誤 = RuntimeError("REPLACEMENT-MUST-SURVIVE")
+
+    def 替換後失敗(剛插入):
+        新值 = __import__("dataclasses").replace(剛插入, 原始需求="replacement")
+        with 服務._鎖:
+            assert 服務._草稿[剛插入.草稿識別碼] is 剛插入
+            服務._草稿[剛插入.草稿識別碼] = 新值
+        替代.append(新值)
+        raise 原錯誤
+
+    monkeypatch.setattr(綱要模組, "_必須重建公開草稿", 替換後失敗)
+    with pytest.raises(RuntimeError) as 捕捉:
+        服務.建立草稿("owner", "需求", {"safe": True}, 現在=1)
+
+    assert 捕捉.value is 原錯誤
+    assert 服務._草稿 == {"replaced-draft": 替代[0]}
+
+
 def test_更新快照與到期刪除交錯不會復活草稿(monkeypatch):
     """更新在 snapshot 完成後鎖內 gate+replace，過期刪除不能被舊讀取復活。"""
     服務, _, _ = _建立服務與草稿()

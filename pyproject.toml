@@ -11,7 +11,7 @@ dependencies = [
   "google-genai>=1.0.0",
   "google-cloud-bigquery>=3.0.0",
   "python-dotenv>=1.0.0",
-  "fastapi>=0.115.0",
+  "fastapi==0.115.6",
   "uvicorn>=0.34.0",
   "jsonschema>=4.26.0",
   "cryptography>=46.0.0",
