@@ -5,10 +5,10 @@
 Login → Draft → Publish v1 → Invoke → 改 Live Skill → 再 Invoke → Publish v2 → Restart，
 並以檔案系統與 SQLite readback 證明每個 Endpoint Version 都載入自己的不可變 Bundle。
 
-Draft／Publish／Version 三條管理路由目前**尚未**掛進 canonical live app（Acceptance #3／#4
-的 ownership）。本檔以 ``test_canonical_live_openapi必須含四類必要路徑`` 精確標記該缺口，
-其餘案例則以相同的 production composition 擴充點掛載**真實**管理路由器與真實服務，
-不使用任何 service fake，讓 Bundle 隔離契約在管理路由接上前就已被完整凍結。
+Draft 已由 Acceptance #3 掛進 canonical live app；Publish／Version 仍屬 Acceptance #4。
+本檔的 inventory test 直接驗證 canonical app；其餘 Acceptance #6 案例因發布服務需要共享
+同一個測試 Draft Aggregate，會在特殊 E2E app 內以完整真實管理 Router 取代 canonical
+Draft Router，不使用 service fake，也不把此替代組合誤當成 canonical inventory 證據。
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def _安裝工具發布(儲存庫: 工具發布庫) -> None:
 
 
 class _E2E建構器:
-    """在 canonical CP4 composition 之上再掛真實管理路由器。"""
+    """以共享測試 Aggregate 的完整管理 Router 取代 canonical Draft Router。"""
 
     def __init__(self, Published設定: Published生產設定, 管理相依) -> None:
         """保存 canonical Controller builder 與管理服務工廠。"""
@@ -101,14 +101,21 @@ class _E2E建構器:
         self._管理相依 = 管理相依
 
     def 建立附加相依項(self, 設定, 目前工作階段相依, CSRF相依) -> 發布介面相依項:
-        """先取得 canonical routers／resources，再加入真實管理路由器。"""
+        """只在 A6 特殊 E2E app 中替換 Draft Router，避免重複 Route。"""
         基礎 = self._Controller.建立附加相依項(設定, 目前工作階段相依, CSRF相依)
+        草稿路由器們 = tuple(
+            路由器 for 路由器 in 基礎.路由器清單
+            if any(getattr(路由, "path", None) == "/api/published-endpoints/draft" for 路由 in 路由器.routes)
+        )
+        if len(草稿路由器們) != 1:
+            raise AssertionError("A6 E2E 預期 exact 一個 canonical Draft Router")
+        保留路由器 = tuple(路由器 for 路由器 in 基礎.路由器清單 if 路由器 is not 草稿路由器們[0])
         管理路由器 = 建立安全規劃發布路由器(
             self._管理相依["草稿規劃服務"], self._管理相依["發布服務"],
             目前工作階段相依, CSRF相依,
         )
         return 發布介面相依項(
-            (*基礎.路由器清單, 管理路由器), 基礎.資源工廠清單,
+            (*保留路由器, 管理路由器), 基礎.資源工廠清單,
         )
 
 

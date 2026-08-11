@@ -10,6 +10,7 @@
     匯入與 app construction 無 I/O；SQLite、installer 與模型 registry 延至 startup。
 """
 from __future__ import annotations
+import asyncio
 import json
 import math
 import os
@@ -26,6 +27,12 @@ from .相依項 import 發布介面相依項
 from .設定 import 生產設定
 from .資料庫 import 初始化發布介面資料庫
 from .生產Web代理 import 生產Web代理建構器
+from .生產Published管理 import (
+    Planner生產設定,
+    延遲草稿規劃服務,
+    生產Planner資源,
+    建立生產Planner資源,
+)
 from .規劃.版本服務 import SQLite目前版本解析器, 已釘選版本, 目前版本不存在錯誤
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
 from .呼叫.儲存庫 import SQLite呼叫儲存庫
@@ -45,6 +52,7 @@ from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
 from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 啟動協調結果, 技能套件協調器
 from .路由.外部呼叫 import 建立外部呼叫路由
+from .路由.規劃發布 import 建立安全草稿路由器
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -96,6 +104,7 @@ class Published生產設定:
     工具發布安裝器: Callable[[工具發布庫], None]
     模型供應商註冊表工廠: Callable[[], dict[str, object]]
     孤兒保留秒數: float = 86_400.0
+    Planner設定: Planner生產設定 | None = None
     def __post_init__(self) -> None:
         """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
         參數：無；讀取五個設定欄位。
@@ -108,12 +117,14 @@ class Published生產設定:
         安裝器 = object.__getattribute__(self, "工具發布安裝器")
         工廠 = object.__getattribute__(self, "模型供應商註冊表工廠")
         保留秒數 = object.__getattribute__(self, "孤兒保留秒數")
+        Planner組裝 = object.__getattribute__(self, "Planner設定")
         if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
                 or type(根) is not _本機Path型別 or not 根.is_absolute()
                 or not callable(安裝器) or not callable(工廠)
                 or type(保留秒數) not in (int, float)
                 or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
-                or (type(保留秒數) is float and not math.isfinite(保留秒數))):
+                or (type(保留秒數) is float and not math.isfinite(保留秒數))
+                or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)):
             raise ValueError("Published生產設定無效") from None
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
@@ -211,7 +222,8 @@ class 生產Published執行資源:
         保存並於關閉時釋放本 composition 的所有 live handler/model authority。
     """
     def __init__(self, 代理: 延遲外部呼叫編排器, 編排器: 外部呼叫編排器,
-                 工具庫: 工具發布庫, 模型表: dict[str, object]) -> None:
+                 工具庫: 工具發布庫, 模型表: dict[str, object],
+                 Planner資源: 生產Planner資源 | None = None) -> None:
         """保存已成功安裝的資源參照。
 
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
@@ -221,33 +233,164 @@ class 生產Published執行資源:
         """
         self._代理, self._編排器 = 代理, 編排器
         self._工具庫, self._模型表 = 工具庫, 模型表
-        self._鎖, self._已關閉 = RLock(), False
+        self._Planner資源 = Planner資源
+        self._關閉條件 = Condition(RLock())
+        self._已關閉 = False
+        self._關閉狀態 = "尚未開始"
+        self._關閉錯誤: BaseException | None = None
+
+    def 取得Planner資源(self) -> 生產Planner資源 | None:
+        """取得仍由本次 Published lifespan 擁有的 Planner resource。
+
+        參數：無。
+        返回值：啟動期間回傳 exact Planner resource；關閉後回傳 ``None``。
+        例外：無預期例外。
+        副作用：無；不建立第二份工具庫或草稿 Aggregate。
+        """
+        return self._Planner資源
+
+    def 取得規劃服務(self):
+        """取得後續 #4 必須共用的唯一 Draft Aggregate。
+
+        參數：無。
+        返回值：Planner 啟用時回傳 exact ``規劃服務``；未啟用或關閉後回傳 ``None``。
+        例外：無預期例外。
+        副作用：無。
+        """
+        Planner資源 = self._Planner資源
+        return None if Planner資源 is None else Planner資源.取得規劃服務()
     async def 關閉(self) -> None:
-        """exact-once 清除 proxy、drain leases 並 detach registries。
+        """讓任意 event loop 的 concurrent callers 等待同一 exact-once shutdown。
+
         參數：無。
         返回值：``None``。
-        例外：drain 的控制流程例外原樣傳出。
-        副作用：不猜測 provider close protocol；只移除本 composition 的 references。
+        例外：cleanup error 對所有 caller 保留 identity；caller cancellation 延至清理完成後傳出。
+        副作用：第一個 worker 成為唯一清理 owner；其餘 caller 跨 loop 等待同一完成結果。
         """
-        with self._鎖:
-            if self._已關閉:
+        caller取消: asyncio.CancelledError | None = None
+        派送錯誤: BaseException | None = None
+        while True:
+            with self._關閉條件:
+                if self._關閉狀態 == "已完成":
+                    if self._關閉錯誤 is not None:
+                        raise self._關閉錯誤
+                    break
+            try:
+                await run_in_threadpool(self._清除同步)
+                break
+            except asyncio.CancelledError as 錯誤:
+                with self._關閉條件:
+                    if self._關閉狀態 == "已完成" and self._關閉錯誤 is 錯誤:
+                        raise
+                if caller取消 is None:
+                    caller取消 = 錯誤
+                目前工作 = asyncio.current_task()
+                if 目前工作 is not None:
+                    目前工作.uncancel()
+            except BaseException as 錯誤:
+                with self._關閉條件:
+                    尚未取得所有權 = self._關閉狀態 == "尚未開始"
+                    已完成同一錯誤 = self._關閉狀態 == "已完成" and self._關閉錯誤 is 錯誤
+                if 已完成同一錯誤:
+                    raise
+                if not 尚未取得所有權:
+                    if 派送錯誤 is None:
+                        派送錯誤 = 錯誤
+                    self._清除同步()
+                    break
+                # threadpool dispatch 尚未進入 cleanup owner 時，caller 原地執行；
+                # 若遲到的 worker 之後啟動，只會依 Condition 等待同一 outcome。
+                self._清除同步()
+                if isinstance(錯誤, _控制流程例外):
+                    raise
+                break
+        if isinstance(派送錯誤, _控制流程例外):
+            raise 派送錯誤
+        if caller取消 is not None:
+            raise caller取消
+        if 派送錯誤 is not None:
+            raise 派送錯誤
+
+    def _清除同步(self) -> None:
+        """以 Condition 協調跨 loop callers 並 exact-once 發布同步清理結果。
+
+        參數：無。
+        返回值：None。
+        例外：所有 caller 在唯一清理完成後取得同一 exact 第一錯誤物件。
+        副作用：唯一 owner 執行實際清理；其他 worker 等待，不會雙重撤銷 authority。
+        """
+        with self._關閉條件:
+            if self._關閉狀態 == "已完成":
+                if self._關閉錯誤 is not None:
+                    raise self._關閉錯誤
                 return
+            if self._關閉狀態 == "進行中":
+                while self._關閉狀態 != "已完成":
+                    self._關閉條件.wait()
+                if self._關閉錯誤 is not None:
+                    raise self._關閉錯誤
+                return
+            self._關閉狀態 = "進行中"
             self._已關閉 = True
-        編排器, 工具庫 = self._編排器, self._工具庫
-        清除錯誤 = None
+        關閉錯誤: BaseException | None = None
+        try:
+            self._執行關閉同步()
+        except BaseException as 清理錯誤:
+            關閉錯誤 = 清理錯誤
+        finally:
+            with self._關閉條件:
+                self._關閉錯誤 = 關閉錯誤
+                self._關閉狀態 = "已完成"
+                self._關閉條件.notify_all()
+        if 關閉錯誤 is not None:
+            raise 關閉錯誤
+
+    def _執行關閉同步(self) -> None:
+        """由唯一 shutdown owner 清除 Planner、Invocation 與 registries。
+
+        參數：無。
+        返回值：None。
+        例外：所有清理都嘗試後，控制流程優先於第一個 ordinary failure。
+        副作用：drain 兩個 proxy，清空模型表與工具發布 authority 並移除強參照。
+        """
+        Planner資源, 編排器, 工具庫 = self._Planner資源, self._編排器, self._工具庫
+        控制流程錯誤 = None
+        普通清除錯誤 = None
+        try:
+            if Planner資源 is not None:
+                Planner資源._清除同步()
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                控制流程錯誤 = 錯誤
+            else:
+                普通清除錯誤 = 錯誤
         try:
             if 編排器 is not None:
-                await run_in_threadpool(self._代理.清除, 編排器)
+                self._代理.清除(編排器)
         except BaseException as 錯誤:
-            清除錯誤 = 錯誤
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None:
+                    控制流程錯誤 = 錯誤
+            elif 普通清除錯誤 is None:
+                普通清除錯誤 = 錯誤
         finally:
+            self._Planner資源 = None
             self._編排器 = None
             self._模型表.clear()
             if 工具庫 is not None:
-                工具庫.清除所有發布()
+                try:
+                    工具庫.清除所有發布()
+                except BaseException as 錯誤:
+                    if isinstance(錯誤, _控制流程例外):
+                        if 控制流程錯誤 is None:
+                            控制流程錯誤 = 錯誤
+                    elif 普通清除錯誤 is None:
+                        普通清除錯誤 = 錯誤
             self._工具庫 = None
-        if 清除錯誤 is not None:
-            raise 清除錯誤
+        if 控制流程錯誤 is not None:
+            raise 控制流程錯誤
+        if 普通清除錯誤 is not None:
+            raise 普通清除錯誤
 class 生產Published執行建構器:
     """建立 CP4 invoke router 與單一 Published lifespan resource factory。
 
@@ -267,18 +410,35 @@ class 生產Published執行建構器:
         if type(設定) is not Published生產設定:
             raise ValueError("Published生產組裝無效") from None
         self._設定 = 設定
+        self._草稿規劃代理 = 延遲草稿規劃服務()
+
+    def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
+        """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
+
+        參數：無。
+        返回值：固定 identity 的 ``延遲草稿規劃服務``，供後續安全 route 捕捉。
+        例外：無預期例外。
+        副作用：無；不建立任何 startup resource。
+        """
+        return self._草稿規劃代理
     def 建立附加相依項(self, 設定: 生產設定, 目前工作階段相依, CSRF相依) -> 發布介面相依項:
         """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
 
         參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
-        返回值：含 exact invocation router 與一個 async resource factory 的附加相依項。
+        返回值：含 exact invocation router、安全草稿 router，以及一個 async resource factory
+        的附加相依項；Planner 尚未配置時，草稿 proxy 仍以 503 fail closed。
         例外：設定或 dependency 違約時固定 ``ValueError``。
         副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
         """
         if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
             raise ValueError("Published生產組裝無效") from None
         代理 = 延遲外部呼叫編排器()
-        路由器 = 建立外部呼叫路由(代理)
+        路由器清單 = (
+            建立外部呼叫路由(代理),
+            建立安全草稿路由器(
+                self._草稿規劃代理, 目前工作階段相依, CSRF相依,
+            ),
+        )
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -287,8 +447,10 @@ class 生產Published執行建構器:
             例外：startup 例外原樣傳給 lifespan 統一分類。
             副作用：執行 migration、注入 callback 及完整 Published 組裝。
             """
-            return await run_in_threadpool(_建立Published資源, 設定, self._設定, 代理)
-        return 發布介面相依項((路由器,), (建立資源,))
+            return await run_in_threadpool(
+                _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
+            )
+        return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
     """依序組合 CP3 Web 與 CP4 Published routers/resources。
 
@@ -455,7 +617,8 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協�
 
 
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
-                    代理: 延遲外部呼叫編排器) -> 生產Published執行資源:
+                    代理: 延遲外部呼叫編排器,
+                    草稿代理: 延遲草稿規劃服務 | None = None) -> 生產Published執行資源:
     """startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
 
     參數：
@@ -484,6 +647,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     工具庫 = 工具發布庫()
     模型表: dict[str, object] = {}
     編排器 = None
+    Planner資源 = None
     try:
         發布.工具發布安裝器(工具庫)
         原模型表 = 發布.模型供應商註冊表工廠()
@@ -508,8 +672,21 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             記錄執行嘗試=台帳.記錄執行嘗試,
         )
         代理.安裝(編排器)
-        return 生產Published執行資源(代理, 編排器, 工具庫, 模型表)
+        if 發布.Planner設定 is not None:
+            if type(草稿代理) is not 延遲草稿規劃服務:
+                raise ValueError("Published生產組裝無效") from None
+            Planner資源 = 建立生產Planner資源(
+                發布.Planner設定, 生產.資料庫路徑, 工具庫, 草稿代理,
+            )
+        return 生產Published執行資源(
+            代理, 編排器, 工具庫, 模型表, Planner資源,
+        )
     except BaseException as 啟動錯誤:
+        try:
+            if Planner資源 is not None:
+                Planner資源._清除同步()
+        except BaseException:
+            pass
         try:
             if 編排器 is not None:
                 代理.清除(編排器)
