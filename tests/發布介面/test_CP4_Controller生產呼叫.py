@@ -4,18 +4,22 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from 繁中代理.工具 import 工具定義
+from 繁中代理.使用者 import 使用者庫
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.設定 import 生產設定
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
+from 繁中代理.發布介面.生產Published管理 import Planner生產設定
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 from 繁中代理.發布介面.領域模型 import WebOwnerPrincipal
 from 繁中代理.發布介面.技能套件.發布器 import 技能套件發布器
 from 繁中代理.發布介面.技能套件.儲存庫 import 套件收據儲存庫
 from 繁中代理.發布介面.憑證.儲存庫 import SQLite憑證儲存庫
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
 from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
 from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
 
@@ -113,6 +117,69 @@ def test_app_construction零callback且不建立資料庫(tmp_path):
     assert calls == [] and not db.exists() and not db.with_name("web.sqlite3").exists()
     assert list(app.openapi()["paths"]).count("/v1/endpoints/{slug}/invoke") == 1
     assert tuple(app.openapi()["paths"]["/v1/endpoints/{slug}/invoke"]) == ("post",)
+
+
+def test_management路由只依explicit設定公開可用能力(tmp_path):
+    """CP4-COMP-04：invoke／draft／create route inventory 必須符合 explicit composition。
+
+    參數：``tmp_path`` 提供三組隔離設定所需的 absolute paths。
+    返回值：無；三種設定的 OpenAPI inventory 皆符合公開能力。
+    例外：route 宣告不存在的 authority 或漏掛完整 management 時 assertion 失敗。
+    副作用：只建構應用並讀 OpenAPI，不呼叫工廠、不建立資料庫或目錄。
+    """
+    Web設定 = 生產設定(
+        tmp_path / "web.sqlite3", ("https://client.example",), "fake", "fake", None, None,
+    )
+    共用參數 = (
+        tmp_path / "published.sqlite3", tmp_path / "bundles",
+        lambda _工具庫: None, lambda: {"fake": object()},
+    )
+    invoke應用 = 建立CP4ASGI應用程式(Web設定, Published生產設定(*共用參數))
+    invoke路徑 = invoke應用.openapi()["paths"]
+    assert tuple(invoke路徑["/api/published-endpoints/draft"]) == ("post",)
+    assert "/api/published-endpoints" not in invoke路徑
+
+    Planner設定 = Planner生產設定(
+        "release-1", lambda 路徑: 使用者庫(路徑), lambda: 決定性假規劃器(), 3600.0,
+    )
+    draft應用 = 建立CP4ASGI應用程式(
+        Web設定, Published生產設定(*共用參數, Planner設定=Planner設定),
+    )
+    draft路徑 = draft應用.openapi()["paths"]
+    assert tuple(draft路徑["/api/published-endpoints/draft"]) == ("post",)
+    assert "/api/published-endpoints" not in draft路徑
+
+    完整應用 = 建立CP4ASGI應用程式(
+        Web設定,
+        Published生產設定(
+            *共用參數, Planner設定=Planner設定,
+            憑證封套工廠=lambda: AESGCM憑證封套({1: b"k" * 32}, 1),
+        ),
+    )
+    完整路徑 = 完整應用.openapi()["paths"]
+    assert tuple(完整路徑["/api/published-endpoints/draft"]) == ("post",)
+    assert tuple(完整路徑["/api/published-endpoints"]) == ("post",)
+
+
+def test_憑證封套設定缺少Planner時建構固定拒絕(tmp_path):
+    """CP4-COMP-05：Create key authority 不得在沒有 Planner authority 時形成部分設定。
+
+    參數：``tmp_path`` 提供不會實際讀取的 absolute Published paths。
+    返回值：無；設定必須在純記憶體驗證階段固定拒絕。
+    例外：只接受 exact ``ValueError`` 與固定公開設定錯誤訊息。
+    副作用：不得呼叫 envelope factory、installer、model factory 或建立檔案。
+    """
+    呼叫: list[str] = []
+    with pytest.raises(ValueError, match="^Published生產設定無效$"):
+        Published生產設定(
+            tmp_path / "published.sqlite3", tmp_path / "bundles",
+            lambda _工具庫: 呼叫.append("installer"),
+            lambda: 呼叫.append("models") or {"fake": object()},
+            憑證封套工廠=lambda: 呼叫.append("envelope") or AESGCM憑證封套(
+                {1: b"k" * 32}, 1,
+            ),
+        )
+    assert 呼叫 == []
 
 
 def test_startup安裝器與模型工廠exact_once並在shutdown清除(tmp_path):

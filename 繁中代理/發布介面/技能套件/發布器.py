@@ -637,7 +637,8 @@ class 技能套件發布器:
     def __init__(self, 根目錄: str | Path, *, 失敗點: Callable[[str], None] | None = None) -> None:
         """建立技能套件發布器。
 
-        參數：``根目錄`` 是套件共同父目錄；``失敗點`` 可在耐久步驟注入失敗。回傳：無。
+        參數：``根目錄`` 是套件共同父目錄；``失敗點`` 可在掃描、複製與耐久步驟
+        注入失敗。回傳：無。
         例外：路徑轉換失敗時傳出標準例外。副作用：只保存設定，不建立目錄。
         """
         self.根目錄 = Path(根目錄)
@@ -669,8 +670,11 @@ class 技能套件發布器:
 
         參數：識別欄位與版本資料描述目標；``技能表`` 提供名稱至來源映射。
         回傳：新發布或同內容雜湊且身分一致之既有套件收據。
-        例外：一般失敗拋出 ``套件發布錯誤``；父同步失敗拋出 ``套件耐久性未知``；控制例外原樣傳出。
-        副作用：掃描來源、建立同層暫存、唯讀同步，並以 no-replace 原子改名發布。
+        例外：scan／copy／耐久步驟的一般失敗拋出 ``套件發布錯誤``；父同步失敗拋出
+        ``套件耐久性未知``；控制例外原樣傳出。
+        副作用：依序命中 public scan／copy failure label、掃描及重驗來源、建立同層
+        暫存、唯讀同步，並以 no-replace 原子改名發布；rename 前失敗清除 stage，
+        parent fsync unknown 保留 final。
         """
         暫存目錄: Path | None = None
         try:
@@ -679,6 +683,7 @@ class 技能套件發布器:
                 raise ValueError
             if type(版本號碼) is not int or 版本號碼 <= 0:
                 raise ValueError
+            self._失敗點("scan")
             掃描列 = self._掃描(技能表)
             清單, 原始資料, 摘要 = 建立清單(
                 套件識別碼=套件識別碼, 端點識別碼=端點識別碼,
@@ -699,9 +704,11 @@ class 技能套件發布器:
                 for 檔案 in 掃描.檔案:
                     目標 = 暫存目錄 / 掃描.名稱 / 檔案.相對路徑
                     目標.parent.mkdir(parents=True, exist_ok=True)
+                    self._失敗點("copy")
                     資料 = 重驗檔案(掃描, 檔案)
                     描述元 = os.open(目標, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                     try:
+                        self._失敗點("write")
                         _完整寫入(描述元, 資料)
                         self._失敗點("file_fsync")
                         os.fsync(描述元)
@@ -710,6 +717,7 @@ class 技能套件發布器:
             清單路徑 = 暫存目錄 / "manifest.json"
             描述元 = os.open(清單路徑, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             try:
+                self._失敗點("write")
                 _完整寫入(描述元, 原始資料)
                 self._失敗點("manifest_fsync")
                 os.fsync(描述元)
