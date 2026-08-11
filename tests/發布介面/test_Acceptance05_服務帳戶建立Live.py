@@ -6,8 +6,12 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
+import os
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -393,6 +397,137 @@ def test_live登入草稿建立兩端點並產生不同服務帳戶且拒絕clie
         初始金鑰 = "[REDACTED]"
 
 
+_圖形寫入前綴 = (
+    "INSERT INTO service_accounts",
+    "INSERT INTO published_endpoints",
+    "INSERT INTO published_endpoint_versions",
+    "INSERT INTO published_draft_consumptions",
+    "INSERT INTO published_endpoint_version_metadata",
+    "INSERT INTO endpoint_credentials",
+    "INSERT INTO published_skill_bundles",
+    "INSERT INTO audit_events",
+    "UPDATE published_endpoints SET current_version_id",
+    "COMMIT",
+)
+
+
+@pytest.mark.parametrize("失敗前綴", _圖形寫入前綴)
+def test_live_HTTP每個交易寫入與commit失敗皆零孤立服務帳戶(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    失敗前綴: str,
+):
+    """從 canonical HTTP 在每個 P04 mutation／commit seam 注入失敗。
+
+    參數：``tmp_path`` 隔離資源；``monkeypatch`` 替換本次服務的連線工廠；
+        ``失敗前綴`` 選擇 exact SQL seam。
+    返回值：無；固定 500、八表零 graph、零孤立 SA 與錯誤遮罩由 assertions 固定。
+    """
+    (tmp_path / "bundles").mkdir()
+    應用程式 = _建立完整管理應用程式(tmp_path, [])
+
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        _建立Owner(tmp_path, "alice", "correct horse")
+        csrf = _登入(客戶端, "alice", "correct horse")
+        草稿 = _建立草稿(客戶端, csrf)
+        assert 草稿.status_code == 201
+        管理服務 = 應用程式.state.發布介面資源[-1].取得發布管理服務()
+
+        class 精確失敗連線(sqlite3.Connection):
+            """保留真 SQLite semantics，並在指定 mutation 前拋固定錯誤。"""
+
+            def execute(self, sql, parameters=()):
+                """只攔截本案例 exact SQL prefix，其餘委派 SQLite 基底實作。"""
+                if sql.startswith(失敗前綴):
+                    raise sqlite3.OperationalError("[REDACTED]")
+                return super().execute(sql, parameters)
+
+        def 建立失敗連線(*參數, **選項):
+            """建立使用 exact failure subclass 的正式 SQLite 連線。"""
+            return sqlite3.connect(*參數, **選項, factory=精確失敗連線)
+
+        monkeypatch.setattr(管理服務._端點發布服務, "_連線工廠", 建立失敗連線)
+        回應 = _送出建立(
+            客戶端,
+            草稿.headers[網頁CSRFHeader名稱],
+            草稿.json(),
+            "fail-api",
+        )
+
+        assert (回應.status_code, 回應.json()) == (500, {"detail": "發布管理服務失敗"})
+        assert str(tmp_path) not in 回應.text
+        assert "service_account" not in 回應.text
+        with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+            for 表 in (
+                "service_accounts",
+                "published_endpoints",
+                "published_endpoint_versions",
+                "published_draft_consumptions",
+                "published_endpoint_version_metadata",
+                "endpoint_credentials",
+                "published_skill_bundles",
+                "audit_events",
+            ):
+                assert 連線.execute(f'SELECT COUNT(*) FROM "{表}"').fetchone() == (0,)
+
+
+def test_相同slug兩個canonical_writer恰一winner且無多餘服務帳戶(tmp_path):
+    """以兩個真 session 並行建立相同 slug，固定一個 winner 與單一 durable graph。
+
+    參數：``tmp_path`` 隔離兩個 writer 共用的 canonical app、DB 與 bundle root。
+    返回值：無；201/409、八表單一 graph 與單一 SA 由 assertions 固定。
+    """
+    (tmp_path / "bundles").mkdir()
+    應用程式 = _建立完整管理應用程式(tmp_path, [])
+
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        _建立Owner(tmp_path, "alice", "correct horse")
+        csrf一 = _登入(客戶端, "alice", "correct horse")
+        草稿一 = _建立草稿(客戶端, csrf一)
+        assert 草稿一.status_code == 201
+        cookie一 = dict(客戶端.cookies)
+        客戶端.cookies.clear()
+
+        csrf二 = _登入(客戶端, "alice", "correct horse")
+        草稿二 = _建立草稿(客戶端, csrf二)
+        assert 草稿二.status_code == 201
+        cookie二 = dict(客戶端.cookies)
+
+        def 建立(輸入):
+            """以隔離 session cookie 與 successor CSRF 送出一個 canonical Create。"""
+            cookie, 草稿 = 輸入
+            return 客戶端.post(
+                端點建立路徑,
+                json={
+                    "draft_id": 草稿.json()["draft_id"],
+                    "slug": "same-api",
+                    "configuration_confirmation": _建立確認(草稿.json()["preview"]),
+                },
+                headers={網頁CSRFHeader名稱: 草稿.headers[網頁CSRFHeader名稱]},
+                cookies=cookie,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as 執行器:
+            回應們 = list(執行器.map(建立, ((cookie一, 草稿一), (cookie二, 草稿二))))
+
+        assert sorted(回應.status_code for 回應 in 回應們) == [201, 409]
+        for 回應 in 回應們:
+            assert "service_account_id" not in 回應.text
+            assert str(tmp_path) not in 回應.text
+        with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+            for 表 in (
+                "service_accounts",
+                "published_endpoints",
+                "published_endpoint_versions",
+                "published_draft_consumptions",
+                "published_endpoint_version_metadata",
+                "endpoint_credentials",
+                "published_skill_bundles",
+                "audit_events",
+            ):
+                assert 連線.execute(f'SELECT COUNT(*) FROM "{表}"').fetchone() == (1,)
+
+
 class _記錄假模型:
     """記錄 restart invocation 的 detached provider 參數。"""
 
@@ -419,10 +554,58 @@ class _記錄假模型:
         )
 
 
-def test_restart後由exact服務帳戶與v1快照完成invoke且不讀live_skill(tmp_path):
-    """證明 fresh app invoke 只使用 exact Published snapshot。
+_FRESH_PROCESS_INVOKE_SCRIPT = r'''
+import json
+import os
+import runpy
+from pathlib import Path
 
-    參數：``tmp_path`` 供前後兩個 canonical app 共用 durable DB 與 bundle root。
+from fastapi.testclient import TestClient
+import 繁中代理.發布介面.執行期.執行器 as 執行器模組
+
+repo = Path(os.environ["A5_REPO"])
+tmp = Path(os.environ["A5_TMP"])
+api_key = os.environ.pop("A5_API_KEY")
+expected_sa = os.environ["A5_EXPECTED_SA"]
+expected_version = os.environ["A5_EXPECTED_VERSION"]
+helpers = runpy.run_path(str(repo / "tests/發布介面/test_Acceptance05_服務帳戶建立Live.py"))
+model = helpers["_記錄假模型"]()
+app = helpers["_建立完整管理應用程式"](
+    tmp, [], 模型表工廠=lambda: {"fake": model},
+)
+captured = []
+original_loader = 執行器模組.載入服務帳戶上下文或失敗關閉
+
+def capture_context(*args, **kwargs):
+    context = original_loader(*args, **kwargs)
+    captured.append((context.service_account_id, context.endpoint_version_id))
+    return context
+
+執行器模組.載入服務帳戶上下文或失敗關閉 = capture_context
+with TestClient(app, raise_server_exceptions=False) as client:
+    response = client.post(
+        "/v1/endpoints/restart-api/invoke",
+        json={"input": {"question": "restart"}},
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+provider_text = json.dumps(model.呼叫[0], ensure_ascii=False, sort_keys=True) if model.呼叫 else ""
+print(json.dumps({
+    "status": response.status_code,
+    "data": response.json().get("data"),
+    "context": captured,
+    "context_matches": captured == [(expected_sa, expected_version)],
+    "model_calls": len(model.呼叫),
+    "bundle_snapshot_present": "# Demo" in provider_text,
+    "owner_data_absent": "correct horse" not in provider_text and str(tmp / "skills") not in provider_text,
+}, ensure_ascii=False, sort_keys=True))
+api_key = "[REDACTED]"
+'''
+
+
+def test_restart後由exact服務帳戶與v1快照完成invoke且不讀live_skill(tmp_path):
+    """證明 fresh process invoke 只使用 exact Published snapshot。
+
+    參數：``tmp_path`` 供父程序與 fresh child process 共用 durable DB 與 bundle root。
     返回值：無；Create→shutdown→刪除 owner skill→restart invoke 全由 assertions 固定。
     """
     (tmp_path / "bundles").mkdir()
@@ -458,24 +641,34 @@ def test_restart後由exact服務帳戶與v1快照完成invoke且不讀live_skil
         ).fetchone() == (端點識別碼,)
 
     (tmp_path / "skills" / "demo" / "SKILL.md").unlink()
-    第二模型 = _記錄假模型()
-    重啟應用 = _建立完整管理應用程式(
-        tmp_path,
-        [],
-        模型表工廠=lambda: {"fake": 第二模型},
+    child環境 = os.environ.copy()
+    child環境.update({
+        "A5_REPO": str(Path(__file__).resolve().parents[2]),
+        "A5_TMP": str(tmp_path),
+        "A5_API_KEY": 初始金鑰,
+        "A5_EXPECTED_SA": 服務帳戶識別碼,
+        "A5_EXPECTED_VERSION": 版本識別碼,
+    })
+    child結果 = subprocess.run(
+        [sys.executable, "-I", "-c", _FRESH_PROCESS_INVOKE_SCRIPT],
+        cwd=Path(__file__).resolve().parents[2],
+        env=child環境,
+        text=True,
+        capture_output=True,
+        check=False,
     )
-    with TestClient(重啟應用, raise_server_exceptions=False) as 客戶端:
-        呼叫 = 客戶端.post(
-            "/v1/endpoints/restart-api/invoke",
-            json={"input": {"question": "restart"}},
-            headers={"Authorization": f"Bearer {初始金鑰}"},
-        )
-
-    assert 呼叫.status_code == 200
-    assert 呼叫.json()["data"] == {"result": "restart-ok"}
-    assert len(第二模型.呼叫) == 1
-    provider參數 = json.dumps(第二模型.呼叫[0], ensure_ascii=False, sort_keys=True)
-    assert "# Demo" in provider參數
-    assert "correct horse" not in provider參數
-    assert str(tmp_path / "skills") not in provider參數
+    assert 初始金鑰 not in child結果.stdout
+    assert 初始金鑰 not in child結果.stderr
+    child環境["A5_API_KEY"] = "[REDACTED]"
+    assert child結果.returncode == 0, "[REDACTED]"
+    child證據 = json.loads(child結果.stdout)
+    assert child證據 == {
+        "bundle_snapshot_present": True,
+        "context": [[服務帳戶識別碼, 版本識別碼]],
+        "context_matches": True,
+        "data": {"result": "restart-ok"},
+        "model_calls": 1,
+        "owner_data_absent": True,
+        "status": 200,
+    }
     初始金鑰 = "[REDACTED]"
