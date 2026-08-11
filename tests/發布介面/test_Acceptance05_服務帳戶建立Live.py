@@ -383,6 +383,7 @@ def test_live登入草稿建立兩端點並產生不同服務帳戶且拒絕clie
                 "published_skill_bundles",
                 "published_draft_consumptions",
                 "published_endpoint_version_metadata",
+                "audit_events",
             ):
                 assert 連線.execute(f'SELECT COUNT(*) FROM "{表}"').fetchone()[0] == 2
 
@@ -510,7 +511,8 @@ def test_相同slug兩個canonical_writer恰一winner且無多餘服務帳戶(tm
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as 執行器:
             回應們 = list(執行器.map(建立, ((cookie一, 草稿一), (cookie二, 草稿二))))
 
-        assert sorted(回應.status_code for 回應 in 回應們) == [201, 409]
+        狀態與本文 = [(回應.status_code, 回應.json()) for 回應 in 回應們]
+        assert sorted(回應.status_code for 回應 in 回應們) == [201, 409], 狀態與本文
         for 回應 in 回應們:
             assert "service_account_id" not in 回應.text
             assert str(tmp_path) not in 回應.text

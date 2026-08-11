@@ -283,7 +283,7 @@ def test_重複發布只有一個圖形且碰撞成果成為孤兒(tmp_path):
     第二筆 = 環境["服務"].原子發布(
         擁有者使用者識別碼=環境["擁有者"], 確認=_確認("draft-1"),
     )
-    assert type(第一筆) is 端點發布結果 and 第二筆 == 管理操作錯誤("internal")
+    assert type(第一筆) is 端點發布結果 and 第二筆 == 管理操作錯誤("status_conflict")
     連線 = sqlite3.connect(環境["資料庫"])
     assert 連線.execute("SELECT count(*) FROM published_endpoints").fetchone() == (1,)
     assert 連線.execute("SELECT count(*) FROM published_endpoint_versions").fetchone() == (1,)
@@ -322,7 +322,7 @@ def test_並行發布至多提交一個圖形且不覆寫贏家(tmp_path):
     贏家執行緒, 贏家 = next(項目 for 項目 in 結果列 if type(項目[1]) is 端點發布結果)
     輸家執行緒, 輸家結果 = next(項目 for 項目 in 結果列 if type(項目[1]) is 管理操作錯誤)
     assert type(贏家) is 端點發布結果
-    assert 輸家結果 == 管理操作錯誤("internal")
+    assert 輸家結果 == 管理操作錯誤("status_conflict")
     贏家ID = 環境["產生紀錄"][贏家執行緒]
     輸家ID = 環境["產生紀錄"][輸家執行緒]
     assert set(贏家ID) == set(輸家ID) == {
