@@ -36,6 +36,7 @@ from 繁中代理.發布介面.技能套件.載入器 import (
 )
 from 繁中代理.發布介面.相依項 import 發布介面相依項
 from 繁中代理.發布介面.生產Published執行 import Published生產設定, 生產Controller建構器
+from 繁中代理.發布介面.生產Published管理 import Planner生產設定
 from 繁中代理.發布介面.生產組裝 import 建立生產應用程式
 from 繁中代理.發布介面.規劃.擁有者能力 import 擁有者能力轉接器
 from 繁中代理.發布介面.規劃.發布管理 import 發布管理協調器
@@ -282,8 +283,13 @@ def test_canonical_live_openapi必須含Draft_Publish_Version與Invoke路徑(tmp
         Cookie安全=False, 工作階段有效秒數=3600,
     )
     Published設定 = Published生產設定(
-        tmp_path / "published.sqlite3", 套件根, lambda _儲存庫: None,
+        tmp_path / "published.sqlite3", 套件根, _安裝工具發布,
         lambda: {"fake": _記錄模型()}, 60.0,
+        Planner設定=Planner生產設定(
+            "release-1", lambda 路徑: 使用者庫(路徑),
+            lambda: 決定性假規劃器(), 3600.0,
+        ),
+        憑證封套工廠=lambda: AESGCM憑證封套({1: b"K" * 32}, 1),
     )
     規格 = 建立CP4ASGI應用程式(網頁設定, Published設定).openapi()
     路徑集 = set(規格["paths"])

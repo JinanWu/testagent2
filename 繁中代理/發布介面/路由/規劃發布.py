@@ -368,6 +368,22 @@ class 端點建立服務(Protocol):
         ...
 
 
+class 版本建立服務(Protocol):
+    """規範 canonical Version route 唯一需要的不可變版本操作。"""
+
+    def 原子建立並切換版本(
+        self, *, 擁有者使用者識別碼: str, 端點識別碼: str,
+        配置: dict[str, JsonValue],
+    ) -> 版本建立結果 | 管理操作錯誤:
+        """以權威 owner、端點與 detached 配置建立版本並切換 current pointer。"""
+        ...
+
+
+class 端點版本管理服務(端點建立服務, 版本建立服務, Protocol):
+    """組合 canonical Create 與 Version routes 實際使用的最小服務介面。"""
+
+
+
 def 建立規劃發布路由器(服務: 發布管理服務, 身份依賴) -> APIRouter:
     """建立三條 session-identity 管理路由；成功 create 一律固定 201。"""
     路由器 = APIRouter()
@@ -521,7 +537,7 @@ def 建立安全草稿端點建立路由器(
 
 def 建立安全規劃發布路由器(
     草稿服務: 安全草稿服務,
-    發布服務: 發布管理服務,
+    發布服務: 端點版本管理服務,
     目前工作階段相依,
     csrf相依,
     *,
@@ -627,7 +643,7 @@ def _安全發布端點(服務: 端點建立服務, 請求: 發布端點請求, 
 
 
 def _安全建立版本(
-    服務: 發布管理服務, 請求: 建立版本請求, 端點識別碼: str, 使用者識別碼: str,
+    服務: 版本建立服務, 請求: 建立版本請求, 端點識別碼: str, 使用者識別碼: str,
 ) -> JSONResponse:
     """在工作執行緒只以使用者識別碼委派權威版本操作。
 
@@ -653,7 +669,7 @@ def _安全建立版本(
         回應 = JSONResponse(status_code=201, content=內容)
         return 回應
     finally:
-        服務 = 請求 = 端點識別碼 = 使用者識別碼 = 配置 = 結果 = 內容 = 回應 = None
+        del 服務, 請求, 端點識別碼, 使用者識別碼, 配置, 結果, 內容, 回應
 
 
 async def _解析安全草稿本文(請求: Request) -> 安全建立草稿請求:

@@ -1446,6 +1446,60 @@ def test_代表性Bundle或SQLite失敗經canonical_Create固定500且零active_
         assert 重試.status_code == 201
 
 
+def test_Canonical_Create後Version路由使用真P05建立v2並切換pointer(tmp_path):
+    """走 canonical Login→Draft→Create→Version，證明三路由組裝安裝真 P05 authority。
+
+    參數：``tmp_path`` 隔離 Web／Published DB、技能來源與 bundle root。
+    回傳值：無；HTTP 201 DTO 與 SQLite current pointer 以 assertions 表達。
+    例外：session、CSRF、Version proxy、P05 或 bundle 任一斷鏈時測試失敗。
+    重要副作用：建立 owner、v1、v2 及兩份不可變 bundle，並把 current pointer 切到 v2。
+    """
+    應用 = _建立正式應用程式(tmp_path)
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿 = _建立Server草稿(客戶端, csrf)
+        assert 草稿.status_code == 201
+        建立 = _建立Endpoint(客戶端, 草稿.headers[網頁CSRFHeader名稱], 草稿.json())
+        assert 建立.status_code == 201, 建立.text
+        預覽 = 草稿.json()["preview"]
+        版本 = 客戶端.post(
+            f"/api/published-endpoints/{建立.json()['endpoint_id']}/versions",
+            json={"configuration": {
+                "original_requirement_text": "建立 Demo API",
+                "system_prompt": 預覽["system_prompt"],
+                "model_config_snapshot": {
+                    "provider": "fake", "model": "fake", "temperature": 0.0,
+                    "max_tokens": 4096, "timeout_seconds": 60.0,
+                    "structured_output": True, "schema_retry_count": 1,
+                },
+                "retry_policy": {"max_attempts": 1},
+                "input_schema": 預覽["input_schema"],
+                "response_schema": 預覽["response_schema"],
+            }},
+            headers={網頁CSRFHeader名稱: 建立.headers[網頁CSRFHeader名稱]},
+        )
+        assert 版本.status_code == 201, 版本.text
+        版本本文 = 版本.json()
+        assert 版本本文 == {
+            "endpoint_id": 建立.json()["endpoint_id"],
+            "version_id": 版本本文["version_id"],
+            "version_number": 2,
+            "current_version_id": 版本本文["version_id"],
+            "schema_changed": False,
+        }
+
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+        assert 連線.execute(
+            "SELECT current_version_id FROM published_endpoints WHERE id=?",
+            (建立.json()["endpoint_id"],),
+        ).fetchone() == (版本本文["version_id"],)
+        assert 連線.execute(
+            "SELECT COUNT(*) FROM published_endpoint_versions WHERE endpoint_id=?",
+            (建立.json()["endpoint_id"],),
+        ).fetchone() == (2,)
+
+
 def test_Create成功後來源刪除且重啟仍由v1_bundle完成Invoke(tmp_path):
     """走 canonical Create→shutdown→restart→Invoke，證明 v1 runtime 不依賴 live source。
 
