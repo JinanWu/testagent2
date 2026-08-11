@@ -19,6 +19,7 @@ from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
+from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
 from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
 from 繁中代理.發布介面.路由.規劃發布 import 發布確認
@@ -80,12 +81,18 @@ def _解析綱要(規格: dict[str, Any], 綱要: dict[str, Any]) -> dict[str, A
     return 規格["components"]["schemas"][綱要["$ref"].rsplit("/", 1)[1]]
 
 
-def _建立完整管理應用程式(暫存目錄: Path, 工廠呼叫: list[str]):
+def _建立完整管理應用程式(
+    暫存目錄: Path,
+    工廠呼叫: list[str],
+    *,
+    模型表工廠=None,
+):
     """以 explicit factories 建立完整管理能力，但不啟動 lifespan。
 
     參數：
         暫存目錄: 提供彼此隔離的 Web DB、Published DB 與 bundle root 路徑。
         工廠呼叫: 若 app construction 錯誤執行 callback，會留下可觀測事件。
+        模型表工廠: 可選的 restart provider registry factory；預設使用隔離假物件。
     返回值：
         尚未啟動、但 OpenAPI 應已公開完整管理路由的 canonical app。
     """
@@ -103,11 +110,16 @@ def _建立完整管理應用程式(暫存目錄: Path, 工廠呼叫: list[str])
         lambda: 工廠呼叫.append("planner") or 決定性假規劃器(),
         3600.0,
     )
+    def 建立模型表():
+        """記錄 startup exact-once 呼叫並建立本次 provider registry。"""
+        工廠呼叫.append("models")
+        return {"fake": object()} if 模型表工廠 is None else 模型表工廠()
+
     published設定 = Published生產設定(
         暫存目錄 / "published.sqlite3",
         暫存目錄 / "bundles",
         lambda 工具庫: _安裝固定工具(工具庫, 工廠呼叫),
-        lambda: 工廠呼叫.append("models") or {"fake": object()},
+        建立模型表,
         Planner設定=planner設定,
         憑證封套工廠=lambda: 工廠呼叫.append("envelope") or AESGCM憑證封套(
             {1: b"A" * 32}, 1,
@@ -355,3 +367,79 @@ def test_live登入草稿建立兩端點並產生不同服務帳戶且拒絕clie
         )
         assert all(初始金鑰 not in 紀錄.getMessage() for 紀錄 in caplog.records)
         初始金鑰 = "[REDACTED]"
+
+
+class _記錄假模型:
+    """記錄 restart invocation 的 detached provider 參數。"""
+
+    def __init__(self) -> None:
+        """建立空呼叫紀錄。"""
+        self.呼叫: list[dict[str, Any]] = []
+
+    def 產生發布回應(self, **參數):
+        """保存 JSON detached 參數並回傳符合 structured schema 的 deterministic 結果。"""
+        self.呼叫.append(json.loads(json.dumps(參數)))
+        return 模型回應快照(
+            text='{"result":"restart-ok"}',
+            finish_reason="stop",
+            usage={"total_tokens": 1},
+            tool_calls=[],
+        )
+
+
+def test_restart後由exact服務帳戶與v1快照完成invoke且不讀live_skill(tmp_path):
+    """SA-4：Create→shutdown→刪除 owner skill→fresh app invoke 仍只使用 Published snapshot。"""
+    (tmp_path / "bundles").mkdir()
+    第一應用 = _建立完整管理應用程式(tmp_path, [])
+    初始金鑰 = None
+
+    with TestClient(第一應用, raise_server_exceptions=False) as 客戶端:
+        _建立Owner(tmp_path, "alice", "correct horse")
+        csrf = _登入(客戶端, "alice", "correct horse")
+        草稿 = _建立草稿(客戶端, csrf)
+        assert 草稿.status_code == 201
+        建立 = _送出建立(
+            客戶端,
+            草稿.headers[網頁CSRFHeader名稱],
+            草稿.json(),
+            "restart-api",
+        )
+        assert 建立.status_code == 201
+        初始金鑰 = 建立.json()["initial_api_key"]
+
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+        端點識別碼, 服務帳戶識別碼, 版本識別碼 = 連線.execute(
+            "SELECT id,service_account_id,current_version_id FROM published_endpoints "
+            "WHERE slug='restart-api'"
+        ).fetchone()
+        assert 連線.execute(
+            "SELECT COUNT(*) FROM service_accounts WHERE id=?",
+            (服務帳戶識別碼,),
+        ).fetchone() == (1,)
+        assert 連線.execute(
+            "SELECT endpoint_id FROM published_endpoint_versions WHERE id=?",
+            (版本識別碼,),
+        ).fetchone() == (端點識別碼,)
+
+    (tmp_path / "skills" / "demo" / "SKILL.md").unlink()
+    第二模型 = _記錄假模型()
+    重啟應用 = _建立完整管理應用程式(
+        tmp_path,
+        [],
+        模型表工廠=lambda: {"fake": 第二模型},
+    )
+    with TestClient(重啟應用, raise_server_exceptions=False) as 客戶端:
+        呼叫 = 客戶端.post(
+            "/v1/endpoints/restart-api/invoke",
+            json={"input": {"question": "restart"}},
+            headers={"Authorization": f"Bearer {初始金鑰}"},
+        )
+
+    assert 呼叫.status_code == 200
+    assert 呼叫.json()["data"] == {"result": "restart-ok"}
+    assert len(第二模型.呼叫) == 1
+    provider參數 = json.dumps(第二模型.呼叫[0], ensure_ascii=False, sort_keys=True)
+    assert "# Demo" in provider參數
+    assert "correct horse" not in provider參數
+    assert str(tmp_path / "skills") not in provider參數
+    初始金鑰 = "[REDACTED]"
