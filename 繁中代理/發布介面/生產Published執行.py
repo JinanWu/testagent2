@@ -58,7 +58,7 @@ from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 技能套件協調器
 from .技能套件.發布器 import 技能套件發布器
 from .路由.外部呼叫 import 建立外部呼叫路由
-from .路由.規劃發布 import 建立安全草稿端點建立路由器
+from .路由.規劃發布 import 建立安全草稿端點建立路由器, 建立安全草稿路由器
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -133,7 +133,8 @@ class Published生產設定:
                 or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
                 or (type(保留秒數) is float and not math.isfinite(保留秒數))
                 or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)
-                or (封套工廠 is not None and not callable(封套工廠))):
+                or (封套工廠 is not None and not callable(封套工廠))
+                or (封套工廠 is not None and Planner組裝 is None)):
             raise ValueError("Published生產設定無效") from None
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
@@ -492,21 +493,25 @@ class 生產Published執行建構器:
         """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
 
         參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
-        返回值：含 exact invocation router、安全草稿 router，以及一個 async resource factory
-        的附加相依項；Planner 尚未配置時，草稿 proxy 仍以 503 fail closed。
+        返回值：含 exact invocation 與固定可探索的 Draft router；只有 explicit Planner＋Key
+        完整設定時才額外公開 Endpoint Create，並附一個 async resource factory。
         例外：設定或 dependency 違約時固定 ``ValueError``。
         副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
         """
         if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
             raise ValueError("Published生產組裝無效") from None
         代理 = 延遲外部呼叫編排器()
-        路由器清單 = (
-            建立外部呼叫路由(代理),
-            建立安全草稿端點建立路由器(
+        路由器清單 = (建立外部呼叫路由(代理),)
+        if self._設定.憑證封套工廠 is None:
+            管理路由器 = 建立安全草稿路由器(
+                self._草稿規劃代理, 目前工作階段相依, CSRF相依,
+            )
+        else:
+            管理路由器 = 建立安全草稿端點建立路由器(
                 self._草稿規劃代理, self._發布管理代理,
                 目前工作階段相依, CSRF相依,
-            ),
-        )
+            )
+        路由器清單 += (管理路由器,)
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
