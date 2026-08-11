@@ -9,12 +9,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.routing import APIRoute
+from fastapi.testclient import TestClient
 
 from 繁中代理.使用者 import 使用者庫
+from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
+from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
 from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
+from 繁中代理.發布介面.路由.規劃發布 import 發布確認
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
 from 繁中代理.發布介面.生產Published管理 import Planner生產設定
 from 繁中代理.發布介面.設定 import 生產設定
@@ -28,6 +33,30 @@ from 繁中代理.發布介面.設定 import 生產設定
     "status",
     "initial_api_key",
 }
+
+
+def _安裝固定工具(工具發布庫物件, 工廠呼叫: list[str]) -> None:
+    """安裝 Planner owner resolver 使用的 deterministic tool release。
+
+    參數：
+        工具發布庫物件: canonical startup 建立的 per-app registry。
+        工廠呼叫: 記錄 installer exact-once 呼叫。
+    返回值：
+        無；安裝一個無外部副作用的工具定義。
+    """
+    工廠呼叫.append("tools")
+    工具發布庫物件.登錄發布(工具發布描述(
+        "acceptance-release",
+        (工具發布註冊(
+            "revision-1",
+            工具定義(
+                "acceptance-tool",
+                "Acceptance deterministic tool",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+                lambda _參數: {"ok": True},
+            ),
+        ),),
+    ))
 
 
 def _解析綱要(規格: dict[str, Any], 綱要: dict[str, Any]) -> dict[str, Any]:
@@ -68,7 +97,7 @@ def _建立完整管理應用程式(暫存目錄: Path, 工廠呼叫: list[str])
     published設定 = Published生產設定(
         暫存目錄 / "published.sqlite3",
         暫存目錄 / "bundles",
-        lambda _工具庫: 工廠呼叫.append("tools"),
+        lambda 工具庫: _安裝固定工具(工具庫, 工廠呼叫),
         lambda: 工廠呼叫.append("models") or {"fake": object()},
         Planner設定=planner設定,
         憑證封套工廠=lambda: 工廠呼叫.append("envelope") or AESGCM憑證封套(
@@ -132,3 +161,38 @@ def test_canonical_OpenAPI只有一個endpoint_create且不接受service_account
     assert not (tmp_path / "published.sqlite3").exists()
     assert not (tmp_path / "web.sqlite3").exists()
     assert not (tmp_path / "bundles").exists()
+
+
+def test_startup重用A3資源並於shutdown撤銷服務帳戶建立authority(tmp_path):
+    """SA-2：Create coordinator 重用同一 Draft／Owner／Registry，關閉後固定 fail closed。
+
+    參數：
+        tmp_path: 隔離 Web DB、Published DB 與 bundle root。
+    返回值：
+        無；lifespan identity 與 shutdown authority assertions 皆成立。
+    重要副作用：
+        啟動並關閉一次 canonical app，建立隔離 SQLite DB；不建立 endpoint 或 SA。
+    """
+    (tmp_path / "bundles").mkdir()
+    工廠呼叫: list[str] = []
+    應用程式 = _建立完整管理應用程式(tmp_path, 工廠呼叫)
+    捕捉管理代理 = None
+
+    with TestClient(應用程式):
+        published資源 = 應用程式.state.發布介面資源[-1]
+        planner資源 = published資源.取得Planner資源()
+        管理服務 = published資源.取得發布管理服務()
+        assert planner資源 is not None and 管理服務 is not None
+        assert 管理服務._草稿服務 is planner資源.取得規劃服務()
+        assert 管理服務._擁有者解析器 is planner資源.取得擁有者解析器()
+        assert planner資源.取得工具發布庫() is published資源._工具庫
+        assert 管理服務._套件協調器 is published資源._技能套件協調器
+        捕捉管理代理 = published資源._發布管理代理
+
+    assert 工廠呼叫 == ["tools", "models", "owner", "planner", "envelope"]
+    assert 捕捉管理代理 is not None
+    with pytest.raises(RuntimeError, match="發布管理服務不可用"):
+        捕捉管理代理.原子發布(
+            擁有者使用者識別碼="owner",
+            確認=發布確認("draft", "safe-api", {}),
+        )
