@@ -1,14 +1,17 @@
-"""Acceptance #4 EP-1：凍結正式草稿與端點建立 HTTP 契約的 RED 測試。
+"""Acceptance #4 EP-1～EP-3：正式草稿與端點建立契約及 Live E2E。
 
 本模組只從 ``建立CP4ASGI應用程式`` 建立正式應用，不建立手工 FastAPI
 應用或替代路由。測試固定 Draft／Create 路徑、方法、OpenAPI 本文與回應、
 正式 Session／單次 CSRF 相依身分，以及不得由客戶端聲稱的內部權威欄位。
-目前預期因正式應用尚未掛載兩條管理路由而 RED；不得在本卡修改 production source。
+EP-3 另以真 Login、Owner Authority 與公開 canonical route 驗證發布圖形及秘密邊界。
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +25,7 @@ from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.技能套件.發布器 import 套件發布收據
 from 繁中代理.發布介面.生產Published執行 import Published生產設定, 生產Controller建構器
 from 繁中代理.發布介面.生產Published管理 import Planner生產設定, 延遲發布管理服務
 from 繁中代理.發布介面.生產Published管理 import 草稿規劃服務不可用
@@ -30,6 +34,7 @@ from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規�
 from 繁中代理.發布介面.路由.規劃發布 import 發布確認
 from 繁中代理.發布介面.路由.網頁認證 import 是模組CSRF相依項
 from 繁中代理.發布介面.設定 import 生產設定
+from 繁中代理.發布介面.設定 import 網頁CSRFHeader名稱, 網頁CSRFCookie名稱, 網頁工作階段Cookie名稱
 
 
 草稿路徑 = "/api/published-endpoints/draft"
@@ -41,6 +46,17 @@ from 繁中代理.發布介面.設定 import 生產設定
     "selected_tools",
     "system_prompt",
 )
+草稿回應頂層鍵 = {"draft_id", "expires_at", "preview"}
+草稿預覽鍵 = {
+    "endpoint_name", "suggested_slug", "behavior_summary", "selected_skills",
+    "recommended_tools", "tool_capabilities", "system_prompt", "input_schema",
+    "response_schema", "human_docs", "rate_limit", "warnings",
+}
+發布副作用資料表 = {
+    "published_endpoints", "published_endpoint_versions", "endpoint_credentials",
+    "published_skill_bundles", "service_accounts", "audit_events",
+    "published_draft_consumptions", "published_endpoint_version_metadata",
+}
 
 
 def _安裝固定工具(工具發布庫物件) -> None:
@@ -94,12 +110,16 @@ def _建立憑證封套() -> AESGCM憑證封套:
     return AESGCM憑證封套({1: b"A" * 32}, 1)
 
 
-def _建立正式應用程式(暫存目錄: Path, *, 封套工廠=_建立憑證封套):
+def _建立正式應用程式(
+    暫存目錄: Path, *, 封套工廠=_建立憑證封套,
+    草稿存續秒數: float = 3600.0,
+):
     """建立不讀隱含環境且可由正式 lifespan 啟動的 CP4 應用。
 
     參數：
         暫存目錄: pytest 提供的隔離目錄，用來配置 Web DB、Published DB 與 bundle root。
         封套工廠: 只保存至 startup 才呼叫的 explicit credential envelope factory。
+        草稿存續秒數: Server Draft 的存續時間，用於 Live expiry 邊界。
     回傳值：
         ``建立CP4ASGI應用程式`` 回傳的正式 FastAPI 應用。
     例外：
@@ -124,7 +144,7 @@ def _建立正式應用程式(暫存目錄: Path, *, 封套工廠=_建立憑證�
         _建立假模型表,
         Planner設定=Planner生產設定(
             "acceptance-release", lambda 路徑: 使用者庫(路徑),
-            lambda: 決定性假規劃器(), 3600.0,
+            lambda: 決定性假規劃器(), 草稿存續秒數,
         ),
         憑證封套工廠=封套工廠,
     )
@@ -226,6 +246,154 @@ def _取得請求綱要(規格: dict[str, Any], 路徑: str) -> dict[str, Any]:
         規格,
         本文契約["content"]["application/json"]["schema"],
     )
+
+
+def _建立Owner技能與使用者(暫存目錄: Path, 帳號: str, 密碼: str) -> str:
+    """建立具真技能及 authoritative tool 授權的 Web owner。
+
+    參數：``暫存目錄`` 定位隔離技能與 Web DB；``帳號``、``密碼`` 是登入資料。
+    回傳值：canonical owner user id 字串。
+    例外：技能寫入、使用者建立或 SQLite 操作失敗時原樣傳出。
+    重要副作用：寫入一份 ``demo`` 技能並新增一位啟用該技能及工具的使用者。
+    """
+    技能根 = 暫存目錄 / "skills"
+    技能目錄 = 技能根 / "demo"
+    技能目錄.mkdir(parents=True, exist_ok=True)
+    (技能目錄 / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: acceptance skill\n---\n\n# Demo\n",
+        encoding="utf-8",
+    )
+    儲存庫 = 使用者庫(暫存目錄 / "web.sqlite3")
+    try:
+        使用者 = 儲存庫.建立使用者(
+            帳號, 密碼, roles=["user"], enabled_tools=["acceptance-tool"],
+            enabled_skills=["demo"], skill_roots=[str(技能根)],
+            allowed_workdirs=[str(暫存目錄)],
+        )
+        return str(使用者["id"])
+    finally:
+        儲存庫.連線.close()
+
+
+def _登入Owner(客戶端: TestClient, 帳號: str, 密碼: str):
+    """以真帳密登入並確認 Cookie，回傳 Login response 與首枚 CSRF。
+
+    參數：``客戶端`` 是已啟動 canonical app client；帳號與密碼屬測試使用者。
+    回傳值：二元組 ``(login response, csrf token)``。
+    例外：登入契約漂移時以 assertion 失敗。
+    重要副作用：建立真 session，並在 client cookie jar 寫入 session／CSRF cookies。
+    """
+    回應 = 客戶端.post("/api/auth/login", json={"username": 帳號, "password": 密碼})
+    assert 回應.status_code == 200
+    assert 網頁工作階段Cookie名稱 in 客戶端.cookies
+    assert 網頁CSRFCookie名稱 in 客戶端.cookies
+    return 回應, 回應.json()["csrf_token"]
+
+
+def _建立Server草稿(客戶端: TestClient, csrf: str):
+    """經 canonical HTTP 建立一份 authoritative owner Draft。
+
+    參數：``客戶端`` 持有真 session；``csrf`` 是本次尚未使用的權杖。
+    回傳值：原始 HTTP response，供呼叫端驗證 exact DTO 與 successor token。
+    例外：傳輸錯誤原樣傳出；HTTP 契約由呼叫端斷言。
+    重要副作用：成功時在 canonical in-memory Draft Aggregate 新增一份草稿並輪替 CSRF。
+    """
+    return 客戶端.post(
+        草稿路徑,
+        json={
+            "original_requirement_text": "建立 Demo API",
+            "selected_skills": ["demo"],
+            "response_mode": "structured",
+        },
+        headers={網頁CSRFHeader名稱: csrf},
+    )
+
+
+def _建立Server確認(預覽: dict[str, Any]) -> dict[str, Any]:
+    """從 exact server preview 建立 route 允許的五個顯示值確認。
+
+    參數：``預覽`` 是 Draft 201 回傳的十二鍵 server preview。
+    回傳值：只含 Prompt、Input／Response Schema、Docs 與 Rate 的 detached dict。
+    例外：必要鍵缺失時傳出 ``KeyError``，使 server DTO 漂移明確失敗。
+    重要副作用：無；所有巢狀 JSON 值先經 JSON round-trip 脫離。
+    """
+    return json.loads(json.dumps({
+        "system_prompt": 預覽["system_prompt"],
+        "input_schema": 預覽["input_schema"],
+        "response_schema": 預覽["response_schema"],
+        "human_docs": 預覽["human_docs"],
+        "rate_limit": 預覽["rate_limit"],
+    }))
+
+
+def _建立Endpoint(客戶端: TestClient, csrf: str, 草稿本文: dict[str, Any], *, 確認=None):
+    """以三鍵 exact body 經 canonical HTTP 嘗試建立 Endpoint。
+
+    參數：client 與 CSRF 驗證真 session；草稿本文供應 ID／preview；確認可覆寫負向案例。
+    回傳值：原始 Create HTTP response。
+    例外：草稿本文缺鍵或傳輸錯誤原樣傳出。
+    重要副作用：成功時建立 v1 publication graph；失敗時產品契約要求不產生 publication。
+    """
+    配置 = _建立Server確認(草稿本文["preview"]) if 確認 is None else 確認
+    return 客戶端.post(
+        端點建立路徑,
+        json={
+            "draft_id": 草稿本文["draft_id"],
+            "slug": "demo-api",
+            "configuration_confirmation": 配置,
+        },
+        headers={網頁CSRFHeader名稱: csrf},
+    )
+
+
+def _建立並收斂成功秘密(
+    客戶端: TestClient, csrf: str, 草稿本文: dict[str, Any], 暫存目錄: Path, caplog,
+) -> tuple[dict[str, Any], dict[str, bool], int]:
+    """建立 Endpoint 並在離開 helper 前清除所有一次性明文別名。
+
+    參數：canonical client、fresh CSRF、Server Draft、隔離目錄與 log capture。
+    回傳值：不含秘密的 public 欄位、秘密邊界布林證據，以及 CSRF replay 狀態碼。
+    例外：HTTP／JSON／檔案讀取錯誤原樣傳出；``finally`` 仍清除 helper 內明文別名。
+    重要副作用：執行一次成功 Create 與一次已消耗 CSRF replay；不保存或 assert 明文。
+    """
+    回應 = 本文 = 初始金鑰 = 初始金鑰文字 = 初始金鑰位元 = 重放 = 結果 = None
+    try:
+        回應 = _建立Endpoint(客戶端, csrf, 草稿本文)
+        本文 = 回應.json()
+        初始金鑰 = 本文.get("initial_api_key") if type(本文) is dict else None
+        初始金鑰有效 = type(初始金鑰) is str and bool(初始金鑰)
+        初始金鑰文字 = 初始金鑰 if type(初始金鑰) is str else ""
+        初始金鑰位元 = 初始金鑰文字.encode()
+        重放 = _建立Endpoint(客戶端, csrf, 草稿本文)
+        公開欄位 = {
+            "status_code": 回應.status_code,
+            "keys": set(本文) if type(本文) is dict else set(),
+            "endpoint_id": 本文.get("endpoint_id") if type(本文) is dict else None,
+            "version_id": 本文.get("version_id") if type(本文) is dict else None,
+            "version_number": 本文.get("version_number") if type(本文) is dict else None,
+            "status": 本文.get("status") if type(本文) is dict else None,
+        }
+        證據 = {
+            "initial_api_key_valid": 初始金鑰有效,
+            "response_once": 初始金鑰有效 and 回應.text.count(初始金鑰文字) == 1,
+            "replay_absent": 初始金鑰有效 and 初始金鑰文字 not in 重放.text,
+            "database_absent": 初始金鑰有效 and 初始金鑰位元 not in (
+                暫存目錄 / "published.sqlite3"
+            ).read_bytes(),
+            "bundles_absent": 初始金鑰有效 and all(
+                初始金鑰位元 not in 路徑.read_bytes()
+                for 路徑 in (暫存目錄 / "bundles").rglob("*") if 路徑.is_file()
+            ),
+            "stack_absent": 初始金鑰有效 and 初始金鑰文字 not in "".join(traceback.format_stack()),
+            "logs_absent": 初始金鑰有效 and all(
+                初始金鑰文字 not in 紀錄.getMessage() for 紀錄 in caplog.records
+            ),
+        }
+        結果 = (公開欄位, 證據, 重放.status_code)
+    finally:
+        初始金鑰 = 初始金鑰文字 = 初始金鑰位元 = 本文 = 回應 = 重放 = None
+        del 初始金鑰, 初始金鑰文字, 初始金鑰位元, 本文, 回應, 重放
+    return 結果
 
 
 def test_canonical_OpenAPI包含唯一draft與endpoint_create(tmp_path):
