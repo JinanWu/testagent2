@@ -1090,3 +1090,99 @@ def test_真Login草稿建立Endpoint成功並readback完整圖形與一次性�
         assert [項目.name for 項目 in 投影.source_skills] == ["demo"]
 
 
+修改確認案例 = {
+    "Prompt": ("system_prompt", "client-modified"),
+    "Tools": (None, None),
+    "Input Schema": ("input_schema", {"type": "null"}),
+    "Response Schema": ("response_schema", {"type": "null"}),
+    "Rate": ("rate_limit", {"endpoint_per_minute": 1, "credential_per_minute": 1}),
+}
+
+
+@pytest.mark.parametrize("案例", sorted(修改確認案例))
+def test_修改確認由genuine_coordinator恰一次拒絕且保留Draft與零發布副作用(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 案例: str,
+):
+    """修改五類權威值，固定 genuine coordinator 一次、權威拒絕且 pre-write 零進入。
+
+    參數：``tmp_path`` 隔離狀態；``monkeypatch`` 安裝探針；``案例`` 選修改類別。
+    回傳值：無；拒絕、owner readback、完整零副作用與同 Draft HTTP retry 均以 assertions 固定。
+    例外：route 因果、權威撤銷、Draft retention 或 retry 契約漂移時測試失敗。
+    重要副作用：Tools 案例經真使用者庫撤權再恢復；每案最後成功發布原 Draft。
+    """
+    應用程式 = _建立正式應用程式(tmp_path)
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        擁有者 = _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, csrf)
+        assert 草稿回應.status_code == 201
+        草稿本文 = 草稿回應.json()
+        草稿識別碼 = 草稿本文["draft_id"]
+        基準草稿 = _取得Planner聚合(應用程式).讀取草稿(
+            擁有者, 草稿識別碼, 現在=time.time(),
+        )
+        修改確認 = _建立Server確認(草稿本文["preview"])
+        鍵, 值 = 修改確認案例[案例]
+        if 案例 == "Tools":
+            使用者儲存庫 = 使用者庫(tmp_path / "web.sqlite3")
+            try:
+                使用者儲存庫.設定權限欄位(
+                    "alice", "enabled_tools_json", ["revoked-tool"],
+                )
+            finally:
+                使用者儲存庫.連線.close()
+        else:
+            修改確認[鍵] = 值
+        之前 = _建立完整副作用快照(tmp_path, 應用程式)
+        管理服務 = _取得管理服務(應用程式)
+        原發布 = 管理服務.原子發布
+        呼叫次數 = 0
+
+        def 記錄後委派(*參數, **關鍵字):
+            """記錄 genuine coordinator 呼叫後委派原方法，保留真實權威判斷。
+
+            參數：位置與關鍵字參數完全沿用 ``原子發布``。
+            回傳值：原 genuine coordinator 的實際結果。
+            例外：原方法控制流程原樣傳出。
+            重要副作用：只增加記憶體 counter，產品行為仍由原方法執行。
+            """
+            nonlocal 呼叫次數
+            呼叫次數 += 1
+            return 原發布(*參數, **關鍵字)
+
+        monkeypatch.setattr(管理服務, "原子發布", 記錄後委派)
+        prewrite次數 = _安裝PreWrite零進入探針(monkeypatch, 管理服務)
+        回應 = _建立Endpoint(
+            客戶端, 草稿回應.headers[網頁CSRFHeader名稱], 草稿本文, 確認=修改確認,
+        )
+        之後 = _建立完整副作用快照(tmp_path, 應用程式)
+
+        assert 呼叫次數 == 1
+        assert prewrite次數 == {"identifier": 0, "entropy": 0, "bundle": 0, "p04": 0}
+        預期錯誤 = (
+            (500, {"detail": "發布管理服務失敗"})
+            if 案例 == "Tools"
+            else (422, {"detail": "管理操作輸入無效"})
+        )
+        assert (回應.status_code, 回應.json()) == 預期錯誤
+        _斷言固定錯誤且不洩漏(回應, tmp_path)
+        _斷言Draft語意保留(之前, 之後)
+        _斷言Owner可讀且Draft語意保留(應用程式, 擁有者, 草稿識別碼, 基準草稿)
+        assert 之後["tables"] == 之前["tables"]
+        assert 之後["bundle_tree"] == 之前["bundle_tree"] == ()
+
+        monkeypatch.undo()
+        if 案例 == "Tools":
+            使用者儲存庫 = 使用者庫(tmp_path / "web.sqlite3")
+            try:
+                使用者儲存庫.設定權限欄位(
+                    "alice", "enabled_tools_json", ["acceptance-tool"],
+                )
+            finally:
+                使用者儲存庫.連線.close()
+        重試 = _以Fresh登入重試同Draft(
+            客戶端, "alice", "correct horse", 草稿本文,
+        )
+        assert 重試.status_code == 201
+
+
