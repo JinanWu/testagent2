@@ -474,6 +474,86 @@ def _斷言Draft語意保留(之前: dict[str, Any], 之後: dict[str, Any]) -> 
     )
 
 
+def _斷言Owner可讀且Draft語意保留(
+    應用程式, 擁有者識別碼: str, 草稿識別碼: str, 基準草稿,
+) -> None:
+    """經 shared aggregate 正式 read path 逐欄證明 owner Draft 語意保留。
+
+    參數：canonical app、原 owner、原 draft id，以及失敗前由同一路徑讀得的基準草稿。
+    回傳值：無；readback 的 identity、owner、需求、綱要、時間、狀態、世代與能力逐欄相等。
+    例外：owner 不可讀、草稿過期或任一欄漂移時以產品錯誤或 assertion 失敗。
+    重要副作用：唯讀 shared aggregate；不直接呼叫 publication coordinator。
+    """
+    讀回 = _取得Planner聚合(應用程式).讀取草稿(
+        擁有者識別碼, 草稿識別碼, 現在=time.time(),
+    )
+    assert 讀回.草稿識別碼 == 基準草稿.草稿識別碼 == 草稿識別碼
+    assert 讀回.擁有者識別碼 == 基準草稿.擁有者識別碼 == 擁有者識別碼
+    assert 讀回.原始需求 == 基準草稿.原始需求
+    assert 讀回.綱要 == 基準草稿.綱要
+    assert 讀回.建立時間 == 基準草稿.建立時間
+    assert 讀回.到期時間 == 基準草稿.到期時間
+    assert 讀回.狀態 == 基準草稿.狀態 == "draft"
+    assert 讀回._世代 == 基準草稿._世代
+    assert 讀回.能力摘要 == 基準草稿.能力摘要
+
+
+def _安裝PreWrite零進入探針(
+    monkeypatch: pytest.MonkeyPatch, 管理服務,
+) -> dict[str, int]:
+    """在識別、熵、Bundle 與 P04 入口安裝進入即失敗的計數探針。
+
+    參數：pytest monkeypatch 與 canonical genuine coordinator。
+    回傳值：四個入口的可斷言 counter mapping。
+    例外：任一入口遭錯誤進入時立即拋出 ``AssertionError('[REDACTED]')``。
+    重要副作用：暫時替換 coordinator 實例的四個 pre-write dependency seams。
+    """
+    次數 = {"identifier": 0, "entropy": 0, "bundle": 0, "p04": 0}
+
+    def 不得進入(名稱: str):
+        """建立只計數且固定遮罩失敗的入口 sentinel。"""
+        def 探針(*_參數, **_關鍵字):
+            """記錄意外進入並以固定遮罩訊息中止。"""
+            次數[名稱] += 1
+            raise AssertionError("[REDACTED]")
+        return 探針
+
+    monkeypatch.setattr(管理服務, "_識別碼產生器", 不得進入("identifier"))
+    monkeypatch.setattr(管理服務, "_隨機位元組", 不得進入("entropy"))
+    monkeypatch.setattr(管理服務._套件發布器, "發布", 不得進入("bundle"))
+    monkeypatch.setattr(管理服務._端點發布服務, "發布已準備圖形", 不得進入("p04"))
+    return 次數
+
+
+def _以Fresh登入重試同Draft(
+    客戶端: TestClient, 帳號: str, 密碼: str, 草稿本文: dict[str, Any],
+):
+    """以同 owner 真 Login 取得 fresh CSRF，經 canonical HTTP 重試同一 Draft。
+
+    參數：canonical client、owner 帳密及原 Server Draft response body。
+    回傳值：原始 Create HTTP response。
+    例外：Login 契約由 ``_登入Owner`` 固定；傳輸錯誤原樣傳出。
+    重要副作用：建立 fresh session，並以 server exact 五鍵 confirmation 發布同一 Draft。
+    """
+    _, fresh_csrf = _登入Owner(客戶端, 帳號, 密碼)
+    return _建立Endpoint(客戶端, fresh_csrf, 草稿本文)
+
+
+def _斷言固定錯誤且不洩漏(回應, 暫存目錄: Path) -> None:
+    """驗證 canonical error 不含 Path、Manifest、Ciphertext、Hash、Traceback 或 Internal ID。
+
+    參數：``回應`` 是負向 HTTP response；``暫存目錄`` 提供本案內部路徑 marker。
+    回傳值：無。
+    例外：任何 marker 出現在 public response 時以 assertion 失敗。
+    重要副作用：無；只讀 response text。
+    """
+    for 標記 in (
+        str(暫存目錄), "SKILL.md", "manifest", "ciphertext", "key_hash",
+        "Traceback", "service_account", "bundle_id", "credential_id",
+    ):
+        assert 標記 not in 回應.text
+
+
 def test_canonical_OpenAPI包含唯一draft與endpoint_create(tmp_path):
     """固定正式 Draft／Create 的唯一 POST、strict schema、public 201 DTO 與 canonical 身分相依。
 
