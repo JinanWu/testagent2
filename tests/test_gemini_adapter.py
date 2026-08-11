@@ -7,6 +7,12 @@
 from 繁中代理.cli import 建立參數解析器, 建立執行階段, 解析上下文長度
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import GeminiADC供應商, 正規化Gemini模型名稱, 查詢Gemini上下文長度
+from 繁中代理.使用者 import 建立預設使用者上下文
+
+
+def _注入隔離使用者上下文(參數, tmp_path) -> None:
+    """固定使用測試目錄的 local principal，不讀取開發者 Auth File 或登入 Token。"""
+    參數._resolved_user_context = 建立預設使用者上下文(tmp_path)
 
 
 def test_查詢Gemini上下文長度_依模型查表():
@@ -30,6 +36,7 @@ def test_cli_建立runtime_上下文長度依模型(tmp_path, monkeypatch):
     monkeypatch.delenv("AIAGENT_CONTEXT_WINDOW", raising=False)
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args(["--mode", "gemini", "--model", "gemini-1.0-pro", "hello"])
+    _注入隔離使用者上下文(參數, tmp_path)
     runtime = 建立執行階段(參數, 工作階段庫(tmp_path / "sessions.sqlite3"), 解析器)
     assert runtime.上下文壓縮器物件.上下文長度 == 32_768
 
@@ -79,6 +86,7 @@ def test_cli_建立runtime前正規化模型名稱(tmp_path):
     """確認 CLI 模型別名會在 session/runtime 層先正規化。"""
     解析器 = 建立參數解析器()
     參數 = 解析器.parse_args(["--mode", "gemini", "--model", "gemini-flash-lite", "hello"])
+    _注入隔離使用者上下文(參數, tmp_path)
     runtime = 建立執行階段(參數, 工作階段庫(tmp_path / "sessions.sqlite3"), 解析器)
     assert runtime.模型名稱 == "gemini-2.5-flash-lite"
     assert runtime.model_config["requested_model"] == "gemini-flash-lite"
