@@ -52,6 +52,7 @@ from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
 from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 啟動協調結果, 技能套件協調器
 from .路由.外部呼叫 import 建立外部呼叫路由
+from .路由.規劃發布 import 建立安全草稿路由器
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -424,14 +425,19 @@ class 生產Published執行建構器:
         """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
 
         參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
-        返回值：含 exact invocation router 與一個 async resource factory 的附加相依項。
+        返回值：含 exact invocation router、僅在配置 Planner 時加掛的安全草稿 router，
+        以及一個 async resource factory 的附加相依項。
         例外：設定或 dependency 違約時固定 ``ValueError``。
         副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
         """
         if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
             raise ValueError("Published生產組裝無效") from None
         代理 = 延遲外部呼叫編排器()
-        路由器 = 建立外部呼叫路由(代理)
+        路由器清單 = (建立外部呼叫路由(代理),)
+        if self._設定.Planner設定 is not None:
+            路由器清單 = (*路由器清單, 建立安全草稿路由器(
+                self._草稿規劃代理, 目前工作階段相依, CSRF相依,
+            ))
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -443,7 +449,7 @@ class 生產Published執行建構器:
             return await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
             )
-        return 發布介面相依項((路由器,), (建立資源,))
+        return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
     """依序組合 CP3 Web 與 CP4 Published routers/resources。
 
