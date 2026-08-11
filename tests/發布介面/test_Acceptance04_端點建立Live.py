@@ -9,6 +9,7 @@ EP-3 另以真 Login、Owner Authority 與公開 canonical route 驗證發布圖
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 import time
 import traceback
@@ -24,6 +25,7 @@ from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
+from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
 from 繁中代理.發布介面.技能套件.發布器 import 套件發布收據
 from 繁中代理.發布介面.生產Published執行 import Published生產設定, 生產Controller建構器
@@ -110,9 +112,26 @@ def _建立憑證封套() -> AESGCM憑證封套:
     return AESGCM憑證封套({1: b"A" * 32}, 1)
 
 
+class _記錄假模型:
+    """記錄 restart invoke 的釘選模型參數並回傳符合 structured schema 的結果。"""
+
+    def __init__(self) -> None:
+        """建立隔離呼叫紀錄；無外部副作用。"""
+        self.呼叫: list[dict[str, Any]] = []
+
+    def 產生發布回應(self, **參數):
+        """保存本次 detached 參數並回傳 deterministic JSON 模型結果。"""
+        self.呼叫.append(json.loads(json.dumps(參數)))
+        return 模型回應快照(
+            text='{"result":"restart-ok"}', finish_reason="stop",
+            usage={"total_tokens": 1}, tool_calls=[],
+        )
+
+
 def _建立正式應用程式(
     暫存目錄: Path, *, 封套工廠=_建立憑證封套,
-    草稿存續秒數: float = 3600.0,
+    草稿存續秒數: float = 3600.0, 模型表工廠=_建立假模型表,
+    工具安裝器=_安裝固定工具,
 ):
     """建立不讀隱含環境且可由正式 lifespan 啟動的 CP4 應用。
 
@@ -120,6 +139,8 @@ def _建立正式應用程式(
         暫存目錄: pytest 提供的隔離目錄，用來配置 Web DB、Published DB 與 bundle root。
         封套工廠: 只保存至 startup 才呼叫的 explicit credential envelope factory。
         草稿存續秒數: Server Draft 的存續時間，用於 Live expiry 邊界。
+        模型表工廠: startup 建立 Published Runtime provider registry 的 explicit factory。
+        工具安裝器: startup 建立 exact tool release registry 的 explicit installer。
     回傳值：
         ``建立CP4ASGI應用程式`` 回傳的正式 FastAPI 應用。
     例外：
@@ -128,7 +149,7 @@ def _建立正式應用程式(
         只建立 bundle 目錄；應用建構本身不得建立資料庫或呼叫外部注入。
     """
     技能套件根目錄 = 暫存目錄 / "bundles"
-    技能套件根目錄.mkdir()
+    技能套件根目錄.mkdir(exist_ok=True)
     網頁設定 = 生產設定(
         暫存目錄 / "web.sqlite3",
         ("http://localhost:5173",),
@@ -140,8 +161,8 @@ def _建立正式應用程式(
     發布設定 = Published生產設定(
         暫存目錄 / "published.sqlite3",
         技能套件根目錄,
-        _安裝固定工具,
-        _建立假模型表,
+        工具安裝器,
+        模型表工廠,
         Planner設定=Planner生產設定(
             "acceptance-release", lambda 路徑: 使用者庫(路徑),
             lambda: 決定性假規劃器(), 草稿存續秒數,
@@ -1045,9 +1066,12 @@ def test_真Login草稿建立Endpoint成功並readback完整圖形與一次性�
             服務帳號 = dict(連線.execute("SELECT * FROM service_accounts").fetchone())
             套件 = dict(連線.execute("SELECT * FROM published_skill_bundles").fetchone())
             稽核 = dict(連線.execute("SELECT * FROM audit_events").fetchone())
+            消耗 = dict(連線.execute("SELECT * FROM published_draft_consumptions").fetchone())
+            版本中繼 = dict(連線.execute("SELECT * FROM published_endpoint_version_metadata").fetchone())
             for 表 in (
                 "published_endpoints", "published_endpoint_versions", "endpoint_credentials",
                 "published_skill_bundles", "service_accounts", "audit_events",
+                "published_draft_consumptions", "published_endpoint_version_metadata",
             ):
                 assert 連線.execute(f'SELECT COUNT(*) FROM "{表}"').fetchone()[0] == 1
         assert 端點["id"] == 建立端點識別碼
@@ -1057,6 +1081,15 @@ def test_真Login草稿建立Endpoint成功並readback完整圖形與一次性�
         assert 版本["endpoint_id"] == 端點["id"]
         assert (端點["status"], 版本["version_number"]) == ("active", 1)
         assert 版本["created_by_user_id"] == 擁有者
+        assert 消耗 == {
+            "draft_id": 草稿本文["draft_id"], "endpoint_id": 端點["id"],
+            "consumed_at": 端點["created_at"],
+        }
+        assert 版本中繼 == {
+            "version_id": 版本["id"], "publication_source": "initial_draft",
+            "prompt_changed": 0, "skills_changed": 0, "tools_changed": 0,
+            "model_changed": 0, "docs_changed": 0,
+        }
         assert json.loads(版本["allowed_skills_json"]) == ["demo"]
         assert json.loads(版本["allowed_tools_json"]) == ["acceptance-tool"]
         assert set(json.loads(版本["tool_schema_snapshot_json"])) == {"acceptance-tool"}
@@ -1088,6 +1121,28 @@ def test_真Login草稿建立Endpoint成功並readback完整圖形與一次性�
         assert 投影.endpoint_version_id == 版本["id"]
         assert 投影.version_number == 1
         assert [項目.name for 項目 in 投影.source_skills] == ["demo"]
+        套件目錄 = tmp_path / "bundles" / 套件["bundle_id"]
+        清單位元組 = (套件目錄 / "manifest.json").read_bytes()
+        清單 = json.loads(清單位元組)
+        assert hashlib.sha256(清單位元組).hexdigest() == 套件["manifest_digest"] == 收據.清單摘要
+        for 檔案 in 清單["copied_files"]:
+            內容 = (套件目錄 / 檔案["path"]).read_bytes()
+            assert len(內容) == 檔案["size_bytes"]
+            assert hashlib.sha256(內容).hexdigest() == 檔案["sha256"]
+            assert 清單["copied_file_hashes"][檔案["path"]] == 檔案["sha256"]
+        三元組 = sorted(
+            [[檔案["path"], 檔案["size_bytes"], 檔案["sha256"]] for 檔案 in 清單["copied_files"]],
+            key=lambda 項目: 項目[0].encode("utf-8"),
+        )
+        重算套件雜湊 = hashlib.sha256(json.dumps(
+            三元組, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")).hexdigest()
+        版本清單 = json.loads(版本["skill_bundle_manifest_json"])
+        assert 重算套件雜湊 == 清單["bundle_hash"] == 套件["bundle_hash"] == 收據.套件雜湊
+        assert 版本清單["bundle_id"] == 套件["bundle_id"]
+        assert 版本清單["manifest_reference"] == 套件["manifest_reference"]
+        assert 版本清單["manifest_digest"] == 套件["manifest_digest"]
+        assert 版本清單["sha256"] == 套件["bundle_hash"]
 
 
 修改確認案例 = {
@@ -1389,3 +1444,139 @@ def test_代表性Bundle或SQLite失敗經canonical_Create固定500且零active_
             客戶端, "alice", "correct horse", 草稿本文,
         )
         assert 重試.status_code == 201
+
+
+def test_Create成功後來源刪除且重啟仍由v1_bundle完成Invoke(tmp_path):
+    """走 canonical Create→shutdown→restart→Invoke，證明 v1 runtime 不依賴 live source。
+
+    參數：``tmp_path`` 供兩個 successive canonical apps 共用 Web／Published DB 與 bundle root。
+    回傳值：無；Create DTO、bundle bytes、restart HTTP 200 與 provider snapshot 皆以 assertions 表達。
+    例外：建構、startup、Create、reconciliation、credential 或 runtime 任一斷鏈時測試失敗。
+    重要副作用：建立 owner 與 v1 publication，關閉第一 app 後刪除來源技能，再啟動第二 app 呼叫。
+    """
+    第一模型 = _記錄假模型()
+    第一應用 = _建立正式應用程式(
+        tmp_path, 模型表工廠=lambda: {"fake": 第一模型},
+    )
+    初始金鑰 = None
+    with TestClient(第一應用, raise_server_exceptions=False) as 客戶端:
+        _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, csrf)
+        assert 草稿回應.status_code == 201
+        建立回應 = _建立Endpoint(
+            客戶端, 草稿回應.headers[網頁CSRFHeader名稱], 草稿回應.json(),
+        )
+        assert 建立回應.status_code == 201, 建立回應.text
+        建立本文 = 建立回應.json()
+        初始金鑰 = 建立本文["initial_api_key"]
+        assert 建立本文["version_number"] == 1 and 建立本文["status"] == "active"
+
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+        套件識別碼, 清單摘要 = 連線.execute(
+            "SELECT bundle_id,manifest_digest FROM published_skill_bundles"
+        ).fetchone()
+    清單路徑 = tmp_path / "bundles" / 套件識別碼 / "manifest.json"
+    原始清單 = 清單路徑.read_bytes()
+    assert hashlib.sha256(原始清單).hexdigest() == 清單摘要
+    (tmp_path / "skills" / "demo" / "SKILL.md").unlink()
+
+    第二模型 = _記錄假模型()
+    重啟應用 = _建立正式應用程式(
+        tmp_path, 模型表工廠=lambda: {"fake": 第二模型},
+    )
+    with TestClient(重啟應用, raise_server_exceptions=False) as 客戶端:
+        呼叫回應 = 客戶端.post(
+            "/v1/endpoints/demo-api/invoke",
+            json={"input": {"question": "restart"}},
+            headers={"Authorization": f"Bearer {初始金鑰}"},
+        )
+    assert 呼叫回應.status_code == 200, 呼叫回應.text
+    assert len(第二模型.呼叫) == 1
+    provider參數 = json.dumps(第二模型.呼叫[0], ensure_ascii=False, sort_keys=True)
+    assert "# Demo" in provider參數
+    assert 清單路徑.read_bytes() == 原始清單
+    初始金鑰 = None
+
+
+@pytest.mark.parametrize("破壞", ["manifest", "file", "receipt", "provider", "tool"])
+def test_Canonical_Create後重啟竄改或缺runtime_pin皆在模型呼叫前拒絕(tmp_path, 破壞):
+    """由真 Create producer 建 v1，逐一證明 runtime tamper 與 missing pin fail closed。
+
+    參數：``tmp_path`` 隔離兩次 app lifecycle；``破壞`` 選 manifest、file、receipt、provider 或 tool。
+    回傳值：無；HTTP 固定錯誤、零 provider call 與原始 v1 identity 皆以 assertions 表達。
+    例外：任一破壞越過 loader／registry 邊界或改用 live source fallback 時測試失敗。
+    重要副作用：每案發布一個 v1，App B startup 後只修改指定 authority，隨後呼叫 stable URL。
+    """
+    建立應用 = _建立正式應用程式(tmp_path)
+    初始金鑰 = None
+    with TestClient(建立應用, raise_server_exceptions=False) as 客戶端:
+        _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿 = _建立Server草稿(客戶端, csrf)
+        assert 草稿.status_code == 201
+        建立 = _建立Endpoint(客戶端, 草稿.headers[網頁CSRFHeader名稱], 草稿.json())
+        assert 建立.status_code == 201
+        初始金鑰 = 建立.json()["initial_api_key"]
+
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+        套件識別碼, 版本識別碼 = 連線.execute(
+            "SELECT bundle_id,version_id FROM published_skill_bundles"
+        ).fetchone()
+    套件根 = tmp_path / "bundles" / 套件識別碼
+    清單路徑 = 套件根 / "manifest.json"
+    清單 = json.loads(清單路徑.read_bytes())
+    模型 = _記錄假模型()
+    模型表工廠 = (
+        (lambda: {"other": 模型}) if 破壞 == "provider" else (lambda: {"fake": 模型})
+    )
+    def 安裝缺少釘選工具(工具發布庫物件) -> None:
+        """保留 acceptance release，但刻意只安裝非 v1 釘選的合法工具。"""
+        工具發布庫物件.登錄發布(工具發布描述(
+            "acceptance-release",
+            (工具發布註冊(
+                "other-revision",
+                工具定義(
+                    "other-tool", "Other deterministic tool",
+                    {"type": "object", "properties": {}, "additionalProperties": False},
+                    lambda _參數: {"ok": True},
+                ),
+            ),),
+        ))
+
+    工具安裝器 = 安裝缺少釘選工具 if 破壞 == "tool" else _安裝固定工具
+    重啟應用 = _建立正式應用程式(
+        tmp_path, 模型表工廠=模型表工廠, 工具安裝器=工具安裝器,
+    )
+    with TestClient(重啟應用, raise_server_exceptions=False) as 客戶端:
+        if 破壞 == "manifest":
+            清單路徑.chmod(0o644)
+            清單路徑.write_bytes(b"{}")
+        elif 破壞 == "file":
+            目標 = 套件根 / 清單["copied_files"][0]["path"]
+            目標.chmod(0o644)
+            目標.write_bytes(b"tampered")
+        elif 破壞 == "receipt":
+            with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+                immutable觸發器 = [
+                    列[0] for 列 in 連線.execute(
+                        "SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name='published_skill_bundles'"
+                    )
+                ]
+                assert immutable觸發器
+                for 名稱 in immutable觸發器:
+                    連線.execute(f'DROP TRIGGER "{名稱}"')
+                連線.execute(
+                    "UPDATE published_skill_bundles SET bundle_hash=? WHERE version_id=?",
+                    ("0" * 64, 版本識別碼),
+                )
+        回應 = 客戶端.post(
+            "/v1/endpoints/demo-api/invoke",
+            json={"input": {"question": "must-fail"}},
+            headers={"Authorization": f"Bearer {初始金鑰}"},
+        )
+    assert 回應.status_code == 500
+    預期錯誤碼 = "internal_error" if 破壞 == "receipt" else "endpoint_misconfigured"
+    assert 回應.json()["error"]["code"] == 預期錯誤碼
+    assert 模型.呼叫 == []
+    初始金鑰 = None

@@ -781,6 +781,15 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 套件協調器物件=套件協調器,
                 端點發布服務=端點發布服務,
                 憑證封套=憑證封套,
+                模型設定={
+                    "provider": 生產.模型供應器,
+                    "model": 生產.模型名稱,
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                    "timeout_seconds": 60.0,
+                    "structured_output": True,
+                    "schema_retry_count": 1,
+                },
             )
             管理代理.安裝(管理服務)
         return 生產Published執行資源(
