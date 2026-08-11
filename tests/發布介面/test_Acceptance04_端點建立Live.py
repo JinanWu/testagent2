@@ -16,9 +16,19 @@ import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
+import 繁中代理.發布介面.生產Published執行 as 生產Published執行模組
 from 繁中代理.使用者 import 使用者庫
+from 繁中代理.工具 import 工具定義
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
-from 繁中代理.發布介面.生產Published執行 import Published生產設定
+from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
+from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.生產Published執行 import Published生產設定, 生產Controller建構器
+from 繁中代理.發布介面.生產Published管理 import Planner生產設定, 延遲發布管理服務
+from 繁中代理.發布介面.生產Published管理 import 草稿規劃服務不可用
+from 繁中代理.發布介面.生產組裝 import 建立生產應用程式
+from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
+from 繁中代理.發布介面.路由.規劃發布 import 發布確認
+from 繁中代理.發布介面.路由.網頁認證 import 是模組CSRF相依項
 from 繁中代理.發布介面.設定 import 生產設定
 
 
@@ -33,18 +43,29 @@ from 繁中代理.發布介面.設定 import 生產設定
 )
 
 
-def _安裝空工具(_工具發布庫) -> None:
-    """提供正式 Published 設定所需但不安裝任何工具的測試注入。
+def _安裝固定工具(工具發布庫物件) -> None:
+    """安裝 Planner Owner Resolver 所需的 exact deterministic tool release。
 
     參數：
-        _工具發布庫: 正式 startup 建立的工具發布庫；本卡不需使用。
+        工具發布庫物件: 正式 startup 建立且由 Planner／Invoke 共用的工具發布庫。
     回傳值：
         無。
     例外：
         無預期例外。
     重要副作用：
-        無；不修改工具發布庫。
+        登錄一次 ``acceptance-release``；測試使用者可不啟用其中工具。
     """
+    工具發布庫物件.登錄發布(工具發布描述(
+        "acceptance-release",
+        (工具發布註冊(
+            "revision-1",
+            工具定義(
+                "acceptance-tool", "Acceptance deterministic tool",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+                lambda _參數: {"ok": True},
+            ),
+        ),),
+    ))
 
 
 def _建立假模型表() -> dict[str, object]:
@@ -62,11 +83,23 @@ def _建立假模型表() -> dict[str, object]:
     return {"fake": object()}
 
 
-def _建立正式應用程式(暫存目錄: Path):
+def _建立憑證封套() -> AESGCM憑證封套:
+    """由測試內 explicit key material 建立 exact AES-GCM envelope。
+
+    參數：無。
+    回傳值：active version 為一的 ``AESGCM憑證封套``。
+    例外：固定 keyring 若違反密碼學契約則原樣傳出。
+    重要副作用：只配置記憶體 keyring；不讀環境、檔案系統或資料庫。
+    """
+    return AESGCM憑證封套({1: b"A" * 32}, 1)
+
+
+def _建立正式應用程式(暫存目錄: Path, *, 封套工廠=_建立憑證封套):
     """建立不讀隱含環境且可由正式 lifespan 啟動的 CP4 應用。
 
     參數：
         暫存目錄: pytest 提供的隔離目錄，用來配置 Web DB、Published DB 與 bundle root。
+        封套工廠: 只保存至 startup 才呼叫的 explicit credential envelope factory。
     回傳值：
         ``建立CP4ASGI應用程式`` 回傳的正式 FastAPI 應用。
     例外：
@@ -87,10 +120,46 @@ def _建立正式應用程式(暫存目錄: Path):
     發布設定 = Published生產設定(
         暫存目錄 / "published.sqlite3",
         技能套件根目錄,
-        _安裝空工具,
+        _安裝固定工具,
         _建立假模型表,
+        Planner設定=Planner生產設定(
+            "acceptance-release", lambda 路徑: 使用者庫(路徑),
+            lambda: 決定性假規劃器(), 3600.0,
+        ),
+        憑證封套工廠=封套工廠,
     )
     return 建立CP4ASGI應用程式(網頁設定, 發布設定)
+
+
+def _建立直接Published組裝(暫存目錄: Path):
+    """建立可精確注入 startup／shutdown lifecycle failure 的正式底層組裝參數。
+
+    參數：``暫存目錄`` 提供隔離 Web／Published DB 與 bundle root。
+    回傳值：依序回傳 Web 設定、Published 設定及 Invocation／Draft／Create 三個 proxy。
+    例外：正式設定驗證錯誤原樣傳出。
+    重要副作用：只建立 bundle 目錄與三個空 proxy；尚不建立資料庫或安裝 authority。
+    """
+    套件根 = 暫存目錄 / "bundles"
+    套件根.mkdir()
+    Web設定 = 生產設定(
+        暫存目錄 / "web.sqlite3", ("http://localhost:5173",), "fake", "fake",
+        Cookie安全=False, 工作階段有效秒數=60,
+    )
+    Published設定 = Published生產設定(
+        暫存目錄 / "published.sqlite3", 套件根, _安裝固定工具, _建立假模型表,
+        Planner設定=Planner生產設定(
+            "acceptance-release", lambda 路徑: 使用者庫(路徑),
+            lambda: 決定性假規劃器(), 3600.0,
+        ),
+        憑證封套工廠=_建立憑證封套,
+    )
+    return (
+        Web設定,
+        Published設定,
+        生產Published執行模組.延遲外部呼叫編排器(),
+        生產Controller建構器(Published設定)._Published.取得草稿規劃代理(),
+        延遲發布管理服務(),
+    )
 
 
 def _取得唯一正式路由(應用程式, 路徑: str) -> APIRoute:
@@ -233,10 +302,125 @@ def test_canonical_OpenAPI包含唯一draft與endpoint_create(tmp_path):
 
     草稿相依清單 = [相依.call for 相依 in 草稿路由.dependant.dependencies]
     建立相依清單 = [相依.call for 相依 in 建立路由.dependant.dependencies]
-    登出路由 = _取得唯一正式路由(應用程式, "/api/auth/logout")
-    登出相依清單 = [相依.call for 相依 in 登出路由.dependant.dependencies]
+    目前工作階段路由 = _取得唯一正式路由(應用程式, "/api/auth/me")
+    目前工作階段相依清單 = [相依.call for 相依 in 目前工作階段路由.dependant.dependencies]
     assert len(草稿相依清單) == 2
-    assert 草稿相依清單 == 建立相依清單 == 登出相依清單
+    assert 草稿相依清單 == 建立相依清單
+    assert len(目前工作階段相依清單) == 1
+    assert 草稿相依清單[0] is 目前工作階段相依清單[0]
+    assert 是模組CSRF相依項(草稿相依清單[1])
+
+
+def test_construction零封套呼叫且startup共用identity並於shutdown撤銷Create(tmp_path):
+    """固定 envelope startup exact-once、A3 authority identity 共用與舊 Create proxy 關閉。
+
+    參數：``tmp_path`` 提供隔離 Web／Published DB、bundle 與技能路徑。
+    回傳值：無；construction、startup identity 與 shutdown assertions 全部成立。
+    例外：factory 呼叫時機／次數、authority identity 或 proxy 撤銷漂移時測試失敗。
+    重要副作用：啟動並關閉一次 canonical lifespan，建立兩個 SQLite DB；不發布端點。
+    """
+    封套呼叫: list[str] = []
+
+    def 建立可觀測封套() -> AESGCM憑證封套:
+        """記錄一次 startup 呼叫並回傳 exact 測試 envelope。
+
+        參數：無。
+        回傳值：新的 exact ``AESGCM憑證封套``。
+        例外：底層 envelope 驗證錯誤原樣傳出。
+        重要副作用：附加一筆記憶體事件，不讀 DB／FS／環境。
+        """
+        封套呼叫.append("envelope")
+        return _建立憑證封套()
+
+    應用程式 = _建立正式應用程式(tmp_path, 封套工廠=建立可觀測封套)
+    assert 封套呼叫 == []
+    捕捉管理代理 = None
+    with TestClient(應用程式, raise_server_exceptions=False):
+        assert 封套呼叫 == ["envelope"]
+        Published資源 = 應用程式.state.發布介面資源[-1]
+        Planner資源 = Published資源.取得Planner資源()
+        管理服務 = Published資源.取得發布管理服務()
+        assert Planner資源 is not None and 管理服務 is not None
+        assert 管理服務._草稿服務 is Planner資源.取得規劃服務()
+        assert 管理服務._擁有者解析器 is Planner資源.取得擁有者解析器()
+        assert Planner資源.取得工具發布庫() is Published資源._工具庫
+        assert 管理服務._套件協調器 is Published資源._技能套件協調器
+        捕捉管理代理 = Published資源._發布管理代理
+
+    assert 捕捉管理代理 is not None and 封套呼叫 == ["envelope"]
+    with pytest.raises(RuntimeError, match="發布管理服務不可用"):
+        捕捉管理代理.原子發布(
+            擁有者使用者識別碼="owner",
+            確認=發布確認("draft", "endpoint", {}),
+        )
+
+
+@pytest.mark.parametrize("失敗階段", ["key", "management"])
+def test_key或management啟動失敗後兩proxy關閉且零部分authority(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 失敗階段: str,
+):
+    """固定 secret／coordinator 任一步失敗皆撤銷 Draft 與 Create 且不寫 endpoint。
+
+    參數：``tmp_path`` 提供隔離資源；``monkeypatch`` 注入 management 建構失敗；
+    ``失敗階段`` 選擇 key factory 或 coordinator constructor。
+    回傳值：無；固定 startup error、exact-once factory、proxy 與資料庫 assertions 成立。
+    例外：預期 lifespan 固定拋 ``RuntimeError``；代理則各拋其 fail-closed 錯誤。
+    重要副作用：建立並失敗清理一次 canonical lifespan，不建立任何發布端點。
+    """
+    套件根 = tmp_path / "bundles"
+    套件根.mkdir()
+    Web設定 = 生產設定(
+        tmp_path / "web.sqlite3", ("http://localhost:5173",), "fake", "fake",
+        Cookie安全=False, 工作階段有效秒數=60,
+    )
+    工廠呼叫: list[str] = []
+
+    def 建立測試封套() -> AESGCM憑證封套:
+        """記錄 exact-once startup 呼叫，並依案例回傳封套或拋 sentinel。
+
+        參數：無。
+        回傳值：management 失敗案例回傳 exact envelope。
+        例外：key 失敗案例拋出 ``LookupError`` sentinel。
+        重要副作用：只附加一筆記憶體事件。
+        """
+        工廠呼叫.append("envelope")
+        if 失敗階段 == "key":
+            raise LookupError("key unavailable")
+        return _建立憑證封套()
+
+    if 失敗階段 == "management":
+        monkeypatch.setattr(
+            生產Published執行模組, "發布管理協調器",
+            lambda **_參數: (_ for _ in ()).throw(LookupError("management unavailable")),
+        )
+    Published設定 = Published生產設定(
+        tmp_path / "published.sqlite3", 套件根, _安裝固定工具, _建立假模型表,
+        Planner設定=Planner生產設定(
+            "acceptance-release", lambda 路徑: 使用者庫(路徑),
+            lambda: 決定性假規劃器(), 3600.0,
+        ),
+        憑證封套工廠=建立測試封套,
+    )
+    建構器 = 生產Controller建構器(Published設定)
+    草稿代理 = 建構器._Published.取得草稿規劃代理()
+    管理代理 = 建構器._Published.取得發布管理代理()
+    應用程式 = 建立生產應用程式(Web設定, 建構器)
+    assert 工廠呼叫 == []
+
+    with pytest.raises(RuntimeError, match="發布介面啟動失敗"):
+        with TestClient(應用程式):
+            pass
+
+    assert 工廠呼叫 == ["envelope"]
+    with pytest.raises(草稿規劃服務不可用):
+        草稿代理.建立草稿("owner", "需求", ("demo",), "text", 現在=1.0)
+    with pytest.raises(RuntimeError, match="發布管理服務不可用"):
+        管理代理.原子發布(
+            擁有者使用者識別碼="owner",
+            確認=發布確認("draft", "endpoint", {}),
+        )
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 資料庫連線:
+        assert 資料庫連線.execute("SELECT COUNT(*) FROM published_endpoints").fetchone()[0] == 0
 
 
 @pytest.mark.parametrize("請求方法", ["GET", "PUT", "PATCH", "DELETE"])
@@ -364,7 +548,11 @@ def test_正式端點建立只接受伺服器草稿相等確認(tmp_path):
         )
         assert 草稿回應.status_code == 201
         草稿本文 = 草稿回應.json()
-        修改確認 = dict(草稿本文["preview"])
+        預覽 = 草稿本文["preview"]
+        修改確認 = {
+            鍵: 預覽[鍵]
+            for 鍵 in ("system_prompt", "input_schema", "response_schema", "human_docs", "rate_limit")
+        }
         修改確認["system_prompt"] = "客戶端不得覆寫的提示"
         建立回應 = 客戶端.post(
             端點建立路徑,
