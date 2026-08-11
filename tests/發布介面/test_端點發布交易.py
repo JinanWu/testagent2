@@ -21,6 +21,7 @@ from 繁中代理.發布介面.規劃.端點發布 import (
     發布版本快照,
     端點發布結果,
     端點發布錯誤,
+    端點發布耐久性未知,
     端點發布輸入錯誤,
 )
 from 繁中代理.發布介面.技能套件.發布器 import 套件發布收據
@@ -259,6 +260,13 @@ def test_預配發布單交易建立圖形收據稽核且零callback(tmp_path):
         "version_id": "version-ready", "version_number": 1,
     }
     assert audit[13] == 20.0
+    assert connection.execute(
+        "SELECT draft_id,endpoint_id,consumed_at FROM published_draft_consumptions"
+    ).fetchone() == ("draft-p04", "endpoint-ready", 20.0)
+    assert connection.execute(
+        "SELECT version_id,publication_source,prompt_changed,skills_changed,tools_changed,model_changed,docs_changed "
+        "FROM published_endpoint_version_metadata"
+    ).fetchone() == ("version-ready", "initial_draft", 0, 0, 0, 0, 0)
     forbidden = ("回答問題", "請精確回答", "1234", "pub_", "a" * 64, "PLAINTEXT-MARKER")
     assert all(marker not in audit[12] for marker in forbidden)
 
@@ -465,6 +473,13 @@ def test_成功原子建立完整圖形canonical快照與不可變v1(tmp_path):
     assert endpoint == ("endpoint-1", "owner", "account-1", "customer-support", "active", "version-1", 60, 60)
     assert version == (1, '["skill.one"]', '{"model":"test-model","temperature":0}', '{"type":"string"}', 0, 20.0)
     assert credential == ("endpoint-1", 1, b"n" * 12, b"c" * 62, "a" * 64, None, None, '["203.0.113.1"]', 20.0, 20.0, 0)
+    assert connection.execute(
+        "SELECT draft_id,endpoint_id,consumed_at FROM published_draft_consumptions"
+    ).fetchone() == ("draft-p04", "endpoint-1", 20.0)
+    assert connection.execute(
+        "SELECT version_id,publication_source,prompt_changed,skills_changed,tools_changed,model_changed,docs_changed "
+        "FROM published_endpoint_version_metadata"
+    ).fetchone() == ("version-1", "initial_draft", 0, 0, 0, 0, 0)
     with pytest.raises(sqlite3.DatabaseError, match="immutable"):
         connection.execute("UPDATE published_endpoint_versions SET system_prompt='changed'")
 
@@ -727,6 +742,265 @@ def test_commit失敗rollback一次close一次且固定錯誤(tmp_path):
     assert error.value.__cause__ is None and error.value.__context__ is None
     assert (_狀態連線.rollback_calls, _狀態連線.close_calls) == (1, 1)
     assert sqlite3.connect(path).execute("SELECT count(*) FROM published_endpoints").fetchone() == (0,)
+
+
+def _斷言預配八張逐值圖形(fresh: sqlite3.Connection) -> None:
+    """逐欄驗證 ack-loss 後的 SA、端點、版本、消耗、metadata、憑證、收據與稽核。
+
+    參數：``fresh`` 是 owner connection 關閉後另開的 canonical 連線。回傳：無。
+    例外：任何欄值、pointer、manifest reference／digest 或 bundle hash 漂移即斷言失敗。
+    副作用：只執行八張表的唯讀查詢。
+    """
+    assert fresh.execute(
+        "SELECT id,created_at,disabled_at FROM service_accounts"
+    ).fetchone() == ("account-ready", 20.0, None)
+    assert fresh.execute(
+        "SELECT id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at,rate_limit_requests,rate_limit_window_seconds FROM published_endpoints"
+    ).fetchone() == (
+        "endpoint-ready", "owner", "account-ready", "customer-support", "active",
+        "version-ready", 20.0, 20.0, 60, 60,
+    )
+    assert fresh.execute(
+        "SELECT id,endpoint_id,version_number,original_requirement_text,system_prompt,allowed_skills_json,allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,model_config_snapshot_json,retry_policy_json,skill_bundle_manifest_json,input_schema_json,response_schema_json,schema_changed,created_by_user_id,created_at FROM published_endpoint_versions"
+    ).fetchone() == (
+        "version-ready", "endpoint-ready", 1, "回答問題", "請精確回答",
+        '["skill.one"]', '["tool.one"]', '{"tool.one":{"type":"object"}}',
+        "runtime-1", '{"model":"test-model","temperature":0}', '{"max_attempts":1}',
+        '{"bundle_id":"bundle-ready","manifest_digest":"' + "b" * 64
+        + '","manifest_reference":"bundle-ready/manifest.json","sha256":"' + "c" * 64 + '"}',
+        None, '{"type":"string"}', 0, "owner", 20.0,
+    )
+    assert fresh.execute(
+        "SELECT draft_id,endpoint_id,consumed_at FROM published_draft_consumptions"
+    ).fetchone() == ("draft-p04", "endpoint-ready", 20.0)
+    assert fresh.execute(
+        "SELECT version_id,publication_source,prompt_changed,skills_changed,tools_changed,model_changed,docs_changed FROM published_endpoint_version_metadata"
+    ).fetchone() == ("version-ready", "initial_draft", 0, 0, 0, 0, 0)
+    assert fresh.execute(
+        "SELECT id,endpoint_id,name,purpose,key_version,key_nonce,key_ciphertext,key_hash,key_prefix,key_last4,expires_at,last_used_at,created_at,updated_at,revoked_at,ip_allowlist_json,rate_limit_requests,created_by_user_id,revision FROM endpoint_credentials"
+    ).fetchone() == (
+        "credential-ready", "endpoint-ready", "初始憑證", "呼叫端點", 1,
+        b"n" * 12, b"c" * 62, "a" * 64, "pub_", "1234", 999.0, None,
+        20.0, 20.0, None, '["203.0.113.1"]', 30, "owner", 0,
+    )
+    assert fresh.execute(
+        "SELECT bundle_id,version_id,manifest_reference,manifest_digest,bundle_hash,total_bytes,state,published_at,reconciled_at FROM published_skill_bundles"
+    ).fetchone() == (
+        "bundle-ready", "version-ready", "bundle-ready/manifest.json", "b" * 64,
+        "c" * 64, 12, "published", 20.0, None,
+    )
+    audit = fresh.execute(
+        "SELECT id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at FROM audit_events"
+    ).fetchone()
+    assert audit[:12] == (
+        "audit-ready", "audit-ready", 20.0, "endpoint_published", "success", "user",
+        "owner", "published_endpoint", "endpoint-ready", "request-1", "endpoint-ready", None,
+    )
+    assert json.loads(audit[12]) == {
+        "bundle_hash": "c" * 64, "bundle_id": "bundle-ready",
+        "credential_id": "credential-ready", "service_account_id": "account-ready",
+        "version_id": "version-ready", "version_number": 1,
+    }
+    assert audit[13] == 20.0
+
+
+def test_預配交易COMMIT已耐久但ack遺失以fresh完整postcondition判定成功(tmp_path):
+    """真 COMMIT 後才遺失 acknowledgement 時，完整 canonical graph readback 應收斂成功。
+
+    參數：``tmp_path`` 提供隔離 SQLite。回傳：無；以公開 connection factory 注入
+    acknowledgement-loss。例外：若耐久結果被誤報或任一 canonical row 缺失即測試失敗。
+    副作用：建立一個完整 v1 publication，並以另一條 fresh connection 驗證提交結果。
+    """
+    path = tmp_path / "commit-ack-loss.db"
+    初始化發布介面資料庫(path)
+
+    class Ack遺失連線(sqlite3.Connection):
+        """只在真正 COMMIT 完成後拋出一次 ordinary acknowledgement-loss。"""
+
+        def execute(self, sql, parameters=()):
+            if sql == "COMMIT":
+                super().execute(sql, parameters)
+                raise sqlite3.OperationalError("acknowledgement-lost")
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        """透過正式 connection factory 建立真實 SQLite subclass。"""
+        return sqlite3.connect(*args, **kwargs, factory=Ack遺失連線)
+
+    result = _服務(path, connection_factory=connect).發布已準備圖形(
+        "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+        _預配識別(), _套件收據(), 請求識別碼="request-1",
+    )
+    assert result == 端點發布結果(
+        "endpoint-ready", "version-ready", "credential-ready", "account-ready",
+    )
+    with sqlite3.connect(path) as fresh:
+        _斷言預配八張逐值圖形(fresh)
+
+
+@pytest.mark.parametrize("控制型別", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_預配交易COMMIT已耐久後控制流程保留identity且八張圖形不撤銷(
+    tmp_path, 控制型別,
+):
+    """真正提交後的系統中斷須原樣傳出，且不得把已耐久的八張關聯資料當作可撤銷。
+
+    參數：``tmp_path`` 提供隔離資料庫；``控制型別`` 選擇三種正式系統中斷。
+    回傳：無；原物件身分、參數與八張表各一筆皆由斷言固定。
+    例外：預期原始系統中斷由 P04 原樣傳出；其他結果代表提交邊界分類漂移。
+    副作用：建立完整第一版發布關聯，並在真正 COMMIT 後模擬成功回應遺失。
+    """
+    path = tmp_path / f"commit-control-{控制型別.__name__}.db"
+    初始化發布介面資料庫(path)
+    主要 = 控制型別("POST_COMMIT_CONTROL", "opaque")
+
+    class 提交後控制連線(sqlite3.Connection):
+        """完成真 COMMIT 後拋出指定原始系統中斷物件。"""
+
+        def execute(self, sql, parameters=()):
+            if sql == "COMMIT":
+                super().execute(sql, parameters)
+                raise 主要
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        """透過正式連線工廠建立提交後中斷連線。"""
+        return sqlite3.connect(*args, **kwargs, factory=提交後控制連線)
+
+    with pytest.raises(控制型別) as caught:
+        _服務(path, connection_factory=connect).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼="request-1",
+        )
+    assert caught.value is 主要 and caught.value.args == ("POST_COMMIT_CONTROL", "opaque")
+    with sqlite3.connect(path) as fresh:
+        assert [fresh.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in (
+            "service_accounts", "published_endpoints", "published_endpoint_versions",
+            "published_draft_consumptions", "published_endpoint_version_metadata",
+            "endpoint_credentials", "published_skill_bundles", "audit_events",
+        )] == [1] * 8
+
+
+def test_COMMIT正常ack但fresh證明not_committed不得成功(tmp_path):
+    """連線若正常回覆 COMMIT 卻實際 rollback，fresh 零圖形必須固定拒絕。
+
+    參數：``tmp_path`` 隔離 SQLite。回傳：無。例外：公開服務只接受固定
+    ``端點發布錯誤``。副作用：正式 connection factory 將 COMMIT seam 改為真
+    ROLLBACK 後正常回傳，再由 canonical fresh connection 證明八張圖形均未提交。
+    """
+    path = tmp_path / "false-commit-ack.db"
+    初始化發布介面資料庫(path)
+
+    class 假正常確認連線(sqlite3.Connection):
+        """在 COMMIT 呼叫點真正回滾，卻以 cursor 模擬正常 acknowledgement。"""
+
+        def execute(self, sql, parameters=()):
+            if sql == "COMMIT":
+                return super().execute("ROLLBACK")
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        """透過正式連線工廠建立保留其餘 SQLite semantics 的測試連線。"""
+        return sqlite3.connect(*args, **kwargs, factory=假正常確認連線)
+
+    with pytest.raises(端點發布錯誤, match="^端點發布失敗$"):
+        _服務(path, connection_factory=connect).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼="request-1",
+        )
+    with sqlite3.connect(path) as fresh:
+        assert [fresh.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in (
+            "service_accounts", "published_endpoints", "published_endpoint_versions",
+            "published_draft_consumptions", "published_endpoint_version_metadata",
+            "endpoint_credentials", "published_skill_bundles", "audit_events",
+        )] == [0] * 8
+
+
+def test_COMMIT_ack遺失後資料庫authority替換回專用durability_unknown(tmp_path):
+    """COMMIT 已發生但 canonical path 被替換時，不得把替代 DB 的零列假稱 rollback。
+
+    參數：``tmp_path`` 提供原始與替代 SQLite。回傳：無。例外：只接受專用
+    ``端點發布耐久性未知``。副作用：正式 connection factory 在真 COMMIT 後原子替換
+    canonical path，以可達 TOCTOU 證明 fresh readback 無法判定原 inode 的 durability。
+    """
+    path = tmp_path / "commit-authority.db"
+    replacement = tmp_path / "replacement.db"
+    初始化發布介面資料庫(path)
+    初始化發布介面資料庫(replacement)
+
+    class Authority替換連線(sqlite3.Connection):
+        """真 COMMIT 後替換 canonical DB path，再模擬 acknowledgement-loss。"""
+
+        def execute(self, sql, parameters=()):
+            if sql == "COMMIT":
+                super().execute(sql, parameters)
+                os.replace(replacement, path)
+                raise sqlite3.OperationalError("acknowledgement-lost")
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        """建立保留真 SQLite commit semantics 的 TOCTOU 連線。"""
+        return sqlite3.connect(*args, **kwargs, factory=Authority替換連線)
+
+    with pytest.raises(端點發布耐久性未知, match="^端點發布耐久性未知$"):
+        _服務(path, connection_factory=connect).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼="request-1",
+        )
+    assert sqlite3.connect(path).execute(
+        "SELECT count(*) FROM published_endpoints"
+    ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize("失敗前綴", [
+    "INSERT INTO service_accounts",
+    "INSERT INTO published_endpoints",
+    "INSERT INTO published_endpoint_versions",
+    "INSERT INTO published_draft_consumptions",
+    "INSERT INTO published_endpoint_version_metadata",
+    "INSERT INTO endpoint_credentials",
+    "INSERT INTO published_skill_bundles",
+    "INSERT INTO audit_events",
+    "UPDATE published_endpoints SET current_version_id",
+])
+def test_預配交易每個graph_statement明確失敗完整rollback且pointer永遠最後(tmp_path, 失敗前綴):
+    """SA 至 pointer 的每個正式 statement seam 都必須回滾八張 canonical 表。
+
+    參數：``tmp_path`` 隔離資料庫；``失敗前綴`` 選擇公開 connection factory 攔截的
+    真 SQL。回傳：無。例外：只接受固定、無鏈結 ``端點發布錯誤``。
+    副作用：每案建立 fresh DB、命中指定 statement，並從另一連線讀回完整零圖形。
+    """
+    path = tmp_path / f"late-{abs(hash(失敗前綴))}.db"
+    初始化發布介面資料庫(path)
+    已見: list[str] = []
+
+    class 精確失敗連線(sqlite3.Connection):
+        """記錄 mutation 順序並在指定公開 SQL 前綴明確失敗。"""
+
+        def execute(self, sql, parameters=()):
+            if sql.startswith(("INSERT INTO ", "UPDATE published_endpoints")):
+                已見.append(sql)
+            if sql.startswith(失敗前綴):
+                raise sqlite3.OperationalError("fixed-statement-failure")
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        """建立有正式 SQLite 行為的失敗注入連線。"""
+        return sqlite3.connect(*args, **kwargs, factory=精確失敗連線)
+
+    with pytest.raises(端點發布錯誤, match="^端點發布失敗$") as caught:
+        _服務(path, connection_factory=connect).發布已準備圖形(
+            "owner", _已確認草稿(), _預配版本快照(), _已準備憑證(),
+            _預配識別(), _套件收據(), 請求識別碼="request-1",
+        )
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    if 失敗前綴.startswith("UPDATE"):
+        assert 已見[-1].startswith("UPDATE published_endpoints SET current_version_id")
+    with sqlite3.connect(path) as fresh:
+        assert [fresh.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in (
+            "service_accounts", "published_endpoints", "published_endpoint_versions",
+            "published_draft_consumptions", "published_endpoint_version_metadata",
+            "endpoint_credentials", "published_skill_bundles", "audit_events",
+        )] == [0] * 8
 
 
 def test_rollback與close普通失敗不取代primary且不重複cleanup(tmp_path):
