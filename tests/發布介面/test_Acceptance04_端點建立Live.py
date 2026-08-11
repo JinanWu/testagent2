@@ -1289,3 +1289,103 @@ def test_不可用Draft的canonical_Create固定不可枚舉且完整發布狀�
     assert 之後["bundle_tree"] == 之前["bundle_tree"] == ()
 
 
+def test_已消耗CSRF重放Create固定403且management完全不進入(tmp_path, monkeypatch: pytest.MonkeyPatch):
+    """用已消耗 Login token 重放 Create，固定 403 且 genuine management operation 零進入。
+
+    參數：``tmp_path`` 隔離狀態；``monkeypatch`` 對 genuine service 安裝不得進入 sentinel。
+    回傳值：無。
+    例外：CSRF 未在 route 前拒絕、Draft 漂移或 DB／Bundle 有副作用時測試失敗。
+    重要副作用：只建立一份 Draft；重放請求不得觸發 publication。
+    """
+    應用程式 = _建立正式應用程式(tmp_path)
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, 已消耗csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, 已消耗csrf)
+        assert 草稿回應.status_code == 201
+        草稿本文 = 草稿回應.json()
+        呼叫次數 = 0
+        原發布 = _取得管理服務(應用程式).原子發布
+
+        def 記錄後委派(*參數, **關鍵字):
+            """若 CSRF gate 漂移則記錄並委派 genuine coordinator。
+
+            參數：完全沿用 ``原子發布`` 的位置與關鍵字參數。
+            回傳值：原 genuine coordinator 結果。
+            例外：原方法控制流程原樣傳出。
+            重要副作用：只有 gate 錯誤放行時才增加 counter 並可能產生產品副作用。
+            """
+            nonlocal 呼叫次數
+            呼叫次數 += 1
+            return 原發布(*參數, **關鍵字)
+
+        monkeypatch.setattr(_取得管理服務(應用程式), "原子發布", 記錄後委派)
+        之前 = _建立完整副作用快照(tmp_path, 應用程式)
+        回應 = _建立Endpoint(客戶端, 已消耗csrf, 草稿本文)
+        之後 = _建立完整副作用快照(tmp_path, 應用程式)
+
+    assert 回應.status_code == 403
+    assert 呼叫次數 == 0
+    assert 之後 == 之前
+    _斷言固定錯誤且不洩漏(回應, tmp_path)
+
+
+@pytest.mark.parametrize("失敗階段", ["Bundle", "SQLite"])
+def test_代表性Bundle或SQLite失敗經canonical_Create固定500且零active_publication(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 失敗階段: str,
+):
+    """以代表性 FS／DB seam 固定 HTTP 500、秘密缺席與零 active publication。
+
+    參數：``tmp_path`` 提供隔離資源；``monkeypatch`` 注入 genuine dependency failure；
+    ``失敗階段`` 選擇 Bundle Publisher 或 SQLite P04 邊界。
+    回傳值：無；固定錯誤、Draft 語意與 Published DB assertions 全部成立。
+    例外：HTTP 映射洩漏內部細節，或失敗留下 active graph 時測試失敗。
+    重要副作用：經 canonical HTTP 建立 Draft 並嘗試一次 Create；SQLite 案例可依既有
+    orphan protocol 移動已發布 Bundle，該跨資源細節留給 A4-04 驗證。
+    """
+    應用程式 = _建立正式應用程式(tmp_path)
+    with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
+        擁有者 = _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        _, csrf = _登入Owner(客戶端, "alice", "correct horse")
+        草稿回應 = _建立Server草稿(客戶端, csrf)
+        assert 草稿回應.status_code == 201
+        草稿本文 = 草稿回應.json()
+        草稿識別碼 = 草稿本文["draft_id"]
+        基準草稿 = _取得Planner聚合(應用程式).讀取草稿(
+            擁有者, 草稿識別碼, 現在=time.time(),
+        )
+        管理服務 = _取得管理服務(應用程式)
+
+        if 失敗階段 == "Bundle":
+            def 套件發布失敗(_發布器, **_參數):
+                """在任何 Bundle bytes 產生前拋出含內部 marker 的代表性 FS error。"""
+                raise OSError(f"{tmp_path}/manifest/ciphertext/key_hash")
+
+            monkeypatch.setattr(type(管理服務._套件發布器), "發布", 套件發布失敗)
+        else:
+            def 圖形發布失敗(_服務, *_參數, **_關鍵字):
+                """在 P04 入口拋出含內部 marker 的代表性 SQLite error。"""
+                raise sqlite3.OperationalError(f"{tmp_path}/published.sqlite3 credential_id")
+
+            monkeypatch.setattr(type(管理服務._端點發布服務), "發布已準備圖形", 圖形發布失敗)
+
+        之前 = _建立完整副作用快照(tmp_path, 應用程式)
+        回應 = _建立Endpoint(
+            客戶端, 草稿回應.headers[網頁CSRFHeader名稱], 草稿本文,
+        )
+        之後 = _建立完整副作用快照(tmp_path, 應用程式)
+
+        assert (回應.status_code, 回應.json()) == (500, {"detail": "發布管理服務失敗"})
+        _斷言固定錯誤且不洩漏(回應, tmp_path)
+        _斷言Draft語意保留(之前, 之後)
+        _斷言Owner可讀且Draft語意保留(應用程式, 擁有者, 草稿識別碼, 基準草稿)
+        assert 之後["tables"] == 之前["tables"]
+        assert all(之後["tables"][表] == () for 表 in 發布副作用資料表)
+        if 失敗階段 == "Bundle":
+            assert 之後["bundle_tree"] == 之前["bundle_tree"] == ()
+
+        monkeypatch.undo()
+        重試 = _以Fresh登入重試同Draft(
+            客戶端, "alice", "correct horse", 草稿本文,
+        )
+        assert 重試.status_code == 201
