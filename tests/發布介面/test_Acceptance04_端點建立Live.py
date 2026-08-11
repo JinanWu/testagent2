@@ -994,76 +994,99 @@ def test_正式端點建立拒絕客戶端權威聲稱且零發布副作用(tmp_
     assert 發布端點數量 == 0
 
 
-def test_正式端點建立只接受伺服器草稿相等確認(tmp_path):
-    """固定 Create 不得用客戶端修改值覆寫正式 Draft 的 Planner 內容。
+def test_真Login草稿建立Endpoint成功並readback完整圖形與一次性秘密(tmp_path, caplog):
+    """走完整 canonical Login→Draft→Create，驗 exact DTO、authority、DB／Bundle 與 [REDACTED]。
 
-    參數：
-        tmp_path: pytest 提供的隔離目錄，用來保存技能、Web DB、Published DB 與 bundle root。
-    回傳值：
-        無；修改 ``system_prompt`` 的 confirmation 必須固定回 422 且零發布資料。
-    例外：
-        Draft 路由缺失、正式規劃失敗、修改值被接受或產生發布副作用時測試失敗。
-    重要副作用：
-        啟動正式 lifespan、建立隔離技能與使用者、建立一份 Draft 並送出一次不相等確認。
+    參數：``tmp_path`` 提供隔離持久層；``caplog`` 收集本案產品 log 作秘密缺席證據。
+    回傳值：無；EP-3 成功契約全部以 assertions 表達。
+    例外：任何 HTTP、authority、graph、validator 或秘密邊界漂移時測試失敗。
+    重要副作用：建立一位 owner、一份 Draft、一個 active v1 publication 與初始 credential。
     """
-    技能根目錄 = tmp_path / "skills"
-    技能目錄 = 技能根目錄 / "demo"
-    技能目錄.mkdir(parents=True)
-    (技能目錄 / "SKILL.md").write_text(
-        "---\nname: demo\ndescription: contract skill\n---\n\n# Demo\n",
-        encoding="utf-8",
-    )
     應用程式 = _建立正式應用程式(tmp_path)
+    # expected literals 由測試人工凍結，不從 Pydantic model 或 OpenAPI 自生。
     with TestClient(應用程式, raise_server_exceptions=False) as 客戶端:
-        使用者儲存庫 = 使用者庫(tmp_path / "web.sqlite3")
-        使用者儲存庫.建立使用者(
-            "alice",
-            "correct horse",
-            roles=["user"],
-            enabled_tools=[],
-            enabled_skills=["demo"],
-            skill_roots=[str(技能根目錄)],
-            allowed_workdirs=[str(tmp_path)],
-        )
-        使用者儲存庫.連線.close()
-        登入回應 = 客戶端.post(
-            "/api/auth/login",
-            json={"username": "alice", "password": "correct horse"},
-        )
-        assert 登入回應.status_code == 200
-        草稿回應 = 客戶端.post(
-            草稿路徑,
-            json={
-                "original_requirement_text": "建立合約測試 API",
-                "selected_skills": ["demo"],
-                "response_mode": "text",
-            },
-            headers={"X-CSRF-Token": 登入回應.json()["csrf_token"]},
-        )
+        擁有者 = _建立Owner技能與使用者(tmp_path, "alice", "correct horse")
+        登入回應, login_csrf = _登入Owner(客戶端, "alice", "correct horse")
+        assert 登入回應.json()["user"]["id"] == 擁有者
+        草稿回應 = _建立Server草稿(客戶端, login_csrf)
         assert 草稿回應.status_code == 201
         草稿本文 = 草稿回應.json()
-        預覽 = 草稿本文["preview"]
-        修改確認 = {
-            鍵: 預覽[鍵]
-            for 鍵 in ("system_prompt", "input_schema", "response_schema", "human_docs", "rate_limit")
+        assert set(草稿本文) == 草稿回應頂層鍵
+        assert set(草稿本文["preview"]) == 草稿預覽鍵
+        assert 草稿本文["preview"]["selected_skills"] == ["demo"]
+        assert 草稿本文["preview"]["recommended_tools"] == ["acceptance-tool"]
+        assert 草稿本文["preview"]["rate_limit"] == {
+            "endpoint_per_minute": 60, "credential_per_minute": 30,
         }
-        修改確認["system_prompt"] = "客戶端不得覆寫的提示"
-        建立回應 = 客戶端.post(
-            端點建立路徑,
-            json={
-                "draft_id": 草稿本文["draft_id"],
-                "slug": "contract-api",
-                "configuration_confirmation": 修改確認,
-            },
-            headers={"X-CSRF-Token": 草稿回應.headers["X-CSRF-Token"]},
-        )
+        聚合草稿 = _取得Planner聚合(應用程式)._草稿[草稿本文["draft_id"]]
+        assert 聚合草稿.擁有者識別碼 == 擁有者
+        assert [項目.名稱 for 項目 in 聚合草稿.能力摘要.技能] == ["demo"]
+        assert [項目.名稱 for 項目 in 聚合草稿.能力摘要.工具] == ["acceptance-tool"]
 
-    assert (建立回應.status_code, 建立回應.json()) == (
-        422,
-        {"detail": "管理操作輸入無效"},
-    )
-    with sqlite3.connect(tmp_path / "published.sqlite3") as 資料庫連線:
-        發布端點數量 = 資料庫連線.execute(
-            "SELECT COUNT(*) FROM published_endpoints"
-        ).fetchone()[0]
-    assert 發布端點數量 == 0
+        公開欄位, 秘密證據, 重放狀態 = _建立並收斂成功秘密(
+            客戶端, 草稿回應.headers[網頁CSRFHeader名稱], 草稿本文, tmp_path, caplog,
+        )
+        assert 公開欄位["status_code"] == 201, "[REDACTED]"
+        assert 公開欄位["keys"] == {
+            "endpoint_id", "version_id", "version_number", "status", "initial_api_key",
+        }, "[REDACTED]"
+        assert 公開欄位["version_number"] == 1, "[REDACTED]"
+        assert 公開欄位["status"] == "active", "[REDACTED]"
+        assert 重放狀態 == 403, "[REDACTED]"
+        assert all(秘密證據.values()), "[REDACTED]"
+        建立端點識別碼 = 公開欄位["endpoint_id"]
+        建立版本識別碼 = 公開欄位["version_id"]
+
+        with sqlite3.connect(tmp_path / "published.sqlite3") as 連線:
+            連線.row_factory = sqlite3.Row
+            端點 = dict(連線.execute("SELECT * FROM published_endpoints").fetchone())
+            版本 = dict(連線.execute("SELECT * FROM published_endpoint_versions").fetchone())
+            憑證 = dict(連線.execute("SELECT * FROM endpoint_credentials").fetchone())
+            服務帳號 = dict(連線.execute("SELECT * FROM service_accounts").fetchone())
+            套件 = dict(連線.execute("SELECT * FROM published_skill_bundles").fetchone())
+            稽核 = dict(連線.execute("SELECT * FROM audit_events").fetchone())
+            for 表 in (
+                "published_endpoints", "published_endpoint_versions", "endpoint_credentials",
+                "published_skill_bundles", "service_accounts", "audit_events",
+            ):
+                assert 連線.execute(f'SELECT COUNT(*) FROM "{表}"').fetchone()[0] == 1
+        assert 端點["id"] == 建立端點識別碼
+        assert 端點["owner_user_id"] == 擁有者
+        assert 端點["service_account_id"] == 服務帳號["id"]
+        assert 端點["current_version_id"] == 版本["id"] == 建立版本識別碼
+        assert 版本["endpoint_id"] == 端點["id"]
+        assert (端點["status"], 版本["version_number"]) == ("active", 1)
+        assert 版本["created_by_user_id"] == 擁有者
+        assert json.loads(版本["allowed_skills_json"]) == ["demo"]
+        assert json.loads(版本["allowed_tools_json"]) == ["acceptance-tool"]
+        assert set(json.loads(版本["tool_schema_snapshot_json"])) == {"acceptance-tool"}
+        assert 版本["tool_runtime_revision"] == "acceptance-release"
+        assert 憑證["endpoint_id"] == 端點["id"]
+        assert 憑證["created_by_user_id"] == 擁有者
+        assert 套件["version_id"] == 版本["id"]
+        assert 套件["state"] == "published"
+        assert 稽核["endpoint_id"] == 端點["id"]
+        assert 稽核["resource_id"] == 端點["id"]
+        assert 稽核["action"] == "endpoint_published"
+        assert 稽核["actor_type"] == "user"
+        assert 稽核["actor_id"] == 擁有者
+        assert 稽核["outcome"] == "success"
+        assert 稽核["resource_type"] == "published_endpoint"
+        稽核中繼 = json.loads(稽核["metadata_json"])
+        assert 稽核中繼 == {
+            "version_id": 版本["id"], "version_number": 版本["version_number"],
+            "bundle_id": 套件["bundle_id"], "bundle_hash": 套件["bundle_hash"],
+            "credential_id": 憑證["id"], "service_account_id": 服務帳號["id"],
+        }
+        收據 = 套件發布收據(
+            套件["bundle_id"], 套件["manifest_reference"], 套件["manifest_digest"],
+            套件["bundle_hash"], 套件["total_bytes"], tmp_path / "bundles" / 套件["bundle_id"],
+        )
+        投影 = _取得管理服務(應用程式)._套件協調器.讀取已驗證清單(收據)
+        assert 投影.bundle_id == 套件["bundle_id"]
+        assert 投影.endpoint_id == 端點["id"]
+        assert 投影.endpoint_version_id == 版本["id"]
+        assert 投影.version_number == 1
+        assert [項目.name for 項目 in 投影.source_skills] == ["demo"]
+
+
