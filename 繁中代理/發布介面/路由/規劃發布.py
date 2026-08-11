@@ -252,6 +252,41 @@ class 草稿建立結果:
     預覽: Annotated[dict[str, JsonValue], Field(alias="preview")]
 
 
+class 安全草稿限流預覽(BaseModel):
+    """安全草稿預覽中的 exact 兩鍵限流資料傳輸物件。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
+    端點每分鐘: int = Field(alias="endpoint_per_minute")
+    憑證每分鐘: int = Field(alias="credential_per_minute")
+
+
+class 安全草稿預覽(BaseModel):
+    """安全草稿 Route 對外公開的 exact 十二鍵預覽資料傳輸物件。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
+    端點名稱: StrictStr = Field(alias="endpoint_name")
+    建議短名: StrictStr = Field(alias="suggested_slug")
+    行為摘要: StrictStr = Field(alias="behavior_summary")
+    選擇技能: list[StrictStr] = Field(alias="selected_skills")
+    建議工具: list[StrictStr] = Field(alias="recommended_tools")
+    工具能力: dict[str, StrictStr] = Field(alias="tool_capabilities")
+    系統提示: StrictStr = Field(alias="system_prompt")
+    輸入綱要: dict[str, JsonValue] | None = Field(alias="input_schema")
+    回應綱要: dict[str, JsonValue] = Field(alias="response_schema")
+    人類文件: StrictStr = Field(alias="human_docs")
+    限流: 安全草稿限流預覽 = Field(alias="rate_limit")
+    警告: list[StrictStr] = Field(alias="warnings")
+
+
+class 安全草稿建立結果(BaseModel):
+    """安全草稿 Route 對外公開的 exact 三鍵建立結果。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
+    草稿識別碼: StrictStr = Field(alias="draft_id")
+    到期時間: float = Field(alias="expires_at")
+    預覽: 安全草稿預覽 = Field(alias="preview")
+
+
 @dataclass(frozen=True, slots=True)
 class 端點發布結果:
     """原子發布 receipt；初始明文金鑰只供本次成功回應。"""
@@ -356,7 +391,7 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
     路由器 = APIRouter(prefix="/api/published-endpoints")
 
     @路由器.post(
-        "/draft", status_code=201, response_model=草稿建立結果,
+        "/draft", status_code=201, response_model=安全草稿建立結果,
         openapi_extra=_草稿本文綱要,
     )
     async def 建立伺服器草稿(
