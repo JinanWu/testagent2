@@ -549,7 +549,9 @@ class 發布管理協調器:
                 "response_schema": 綱要["response_schema"], "human_docs": 綱要["human_docs"],
                 "rate_limit": 綱要["rate_limit"],
             }
-            return all(鍵 in 對照 and 值 == 對照[鍵] for 鍵, 值 in 配置.items())
+            return set(配置) == set(對照) and all(
+                配置[鍵] == 對照[鍵] for 鍵 in 對照
+            )
         except _控制流程:
             raise
         except BaseException:

@@ -329,7 +329,9 @@ def test_產品E2E_v1與v2各自Bundle且Restart後不漂移(tmp_path):
                 "draft_id": 草稿識別碼, "slug": "alpha-api",
                 "configuration_confirmation": {
                     "system_prompt": 預覽["system_prompt"],
+                    "input_schema": 預覽["input_schema"],
                     "response_schema": 預覽["response_schema"],
+                    "human_docs": 預覽["human_docs"],
                     "rate_limit": 預覽["rate_limit"],
                 },
             },
@@ -460,7 +462,9 @@ def test_Startup_Reconciliation可重入(tmp_path):
             json={"draft_id": 草稿.json()["draft_id"], "slug": "alpha-api",
                   "configuration_confirmation": {
                       "system_prompt": 預覽["system_prompt"],
+                      "input_schema": 預覽["input_schema"],
                       "response_schema": 預覽["response_schema"],
+                      "human_docs": 預覽["human_docs"],
                       "rate_limit": 預覽["rate_limit"]}},
             headers={"X-CSRF-Token": csrf},
         )
@@ -499,7 +503,9 @@ def test_HTTP回應不洩漏source_path或Bundle根(tmp_path):
             json={"draft_id": 草稿.json()["draft_id"], "slug": "alpha-api",
                   "configuration_confirmation": {
                       "system_prompt": 預覽["system_prompt"],
+                      "input_schema": 預覽["input_schema"],
                       "response_schema": 預覽["response_schema"],
+                      "human_docs": 預覽["human_docs"],
                       "rate_limit": 預覽["rate_limit"]}},
             headers={"X-CSRF-Token": csrf},
         )
@@ -568,7 +574,9 @@ def _發布v1並取得金鑰(客戶端: TestClient) -> tuple[dict, str]:
         json={"draft_id": 草稿.json()["draft_id"], "slug": "alpha-api",
               "configuration_confirmation": {
                   "system_prompt": 預覽["system_prompt"],
+                  "input_schema": 預覽["input_schema"],
                   "response_schema": 預覽["response_schema"],
+                  "human_docs": 預覽["human_docs"],
                   "rate_limit": 預覽["rate_limit"]}},
         headers={"X-CSRF-Token": csrf},
     )
