@@ -423,6 +423,174 @@ def test_key或management啟動失敗後兩proxy關閉且零部分authority(
         assert 資料庫連線.execute("SELECT COUNT(*) FROM published_endpoints").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("錯誤種類", ["ordinary", "control-flow"])
+def test_management安裝成功後立即失敗仍關閉兩proxy且零endpoint(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 錯誤種類: str,
+):
+    """固定 Create authority 已裝入但安裝 wrapper 隨即失敗時仍完整 fail closed。
+
+    參數：``tmp_path`` 提供隔離 DB；``monkeypatch`` 包裝 exact 安裝；``錯誤種類``
+    選擇 ordinary ``RuntimeError`` 或 control-flow ``SystemExit``。
+    回傳值：無；原失敗 identity、Draft／Create proxy 關閉及零 endpoint 全部成立。
+    例外：測試精確捕捉注入 sentinel；任何 lifecycle 漂移皆由 assertion 回報。
+    重要副作用：執行一次正式底層 startup，於 Create 安裝後立即失敗並清理全部 authority。
+    """
+    Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理 = _建立直接Published組裝(tmp_path)
+    安裝錯誤: BaseException = (
+        RuntimeError("installed then ordinary failure")
+        if 錯誤種類 == "ordinary"
+        else SystemExit("installed then control-flow failure")
+    )
+    原安裝 = 延遲發布管理服務.安裝
+
+    def 安裝後失敗(self, 管理服務) -> None:
+        """先完成真實 slot 安裝，再拋指定 exact startup sentinel。
+
+        參數：``self`` 是 Create proxy；``管理服務`` 是本次 exact coordinator。
+        回傳值：不返回。
+        例外：固定拋測試建立的 ordinary 或 control-flow sentinel。
+        重要副作用：先以原實作開啟 Create authority，迫使 failure cleanup 負責撤銷。
+        """
+        原安裝(self, 管理服務)
+        raise 安裝錯誤
+
+    monkeypatch.setattr(延遲發布管理服務, "安裝", 安裝後失敗)
+    try:
+        生產Published執行模組._建立Published資源(
+            Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理,
+        )
+    except BaseException as 實際錯誤:
+        assert 實際錯誤 is 安裝錯誤
+    else:
+        pytest.fail("management 安裝後 sentinel 必須終止 startup")
+
+    with pytest.raises(草稿規劃服務不可用):
+        草稿代理.建立草稿("owner", "需求", ("demo",), "text", 現在=1.0)
+    with pytest.raises(RuntimeError, match="發布管理服務不可用"):
+        管理代理.原子發布(
+            擁有者使用者識別碼="owner", 確認=發布確認("draft", "endpoint", {}),
+        )
+    with sqlite3.connect(tmp_path / "published.sqlite3") as 資料庫連線:
+        assert 資料庫連線.execute("SELECT COUNT(*) FROM published_endpoints").fetchone()[0] == 0
+
+
+def test_ordinary_startup搭配cleanup_control_flow重拋cleanup_exact_identity(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+):
+    """固定 ordinary startup failure 之後的第一個 cleanup control-flow 具有重拋優先權。
+
+    參數：``tmp_path`` 提供隔離 DB；``monkeypatch`` 精確包裝 management install／clear。
+    回傳值：無；最終例外必須是 cleanup ``SystemExit`` 的 exact object，且兩 proxy 關閉。
+    例外：測試捕捉 cleanup sentinel；identity 或 fail-closed 漂移時 assertion 失敗。
+    重要副作用：先真實安裝 Create authority，再於 startup 與 cleanup 各注入一次失敗。
+    """
+    Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理 = _建立直接Published組裝(tmp_path)
+    啟動錯誤 = RuntimeError("ordinary startup sentinel")
+    清理錯誤 = SystemExit("cleanup control-flow sentinel")
+    原安裝 = 延遲發布管理服務.安裝
+    原清除 = 延遲發布管理服務.清除
+
+    def 安裝後ordinary失敗(self, 管理服務) -> None:
+        """完成真實安裝後拋 ordinary startup sentinel。
+
+        參數：``self`` 與 ``管理服務`` 是本次 exact proxy／coordinator。
+        回傳值：不返回。
+        例外：固定拋 exact ordinary startup sentinel。
+        重要副作用：先開啟 Create authority，再迫使 startup 進入 failure cleanup。
+        """
+        原安裝(self, 管理服務)
+        raise 啟動錯誤
+
+    def 清除後control_flow失敗(self, 管理服務) -> None:
+        """完成真實撤銷後拋 exact cleanup control-flow sentinel。
+
+        參數：``self`` 與 ``管理服務`` 是已安裝的 exact proxy／coordinator。
+        回傳值：不返回。
+        例外：固定拋 exact ``SystemExit`` sentinel。
+        重要副作用：先撤銷 Create slot，使後續允許已撤銷的收斂路徑可安全重入。
+        """
+        原清除(self, 管理服務)
+        raise 清理錯誤
+
+    monkeypatch.setattr(延遲發布管理服務, "安裝", 安裝後ordinary失敗)
+    monkeypatch.setattr(延遲發布管理服務, "清除", 清除後control_flow失敗)
+    try:
+        生產Published執行模組._建立Published資源(
+            Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理,
+        )
+    except BaseException as 實際錯誤:
+        assert 實際錯誤 is 清理錯誤
+    else:
+        pytest.fail("cleanup control-flow sentinel 必須覆蓋 ordinary startup failure")
+
+    with pytest.raises(草稿規劃服務不可用):
+        草稿代理.建立草稿("owner", "需求", ("demo",), "text", 現在=1.0)
+    with pytest.raises(RuntimeError, match="發布管理服務不可用"):
+        管理代理.原子發布(
+            擁有者使用者識別碼="owner", 確認=發布確認("draft", "endpoint", {}),
+        )
+
+
+@pytest.mark.parametrize("錯誤種類", ["ordinary", "control-flow"])
+def test_shutdown_management_planner_invoke多重失敗保留第一個identity(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 錯誤種類: str,
+):
+    """固定 shutdown management→Planner→Invocation 多重失敗只回報第一個同類錯誤。
+
+    參數：``tmp_path`` 提供成功 startup；``monkeypatch`` 注入三階段失敗；
+    ``錯誤種類`` 選擇三個 ordinary，或前兩個 control-flow 加一個 ordinary。
+    回傳值：無；三階段皆被嘗試，且最終保留 management 第一個 exact identity。
+    例外：測試捕捉第一個 sentinel；錯誤覆寫、短路或順序漂移時 assertion 失敗。
+    重要副作用：建立一次正式底層資源，直接執行同步 shutdown owner 並在測試末收斂注入資源。
+    """
+    Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理 = _建立直接Published組裝(tmp_path)
+    資源 = 生產Published執行模組._建立Published資源(
+        Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理,
+    )
+    Planner資源 = 資源._Planner資源
+    編排器 = 資源._編排器
+    assert Planner資源 is not None and 編排器 is not None
+    if 錯誤種類 == "ordinary":
+        第一錯誤, 第二錯誤, 第三錯誤 = (
+            RuntimeError("management first"), LookupError("planner second"), ValueError("invoke third"),
+        )
+    else:
+        第一錯誤, 第二錯誤, 第三錯誤 = (
+            SystemExit("management first"), KeyboardInterrupt("planner second"), RuntimeError("invoke third"),
+        )
+    事件: list[str] = []
+
+    def management失敗(_服務) -> None:
+        """記錄 management 階段並拋第一個 exact sentinel。"""
+        事件.append("management")
+        raise 第一錯誤
+
+    def planner失敗() -> None:
+        """記錄 Planner 階段並拋第二個 exact sentinel。"""
+        事件.append("planner")
+        raise 第二錯誤
+
+    def invoke失敗(_編排器) -> None:
+        """記錄 Invocation 階段並拋第三個 exact sentinel。"""
+        事件.append("invoke")
+        raise 第三錯誤
+
+    with monkeypatch.context() as 注入:
+        注入.setattr(管理代理, "清除", management失敗)
+        注入.setattr(Planner資源, "_清除同步", planner失敗)
+        注入.setattr(呼叫代理, "清除", invoke失敗)
+        try:
+            資源._執行關閉同步()
+        except BaseException as 實際錯誤:
+            assert 實際錯誤 is 第一錯誤
+        else:
+            pytest.fail("shutdown 多重失敗必須重拋第一個 exact sentinel")
+
+    assert 事件 == ["management", "planner", "invoke"]
+    Planner資源._清除同步()
+    呼叫代理.清除(編排器)
+
+
 @pytest.mark.parametrize("請求方法", ["GET", "PUT", "PATCH", "DELETE"])
 @pytest.mark.parametrize("路徑", [草稿路徑, 端點建立路徑])
 def test_正式草稿與端點建立拒絕其他HTTP方法(tmp_path, 請求方法: str, 路徑: str):
