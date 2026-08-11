@@ -1,8 +1,6 @@
 """MGT M01 擁有者與管理者發布端點查詢契約測試。"""
 
-import hashlib
 import inspect
-import json
 import sys
 import threading
 from types import MethodType
@@ -395,29 +393,168 @@ def test_M01_M02整合路徑方法OpenAPI尾斜線且無重複():
     assert frozenset({"endpoint_id", "version_id", "version_number", "current_version_id", "schema_changed"}) in 欄位集合
 
 
-def test_M02_OpenAPI完整快照與partial綁定前完全相同():
-    """鎖定 472ac63 的三條文件及完整 isolated M02 OpenAPI bytes。"""
+def _正規化OpenAPI綱要(結構, 綱要):
+    """展開 local ref／單一 allOf wrapper，並移除非語意 title／description。"""
+    if "$ref" in 綱要:
+        參照 = 綱要["$ref"]
+        前綴 = "#/components/schemas/"
+        assert 參照.startswith(前綴)
+        已展開 = _正規化OpenAPI綱要(
+            結構, 結構["components"]["schemas"][參照[len(前綴):]],
+        )
+        同層限制 = _正規化OpenAPI綱要(
+            結構, {鍵: 值 for 鍵, 值 in 綱要.items() if 鍵 != "$ref"},
+        )
+        return 已展開 if not 同層限制 else {"allOf": [已展開, 同層限制]}
+    if len(綱要.get("allOf", ())) == 1:
+        已展開 = _正規化OpenAPI綱要(結構, 綱要["allOf"][0])
+        同層限制 = _正規化OpenAPI綱要(
+            結構, {鍵: 值 for 鍵, 值 in 綱要.items() if 鍵 != "allOf"},
+        )
+        return 已展開 if not 同層限制 else {"allOf": [已展開, 同層限制]}
+    return {
+        鍵: (
+            _正規化OpenAPI綱要(結構, 值) if type(值) is dict
+            else [_正規化OpenAPI綱要(結構, 項目) if type(項目) is dict else 項目 for 項目 in 值]
+            if type(值) is list else 值
+        )
+        for 鍵, 值 in 綱要.items() if 鍵 not in {"title", "description"}
+    }
+
+
+def test_M02_OpenAPI綱要正規化接受inline_local_ref與單一allOf包裝():
+    """同一公開語意不因 framework 選擇 inline、local ref 或單一 allOf 表示而漂移。"""
+    結構 = {"components": {"schemas": {
+        "任意Opaque名稱": {
+            "title": "非語意名稱", "description": "非語意文件", "type": "string",
+            "minLength": 1,
+        },
+    }}}
+    預期 = {"type": "string", "minLength": 1}
+    assert _正規化OpenAPI綱要(結構, {**預期, "title": "Inline"}) == 預期
+    assert _正規化OpenAPI綱要(
+        結構, {"$ref": "#/components/schemas/任意Opaque名稱"},
+    ) == 預期
+    assert _正規化OpenAPI綱要(
+        結構, {
+            "allOf": [{"$ref": "#/components/schemas/任意Opaque名稱"}],
+            "description": "Wrapper",
+        },
+    ) == 預期
+    assert _正規化OpenAPI綱要(
+        結構, {
+            "$ref": "#/components/schemas/任意Opaque名稱",
+            "maxLength": 8,
+        },
+    ) == {"allOf": [預期, {"maxLength": 8}]}
+
+
+def test_M02_OpenAPI以可審查語意快照鎖定公開契約而不綁框架bytes():
+    """鎖定三條 M02 公開契約，不綁 FastAPI／Pydantic 產生器的非語意 bytes。"""
     app = FastAPI(redirect_slashes=False)
     app.include_router(建立規劃發布路由器(假發布管理服務(), lambda: _身份()))
-    回應 = TestClient(app).get("/openapi.json")
-    結構 = 回應.json()
-    文件 = {
-        路徑: 結構["paths"][路徑]["post"]["description"]
-        for 路徑 in (
-            "/api/published-endpoints/draft",
-            "/api/published-endpoints",
-            "/api/published-endpoints/{endpoint_id}/versions",
+    結構 = TestClient(app).get("/openapi.json").json()
+    契約 = {
+        "/api/published-endpoints/draft": {
+            "operationId": "建立發布草稿_api_published_endpoints_draft_post",
+            "description": "建立純草稿，不配置 endpoint、版本或憑證。",
+            "request": {
+                "original_requirement_text": {"type": "string", "minLength": 1, "maxLength": 16384},
+                "planner_content": {"type": "object", "additionalProperties": {}},
+            },
+            "response": {
+                "draft_id": {"type": "string"}, "expires_at": {"type": "number"},
+                "preview": {"type": "object", "additionalProperties": {}},
+            },
+        },
+        "/api/published-endpoints": {
+            "operationId": "發布端點_api_published_endpoints_post",
+            "description": "只委派一次原子服務操作，回傳初始明文金鑰一次。",
+            "request": {
+                "draft_id": {
+                    "type": "string", "minLength": 1, "maxLength": 128,
+                    "pattern": "^[A-Za-z0-9_.:-]+$",
+                },
+                "slug": {
+                    "type": "string", "minLength": 1, "maxLength": 63,
+                    "pattern": "^[a-z0-9][a-z0-9-]*$",
+                },
+                "configuration_confirmation": {"type": "object", "additionalProperties": {}},
+            },
+            "response": {
+                "endpoint_id": {"type": "string"}, "version_id": {"type": "string"},
+                "version_number": {"type": "integer"}, "status": {"type": "string"},
+                "initial_api_key": {"type": "string"},
+            },
+        },
+        "/api/published-endpoints/{endpoint_id}/versions": {
+            "operationId": "建立不可變版本_api_published_endpoints__endpoint_id__versions_post",
+            "description": "由服務一次完成 owner/admin 授權、create-only insert 與 pointer switch。",
+            "request": {"configuration": {"type": "object", "additionalProperties": {}}},
+            "response": {
+                "endpoint_id": {"type": "string"}, "version_id": {"type": "string"},
+                "version_number": {"type": "integer"}, "current_version_id": {"type": "string"},
+                "schema_changed": {"type": "boolean"},
+            },
+        },
+    }
+    assert set(結構["paths"]) == set(契約)
+    for 路徑, 預期 in 契約.items():
+        assert set(結構["paths"][路徑]) == {"post"}
+        操作 = 結構["paths"][路徑]["post"]
+        assert 操作["operationId"] == 預期["operationId"]
+        assert 操作["description"] == 預期["description"]
+        assert "partial application" not in 操作["description"]
+        assert 操作["requestBody"]["required"] is True
+        assert set(操作["responses"]) == {"201", "422"}
+        請求內容 = 操作["requestBody"]["content"]
+        成功內容 = 操作["responses"]["201"]["content"]
+        驗證錯誤內容 = 操作["responses"]["422"]["content"]
+        assert set(請求內容) == set(成功內容) == set(驗證錯誤內容) == {"application/json"}
+
+        請求綱要 = _正規化OpenAPI綱要(結構, 請求內容["application/json"]["schema"])
+        回應綱要 = _正規化OpenAPI綱要(結構, 成功內容["application/json"]["schema"])
+        assert set(請求綱要) == {"type", "properties", "required", "additionalProperties"}
+        assert 請求綱要["type"] == "object" and 請求綱要["additionalProperties"] is False
+        assert set(請求綱要["required"]) == set(預期["request"])
+        assert 請求綱要["properties"] == 預期["request"]
+        assert set(回應綱要) == {"type", "properties", "required"}
+        assert 回應綱要["type"] == "object"
+        assert set(回應綱要["required"]) == set(預期["response"])
+        assert 回應綱要["properties"] == 預期["response"]
+
+        驗證錯誤綱要 = _正規化OpenAPI綱要(
+            結構, 驗證錯誤內容["application/json"]["schema"],
         )
+        assert 驗證錯誤綱要 == {
+            "type": "object",
+            "properties": {"detail": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "loc": {
+                            "type": "array", "items": {
+                                "anyOf": [{"type": "string"}, {"type": "integer"}],
+                            },
+                        },
+                        "msg": {"type": "string"},
+                        "type": {"type": "string"},
+                    },
+                    "required": ["loc", "msg", "type"],
+                },
+            }},
+        }
+
+    版本參數 = 結構["paths"]["/api/published-endpoints/{endpoint_id}/versions"]["post"]["parameters"]
+    assert len(版本參數) == 1
+    assert {鍵: 版本參數[0][鍵] for 鍵 in ("name", "in", "required")} == {
+        "name": "endpoint_id", "in": "path", "required": True,
     }
-    assert 文件 == {
-        "/api/published-endpoints/draft": "建立純草稿，不配置 endpoint、版本或憑證。",
-        "/api/published-endpoints": "只委派一次原子服務操作，回傳初始明文金鑰一次。",
-        "/api/published-endpoints/{endpoint_id}/versions": "由服務一次完成 owner/admin 授權、create-only insert 與 pointer switch。",
+    assert _正規化OpenAPI綱要(結構, 版本參數[0]["schema"]) == {
+        "type": "string", "minLength": 1, "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_.:-]+$",
     }
-    assert all("partial application" not in 內容 for 內容 in 文件.values())
-    標準位元組 = json.dumps(結構, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    assert hashlib.sha256(標準位元組).hexdigest() == "3ecb7738f1d8bccd133c465f4f23cb750ccebaa26222753dc77674683a5021b6"
-    assert hashlib.sha256(回應.content).hexdigest() == "039fd0a3efbe6836270df3c241043cfca0a9454fcdd69cbaea0bc2d4024ae079"
 
 
 class _敵意字串(str):
