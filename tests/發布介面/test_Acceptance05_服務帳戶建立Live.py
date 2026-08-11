@@ -111,7 +111,11 @@ def _建立完整管理應用程式(
         3600.0,
     )
     def 建立模型表():
-        """記錄 startup exact-once 呼叫並建立本次 provider registry。"""
+        """記錄 startup exact-once 呼叫並建立本次 provider registry。
+
+        參數：無；使用外層 explicit factory。
+        返回值：本次 fresh provider registry。
+        """
         工廠呼叫.append("models")
         return {"fake": object()} if 模型表工廠 is None else 模型表工廠()
 
@@ -248,7 +252,11 @@ def _建立Owner(暫存目錄: Path, 帳號: str, 密碼: str) -> str:
 
 
 def _登入(客戶端: TestClient, 帳號: str, 密碼: str) -> str:
-    """經 canonical login 建立真 session 並回傳本次 CSRF token。"""
+    """經 canonical login 建立真 session。
+
+    參數：canonical client，以及測試 owner 的帳號與密碼。
+    返回值：本次 session 的 fresh CSRF token。
+    """
     回應 = 客戶端.post("/api/auth/login", json={"username": 帳號, "password": 密碼})
     assert 回應.status_code == 200
     assert 網頁工作階段Cookie名稱 in 客戶端.cookies
@@ -257,7 +265,11 @@ def _登入(客戶端: TestClient, 帳號: str, 密碼: str) -> str:
 
 
 def _建立草稿(客戶端: TestClient, csrf: str):
-    """經 canonical Draft route 建立 server-owned configuration。"""
+    """經 canonical Draft route 建立 server-owned configuration。
+
+    參數：持有真 session 的 client 與尚未使用的 CSRF token。
+    返回值：原始 Draft HTTP response。
+    """
     return 客戶端.post(
         "/api/published-endpoints/draft",
         json={
@@ -270,7 +282,11 @@ def _建立草稿(客戶端: TestClient, csrf: str):
 
 
 def _建立確認(預覽: dict[str, Any]) -> dict[str, Any]:
-    """只從 server preview 建立 route 允許的五個確認欄位。"""
+    """只從 server preview 建立 route 允許的五個確認欄位。
+
+    參數：Draft 201 回傳的 server-owned preview。
+    返回值：與 preview 脫離的五鍵 configuration confirmation。
+    """
     return json.loads(json.dumps({
         "system_prompt": 預覽["system_prompt"],
         "input_schema": 預覽["input_schema"],
@@ -281,7 +297,11 @@ def _建立確認(預覽: dict[str, Any]) -> dict[str, Any]:
 
 
 def _送出建立(客戶端: TestClient, csrf: str, 草稿: dict[str, Any], slug: str, **額外欄位):
-    """經 canonical Create route 送出三鍵本文及測試指定的敵對額外欄位。"""
+    """經 canonical Create route 送出本文。
+
+    參數：真 session client、fresh CSRF、server Draft、slug，以及負向案例額外欄位。
+    返回值：原始 Endpoint Create HTTP response。
+    """
     本文 = {
         "draft_id": 草稿["draft_id"],
         "slug": slug,
@@ -296,7 +316,11 @@ def _送出建立(客戶端: TestClient, csrf: str, 草稿: dict[str, Any], slug
 
 
 def test_live登入草稿建立兩端點並產生不同服務帳戶且拒絕client_claim(tmp_path, caplog):
-    """SA-3：真 HTTP 建立完整 SQLite 圖形，第二端點不可重用 SA，敵對 claim 零副作用。"""
+    """以真 HTTP 建立完整 SQLite 圖形並拒絕敵對 claim。
+
+    參數：``tmp_path`` 隔離持久層；``caplog`` 觀測 secret absence。
+    返回值：無；第二端點使用不同 SA、完整 graph 與秘密邊界由 assertions 固定。
+    """
     (tmp_path / "bundles").mkdir()
     應用程式 = _建立完整管理應用程式(tmp_path, [])
 
@@ -373,11 +397,19 @@ class _記錄假模型:
     """記錄 restart invocation 的 detached provider 參數。"""
 
     def __init__(self) -> None:
-        """建立空呼叫紀錄。"""
+        """建立空呼叫紀錄。
+
+        參數：無。
+        返回值：None。
+        """
         self.呼叫: list[dict[str, Any]] = []
 
     def 產生發布回應(self, **參數):
-        """保存 JSON detached 參數並回傳符合 structured schema 的 deterministic 結果。"""
+        """保存 JSON detached 參數並建立 deterministic 結果。
+
+        參數：Published runtime 傳入的 provider keyword arguments。
+        返回值：符合 structured schema 的模型回應快照。
+        """
         self.呼叫.append(json.loads(json.dumps(參數)))
         return 模型回應快照(
             text='{"result":"restart-ok"}',
@@ -388,7 +420,11 @@ class _記錄假模型:
 
 
 def test_restart後由exact服務帳戶與v1快照完成invoke且不讀live_skill(tmp_path):
-    """SA-4：Create→shutdown→刪除 owner skill→fresh app invoke 仍只使用 Published snapshot。"""
+    """證明 fresh app invoke 只使用 exact Published snapshot。
+
+    參數：``tmp_path`` 供前後兩個 canonical app 共用 durable DB 與 bundle root。
+    返回值：無；Create→shutdown→刪除 owner skill→restart invoke 全由 assertions 固定。
+    """
     (tmp_path / "bundles").mkdir()
     第一應用 = _建立完整管理應用程式(tmp_path, [])
     初始金鑰 = None
