@@ -396,6 +396,84 @@ def _建立並收斂成功秘密(
     return 結果
 
 
+def _取得Planner聚合(應用程式):
+    """取得 canonical startup 唯一 Draft Aggregate 作 readback。
+
+    參數：``應用程式`` 是已啟動的 CP4 canonical app。
+    回傳值：Published lifespan resource 持有的 Planner aggregate。
+    例外：資源未啟動或 composition 漂移時傳出 attribute/index 錯誤。
+    重要副作用：無；只讀 app state。
+    """
+    return 應用程式.state.發布介面資源[-1].取得Planner資源().取得規劃服務()
+
+
+def _取得管理服務(應用程式):
+    """取得 canonical startup 安裝的 genuine publication coordinator 作觀測。
+
+    參數：``應用程式`` 是已啟動的 CP4 canonical app。
+    回傳值：route proxy 委派的真實 management service。
+    例外：資源尚未啟動或 wiring 漂移時傳出明確 attribute/index 錯誤。
+    重要副作用：無；只讀 app state，不直接呼叫 coordinator。
+    """
+    return 應用程式.state.發布介面資源[-1].取得發布管理服務()
+
+
+def _建立完整副作用快照(暫存目錄: Path, 應用程式) -> dict[str, Any]:
+    """建立 Draft 語意、全部 Published tables 與完整 Bundle tree 快照。
+
+    參數：``暫存目錄`` 定位 DB／bundle；``應用程式`` 提供 canonical aggregate readback。
+    回傳值：可直接 equality 比較、且不保存一次性明文的 detached snapshot。
+    例外：資料表缺失、讀檔或 SQLite 失敗時原樣傳出。
+    重要副作用：唯讀 DB、Draft 與檔案樹；不修改任何產品狀態。
+    """
+    草稿們 = _取得Planner聚合(應用程式)._草稿
+    草稿快照 = tuple(sorted((
+        識別, 草稿.擁有者識別碼, 草稿.原始需求, 草稿._綱要正規JSON,
+        草稿.建立時間, 草稿.到期時間, 草稿.狀態, 草稿._世代,
+        getattr(草稿.能力摘要, "正規JSON", None),
+        None if 草稿.發布確認 is None else (
+            草稿.發布確認.草稿識別碼, 草稿.發布確認.草稿世代,
+            草稿.發布確認.slug, 草稿.發布確認.response_schema,
+            草稿.發布確認.docs, 草稿.發布確認.endpoint_limit,
+            草稿.發布確認.credential_limit,
+        ),
+    ) for 識別, 草稿 in 草稿們.items()))
+    套件根 = 暫存目錄 / "bundles"
+    快照: dict[str, Any] = {
+        "drafts": 草稿快照,
+        "bundle_tree": tuple(sorted(
+            (str(路徑.relative_to(套件根)), 路徑.is_dir(),
+             None if 路徑.is_dir() else 路徑.read_bytes())
+            for 路徑 in 套件根.rglob("*")
+        )),
+        "tables": {},
+    }
+    with sqlite3.connect(暫存目錄 / "published.sqlite3") as 連線:
+        現有表 = sorted(列[0] for 列 in 連線.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        ))
+        assert 發布副作用資料表 <= set(現有表)
+        for 表 in 現有表:
+            安全表 = 表.replace('"', '""')
+            快照["tables"][表] = tuple(連線.execute(
+                f'SELECT * FROM "{安全表}" ORDER BY rowid'
+            ))
+    return 快照
+
+
+def _斷言Draft語意保留(之前: dict[str, Any], 之後: dict[str, Any]) -> None:
+    """確認 Create 失敗只允許內部發布確認欄改變，其餘 Draft 語意不漂移。
+
+    參數：``之前``、``之後`` 是同一案例的完整副作用 snapshots。
+    回傳值：無；所有語意保留條件以 assertions 表達。
+    例外：Draft identity、owner、需求、preview、expiry、generation 或狀態漂移時失敗。
+    重要副作用：無；只比較 detached tuples。
+    """
+    assert tuple(項目[:-1] for 項目 in 之後["drafts"]) == tuple(
+        項目[:-1] for 項目 in 之前["drafts"]
+    )
+
+
 def test_canonical_OpenAPI包含唯一draft與endpoint_create(tmp_path):
     """固定正式 Draft／Create 的唯一 POST、strict schema、public 201 DTO 與 canonical 身分相依。
 
