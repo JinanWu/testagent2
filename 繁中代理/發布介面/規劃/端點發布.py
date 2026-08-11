@@ -49,6 +49,10 @@ class 端點發布錯誤(RuntimeError):
     """代表資料庫發布無法原子完成。"""
 
 
+class 端點發布耐久性未知(端點發布錯誤):
+    """代表 COMMIT 結果無法由 fresh exact postcondition 安全判定。"""
+
+
 @dataclass(frozen=True, slots=True)
 class 發布版本快照:
     """完整對應已發布第一版欄位的脫離快照。
@@ -230,7 +234,7 @@ class SQLite端點發布服務:
             uri = 路徑.as_uri() + "?mode=rw"
             連線 = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
             _驗證已開啟資料庫路徑(連線, 路徑, 身分)
-            _驗證並寫入(連線, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間)
+            _驗證並寫入(連線, 路徑, 身分, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間)
             結果 = 端點發布結果(識別碼[0], 識別碼[1], 識別碼[2], 識別碼[3])
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             del self, owner_user_id, draft, version_snapshot, prepared_credential, now, 草稿副本, 版本副本, 憑證副本, 確認, 識別碼, 建立時間, 路徑, 身分, uri, 連線, 結果, 發布失敗
@@ -279,7 +283,7 @@ class SQLite端點發布服務:
             連線 = self._連線工廠(uri, uri=True, timeout=30.0, isolation_level=None)
             _驗證已開啟資料庫路徑(連線, 路徑, 身分)
             _驗證並寫入(
-                連線, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認,
+                連線, 路徑, 身分, owner_user_id, 草稿副本, 版本副本, 憑證副本, 確認,
                 識別碼, 識別碼[6], 收據, 識別碼[5], 請求識別碼,
                 寫入前權威確認,
             )
@@ -553,28 +557,35 @@ def _驗證已開啟資料庫路徑(連線: sqlite3.Connection, 路徑: Path, �
 
 
 def _驗證並寫入(
-    連線: sqlite3.Connection, owner: str, draft: 規劃草稿, snapshot: 發布版本快照,
-    credential: 已準備初始憑證, confirmation: 發布值確認,
-    ids: tuple[Any, ...], created_at: float, 套件收據: 套件發布收據 | None = None,
+    連線: sqlite3.Connection, 資料庫路徑: Path, 資料庫身分: tuple[int, int],
+    擁有者識別碼: str, 草稿: 規劃草稿, 快照: 發布版本快照,
+    憑證: 已準備初始憑證, 確認: 發布值確認,
+    識別碼: tuple[Any, ...], 建立時間: float, 套件收據: 套件發布收據 | None = None,
     稽核識別碼: str | None = None, 請求識別碼: str | None = None,
     寫入前權威確認: Callable[[], object] | None = None,
 ) -> None:
     """鎖住資料庫結構後驗證指紋，並以明確狀態機完成單一交易。
 
-        參數：連線由本函式完成交易及關閉；擁有者、草稿、快照、憑證、確認、
-        識別碼與建立時間共同描述待發布的固定第一版圖形；可空
+        參數：連線由本函式完成交易及關閉；資料庫路徑與 inode 身分供 COMMIT 後
+        fresh readback 固定 authority；擁有者、草稿、快照、憑證、確認、識別碼與
+        建立時間共同描述待發布的固定第一版圖形；可空
         ``寫入前權威確認`` 是無參數 callback。
-        回傳：成功提交並關閉連線後回傳 ``None``。
-        例外：callback、交易或結構失敗固定映射為 ``端點發布錯誤``；回滾或關閉
-        時的控制流程例外依清理契約原樣傳出，原始 callback traceback locals 會
-        被清除。
+        回傳：不論 COMMIT acknowledgement 是否正常，唯有關閉 owner connection 後，
+        fresh readback 對原 inode 的完整八張逐值圖形判定為 ``committed`` 才回傳
+        ``None``。例外：判定為 ``not_committed`` 時固定映射為 ``端點發布錯誤``；
+        路徑／inode 漂移、部分或衝突圖形及讀取失敗等 ``unknown`` 結果拋出
+        ``端點發布耐久性未知``；回滾或關閉時的控制流程例外依清理契約原樣傳出，
+        原始 callback traceback locals 會被清除。
         副作用：設定外鍵及驗證函式、開始 ``BEGIN IMMEDIATE``，先呼叫 callback
-        再寫入端點圖形、提交並關閉連線；失敗時回滾且關閉連線。
+        再依 SA→Endpoint(NULL)→Version→Consumption→Metadata→Credential→Receipt→
+        Audit→Pointer 順序寫入並提交；普通交易失敗回滾；COMMIT 返回或 ordinary
+        acknowledgement-loss 都先關閉 owner connection，再另開 fresh 唯讀連線判定。
     """
     已開始 = False
     已提交 = False
+    提交待判定 = False
     交易失敗 = False
-    ledger = rows = raw = endpoint_id = version_id = credential_id = account_id = None
+    ledger = rows = raw = 端點識別碼 = 版本識別碼 = 憑證識別碼 = 服務帳戶識別碼 = None
     收據儲存庫 = 中繼資料 = None
     回滾控制: list[BaseException] = []
     關閉控制: list[BaseException] = []
@@ -590,55 +601,73 @@ def _驗證並寫入(
         驗證資料庫結構(連線)
         if 寫入前權威確認 is not None:
             寫入前權威確認()
-        endpoint_id, version_id, credential_id, account_id = ids[:4]
+        端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼 = 識別碼[:4]
         if 套件收據 is not None:
-            if 稽核識別碼 != ids[5]:
+            if 稽核識別碼 != 識別碼[5]:
                 raise sqlite3.DatabaseError
-            套件收據 = _驗證預配關係(ids, snapshot, 套件收據, 請求識別碼)
+            套件收據 = _驗證預配關係(識別碼, 快照, 套件收據, 請求識別碼)
         elif 稽核識別碼 is not None or 請求識別碼 is not None:
             raise sqlite3.DatabaseError
-        _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (account_id, created_at))
+        _執行一列(連線, "INSERT INTO service_accounts(id,created_at,disabled_at) VALUES(?,?,NULL)", (服務帳戶識別碼, 建立時間))
         _執行一列(
             連線,
             "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at,rate_limit_requests,rate_limit_window_seconds) VALUES(?,?,?,?,?,NULL,?,?,?,?)",
-            (endpoint_id, owner, account_id, confirmation.slug, "active", created_at, created_at, confirmation.endpoint_limit, confirmation.window_seconds),
+            (端點識別碼, 擁有者識別碼, 服務帳戶識別碼, 確認.slug, "active", 建立時間, 建立時間, 確認.endpoint_limit, 確認.window_seconds),
         )
         _執行一列(
             連線,
             "INSERT INTO published_endpoint_versions(id,endpoint_id,version_number,original_requirement_text,system_prompt,allowed_skills_json,allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,model_config_snapshot_json,retry_policy_json,skill_bundle_manifest_json,input_schema_json,response_schema_json,schema_changed,created_by_user_id,created_at) VALUES(?,?,1,?,?,?,?,?,?,?,?,?,?,?,0,?,?)",
-            (version_id, endpoint_id, snapshot.original_requirement_text, snapshot.system_prompt,
-             _正規JSON(snapshot.allowed_skills), _正規JSON(snapshot.allowed_tools), _正規JSON(snapshot.tool_schema_snapshot),
-             snapshot.tool_runtime_revision, _正規JSON(snapshot.model_config_snapshot), _正規JSON(snapshot.retry_policy),
-             _正規JSON(snapshot.skill_bundle_manifest), None if snapshot.input_schema is None else _正規JSON(snapshot.input_schema),
-             _正規JSON(snapshot.response_schema), snapshot.created_by_user_id, created_at),
+            (版本識別碼, 端點識別碼, 快照.original_requirement_text, 快照.system_prompt,
+             _正規JSON(快照.allowed_skills), _正規JSON(快照.allowed_tools), _正規JSON(快照.tool_schema_snapshot),
+             快照.tool_runtime_revision, _正規JSON(快照.model_config_snapshot), _正規JSON(快照.retry_policy),
+             _正規JSON(快照.skill_bundle_manifest), None if 快照.input_schema is None else _正規JSON(快照.input_schema),
+             _正規JSON(快照.response_schema), 快照.created_by_user_id, 建立時間),
         )
-        _執行一列(連線, "UPDATE published_endpoints SET current_version_id=? WHERE id=? AND current_version_id IS NULL", (version_id, endpoint_id))
+        _執行一列(
+            連線,
+            "INSERT INTO published_draft_consumptions(draft_id,endpoint_id,consumed_at) VALUES(?,?,?)",
+            (草稿.草稿識別碼, 端點識別碼, 建立時間),
+        )
+        _執行一列(
+            連線,
+            "INSERT INTO published_endpoint_version_metadata(version_id,publication_source,prompt_changed,skills_changed,tools_changed,model_changed,docs_changed) VALUES(?, 'initial_draft',0,0,0,0,0)",
+            (版本識別碼,),
+        )
         _執行一列(
             連線,
             "INSERT INTO endpoint_credentials(id,endpoint_id,name,purpose,key_version,key_nonce,key_ciphertext,key_hash,key_prefix,key_last4,expires_at,last_used_at,created_at,updated_at,revoked_at,ip_allowlist_json,rate_limit_requests,created_by_user_id,revision) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,?,?,NULL,?,?,?,0)",
-            (credential_id, endpoint_id, credential.name, credential.purpose, credential.key_version,
-             credential.key_nonce, credential.key_ciphertext, credential.key_hash, credential.key_prefix,
-             credential.key_last4, credential.expires_at, created_at, created_at,
-             _正規JSON(credential.ip_allowlist), credential.rate_limit_requests, credential.created_by_user_id),
+            (憑證識別碼, 端點識別碼, 憑證.name, 憑證.purpose, 憑證.key_version,
+             憑證.key_nonce, 憑證.key_ciphertext, 憑證.key_hash, 憑證.key_prefix,
+             憑證.key_last4, 憑證.expires_at, 建立時間, 建立時間,
+             _正規JSON(憑證.ip_allowlist), 憑證.rate_limit_requests, 憑證.created_by_user_id),
         )
         if 套件收據 is not None:
             收據儲存庫 = object.__new__(套件收據儲存庫)
             收據儲存庫.連線 = 連線
-            收據儲存庫.新增(版本識別碼=version_id, 收據=套件收據, 發布時間=created_at)
+            收據儲存庫.新增(版本識別碼=版本識別碼, 收據=套件收據, 發布時間=建立時間)
             中繼資料 = _正規JSON({
-                "version_id": version_id, "version_number": 1,
-                "bundle_id": ids[4], "bundle_hash": 套件收據.套件雜湊,
-                "credential_id": credential_id, "service_account_id": account_id,
+                "version_id": 版本識別碼, "version_number": 1,
+                "bundle_id": 識別碼[4], "bundle_hash": 套件收據.套件雜湊,
+                "credential_id": 憑證識別碼, "service_account_id": 服務帳戶識別碼,
             })
             _執行一列(
                 連線,
                 "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
-                (稽核識別碼, 稽核識別碼, created_at, "endpoint_published", "success", "user", owner,
-                 "published_endpoint", endpoint_id, 請求識別碼, endpoint_id, 中繼資料, created_at),
+                (稽核識別碼, 稽核識別碼, 建立時間, "endpoint_published", "success", "user", 擁有者識別碼,
+                 "published_endpoint", 端點識別碼, 請求識別碼, 端點識別碼, 中繼資料, 建立時間),
             )
-        連線.execute("COMMIT")
-        已開始 = False
-        已提交 = True
+        _執行一列(連線, "UPDATE published_endpoints SET current_version_id=? WHERE id=? AND current_version_id IS NULL", (版本識別碼, 端點識別碼))
+        try:
+            連線.execute("COMMIT")
+        except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            raise
+        except BaseException as 錯誤:
+            _清除例外框架(錯誤)
+            提交待判定 = True
+        else:
+            已開始 = False
+            已提交 = True
+            提交待判定 = True
     except (KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
         _清除例外框架(控制)
         if 已開始:
@@ -648,7 +677,7 @@ def _驗證並寫入(
         關閉控制.clear()
         _清除例外鏈(控制)
         del 控制
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制, 關閉控制
+        del 連線, 資料庫路徑, 資料庫身分, 擁有者識別碼, 草稿, 快照, 憑證, 確認, 識別碼, 建立時間, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 提交待判定, 交易失敗, ledger, rows, raw, 端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼, 收據儲存庫, 中繼資料, 回滾控制, 關閉控制
         raise
     except BaseException as 錯誤:
         _清除例外框架(錯誤)
@@ -657,7 +686,7 @@ def _驗證並寫入(
         關閉控制 = _安全關閉(連線)
         交易失敗 = True
     if 交易失敗:
-        del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料
+        del 連線, 資料庫路徑, 資料庫身分, 擁有者識別碼, 草稿, 快照, 憑證, 確認, 識別碼, 建立時間, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 提交待判定, 交易失敗, ledger, rows, raw, 端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼, 收據儲存庫, 中繼資料
         if 回滾控制:
             關閉控制.clear()
             _拋出清理控制(回滾控制.pop())
@@ -665,11 +694,148 @@ def _驗證並寫入(
             _拋出清理控制(關閉控制.pop())
         del 回滾控制, 關閉控制
         _拒絕發布()
+    if 提交待判定 and 已開始:
+        回滾控制 = _安全回滾(連線)
     關閉控制 = _安全關閉(連線)
-    del 連線, owner, draft, snapshot, credential, confirmation, ids, created_at, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 交易失敗, ledger, rows, raw, endpoint_id, version_id, credential_id, account_id, 收據儲存庫, 中繼資料, 回滾控制
+    if 回滾控制:
+        關閉控制.clear()
+        _拋出清理控制(回滾控制.pop())
     if 關閉控制:
         _拋出清理控制(關閉控制.pop())
+    if 提交待判定:
+        判定 = _判定初始發布提交結果(
+            資料庫路徑, 資料庫身分, 擁有者識別碼, 草稿, 快照, 憑證, 確認, 識別碼,
+            建立時間, 套件收據, 稽核識別碼, 請求識別碼,
+        )
+        if 判定 == "committed":
+            return
+        if 判定 == "unknown":
+            raise 端點發布耐久性未知("端點發布耐久性未知") from None
+        _拒絕發布()
+    del 連線, 資料庫路徑, 資料庫身分, 擁有者識別碼, 草稿, 快照, 憑證, 確認, 識別碼, 建立時間, 套件收據, 稽核識別碼, 請求識別碼, 寫入前權威確認, 已開始, 已提交, 提交待判定, 交易失敗, ledger, rows, raw, 端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼, 收據儲存庫, 中繼資料, 回滾控制
     del 關閉控制
+
+
+def _判定初始發布提交結果(
+    資料庫路徑: Path, 資料庫身分: tuple[int, int], 擁有者識別碼: str,
+    草稿: 規劃草稿, 快照: 發布版本快照,
+    憑證: 已準備初始憑證, 確認: 發布值確認, 識別碼: tuple[Any, ...],
+    建立時間: float, 套件收據: 套件發布收據 | None,
+    稽核識別碼: str | None, 請求識別碼: str | None,
+) -> str:
+    """以 fresh 唯讀連線將所有 COMMIT 回應分成三種耐久結果。
+
+    參數：資料庫路徑、原 inode 身分與本次 module-owned DTO／識別共同描述唯一
+    預期初始圖形，無論 owner 收到正常 acknowledgement 或 ordinary loss 都使用。
+    回傳：完整八張逐值資料及 Endpoint pointer 相等時為 ``committed``；本次所有
+    identity 均不存在時為 ``not_committed``；部分列、衝突列、路徑／inode 漂移或
+    任何讀取失敗皆為 ``unknown``。
+    例外：一般讀取錯誤關閉為 ``unknown``；系統中斷保持原物件向外傳出。
+    副作用：只開啟一條 fresh read-only SQLite connection，查詢後立即關閉。
+    """
+    連線 = None
+    try:
+        端點識別碼, 版本識別碼, 憑證識別碼, 服務帳戶識別碼 = 識別碼[:4]
+        路徑狀態 = 資料庫路徑.lstat()
+        if stat.S_ISLNK(路徑狀態.st_mode) or (路徑狀態.st_dev, 路徑狀態.st_ino) != 資料庫身分:
+            return "unknown"
+        資料庫URI = 資料庫路徑.as_uri() + "?mode=ro"
+        連線 = sqlite3.connect(資料庫URI, uri=True, timeout=1.0, isolation_level=None)
+        主檔 = next(列[2] for 列 in 連線.execute("PRAGMA database_list") if 列[1] == "main")
+        主檔狀態 = os.stat(主檔)
+        if (主檔狀態.st_dev, 主檔狀態.st_ino) != 資料庫身分:
+            return "unknown"
+        端點預期 = (
+            端點識別碼, 擁有者識別碼, 服務帳戶識別碼, 確認.slug, "active", 版本識別碼,
+            建立時間, 建立時間, 確認.endpoint_limit, 確認.window_seconds,
+        )
+        版本預期 = (
+            版本識別碼, 端點識別碼, 1, 快照.original_requirement_text, 快照.system_prompt,
+            _正規JSON(快照.allowed_skills), _正規JSON(快照.allowed_tools),
+            _正規JSON(快照.tool_schema_snapshot), 快照.tool_runtime_revision,
+            _正規JSON(快照.model_config_snapshot), _正規JSON(快照.retry_policy),
+            _正規JSON(快照.skill_bundle_manifest),
+            None if 快照.input_schema is None else _正規JSON(快照.input_schema),
+            _正規JSON(快照.response_schema), 0, 快照.created_by_user_id, 建立時間,
+        )
+        憑證預期 = (
+            憑證識別碼, 端點識別碼, 憑證.name, 憑證.purpose,
+            憑證.key_version, 憑證.key_nonce, 憑證.key_ciphertext,
+            憑證.key_hash, 憑證.key_prefix, 憑證.key_last4,
+            憑證.expires_at, None, 建立時間, 建立時間, None,
+            _正規JSON(憑證.ip_allowlist), 憑證.rate_limit_requests,
+            憑證.created_by_user_id, 0,
+        )
+        實際 = [
+            連線.execute(
+                "SELECT id,created_at,disabled_at FROM service_accounts WHERE id=?", (服務帳戶識別碼,),
+            ).fetchone(),
+            連線.execute(
+                "SELECT id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at,rate_limit_requests,rate_limit_window_seconds FROM published_endpoints WHERE id=?",
+                (端點識別碼,),
+            ).fetchone(),
+            連線.execute(
+                "SELECT id,endpoint_id,version_number,original_requirement_text,system_prompt,allowed_skills_json,allowed_tools_json,tool_schema_snapshot_json,tool_runtime_revision,model_config_snapshot_json,retry_policy_json,skill_bundle_manifest_json,input_schema_json,response_schema_json,schema_changed,created_by_user_id,created_at FROM published_endpoint_versions WHERE id=?",
+                (版本識別碼,),
+            ).fetchone(),
+            連線.execute(
+                "SELECT draft_id,endpoint_id,consumed_at FROM published_draft_consumptions WHERE draft_id=?",
+                (草稿.草稿識別碼,),
+            ).fetchone(),
+            連線.execute(
+                "SELECT version_id,publication_source,prompt_changed,skills_changed,tools_changed,model_changed,docs_changed FROM published_endpoint_version_metadata WHERE version_id=?",
+                (版本識別碼,),
+            ).fetchone(),
+            連線.execute(
+                "SELECT id,endpoint_id,name,purpose,key_version,key_nonce,key_ciphertext,key_hash,key_prefix,key_last4,expires_at,last_used_at,created_at,updated_at,revoked_at,ip_allowlist_json,rate_limit_requests,created_by_user_id,revision FROM endpoint_credentials WHERE id=?",
+                (憑證識別碼,),
+            ).fetchone(),
+        ]
+        預期 = [
+            (服務帳戶識別碼, 建立時間, None), 端點預期, 版本預期,
+            (草稿.草稿識別碼, 端點識別碼, 建立時間),
+            (版本識別碼, "initial_draft", 0, 0, 0, 0, 0), 憑證預期,
+        ]
+        if 套件收據 is not None:
+            中繼資料 = _正規JSON({
+                "version_id": 版本識別碼, "version_number": 1,
+                "bundle_id": 識別碼[4], "bundle_hash": 套件收據.套件雜湊,
+                "credential_id": 憑證識別碼, "service_account_id": 服務帳戶識別碼,
+            })
+            實際.extend((
+                連線.execute(
+                    "SELECT bundle_id,version_id,manifest_reference,manifest_digest,bundle_hash,total_bytes,state,published_at,reconciled_at FROM published_skill_bundles WHERE bundle_id=?",
+                    (識別碼[4],),
+                ).fetchone(),
+                連線.execute(
+                    "SELECT id,event_id,occurred_at,action,outcome,actor_type,actor_id,resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at FROM audit_events WHERE id=?",
+                    (稽核識別碼,),
+                ).fetchone(),
+            ))
+            預期.extend((
+                (識別碼[4], 版本識別碼, 套件收據.清單參照, 套件收據.清單摘要,
+                 套件收據.套件雜湊, 套件收據.總位元組數, "published", 建立時間, None),
+                (稽核識別碼, 稽核識別碼, 建立時間, "endpoint_published", "success",
+                 "user", 擁有者識別碼, "published_endpoint", 端點識別碼, 請求識別碼,
+                 端點識別碼, None, 中繼資料, 建立時間),
+            ))
+        if 實際 == 預期:
+            return "committed"
+        if all(列 is None for 列 in 實際):
+            return "not_committed"
+        return "unknown"
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        return "unknown"
+    finally:
+        if 連線 is not None:
+            try:
+                連線.close()
+            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+                raise
+            except BaseException:
+                pass
 
 
 def _執行一列(連線: sqlite3.Connection, sql: str, parameters: tuple[Any, ...]) -> None:

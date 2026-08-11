@@ -57,7 +57,8 @@ def _確認(草稿識別碼: str, *, 短名: str = "alpha-api") -> 發布確認:
     """建立只確認顯示值的 route DTO。"""
     綱要 = _綱要()
     return 發布確認(草稿識別碼, 短名, {
-        "system_prompt": 綱要["system_prompt"], "response_schema": 綱要["response_schema"],
+        "system_prompt": 綱要["system_prompt"], "input_schema": 綱要["input_schema"],
+        "response_schema": 綱要["response_schema"], "human_docs": 綱要["human_docs"],
         "rate_limit": 綱要["rate_limit"],
     })
 

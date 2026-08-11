@@ -17,6 +17,7 @@ import os
 import sqlite3
 import sys
 import time
+import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,10 +31,16 @@ from .生產Web代理 import 生產Web代理建構器
 from .生產Published管理 import (
     Planner生產設定,
     延遲草稿規劃服務,
+    延遲發布管理服務,
     生產Planner資源,
     建立生產Planner資源,
 )
-from .規劃.版本服務 import SQLite目前版本解析器, 已釘選版本, 目前版本不存在錯誤
+from .憑證.加密 import AESGCM憑證封套
+from .規劃.發布管理 import 發布管理協調器
+from .規劃.端點發布 import SQLite端點發布服務
+from .規劃.版本服務 import (
+    SQLite目前版本解析器, SQLite版本配置服務, 已釘選版本, 目前版本不存在錯誤,
+)
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
 from .呼叫.儲存庫 import SQLite呼叫儲存庫
 from .呼叫.限流 import 限流決策
@@ -50,9 +57,12 @@ from .執行期.工具發布庫 import 工具發布庫
 from .執行期.快照儲存庫 import SQLite發布快照儲存庫
 from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
 from .技能套件.載入器 import 已發布技能套件載入器
-from .技能套件.協調器 import 啟動協調結果, 技能套件協調器
+from .技能套件.協調器 import 技能套件協調器
+from .技能套件.發布器 import 技能套件發布器
 from .路由.外部呼叫 import 建立外部呼叫路由
-from .路由.規劃發布 import 建立安全草稿路由器
+from .路由.規劃發布 import (
+    建立安全規劃發布路由器, 建立安全草稿端點建立路由器, 建立安全草稿路由器,
+)
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -105,6 +115,7 @@ class Published生產設定:
     模型供應商註冊表工廠: Callable[[], dict[str, object]]
     孤兒保留秒數: float = 86_400.0
     Planner設定: Planner生產設定 | None = None
+    憑證封套工廠: Callable[[], AESGCM憑證封套] | None = None
     def __post_init__(self) -> None:
         """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
         參數：無；讀取五個設定欄位。
@@ -118,13 +129,16 @@ class Published生產設定:
         工廠 = object.__getattribute__(self, "模型供應商註冊表工廠")
         保留秒數 = object.__getattribute__(self, "孤兒保留秒數")
         Planner組裝 = object.__getattribute__(self, "Planner設定")
+        封套工廠 = object.__getattribute__(self, "憑證封套工廠")
         if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
                 or type(根) is not _本機Path型別 or not 根.is_absolute()
                 or not callable(安裝器) or not callable(工廠)
                 or type(保留秒數) not in (int, float)
                 or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
                 or (type(保留秒數) is float and not math.isfinite(保留秒數))
-                or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)):
+                or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)
+                or (封套工廠 is not None and not callable(封套工廠))
+                or (封套工廠 is not None and Planner組裝 is None)):
             raise ValueError("Published生產設定無效") from None
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
@@ -223,7 +237,13 @@ class 生產Published執行資源:
     """
     def __init__(self, 代理: 延遲外部呼叫編排器, 編排器: 外部呼叫編排器,
                  工具庫: 工具發布庫, 模型表: dict[str, object],
-                 Planner資源: 生產Planner資源 | None = None) -> None:
+                 Planner資源: 生產Planner資源 | None = None,
+                 發布管理代理: 延遲發布管理服務 | None = None,
+                 發布管理服務: 發布管理協調器 | None = None,
+                 技能套件協調器物件: 技能套件協調器 | None = None,
+                 技能套件發布器物件: 技能套件發布器 | None = None,
+                 端點發布服務物件: SQLite端點發布服務 | None = None,
+                 憑證封套物件: AESGCM憑證封套 | None = None) -> None:
         """保存已成功安裝的資源參照。
 
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
@@ -234,6 +254,12 @@ class 生產Published執行資源:
         self._代理, self._編排器 = 代理, 編排器
         self._工具庫, self._模型表 = 工具庫, 模型表
         self._Planner資源 = Planner資源
+        self._發布管理代理 = 發布管理代理
+        self._發布管理服務 = 發布管理服務
+        self._技能套件協調器 = 技能套件協調器物件
+        self._技能套件發布器 = 技能套件發布器物件
+        self._端點發布服務 = 端點發布服務物件
+        self._憑證封套 = 憑證封套物件
         self._關閉條件 = Condition(RLock())
         self._已關閉 = False
         self._關閉狀態 = "尚未開始"
@@ -259,6 +285,16 @@ class 生產Published執行資源:
         """
         Planner資源 = self._Planner資源
         return None if Planner資源 is None else Planner資源.取得規劃服務()
+
+    def 取得發布管理服務(self) -> 發布管理協調器 | None:
+        """取得仍由 lifespan 擁有且已安裝的 exact management coordinator。
+
+        參數：無。
+        返回值：management 啟用期間回傳 exact 協調器；未啟用或關閉後回傳 ``None``。
+        例外：無預期例外。
+        副作用：無；不建立或安裝任何 authority。
+        """
+        return self._發布管理服務
     async def 關閉(self) -> None:
         """讓任意 event loop 的 concurrent callers 等待同一 exact-once shutdown。
 
@@ -353,16 +389,41 @@ class 生產Published執行資源:
         例外：所有清理都嘗試後，控制流程優先於第一個 ordinary failure。
         副作用：drain 兩個 proxy，清空模型表與工具發布 authority 並移除強參照。
         """
+        管理代理, 管理服務 = self._發布管理代理, self._發布管理服務
         Planner資源, 編排器, 工具庫 = self._Planner資源, self._編排器, self._工具庫
         控制流程錯誤 = None
         普通清除錯誤 = None
+        try:
+            if 管理代理 is not None and 管理服務 is not None:
+                管理代理.清除(管理服務)
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                控制流程錯誤 = 錯誤
+            else:
+                普通清除錯誤 = 錯誤
+            try:
+                if type(管理代理) is 延遲發布管理服務 and type(管理服務) is 發布管理協調器:
+                    管理代理._撤銷並等待(管理服務, 允許已撤銷=True)
+            except BaseException as 撤銷錯誤:
+                if isinstance(撤銷錯誤, _控制流程例外) and 控制流程錯誤 is None:
+                    控制流程錯誤 = 撤銷錯誤
+                elif 普通清除錯誤 is None:
+                    普通清除錯誤 = 撤銷錯誤
+        finally:
+            self._發布管理服務 = None
+            self._發布管理代理 = None
+            self._憑證封套 = None
+            self._端點發布服務 = None
+            self._技能套件發布器 = None
+            self._技能套件協調器 = None
         try:
             if Planner資源 is not None:
                 Planner資源._清除同步()
         except BaseException as 錯誤:
             if isinstance(錯誤, _控制流程例外):
-                控制流程錯誤 = 錯誤
-            else:
+                if 控制流程錯誤 is None:
+                    控制流程錯誤 = 錯誤
+            elif 普通清除錯誤 is None:
                 普通清除錯誤 = 錯誤
         try:
             if 編排器 is not None:
@@ -411,6 +472,7 @@ class 生產Published執行建構器:
             raise ValueError("Published生產組裝無效") from None
         self._設定 = 設定
         self._草稿規劃代理 = 延遲草稿規劃服務()
+        self._發布管理代理 = 延遲發布管理服務()
 
     def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
         """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
@@ -421,24 +483,39 @@ class 生產Published執行建構器:
         副作用：無；不建立任何 startup resource。
         """
         return self._草稿規劃代理
+
+    def 取得發布管理代理(self) -> 延遲發布管理服務:
+        """取得 canonical Create route 捕捉的固定 per-app lazy proxy。
+
+        參數：無。
+        返回值：本 builder 建構時建立的 exact ``延遲發布管理服務``。
+        例外：無預期例外。
+        副作用：無；不呼叫 envelope factory 或建立 management resources。
+        """
+        return self._發布管理代理
     def 建立附加相依項(self, 設定: 生產設定, 目前工作階段相依, CSRF相依) -> 發布介面相依項:
         """在 app construction 建立 lazy proxy/router，將全部資源延後至 startup。
 
         參數：CP3 生產設定、canonical session dependency 與 CSRF dependency。
-        返回值：含 exact invocation router、安全草稿 router，以及一個 async resource factory
-        的附加相依項；Planner 尚未配置時，草稿 proxy 仍以 503 fail closed。
+        返回值：含 exact invocation 與固定可探索的 Draft router；只有 explicit Planner＋Key
+        完整設定時才額外公開 Endpoint Create，並附一個 async resource factory。
         例外：設定或 dependency 違約時固定 ``ValueError``。
         副作用：只建立 per-app proxy、router 與 closure，不執行 callback 或 I/O。
         """
         if type(設定) is not 生產設定 or not callable(目前工作階段相依) or not callable(CSRF相依):
             raise ValueError("Published生產組裝無效") from None
         代理 = 延遲外部呼叫編排器()
-        路由器清單 = (
-            建立外部呼叫路由(代理),
-            建立安全草稿路由器(
+        路由器清單 = (建立外部呼叫路由(代理),)
+        if self._設定.憑證封套工廠 is None:
+            管理路由器 = 建立安全草稿路由器(
                 self._草稿規劃代理, 目前工作階段相依, CSRF相依,
-            ),
-        )
+            )
+        else:
+            管理路由器 = 建立安全規劃發布路由器(
+                self._草稿規劃代理, self._發布管理代理,
+                目前工作階段相依, CSRF相依,
+            )
+        路由器清單 += (管理路由器,)
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -449,6 +526,7 @@ class 生產Published執行建構器:
             """
             return await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
+                self._發布管理代理,
             )
         return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
@@ -568,13 +646,13 @@ def _關閉協調資料庫(協調資料庫: sqlite3.Connection) -> None:
     sqlite3.Connection.close(協調資料庫)
 
 
-def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協調結果:
-    """以獨立短連線完成技能套件啟動協調並提交修復結果。
+def _執行技能套件啟動協調(發布: Published生產設定) -> 技能套件協調器:
+    """以一份 lifespan coordinator 完成啟動協調並交回 management 共用。
 
     參數：
         發布: 提供 Published DB、技能套件根與孤兒保存期限的不可變設定。
     返回值：
-        本輪補收據、隔離及刪除結果的不可變 ``啟動協調結果``。
+        已完成本輪協調且可供 management orphan handling 共用的 exact ``技能套件協調器``。
     例外：
         連線、協調或提交失敗原樣傳出；控制流程例外保持原物件。
     副作用：
@@ -598,7 +676,7 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協�
                 if 嘗試次數 == 0:
                     continue
                 raise
-            return 協調結果
+            return 協調器
         except BaseException:
             try:
                 _回滾協調資料庫(協調資料庫)
@@ -618,7 +696,8 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 啟動協�
 
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                     代理: 延遲外部呼叫編排器,
-                    草稿代理: 延遲草稿規劃服務 | None = None) -> 生產Published執行資源:
+                    草稿代理: 延遲草稿規劃服務 | None = None,
+                    管理代理: 延遲發布管理服務 | None = None) -> 生產Published執行資源:
     """startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
 
     參數：
@@ -637,7 +716,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
     初始化發布介面資料庫(資料庫)
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
-    _執行技能套件啟動協調(發布)
+    套件協調器 = _執行技能套件啟動協調(發布)
     解析器 = SQLite目前版本解析器(資料庫)
     呼叫庫 = SQLite呼叫儲存庫(資料庫)
     憑證 = SQLite憑證驗證服務(資料庫)
@@ -648,6 +727,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     模型表: dict[str, object] = {}
     編排器 = None
     Planner資源 = None
+    套件發布器 = 端點發布服務 = 憑證封套 = 管理服務 = None
     try:
         發布.工具發布安裝器(工具庫)
         原模型表 = 發布.模型供應商註冊表工廠()
@@ -678,26 +758,96 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             Planner資源 = 建立生產Planner資源(
                 發布.Planner設定, 生產.資料庫路徑, 工具庫, 草稿代理,
             )
+        if 發布.憑證封套工廠 is not None and Planner資源 is not None:
+            if type(管理代理) is not 延遲發布管理服務 or type(套件協調器) is not 技能套件協調器:
+                raise ValueError("Published生產組裝無效") from None
+            草稿Aggregate = Planner資源.取得規劃服務()
+            擁有者解析器 = Planner資源.取得擁有者解析器()
+            共用工具庫 = Planner資源.取得工具發布庫()
+            if 草稿Aggregate is None or 擁有者解析器 is None or 共用工具庫 is not 工具庫:
+                raise ValueError("Published生產組裝無效") from None
+            套件發布器 = 技能套件發布器(發布.技能套件發布根)
+            端點發布服務 = SQLite端點發布服務(
+                資料庫,
+                lambda: f"endpoint-{uuid.uuid4().hex}",
+                lambda: f"version-{uuid.uuid4().hex}",
+                lambda: f"credential-{uuid.uuid4().hex}",
+                lambda: f"service-account-{uuid.uuid4().hex}",
+                time.time,
+            )
+            版本服務 = SQLite版本配置服務(
+                資料庫, lambda: f"version-{uuid.uuid4().hex}", time.time,
+            )
+            憑證封套 = 發布.憑證封套工廠()
+            if type(憑證封套) is not AESGCM憑證封套:
+                raise ValueError("Published憑證封套無效") from None
+            管理服務 = 發布管理協調器(
+                草稿服務=草稿Aggregate,
+                擁有者解析器=擁有者解析器,
+                套件發布器物件=套件發布器,
+                套件協調器物件=套件協調器,
+                端點發布服務=端點發布服務,
+                憑證封套=憑證封套,
+                版本配置服務=版本服務,
+                模型設定={
+                    "provider": 生產.模型供應器,
+                    "model": 生產.模型名稱,
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                    "timeout_seconds": 60.0,
+                    "structured_output": True,
+                    "schema_retry_count": 1,
+                },
+            )
+            管理代理.安裝(管理服務)
         return 生產Published執行資源(
             代理, 編排器, 工具庫, 模型表, Planner資源,
+            管理代理 if 管理服務 is not None else None,
+            管理服務,
+            套件協調器 if 管理服務 is not None else None,
+            套件發布器, 端點發布服務, 憑證封套,
         )
     except BaseException as 啟動錯誤:
+        清理控制流程: BaseException | None = None
+        try:
+            if type(管理代理) is 延遲發布管理服務 and type(管理服務) is 發布管理協調器:
+                管理代理.清除(管理服務)
+        except BaseException as 清理錯誤:
+            if isinstance(清理錯誤, _控制流程例外):
+                清理控制流程 = 清理錯誤
+            try:
+                if type(管理代理) is 延遲發布管理服務 and type(管理服務) is 發布管理協調器:
+                    管理代理._撤銷並等待(管理服務, 允許已撤銷=True)
+            except BaseException as 撤銷錯誤:
+                if isinstance(撤銷錯誤, _控制流程例外) and 清理控制流程 is None:
+                    清理控制流程 = 撤銷錯誤
+        finally:
+            管理服務 = 憑證封套 = 端點發布服務 = 套件發布器 = None
         try:
             if Planner資源 is not None:
                 Planner資源._清除同步()
-        except BaseException:
-            pass
+        except BaseException as 清理錯誤:
+            if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
+                清理控制流程 = 清理錯誤
         try:
             if 編排器 is not None:
                 代理.清除(編排器)
-        except BaseException:
-            pass
+        except BaseException as 清理錯誤:
+            if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
+                清理控制流程 = 清理錯誤
         finally:
             模型表.clear()
             try:
                 工具庫.清除所有發布()
-            except BaseException:
-                pass
+            except BaseException as 清理錯誤:
+                if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
+                    清理控制流程 = 清理錯誤
+        if isinstance(啟動錯誤, _控制流程例外):
+            raise
+        if 清理控制流程 is not None:
+            清理控制流程.__cause__ = None
+            清理控制流程.__context__ = None
+            raise 清理控制流程
         啟動錯誤.__cause__ = None
         啟動錯誤.__context__ = None
         raise

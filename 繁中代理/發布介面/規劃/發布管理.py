@@ -29,7 +29,7 @@ from .版本服務 import (
 )
 from .端點發布 import (
     SQLite端點發布服務, 已準備初始憑證, 已準備發布識別, 發布版本快照,
-    端點發布輸入錯誤,
+    端點發布耐久性未知, 端點發布輸入錯誤,
 )
 from .綱要 import 發布值確認, 草稿存取錯誤, 規劃服務, 規劃草稿
 from .權限協調 import 授權選擇錯誤, 能力摘要, 權限協調器
@@ -101,9 +101,10 @@ class 發布管理協調器:
         """依固定順序建立 v1 圖形，成功時只揭露一次初始 API 金鑰。
 
         參數：擁有者識別碼來自正規工作階段；確認只作為草稿識別、短名與顯示值確認。
-        回傳：提交成功回路由收據；任何一般拒絕回固定 ``管理操作錯誤``。
-        例外：控制流程例外在盡力隔離已發布套件後維持原物件傳出。
-        副作用：可確認共享草稿、產生一次金鑰、發布套件、提交 P04 或標記孤兒。
+        回傳：提交成功或 P04 exact readback 已提交時回路由收據；任何一般拒絕回固定
+        ``管理操作錯誤``。例外：控制流程例外在依已知狀態盡力隔離套件後維持原物件
+        傳出。副作用：可確認共享草稿、產生一次金鑰、發布套件、提交 P04；只有明確
+        未提交失敗可標記孤兒，Bundle／SQLite durability unknown 均保留 final。
         """
         收據: 套件發布收據 | None = None
         新金鑰 = None
@@ -177,14 +178,18 @@ class 發布管理協調器:
             新金鑰 = 明文 = None
             self._清空敏感緩衝(熵, 明文緩衝)
             self._清除秘密框架(主要)
-            self._盡力標記孤兒(收據)
+            return 管理操作錯誤("internal")
+        except 端點發布耐久性未知 as 主要:
+            新金鑰 = 明文 = None
+            self._清空敏感緩衝(熵, 明文緩衝)
+            self._清除秘密框架(主要)
             return 管理操作錯誤("internal")
         except _控制流程 as 主要:
             新金鑰 = 明文 = None
             self._清空敏感緩衝(熵, 明文緩衝)
             self._清除秘密框架(主要)
-            if 收據 is not None:
-                self._盡力標記孤兒(收據)
+            # 系統中斷可能發生在資料庫提交前或提交後；此時移動正式套件具有破壞性。
+            # 保留正式套件，交由下次啟動時依資料庫實況重新核對。
             raise
         except 草稿存取錯誤 as 主要:
             新金鑰 = 明文 = None
@@ -549,7 +554,9 @@ class 發布管理協調器:
                 "response_schema": 綱要["response_schema"], "human_docs": 綱要["human_docs"],
                 "rate_limit": 綱要["rate_limit"],
             }
-            return all(鍵 in 對照 and 值 == 對照[鍵] for 鍵, 值 in 配置.items())
+            return set(配置) == set(對照) and all(
+                配置[鍵] == 對照[鍵] for 鍵 in 對照
+            )
         except _控制流程:
             raise
         except BaseException:

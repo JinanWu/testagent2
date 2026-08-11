@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import threading
 from typing import cast
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 import 繁中代理.發布介面.技能套件.發布器 as 發布器模組
 from 繁中代理.發布介面.技能套件.發布器 import (
     技能套件發布器,
+    套件發布收據,
     套件發布錯誤,
     套件耐久性未知,
     已驗證技能套件清單,
@@ -137,6 +139,101 @@ def test_來源重驗失敗會清除暫存目錄(tmp_path, monkeypatch):
         _發布(發布器, 來源)
     assert not (tmp_path / "bundles" / "bundle-1").exists()
     assert list((tmp_path / "bundles").glob(".stage-*")) == []
+
+
+@pytest.mark.parametrize("失敗步驟", ["scan", "copy", "write"])
+def test_公開scan_copy與write失敗點在rename前不留stage或final(tmp_path, 失敗步驟):
+    """公開 scan／copy／write label 的 ordinary failure 必須維持 rename 前零成果。
+
+    參數：``tmp_path`` 隔離來源與套件根；``失敗步驟`` 選正式 failure label。
+    回傳：無。例外：只接受固定 ``套件發布錯誤``。副作用：copy 案可短暫建立 stage，
+    但公開方法離開前必須完整清除；兩案都不得建立 final。
+    """
+    來源 = _建立來源(tmp_path)
+
+    def 失敗點(名稱: str) -> None:
+        """只在指定公開 label 拋 ordinary 錯誤。"""
+        if 名稱 == 失敗步驟:
+            raise OSError("public-failure")
+
+    with pytest.raises(套件發布錯誤, match="^技能套件發布失敗$"):
+        _發布(技能套件發布器(tmp_path / "bundles", 失敗點=失敗點), 來源)
+    assert not (tmp_path / "bundles" / "bundle-1").exists()
+    assert not (tmp_path / "bundles").exists() or list((tmp_path / "bundles").glob(".stage-*")) == []
+
+
+def test_相同bundle識別與內容兩writer競爭皆讀回winner且零stage(tmp_path):
+    """兩 writer 以不同非等冪 metadata 競爭，loser 必須精確讀回唯一 winner。
+
+    參數：``tmp_path`` 提供共享來源與 bundle root。回傳：無。例外：任一 writer
+    失敗、候選無法區辨、非恰一候選成為 final、loser 收據漂移或 stage 殘留即失敗。
+    副作用：兩個 publisher 只經正式 ``rename`` failure/synchronization seam 同步；
+    候選標記放在 created metadata，不改內容摘要與 bundle 等冪鍵。
+    """
+    來源 = _建立來源(tmp_path)
+    套件根 = tmp_path / "bundles"
+    柵欄 = threading.Barrier(2)
+    收據: dict[str, 套件發布收據] = {}
+    候選摘要: dict[str, str] = {}
+    候選內容雜湊: dict[str, str] = {}
+    rename到達: list[str] = []
+    錯誤列: list[BaseException] = []
+
+    def 工作(標記: str, 建立時間: float) -> None:
+        """以可區辨 metadata 建立同 identity／content 候選並記錄正式 seam 觀測。"""
+
+        def rename同步(名稱: str) -> None:
+            """在公開 rename seam 讀取本 writer stage 清單後同步兩候選。"""
+            if 名稱 != "rename":
+                return
+            符合 = []
+            for 暫存 in 套件根.glob(".stage-*"):
+                清單路徑 = 暫存 / "manifest.json"
+                if 清單路徑.is_file():
+                    原文 = 清單路徑.read_bytes()
+                    清單 = json.loads(原文)
+                    if 清單["created_by_user_id"] == 標記:
+                        符合.append((原文, 清單))
+            assert len(符合) == 1
+            原文, 清單 = 符合[0]
+            候選摘要[標記] = hashlib.sha256(原文).hexdigest()
+            候選內容雜湊[標記] = 清單["bundle_hash"]
+            rename到達.append(標記)
+            柵欄.wait(5)
+
+        try:
+            收據[標記] = 技能套件發布器(套件根, 失敗點=rename同步).發布(
+                套件識別碼="bundle-1", 端點識別碼="endpoint-1",
+                端點版本識別碼="version-1", 版本號碼=1, 建立時間=建立時間,
+                建立者識別碼=標記, 技能表={"demo": 來源},
+            )
+        except BaseException as 錯誤:
+            錯誤列.append(錯誤)
+
+    執行緒列 = [
+        threading.Thread(target=工作, args=("writer-a", 1.0)),
+        threading.Thread(target=工作, args=("writer-b", 2.0)),
+    ]
+    for 執行緒 in 執行緒列:
+        執行緒.start()
+    for 執行緒 in 執行緒列:
+        執行緒.join(10)
+    assert all(not 執行緒.is_alive() for 執行緒 in 執行緒列)
+    assert 錯誤列 == [] and sorted(rename到達) == ["writer-a", "writer-b"]
+    assert set(收據) == {"writer-a", "writer-b"}
+    assert 收據["writer-a"] == 收據["writer-b"]
+    assert len(set(候選摘要.values())) == 2
+    assert len(set(候選內容雜湊.values())) == 1
+    最終原文 = (套件根 / "bundle-1" / "manifest.json").read_bytes()
+    最終清單 = json.loads(最終原文)
+    最終摘要 = hashlib.sha256(最終原文).hexdigest()
+    assert 最終清單["created_by_user_id"] in {"writer-a", "writer-b"}
+    assert sum(摘要 == 最終摘要 for 摘要 in 候選摘要.values()) == 1
+    贏家標記 = 最終清單["created_by_user_id"]
+    assert 候選摘要[贏家標記] == 最終摘要
+    assert all(項目.清單摘要 == 最終摘要 for 項目 in 收據.values())
+    assert all(項目.套件雜湊 == 最終清單["bundle_hash"] for 項目 in 收據.values())
+    assert list(套件根.glob(".stage-*")) == []
 
 
 @pytest.mark.parametrize("失敗步驟", ["file_fsync", "manifest_fsync", "stage_fsync", "rename", "parent_fsync"])
