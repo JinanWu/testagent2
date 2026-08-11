@@ -175,6 +175,9 @@ class 規劃服務:
         try:
             回傳 = _必須重建公開草稿(草稿)
         except BaseException:
+            with self._鎖:
+                if self._草稿.get(草稿識別碼) is 草稿:
+                    self._草稿.pop(草稿識別碼, None)
             del self, 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼, 草稿, 回傳
             raise
         del 擁有者識別碼, 原始需求, 綱要, 綱要快照, 草稿識別碼, 草稿
@@ -247,6 +250,9 @@ class 規劃服務:
         try:
             回傳 = _必須重建公開草稿(草稿)
         except BaseException:
+            with self._鎖:
+                if self._草稿.get(草稿識別碼) is 草稿:
+                    self._草稿.pop(草稿識別碼, None)
             del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿, 回傳
             raise
         del self, 協調器, 擁有者識別碼, 原始需求, 綱要, 技能名稱, 工具名稱, 現在, 綱要快照, 能力摘要, 草稿識別碼, 草稿

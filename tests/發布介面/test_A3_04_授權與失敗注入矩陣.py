@@ -8,6 +8,7 @@ Published SQLite，證明 Endpoint／Version／Credential／Bundle 全零副作�
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import sqlite3
 from pathlib import Path
@@ -23,6 +24,7 @@ from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布庫,
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
 from 繁中代理.發布介面.生產Published管理 import Planner生產設定
 from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器
+from 繁中代理.發布介面.規劃 import 綱要 as 綱要模組
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
 from 繁中代理.發布介面.設定 import 生產設定
 
@@ -31,16 +33,25 @@ _技能名稱 = "alpha"
 _未授權技能 = "beta"
 _帳號 = "owner"
 _密碼 = "correct horse battery"
+_帳號二 = "owner-two"
+_密碼二 = "another correct battery"
 _發布識別 = "release-1"
 _敏感標記 = "SECRET-PROVIDER-DETAIL-/private/skills/alpha/SKILL.md"
+_角色敏感標記 = "ROLE-MEMBERSHIP-super-admin-internal"
+_handler敏感標記 = "private.tools.handlers.alpha_handler:QualifiedHandler"
 
-_副作用資料表 = (
+_必要副作用資料表 = {
     "published_endpoints",
     "published_endpoint_versions",
     "endpoint_credentials",
     "published_skill_bundles",
     "service_accounts",
-)
+    "endpoint_invocations",
+    "run_events",
+    "endpoint_tool_calls",
+    "published_draft_consumptions",
+    "published_endpoint_version_metadata",
+}
 
 
 def _工具發布描述() -> 工具發布描述:
@@ -68,6 +79,11 @@ def _建立環境(tmp_path: Path) -> dict:
         enabled_skills=[_技能名稱], skill_roots=[str(技能根)],
         allowed_workdirs=[str(技能根)],
     )
+    使用者庫物件.建立使用者(
+        _帳號二, _密碼二, roles=["member"], enabled_tools=["alpha-tool"],
+        enabled_skills=[_技能名稱], skill_roots=[str(技能根)],
+        allowed_workdirs=[str(技能根)],
+    )
     使用者庫物件.連線.close()
 
     套件根 = tmp_path / "bundles"
@@ -92,10 +108,10 @@ def _建立環境(tmp_path: Path) -> dict:
     }
 
 
-def _登入(客戶端: TestClient) -> str:
+def _登入(客戶端: TestClient, 帳號: str = _帳號, 密碼: str = _密碼) -> str:
     """以真實帳密取得 cookie session 與首枚 single-use CSRF。"""
     回應 = 客戶端.post(
-        "/api/auth/login", json={"username": _帳號, "password": _密碼},
+        "/api/auth/login", json={"username": 帳號, "password": 密碼},
     )
     assert 回應.status_code == 200, 回應.text
     return 回應.json()["csrf_token"]
@@ -110,14 +126,14 @@ def _本文(技能: list[str] | None = None) -> dict:
     }
 
 
-def _擁有者身份(環境: dict) -> 網頁使用者:
+def _擁有者身份(環境: dict, 帳號: str = _帳號) -> 網頁使用者:
     """由真實 Web 使用者庫取得 canonical session principal。"""
     使用者庫物件 = 使用者庫(環境["網頁資料庫"])
     try:
-        識別碼 = str(使用者庫物件.讀取使用者(username=_帳號)["id"])
+        識別碼 = str(使用者庫物件.讀取使用者(username=帳號)["id"])
     finally:
         使用者庫物件.連線.close()
-    return 網頁使用者(識別碼, _帳號, "member")
+    return 網頁使用者(識別碼, 帳號, "member")
 
 
 def _Planner資源(應用):
@@ -156,33 +172,52 @@ def _草稿數(應用) -> int:
     return len(_Planner資源(應用).取得規劃服務()._草稿)
 
 
-def _斷言零副作用(環境: dict, 應用) -> None:
-    """證明失敗後 Draft、Endpoint、Version、Credential 與 Bundle 全無副作用。"""
-    assert _草稿數(應用) == 0, "失敗不得建立 Draft"
-    assert list(環境["套件根"].iterdir()) == [], "失敗不得留下任何 Bundle 或暫存目錄"
-    if not 環境["發布資料庫"].exists():
-        return
+def _副作用快照(環境: dict, 應用) -> dict:
+    """完整 readback Draft、Published 全部存在表，以及 Bundle tree bytes。"""
+    草稿 = _Planner資源(應用).取得規劃服務()._草稿
+    快照 = {
+        "drafts": tuple(sorted((鍵, 值.擁有者識別碼, 值._綱要正規JSON,
+                                 getattr(值.能力摘要, "正規JSON", None)) for 鍵, 值 in 草稿.items())),
+        "bundle_tree": tuple(sorted(
+            (str(路徑.relative_to(環境["套件根"])), 路徑.is_dir(),
+             None if 路徑.is_dir() else 路徑.read_bytes())
+            for 路徑 in 環境["套件根"].rglob("*")
+        )),
+        "tables": {},
+    }
     連線 = sqlite3.connect(環境["發布資料庫"])
     try:
-        現有表 = {
+        現有表 = sorted({
             列[0] for 列 in 連線.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
             )
-        }
-        for 表 in _副作用資料表:
-            if 表 in 現有表:
-                assert 連線.execute(
-                    f"SELECT count(*) FROM {表}"
-                ).fetchone() == (0,), f"{表} 不得因草稿失敗而寫入"
+        })
+        assert _必要副作用資料表 <= set(現有表)
+        for 表 in 現有表:
+            安全表 = 表.replace('"', '""')
+            快照["tables"][表] = tuple(連線.execute(f'SELECT * FROM "{安全表}" ORDER BY rowid'))
     finally:
         連線.close()
+    return 快照
+
+
+def _斷言零副作用(環境: dict, 應用, 之前: dict | None = None) -> None:
+    """以完整 before/after snapshot 證明任何失敗點都沒有 publication mutation。"""
+    之後 = _副作用快照(環境, 應用)
+    if 之前 is not None:
+        assert 之後 == 之前
+        return
+    assert 之後["drafts"] == ()
+    assert 之後["bundle_tree"] == ()
+    assert all(之後["tables"][表] == () for 表 in _必要副作用資料表)
 
 
 def _斷言不洩漏(環境: dict, 回應) -> None:
-    """回應不得洩漏 provider 細節、技能來源路徑或 Bundle Root。"""
+    """回應不得洩漏 provider、role、handler、技能路徑或 Bundle Root。"""
     for 敏感 in (
         _敏感標記, str(環境["技能根"]), str(環境["套件根"]),
         str(環境["網頁資料庫"]), "SKILL.md", "Traceback", "planner_content",
+        _角色敏感標記, _handler敏感標記, "QualifiedHandler", "alpha_handler",
     ):
         assert 敏感 not in 回應.text
 
@@ -287,27 +322,58 @@ def _回傳缺欄位JSON():
     return json.dumps({"endpoint_name": _敏感標記})
 
 
-def _回傳越權工具():
-    """模擬 provider 建議未獲授權的工具。"""
-    return json.dumps({
+def _合法供應商值() -> dict:
+    return {
         "endpoint_name": "Alpha API", "suggested_slug": "alpha-api",
         "behavior_summary": "摘要", "selected_skills": [_技能名稱],
-        "recommended_tools": ["未授權工具"], "tool_capabilities": {"未授權工具": "越權"},
+        "recommended_tools": ["alpha-tool"], "tool_capabilities": {"alpha-tool": "查詢"},
         "system_prompt": "提示", "input_schema": None,
         "response_schema": {"type": "object", "properties": {"result": {"type": "string"}},
                             "required": ["result"], "additionalProperties": False},
         "human_docs": "文件",
         "rate_limit": {"endpoint_per_minute": 60, "credential_per_minute": 30},
         "warnings": [],
-    })
+    }
+
+
+def _回傳越權工具():
+    """模擬 provider 建議未獲授權的工具，並夾帶 handler detail。"""
+    值 = _合法供應商值()
+    值["recommended_tools"] = ["unauthorized-tool"]
+    值["tool_capabilities"] = {"unauthorized-tool": _handler敏感標記}
+    return json.dumps(值)
+
+
+def _回傳NaN():
+    值 = _合法供應商值()
+    值["rate_limit"]["endpoint_per_minute"] = float("nan")
+    return json.dumps(值)
+
+
+def _回傳錯誤Schema():
+    值 = _合法供應商值()
+    值["response_schema"] = {"type": "not-a-json-schema-type", "handler": _handler敏感標記}
+    return json.dumps(值)
+
+
+class _敵對文字(str):
+    def encode(self, *_參數, **_關鍵字):
+        raise AssertionError(_handler敏感標記)
 
 
 _供應商案例 = {
     "敏感例外": (_丟出敏感例外, 503, "planner_unavailable"),
     "連線失敗": (_丟出連線失敗, 503, "planner_unavailable"),
+    "timeout": (lambda: (_ for _ in ()).throw(TimeoutError(_敏感標記)), 503, "planner_unavailable"),
     "非JSON": (_回傳非JSON, 502, "planner_output_invalid"),
     "缺欄位": (_回傳缺欄位JSON, 502, "planner_output_invalid"),
     "越權工具": (_回傳越權工具, 502, "planner_output_invalid"),
+    "bytes hostile type": (lambda: _handler敏感標記.encode(), 502, "planner_output_invalid"),
+    "dict hostile type": (lambda: {"handler": _handler敏感標記}, 502, "planner_output_invalid"),
+    "str subclass trap": (lambda: _敵對文字("{}"), 502, "planner_output_invalid"),
+    "NaN": (_回傳NaN, 502, "planner_output_invalid"),
+    "schema invalid": (_回傳錯誤Schema, 502, "planner_output_invalid"),
+    "oversize output": (lambda: "x" * 131_073 + _handler敏感標記, 502, "planner_output_invalid"),
 }
 
 
@@ -497,3 +563,144 @@ def test_身份失敗在服務前關閉且零副作用(tmp_path, 身份案例: s
         assert 觸及 == [], "身份失敗不得觸及 Planner"
         _斷言不洩漏(環境, 回應)
         _斷言零副作用(環境, 環境["應用"])
+
+
+# ---------------------------------------------------------------------------
+# 補正矩陣：canonical identity／authority／request／store／concurrency
+# ---------------------------------------------------------------------------
+
+
+def test_disabled_user持有既有session仍固定401且完整快照不變(tmp_path):
+    環境 = _建立環境(tmp_path.resolve())
+    with TestClient(環境["應用"]) as 客戶端:
+        csrf = _登入(客戶端)
+        with sqlite3.connect(環境["網頁資料庫"]) as 連線:
+            連線.execute("UPDATE users SET disabled=1 WHERE username=?", (_帳號,))
+        之前 = _副作用快照(環境, 環境["應用"])
+        回應 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        assert 回應.status_code == 401
+        _斷言不洩漏(環境, 回應)
+        _斷言零副作用(環境, 環境["應用"], 之前)
+
+
+def test_single_use_CSRF_replay固定403且不增加既有草稿(tmp_path):
+    環境 = _建立環境(tmp_path.resolve())
+    with TestClient(環境["應用"]) as 客戶端:
+        csrf = _登入(客戶端)
+        成功 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        assert 成功.status_code == 201
+        之前 = _副作用快照(環境, 環境["應用"])
+        重播 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        assert 重播.status_code == 403
+        _斷言零副作用(環境, 環境["應用"], 之前)
+
+
+def test_canonical_principal_mismatch固定500且服務前關閉(tmp_path):
+    環境 = _建立環境(tmp_path.resolve())
+    應用 = 環境["應用"]
+    with TestClient(應用) as 客戶端:
+        csrf = _登入(客戶端)
+        路由 = next(路由 for 路由 in 應用.routes if getattr(路由, "path", None) == _草稿路徑)
+        csrf相依 = 路由.dependant.dependencies[1].call
+        應用.dependency_overrides[csrf相依] = lambda: _擁有者身份(環境, _帳號二)
+        之前 = _副作用快照(環境, 應用)
+        try:
+            回應 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        finally:
+            應用.dependency_overrides.clear()
+        assert 回應.status_code == 500
+        _斷言不洩漏(環境, 回應)
+        _斷言零副作用(環境, 應用, 之前)
+
+
+def test_authority_provider普通失敗固定503且role_detail不洩漏(tmp_path):
+    class _失敗權威:
+        def 查詢規劃權限(self, _owner, /):
+            raise RuntimeError(f"{_角色敏感標記} {_敏感標記}")
+
+    環境 = _建立環境(tmp_path.resolve())
+    with TestClient(環境["應用"]) as 客戶端:
+        _Planner資源(環境["應用"])._服務._權限查詢 = _失敗權威()
+        csrf = _登入(客戶端)
+        之前 = _副作用快照(環境, 環境["應用"])
+        回應 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        assert 回應.status_code == 503
+        assert 回應.json() == {"detail": {"code": "planner_unavailable"}}
+        _斷言不洩漏(環境, 回應)
+        _斷言零副作用(環境, 環境["應用"], 之前)
+
+
+@pytest.mark.parametrize("案例", ["wrong content-type", "duplicate key", "raw oversize", "unsorted skills", "duplicate skills"])
+def test_canonical_request_strictness完整readback(tmp_path, 案例):
+    環境 = _建立環境(tmp_path.resolve())
+    with TestClient(環境["應用"]) as 客戶端:
+        csrf = _登入(客戶端)
+        標頭 = {"X-CSRF-Token": csrf, "content-type": "application/json"}
+        if 案例 == "wrong content-type":
+            標頭["content-type"] = "text/plain"
+            原始 = json.dumps(_本文()).encode()
+        elif 案例 == "duplicate key":
+            原始 = b'{"original_requirement_text":"x","original_requirement_text":"y","selected_skills":["alpha"],"response_mode":"structured"}'
+        elif 案例 == "raw oversize":
+            原始 = b"x" * 32769
+        elif 案例 == "unsorted skills":
+            原始 = json.dumps(_本文(["beta", "alpha"])).encode()
+        else:
+            原始 = json.dumps(_本文(["alpha", "alpha"])).encode()
+        之前 = _副作用快照(環境, 環境["應用"])
+        回應 = 客戶端.post(_草稿路徑, content=原始, headers=標頭)
+        assert 回應.status_code == 422
+        _斷言不洩漏(環境, 回應)
+        _斷言零副作用(環境, 環境["應用"], 之前)
+
+
+def test_authorized_store_post_insert_reconstruction_failure不留幽靈草稿(tmp_path, monkeypatch):
+    環境 = _建立環境(tmp_path.resolve())
+    原錯誤 = RuntimeError(f"{_handler敏感標記} {_敏感標記}")
+
+    def 重建失敗(_草稿):
+        raise 原錯誤
+
+    with TestClient(環境["應用"]) as 客戶端:
+        monkeypatch.setattr(綱要模組, "_必須重建公開草稿", 重建失敗)
+        csrf = _登入(客戶端)
+        之前 = _副作用快照(環境, 環境["應用"])
+        回應 = 客戶端.post(_草稿路徑, json=_本文(), headers={"X-CSRF-Token": csrf})
+        assert 回應.status_code == 503
+        _斷言不洩漏(環境, 回應)
+        _斷言零副作用(環境, 環境["應用"], 之前)
+
+
+def test_兩owner並行canonical_requests與readback完全隔離(tmp_path):
+    環境 = _建立環境(tmp_path.resolve())
+    應用 = 環境["應用"]
+    with TestClient(應用) as 客戶端:
+        csrf一 = _登入(客戶端)
+        cookie一 = dict(客戶端.cookies)
+        客戶端.cookies.clear()
+        csrf二 = _登入(客戶端, _帳號二, _密碼二)
+        cookie二 = dict(客戶端.cookies)
+
+        def 建立(資料):
+            cookie, csrf, 標記 = 資料
+            return 客戶端.post(
+                _草稿路徑,
+                json={**_本文(), "original_requirement_text": f"建立 {標記} API"},
+                headers={"X-CSRF-Token": csrf}, cookies=cookie,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as 執行器:
+            回應一, 回應二 = list(執行器.map(建立, ((cookie一, csrf一, "ONE"), (cookie二, csrf二, "TWO"))))
+        assert 回應一.status_code == 回應二.status_code == 201
+        id一, id二 = 回應一.json()["draft_id"], 回應二.json()["draft_id"]
+        owner一, owner二 = _擁有者身份(環境), _擁有者身份(環境, _帳號二)
+        服務 = _Planner資源(應用).取得規劃服務()
+        草稿一 = 服務.讀取草稿(owner一.識別碼, id一, 現在=0)
+        草稿二 = 服務.讀取草稿(owner二.識別碼, id二, 現在=0)
+        assert 草稿一.擁有者識別碼 == owner一.識別碼
+        assert 草稿二.擁有者識別碼 == owner二.識別碼
+        assert 草稿一.能力摘要 is not 草稿二.能力摘要
+        with pytest.raises(Exception):
+            服務.讀取草稿(owner一.識別碼, id二, 現在=0)
+        with pytest.raises(Exception):
+            服務.讀取草稿(owner二.識別碼, id一, 現在=0)
