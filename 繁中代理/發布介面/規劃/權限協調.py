@@ -98,7 +98,7 @@ class 能力摘要:
     正規JSON: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """只接受已由協調器重建的 exact FND DTO 與 canonical 排序。"""
+        """只接受 exact FND DTO；技能排序，工具保留唯一的完整快照 authority 順序。"""
         資料 = 技能資料 = 工具資料 = 項目 = None
         失敗 = False
         try:
@@ -609,7 +609,7 @@ def _從完整快照選擇(
 
 
 def _摘要有效(摘要: 能力摘要) -> bool:
-    """驗證摘要只含 exact、唯一且 deterministic 排序的 FND DTO。"""
+    """驗證 exact FND DTO；技能排序且工具依 authority 順序保持唯一。"""
     技能名稱: list[str] = []
     工具名稱: list[str] = []
     項目 = None
@@ -626,7 +626,7 @@ def _摘要有效(摘要: 能力摘要) -> bool:
                 return False
             工具名稱.append(項目.名稱)
             項目 = None
-        return bool(技能名稱) and _名稱唯一且排序(技能名稱) and _名稱唯一且排序(工具名稱)
+        return bool(技能名稱) and _名稱唯一且排序(技能名稱) and _名稱唯一(工具名稱)
     except _控制流:
         del 摘要, 技能名稱, 工具名稱, 項目
         raise
@@ -649,6 +649,22 @@ def _名稱唯一且排序(名稱串列: list[str]) -> bool:
         return True
     except _控制流:
         del 名稱串列, 已見, 前項, 名稱
+        raise
+
+
+def _名稱唯一(名稱串列: list[str]) -> bool:
+    """驗證有序 authority 名稱不重複，但不改變或限制來源順序。"""
+    已見: set[str] = set()
+    名稱 = None
+    try:
+        for 名稱 in 名稱串列:
+            if 名稱 in 已見:
+                return False
+            已見.add(名稱)
+            名稱 = None
+        return True
+    except _控制流:
+        del 名稱串列, 已見, 名稱
         raise
 
 

@@ -117,8 +117,8 @@ class 規劃權限快照:
     工具: tuple[授權工具, ...]
 
     def __post_init__(self) -> None:
-        """驗證 exact 容器、DTO、唯一性及決定性排序。"""
-        權限修訂 = 技能 = 工具 = 項目 = 名稱 = 摘要 = 內容參照 = 釘選修訂 = 前一名稱 = None
+        """驗證 exact 容器與 DTO；技能排序，工具則保留唯一的 release authority 順序。"""
+        權限修訂 = 技能 = 工具 = 項目 = 名稱 = 摘要 = 內容參照 = 釘選修訂 = 前一名稱 = 已見工具 = None
         失敗 = False
         try:
             權限修訂 = object.__getattribute__(self, "權限修訂")
@@ -159,20 +159,20 @@ class 規劃權限快照:
                             break
                         前一名稱 = 名稱
                 if not 失敗:
-                    前一名稱 = None
+                    已見工具 = set()
                     for 項目 in 工具:
                         名稱 = object.__getattribute__(項目, "名稱")
-                        if 前一名稱 is not None and 名稱 <= 前一名稱:
+                        if 名稱 in 已見工具:
                             失敗 = True
                             break
-                        前一名稱 = 名稱
+                        已見工具.add(名稱)
         except _控制流:
-            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 失敗
+            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 已見工具, 失敗
             raise
         except BaseException:
             失敗 = True
         if 失敗:
-            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 失敗
+            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 已見工具, 失敗
             raise ValueError("規劃權限快照無效") from None
 
 
@@ -180,7 +180,7 @@ class Planner權限查詢(Protocol):
     """只提供 owner-scoped 完整權威快照；不得使用全域、即時或 fallback 來源。"""
 
     def 查詢規劃權限(self, 擁有者: str, /) -> 規劃權限快照:
-        """回傳該擁有者目前完整且決定性排序的授權能力。"""
+        """回傳該擁有者目前完整、技能排序且工具依 release authority 排列的能力。"""
         ...
 
 

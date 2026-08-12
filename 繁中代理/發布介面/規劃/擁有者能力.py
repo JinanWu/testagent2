@@ -168,15 +168,18 @@ class 擁有者能力轉接器:
                 raise ValueError
             資料 = self._重建(擁有者)
             技能表 = {項目.名稱: 項目 for 項目 in 資料.快照.技能}
-            工具表 = {項目.名稱: 項目 for 項目 in 資料.快照.工具}
+            工具名稱 = {項目.名稱 for 項目 in pinned摘要.工具}
+            權威已選工具 = tuple(
+                項目 for 項目 in 資料.快照.工具 if 項目.名稱 in 工具名稱
+            )
             if (pinned摘要.權限修訂 != 資料.快照.權限修訂
                     or tuple(技能表.get(項目.名稱) for 項目 in pinned摘要.技能) != pinned摘要.技能
-                    or tuple(工具表.get(項目.名稱) for 項目 in pinned摘要.工具) != pinned摘要.工具):
+                    or 權威已選工具 != pinned摘要.工具):
                 raise ValueError
             描述表 = {項目.名稱: 項目 for 項目 in 資料.描述}
             來源 = tuple(發布技能來源(名稱, Path(描述表[名稱].來源目錄), 描述表[名稱].內容sha256)
                        for 名稱 in (項目.名稱 for 項目 in pinned摘要.技能))
-            已選工具 = tuple(工具表[項目.名稱] for 項目 in pinned摘要.工具)
+            已選工具 = 權威已選工具
             已選技能 = tuple(技能表[項目.名稱] for 項目 in pinned摘要.技能)
             工具結構 = {
                 項目.名稱: 資料.工具結構快照[項目.名稱] for 項目 in pinned摘要.工具
@@ -234,8 +237,6 @@ class 擁有者能力轉接器:
             if 工具限制 is None or 名稱 in 工具限制:
                 工具資料.append({"name": 名稱, "revision": 註冊.revision, "description": 說明, "parameters": 解析嚴格JSON(結構JSON)})
                 授權工具列.append(授權工具(名稱, 註冊.revision))
-        授權工具列.sort(key=lambda 項目: 項目.名稱)
-        工具資料.sort(key=lambda 項目: 項目["name"])
         授權技能列 = tuple(授權技能(項目.名稱, 項目.摘要 or 項目.名稱, 項目.內容sha256) for 項目 in 描述)
         投影 = {"owner": 擁有者, "roles": list(角色),
               "skill_roots": [{"path": str(根.路徑), "device": 根.裝置, "inode": 根.節點,
