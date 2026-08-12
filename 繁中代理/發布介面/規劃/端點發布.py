@@ -50,7 +50,7 @@ class 端點發布錯誤(RuntimeError):
 
 
 class 端點發布衝突(端點發布錯誤):
-    """代表唯一鍵或主鍵已由另一個發布圖形占用。"""
+    """代表 canonical endpoint slug 已由另一個發布圖形占用。"""
 
 
 class 端點發布耐久性未知(端點發布錯誤):
@@ -576,7 +576,8 @@ def _驗證並寫入(
         ``寫入前權威確認`` 是無參數 callback。
         回傳：不論 COMMIT acknowledgement 是否正常，唯有關閉 owner connection 後，
         fresh readback 對原 inode 的完整八張逐值圖形判定為 ``committed`` 才回傳
-        ``None``。例外：判定為 ``not_committed`` 時固定映射為 ``端點發布錯誤``；
+        ``None``。例外：slug 已占用時拋出 ``端點發布衝突``；判定為
+        ``not_committed`` 時固定映射為 ``端點發布錯誤``；
         路徑／inode 漂移、部分或衝突圖形及讀取失敗等 ``unknown`` 結果拋出
         ``端點發布耐久性未知``；回滾或關閉時的控制流程例外依清理契約原樣傳出，
         原始 callback traceback locals 會被清除。
@@ -1207,5 +1208,5 @@ def _拒絕發布() -> NoReturn:
 
 
 def _拒絕衝突() -> NoReturn:
-    """建立固定、fresh 且不鏈結 SQLite 約束細節的發布衝突。"""
+    """建立固定、fresh 且不鏈結既有 endpoint 細節的 slug 衝突。"""
     raise 端點發布衝突(_發布錯誤訊息) from None
