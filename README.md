@@ -134,3 +134,5 @@ export CORE_BQ_SKIP_DDL=1             # 表已建好時跳過啟動建表，加�
 AIAGENT_MODEL_MODE=fake python3 -m pytest -q
 python3 scripts/檢查繁中文檔.py
 ```
+
+繁中checker採owner核准的嚴格baseline ratchet：現有1,463項是公開的技術債，不代表符合規範；只有finding集合與`scripts/繁中checker-baseline.json`完全相同，或問題真正歸零時才通過。新增、移除、替換、移動任何finding都會失敗並顯示差異。Baseline不得在feature或acceptance卡為恢復綠燈而刷新；只有獨立修債變更、完整checker測試及獨立review通過後，才可更新manifest。
