@@ -19,9 +19,11 @@ from typing import cast
 
 from fastapi import FastAPI
 
+from ..模型供應商 import GeminiADC供應商
 from .嚴格JSON import 解析嚴格JSON
 from .生產Web代理 import 生產Web代理建構器
 from .生產Published執行 import Published生產設定, 生產Controller建構器
+from .生產技能工具 import 安裝生產技能工具
 from .生產組裝 import 建立生產應用程式
 from .設定 import 生產設定
 
@@ -33,6 +35,15 @@ from .設定 import 生產設定
 模型名稱環境名稱 = "TESTAGENT2_MODEL_NAME"
 Gemini專案環境名稱 = "AIAGENT_GCP_PROJECT"
 Gemini位置環境名稱 = "AIAGENT_GCP_LOCATION"
+Web資料庫環境名稱 = 資料庫環境名稱
+Published資料庫環境名稱 = "TESTAGENT2_PUBLISHED_DB_PATH"
+技能套件根環境名稱 = "TESTAGENT2_PUBLISHED_BUNDLE_ROOT"
+_錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
+_核准設定環境名稱 = frozenset((
+    資料庫環境名稱, 來源環境名稱, 供應器環境名稱, 安全Cookie環境名稱,
+    工作階段TTL環境名稱, 模型名稱環境名稱, Gemini專案環境名稱,
+    Gemini位置環境名稱, Published資料庫環境名稱, 技能套件根環境名稱,
+))
 _來源JSON最大位元組 = 16_384
 _來源最大數量 = 64
 _單一來源最大位元組 = 2_048
@@ -71,6 +82,9 @@ def 建立CP4ASGI應用程式(設定: 生產設定, Published設定: Published�
     if type(設定) is not 生產設定 or type(Published設定) is not Published生產設定:
         raise ValueError("ASGI設定無效") from None
     return 建立生產應用程式(設定, 生產Controller建構器(Published設定))
+
+
+建立Canonical應用程式 = 建立CP4ASGI應用程式
 
 
 def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
@@ -131,19 +145,77 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
         raise ValueError("ASGI設定無效") from None
 
 
+def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定, Published生產設定]:
+    """解析完整 Controller 的 canonical 路徑與固定 production authorities。
+
+    只接受三個 canonical 路徑名稱；legacy DB alias 與未知
+    ``TESTAGENT2_PUBLISHED_*`` 一律拒絕。路徑 identity 的 filesystem 檢查仍由
+    lifespan 在任何 migration/provider callback 前執行，使本函式保持零 I/O。
+    """
+    try:
+        if not isinstance(環境, Mapping):
+            raise ValueError
+        for 名稱 in 環境:
+            if type(名稱) is not str:
+                raise ValueError
+            if 名稱 in _錯誤路徑別名:
+                raise ValueError
+            if (
+                名稱.startswith("TESTAGENT2_") or 名稱.startswith("AIAGENT_")
+            ) and 名稱 not in _核准設定環境名稱:
+                raise ValueError
+        Web文字 = 環境.get(Web資料庫環境名稱)
+        Published文字 = 環境.get(Published資料庫環境名稱)
+        根文字 = 環境.get(技能套件根環境名稱)
+        if any(type(值) is not str or not 值 for 值 in (Web文字, Published文字, 根文字)):
+            raise ValueError
+        Web路徑, Published路徑, 根路徑 = Path(Web文字), Path(Published文字), Path(根文字)
+        if any(not 路徑.is_absolute() or ".." in 路徑.parts for 路徑 in (Web路徑, Published路徑, 根路徑)):
+            raise ValueError
+        if Web路徑 == Published路徑:
+            raise ValueError
+        明示供應器 = 環境.get(供應器環境名稱)
+        if 明示供應器 not in (None, "gemini-adc"):
+            raise ValueError
+        Web環境 = dict(環境)
+        Web環境[資料庫環境名稱] = Web文字
+        Web環境[供應器環境名稱] = "gemini-adc"
+        Web設定 = 解析環境生產設定(Web環境)
+
+        def 建立模型註冊表() -> dict[str, object]:
+            """lifespan startup 建立唯一 application-owned Gemini ADC authority。"""
+            return {"gemini-adc": GeminiADC供應商(
+                Web設定.模型名稱,
+                cast(str, Web設定.Gemini專案識別碼),
+                cast(str, Web設定.Gemini位置),
+            )}
+
+        Published設定 = Published生產設定(
+            Published路徑, 根路徑, 安裝生產技能工具, 建立模型註冊表,
+        )
+        return Web設定, Published設定
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        raise ValueError("Canonical環境設定無效") from None
+
+
 def 建立環境應用程式() -> FastAPI:
-    """供 ``uvicorn --factory`` 使用並延遲讀取 process environment。
+    """供 ``uvicorn --factory`` 使用並延遲建立完整 Controller。
 
     參數：
         無；設定來源固定為目前 ``os.environ``。
     返回值：
-        由已驗證環境設定建立的 CP3 FastAPI app。
+        由已驗證環境設定建立的 CP4 FastAPI app。
     例外：
         環境設定違約時固定 ``ValueError``；app construction 例外原樣傳出。
     副作用：
         呼叫時讀取 process environment 並建立 app，不在此階段建立資料庫。
     """
-    return 建立ASGI應用程式(解析環境生產設定(os.environ))
+    return 建立Canonical應用程式(*解析Canonical環境設定(os.environ))
 
 
-__all__ = ("建立ASGI應用程式", "建立CP4ASGI應用程式", "建立環境應用程式", "解析環境生產設定")
+__all__ = (
+    "建立ASGI應用程式", "建立CP4ASGI應用程式", "建立Canonical應用程式",
+    "建立環境應用程式", "解析環境生產設定", "解析Canonical環境設定",
+)
