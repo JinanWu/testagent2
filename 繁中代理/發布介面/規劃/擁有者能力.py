@@ -25,6 +25,7 @@ from ..執行期.工具發布庫 import 工具發布庫, 工具發布註冊
 from .權限協調 import 能力摘要
 
 _識別 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_工具修訂 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}\Z")
 _控制流 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _固定錯誤 = "擁有者發布能力不可用"
 
@@ -225,7 +226,7 @@ class 擁有者能力轉接器:
             if type(註冊) is not 工具發布註冊 or type(註冊.tool) is not 工具定義:
                 raise ValueError
             名稱, 說明, 結構 = 註冊.tool.名稱, 註冊.tool.說明, 註冊.tool.參數結構
-            if not _是識別(名稱) or not _是識別(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
+            if not _是識別(名稱) or not _是工具修訂(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
                 raise ValueError
             結構JSON = 建立正規JSON(結構)
             if len(結構JSON.encode("utf-8")) > 32768:
@@ -266,6 +267,11 @@ def _是識別(值: object) -> bool:
     副作用：無外部副作用。
     """
     return type(值) is str and _識別.fullmatch(值) is not None
+
+
+def _是工具修訂(值: object) -> bool:
+    """只允許工具修訂使用固定 bundle revision 所需的 ``@``。"""
+    return type(值) is str and _工具修訂.fullmatch(值) is not None
 
 
 def _正規集合(值: Any, 容器型別: type, 上限: int) -> tuple[str, ...]:

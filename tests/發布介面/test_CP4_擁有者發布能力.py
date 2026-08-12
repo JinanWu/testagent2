@@ -74,6 +74,26 @@ def test_authoritative_disabled_roles_enabled_sets_skill_roots與exact_release(t
     assert 空快照.技能 == 空快照.工具 == ()
 
 
+def test_owner能力接受production核准工具修訂中的at分隔符(tmp_path):
+    _技能(tmp_path, "alpha")
+    使用者庫 = _使用者庫(_上下文(tmp_path))
+    庫 = 工具發布庫()
+    工具 = 工具定義(
+        "alpha-tool", "alpha-tool description",
+        {"type": "object", "properties": {}}, lambda _: "ok",
+    )
+    庫.登錄發布(工具發布描述(
+        "release-1", (工具發布註冊("alpha-tool@bundle-v1", 工具),),
+    ))
+    轉接器 = 擁有者能力轉接器(使用者庫, 庫, "release-1")
+    快照 = 轉接器.查詢規劃權限("owner-1")
+    assert [(項目.名稱, 項目.釘選修訂) for 項目 in 快照.工具] == [
+        ("alpha-tool", "alpha-tool@bundle-v1"),
+    ]
+    摘要 = 能力摘要(快照.權限修訂, 快照.技能, 快照.工具)
+    assert 轉接器.解析發布能力("owner-1", 摘要).權限快照.工具 == 快照.工具
+
+
 def test_permission_revision使用完整canonical_authority(tmp_path):
     內容 = "---\nname: alpha\ndescription: alpha summary\n---\n# Alpha\n"
     _技能(tmp_path, "alpha", "# Alpha\n")
