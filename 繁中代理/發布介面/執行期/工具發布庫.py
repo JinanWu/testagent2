@@ -17,7 +17,8 @@ from ...工具 import 工具定義
 from ..嚴格JSON import 解析嚴格JSON
 from .工具版本庫 import 工具快照項目, 工具版本庫, 建立版本釘選工具登錄器, 版本釘選工具登錄器
 
-_識別格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_名稱與發布格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_修訂格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
 _固定錯誤 = "工具發布不可用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
@@ -35,12 +36,17 @@ def _拒絕() -> NoReturn:
     """
     raise 工具發布錯誤(_固定錯誤) from None
 
-def _是識別(值: object) -> bool:
-    """驗證 release、revision 或工具名稱的 exact 有界格式。
+def _是名稱或發布(值: object) -> bool:
+    """驗證 tool name 或 handler release 的既有 exact 有界格式。
 
     參數：``值`` 是待驗證物件。回傳：符合格式時為真。例外：無。副作用：無。
     """
-    return type(值) is str and _識別格式.fullmatch(值) is not None
+    return type(值) is str and _名稱與發布格式.fullmatch(值) is not None
+
+
+def _是修訂(值: object) -> bool:
+    """驗證 revision；只有這個 identity 類型允許 ``@``。"""
+    return type(值) is str and _修訂格式.fullmatch(值) is not None
 
 @dataclass(frozen=True, slots=True)
 class 工具發布註冊:
@@ -58,7 +64,7 @@ class 工具發布註冊:
 
         參數：由 dataclass 提供目前實例。回傳：無。例外：不合法時固定失敗。副作用：無。
         """
-        if type(self) is not 工具發布註冊 or not _是識別(self.revision) or type(self.tool) is not 工具定義:
+        if type(self) is not 工具發布註冊 or not _是修訂(self.revision) or type(self.tool) is not 工具定義:
             _拒絕()
 
 @dataclass(frozen=True, slots=True)
@@ -77,7 +83,7 @@ class 工具發布描述:
 
         參數：由 dataclass 提供目前實例。回傳：無。例外：不合法時固定失敗。副作用：無。
         """
-        if type(self) is not 工具發布描述 or not _是識別(self.handler_release) or type(self.tools) is not tuple:
+        if type(self) is not 工具發布描述 or not _是名稱或發布(self.handler_release) or type(self.tools) is not tuple:
             _拒絕()
 
 @dataclass(frozen=True, slots=True)
@@ -139,6 +145,14 @@ class 工具發布版:
     def 描述(self) -> 工具發布描述:
         """回傳新鮮 immutable 描述；參數：無；例外：重建失敗時固定；副作用：無。"""
         return 工具發布描述(self.handler_release, self.tools)
+
+    @property
+    def 工具快照(self) -> tuple[工具快照項目, ...]:
+        """回傳 ordered detached 快照；參數：無；例外：重建失敗時固定；副作用：無。"""
+        return tuple(
+            工具快照項目(項目.name, 項目.revision, 項目.digest)
+            for 項目 in self._內容.snapshots
+        )
 
     def 取得工具修訂(self, 名稱: str, 修訂名稱: str) -> object:
         """供既有釘選解析器依 exact identity 取得 module-private revision。
@@ -206,7 +220,7 @@ class 工具發布庫:
 
         參數：``handler_release``。回傳：新檢視或 ``None``。例外：控制流程原樣。副作用：無。
         """
-        if not _是識別(handler_release):
+        if not _是名稱或發布(handler_release):
             return None
         with self._鎖:
             內容 = self._發布.get(handler_release)
@@ -232,7 +246,7 @@ class 工具發布庫:
 
         參數：exact release。回傳：無。例外：無預期例外。副作用：可能原子移除 live 發布。
         """
-        if _是識別(handler_release):
+        if _是名稱或發布(handler_release):
             with self._鎖:
                 self._發布.pop(handler_release, None)
 
@@ -245,7 +259,7 @@ def _建立發布內容(不可信描述: 工具發布描述) -> _發布內容:
         _拒絕()
     release = object.__getattribute__(不可信描述, "handler_release")
     註冊們 = object.__getattribute__(不可信描述, "tools")
-    if not _是識別(release) or type(註冊們) is not tuple:
+    if not _是名稱或發布(release) or type(註冊們) is not tuple:
         _拒絕()
     庫, 快照們, 已看 = 工具版本庫(), [], set()
     for 不可信註冊 in 註冊們:
@@ -253,10 +267,10 @@ def _建立發布內容(不可信描述: 工具發布描述) -> _發布內容:
             _拒絕()
         revision = object.__getattribute__(不可信註冊, "revision")
         不可信工具 = object.__getattribute__(不可信註冊, "tool")
-        if not _是識別(revision) or type(不可信工具) is not 工具定義:
+        if not _是修訂(revision) or type(不可信工具) is not 工具定義:
             _拒絕()
         名稱 = object.__getattribute__(不可信工具, "名稱")
-        if not _是識別(名稱) or 名稱 in 已看:
+        if not _是名稱或發布(名稱) or 名稱 in 已看:
             _拒絕()
         工具 = 工具定義(
             名稱,
