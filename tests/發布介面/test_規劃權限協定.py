@@ -156,6 +156,22 @@ def test_DTO精確凍結且公開內容最小化():
     assert tuple(規劃權限快照.__dataclass_fields__) == ("權限修訂", "技能", "工具")
 
 
+def test_安全查詢接受production核准工具修訂中的at分隔符():
+    原始 = 規劃權限快照(
+        "perm-r1",
+        (授權技能("alpha", "第一個技能", 雜湊),),
+        (
+            授權工具("skill_view", "skill_view@bundle-v1"),
+            授權工具("skills_list", "skills_list@bundle-v1"),
+        ),
+    )
+    結果 = 安全查詢規劃權限(_查詢器(原始), "owner-1")
+    assert tuple(工具.釘選修訂 for 工具 in 結果.工具) == (
+        "skill_view@bundle-v1",
+        "skills_list@bundle-v1",
+    )
+
+
 def test_Protocol只有一個owner_scoped權威查詢():
     assert set(Planner權限查詢.__dict__) & {"查詢規劃權限"} == {"查詢規劃權限"}
     assert not getattr(Planner權限查詢, "_is_runtime_protocol", False)
