@@ -137,7 +137,9 @@ class 權限協調器:
         快照 = 結果 = None
         失敗 = False
         try:
-            if not _合法識別(擁有者識別碼) or not _合法選擇(技能名稱, 必須非空=True) or not _合法選擇(工具名稱):
+            if (not _合法識別(擁有者識別碼)
+                    or not _合法選擇(技能名稱, 必須非空=True)
+                    or not _合法有序選擇(工具名稱)):
                 失敗 = True
             else:
                 快照 = 安全查詢規劃權限(self._查詢器, 擁有者識別碼)
@@ -688,6 +690,26 @@ def _合法選擇(值: Any, *, 必須非空: bool = False) -> bool:
         return _名稱唯一且排序(名稱串列)
     except _控制流:
         del 值, 必須非空, 名稱串列, 項目
+        raise
+    except BaseException:
+        return False
+
+
+def _合法有序選擇(值: Any) -> bool:
+    """驗證工具選擇為 exact、合法且唯一的 authority-order tuple。"""
+    if type(值) is not tuple:
+        return False
+    名稱串列: list[str] = []
+    項目 = None
+    try:
+        for 項目 in 值:
+            if not _合法識別(項目):
+                return False
+            名稱串列.append(項目)
+            項目 = None
+        return _名稱唯一(名稱串列)
+    except _控制流:
+        del 值, 名稱串列, 項目
         raise
     except BaseException:
         return False
