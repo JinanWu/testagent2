@@ -22,6 +22,7 @@ from 繁中代理.發布介面.規劃.端點發布 import (
     端點發布結果,
     端點發布錯誤,
     端點發布耐久性未知,
+    端點發布衝突,
     端點發布輸入錯誤,
 )
 from 繁中代理.發布介面.技能套件.發布器 import 套件發布收據
@@ -534,8 +535,10 @@ def test_duplicate_slug與各種重複ID皆不留下第二張殘圖(tmp_path):
     ]
     for slug, ids in cases:
         draft = _已確認草稿(slug="customer-support" if slug == "same-slug" else slug)
-        with pytest.raises(端點發布錯誤):
+        預期錯誤 = 端點發布衝突 if slug == "same-slug" else 端點發布錯誤
+        with pytest.raises(預期錯誤, match="^端點發布失敗$") as 捕捉:
             _服務(path, ids=ids).發布("owner", draft, _版本快照(), _已準備憑證(), 10)
+        assert type(捕捉.value) is 預期錯誤
         connection = sqlite3.connect(path)
         counts = [connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("service_accounts", "published_endpoints", "published_endpoint_versions", "endpoint_credentials")]
         assert counts == [1, 1, 1, 1]
@@ -1159,7 +1162,7 @@ def test_兩連線同slug競爭恰一winner且每表一列(tmp_path):
         thread.join(10)
     assert all(not thread.is_alive() for thread in threads)
     assert sum(type(item) is 端點發布結果 for item in outcomes) == 1
-    assert sum(type(item) is 端點發布錯誤 for item in outcomes) == 1
+    assert sum(type(item) is 端點發布衝突 for item in outcomes) == 1
     connection = sqlite3.connect(path)
     counts = [connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("service_accounts", "published_endpoints", "published_endpoint_versions", "endpoint_credentials")]
     assert counts == [1, 1, 1, 1]
