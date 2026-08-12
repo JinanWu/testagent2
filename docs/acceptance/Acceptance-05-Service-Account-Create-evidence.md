@@ -83,4 +83,6 @@ git diff --check 開發中主線...HEAD
 - Production source：僅修改 P04 slug conflict classification 與初始發布 error mapping；duplicate slug 為 409，其他 integrity failure 保持 500。
 - Repo 外 scope：零修改。
 - Ledger：repo 內沒有 `First-Version-Acceptance-Ledger-20260719.md`，因此未修改外部規劃檔；本證據只記錄本卡 closure。
-- 最終判定：**IMPLEMENTED（等待更新後雙軸 review 與父分支合併 checkpoint）**。
+- Standards Review：**APPROVED**；P0/P1 為 0，兩項測試維護性 P2 不阻擋本卡。
+- Spec Review：**IMPLEMENTED**；P0/P1/P2 均為 0。
+- 最終判定：**IMPLEMENTED，已通過雙軸 review，可合併父分支**。
