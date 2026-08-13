@@ -95,7 +95,7 @@ export interface AdminInvocationDetail {
   output: JsonValue
   error: JsonValue
   usage: JsonValue
-  metadataSizeBytes: number
+  metadataSizeBytes: number | null
   metadataSha256: string | null
   latencyMs: number | null
   pricingVersion: string | null
@@ -168,7 +168,7 @@ function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
     for (const [key, child] of Object.entries(object)) {
       const marker = normalized(key)
       if (scanSecrets && (FORBIDDEN_KEYS.has(marker) ||
-          FORBIDDEN_SUFFIXES.some((suffix) => marker.includes(suffix)) ||
+          FORBIDDEN_SUFFIXES.some((suffix) => marker.endsWith(suffix)) ||
           (PATH_KEYS.has(marker) && typeof child === 'string' && ABSOLUTE_PATH.test(child)))) {
         throw new ApiFormatError()
       }
@@ -232,7 +232,8 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       !identifier(detail.endpoint_version_id) || !nullableIdentifier(detail.credential_id) ||
       !nullableIdentifier(detail.message_id) || typeof detail.status !== 'string' || !STATUS.has(detail.status) ||
       !(detail.metadata === null || (typeof detail.metadata === 'object' && detail.metadata !== null && !Array.isArray(detail.metadata))) ||
-      !Number.isInteger(detail.metadata_size_bytes) || !finiteNonNegative(detail.metadata_size_bytes) ||
+      !(detail.metadata_size_bytes === null ||
+        (Number.isInteger(detail.metadata_size_bytes) && finiteNonNegative(detail.metadata_size_bytes))) ||
       !(detail.metadata_sha256 === null || (typeof detail.metadata_sha256 === 'string' && SHA256.test(detail.metadata_sha256))) ||
       !nullableFinite(detail.latency_ms) || !(detail.pricing_version === null || boundedString(detail.pricing_version, 256)) ||
       !finiteNonNegative(detail.created_at) || !nullableFinite(detail.completed_at) ||
@@ -282,7 +283,7 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
     output: safe.output,
     error: safe.error,
     usage: safe.usage,
-    metadataSizeBytes: safe.metadata_size_bytes as number,
+    metadataSizeBytes: safe.metadata_size_bytes as number | null,
     metadataSha256: safe.metadata_sha256 as string | null,
     latencyMs: safe.latency_ms as number | null,
     pricingVersion: safe.pricing_version as string | null,

@@ -142,12 +142,24 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     expect(parseInvocationDetail(body).status).toBe('invalid_api_key')
   })
 
+  it('接受canonical nullable metadata size與不以敏感尾碼結尾的合法raw keys', () => {
+    const body = {
+      ...detail('invocation-1'),
+      metadata_size_bytes: null,
+      input: { cookie_policy: 'accepted', authorization_state: 'disabled' },
+    }
+    const parsed = parseInvocationDetail(body)
+    expect(parsed.metadataSizeBytes).toBeNull()
+    expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
+  })
+
   it.each([
     { ...detail('invocation-1'), extra: true },
     { ...detail('invocation-1'), invocation: { ...detail('invocation-1').invocation, extra: true } },
     { ...detail('invocation-1'), run_events: [{ ...detail('invocation-1').run_events[0], extra: true }] },
     { ...detail('invocation-1'), input: { Authorization: 'marker' } },
-    { ...detail('invocation-1'), input: { cookie_value: 'marker' } },
+    { ...detail('invocation-1'), input: { cookie: 'marker' } },
+    { ...detail('invocation-1'), input: { session_cookie: 'marker' } },
     { ...detail('invocation-1'), input: { path: '/Users/example/private.json' } },
   ])('拒絕額外欄位與semantic secret/path', (body) => {
     expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
