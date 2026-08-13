@@ -28,6 +28,8 @@ class 延遲管理稽核服務:
         self._目前世代 = None
         self._進行中 = 0
         self._停止中 = False
+        self._排空服務 = None
+        self._排空世代 = None
 
     def 安裝(self, 服務) -> int:
         """安裝具list/detail exact methods的startup provider並回傳generation。"""
@@ -62,14 +64,29 @@ class 延遲管理稽核服務:
     def 清除(self, 服務, 世代: int) -> None:
         """只撤銷同identity與generation，並等待所有active leases。"""
         with self._條件:
+            if self._排空服務 is 服務 and self._排空世代 == 世代:
+                while self._排空服務 is 服務 and self._排空世代 == 世代:
+                    self._條件.wait()
+                return
             if self._服務 is 服務 and self._目前世代 == 世代:
                 self._停止中 = True
+                self._排空服務 = 服務
+                self._排空世代 = 世代
                 self._服務 = None
                 self._目前世代 = None
                 while self._進行中:
                     self._條件.wait()
+                self._排空服務 = None
+                self._排空世代 = None
                 self._停止中 = False
                 self._條件.notify_all()
+
+    def _撤銷已發布服務(self, 服務) -> None:
+        """Installer失敗時依module-owned identity解析世代並完成rollback drain。"""
+        with self._條件:
+            世代 = self._目前世代 if self._服務 is 服務 else None
+        if type(世代) is int:
+            延遲管理稽核服務.清除(self, 服務, 世代)
 
     def 列出管理員安全呼叫(self, 條件, 位置, /):
         """租借並委派safe-list provider。"""
@@ -141,10 +158,25 @@ def 建立管理稽核路由(代理: 延遲管理稽核服務, 游標, 目前工
 
 async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 資料庫路徑: Path):
     """在主Published resource成功後安裝Admin provider；失敗時關閉主資源。"""
+    服務 = None
     try:
         服務 = 管理稽核提供者(資料庫路徑)
         世代 = 代理.安裝(服務)
         return 管理稽核組合資源(主資源, 代理, 服務, 世代)
-    except BaseException:
-        await 主資源.關閉()
+    except BaseException as 啟動錯誤:
+        清理錯誤 = None
+        try:
+            if 服務 is not None and isinstance(代理, 延遲管理稽核服務):
+                延遲管理稽核服務._撤銷已發布服務(代理, 服務)
+        except BaseException as 錯誤:
+            清理錯誤 = 錯誤
+        try:
+            await 主資源.關閉()
+        except BaseException as 錯誤:
+            if 清理錯誤 is None or isinstance(錯誤, _控制流程例外):
+                清理錯誤 = 錯誤
+        if isinstance(啟動錯誤, _控制流程例外):
+            raise
+        if 清理錯誤 is not None:
+            raise 清理錯誤
         raise

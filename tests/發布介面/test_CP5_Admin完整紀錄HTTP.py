@@ -2,6 +2,8 @@
 
 from pathlib import Path
 import asyncio
+import threading
+import time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -81,6 +83,18 @@ def test_A18_Admin_routes只接受GET且尾斜線不redirect():
     客戶端, _ = _客戶端("admin")
     assert 客戶端.post("/api/admin/endpoints/ep-1/invocations").status_code == 405
     assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/", follow_redirects=False).status_code != 307
+
+
+def test_A18_malformed_path固定422且不回顯敵對輸入():
+    for 路徑 in (
+        "/api/admin/endpoints/%24RAW_MARKER/invocations",
+        "/api/admin/endpoints/ep-1/invocations/%24RAW_MARKER",
+    ):
+        客戶端, _ = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
+        回應 = 客戶端.get(路徑)
+        assert 回應.status_code == 422
+        assert 回應.json() == {"detail": {"code": "invalid_request"}}
+        assert "RAW_MARKER" not in 回應.text
 
 
 def _詳情資料():
@@ -174,6 +188,15 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
     schemas = 客戶端.get("/openapi.json").json()["components"]["schemas"]
     list_schema = schemas[list_ref.rsplit("/", 1)[1]]
     assert not ({"input", "metadata", "output", "error", "usage"} & set(str(list_schema).lower()))
+    for 定義 in admin.values():
+        assert "503" in 定義["get"]["responses"]
+        for 狀態 in ("401", "403", "422", "500", "503"):
+            if 狀態 in 定義["get"]["responses"]:
+                schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]
+                assert "$ref" in schema or "oneOf" in schema or "properties" in schema
+    detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]
+    for 欄位 in ("invocation", "run_events", "tool_calls"):
+        assert "$ref" in str(detail_schema["properties"][欄位])
 
 
 def test_A18管理稽核proxy在startup前與shutdown後fail_closed():
@@ -277,3 +300,98 @@ def test_A18_Admin_proxy清除失敗仍關閉主資源(tmp_path, monkeypatch):
         assert False
     except RuntimeError as 錯誤:
         assert 錯誤.args == ("cleanup",) and 主.關閉次數 == 1
+
+
+def test_A18_partial_install發布後拋錯必須撤銷authority(tmp_path, monkeypatch):
+    class 主資源:
+        def __init__(self): self.關閉次數 = 0
+        async def 關閉(self): self.關閉次數 += 1
+
+    class 服務:
+        def __init__(self, _路徑): pass
+        def 列出管理員安全呼叫(self, *參數): return 參數
+        def 查詢管理員原始資料(self, *參數): return 參數
+
+    class 發布後失敗代理(延遲管理稽核服務):
+        def 安裝(self, 服務物件):
+            super().安裝(服務物件)
+            raise RuntimeError("after-publish")
+
+    monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 服務)
+    主 = 主資源()
+    代理 = 發布後失敗代理()
+    try:
+        asyncio.run(安裝管理稽核資源(主, 代理, (tmp_path / "published.sqlite3").resolve()))
+        assert False
+    except RuntimeError:
+        assert 主.關閉次數 == 1
+    try:
+        代理.列出管理員安全呼叫("query", None)
+        assert False
+    except RuntimeError as 錯誤:
+        assert 錯誤.args == ("Published管理稽核服務不可用",)
+
+
+def test_A18_same_generation並行clear皆等待同一drain_terminal():
+    進入 = threading.Event()
+    釋放 = threading.Event()
+
+    class 服務:
+        def 列出管理員安全呼叫(self, *參數):
+            進入.set()
+            釋放.wait(2)
+            return 參數
+        def 查詢管理員原始資料(self, *參數): return 參數
+
+    代理 = 延遲管理稽核服務()
+    服務物件 = 服務()
+    世代 = 代理.安裝(服務物件)
+    租借執行緒 = threading.Thread(target=代理.列出管理員安全呼叫, args=("query", None))
+    租借執行緒.start()
+    assert 進入.wait(1)
+    完成 = []
+    清除甲 = threading.Thread(target=lambda: (代理.清除(服務物件, 世代), 完成.append("甲")))
+    清除乙 = threading.Thread(target=lambda: (代理.清除(服務物件, 世代), 完成.append("乙")))
+    清除甲.start()
+    time.sleep(0.02)
+    清除乙.start()
+    time.sleep(0.05)
+    assert 完成 == []
+    釋放.set()
+    for 執行緒 in (租借執行緒, 清除甲, 清除乙):
+        執行緒.join(1)
+    assert sorted(完成) == ["乙", "甲"]
+
+
+def test_A18_stale_generation_clear不撤銷新provider且排空後可重裝():
+    class 服務:
+        def __init__(self, 名稱): self.名稱 = 名稱
+        def 列出管理員安全呼叫(self, *_參數): return self.名稱
+        def 查詢管理員原始資料(self, *_參數): return self.名稱
+
+    代理 = 延遲管理稽核服務()
+    舊服務 = 服務("舊")
+    舊世代 = 代理.安裝(舊服務)
+    代理.清除(舊服務, 舊世代)
+    新服務 = 服務("新")
+    新世代 = 代理.安裝(新服務)
+    代理.清除(舊服務, 舊世代)
+    assert 代理.列出管理員安全呼叫(None, None) == "新"
+    代理.清除(新服務, 新世代)
+
+
+def test_A18_provider建構失敗保留原錯且關閉主資源(tmp_path, monkeypatch):
+    class 主資源:
+        def __init__(self): self.關閉次數 = 0
+        async def 關閉(self): self.關閉次數 += 1
+
+    class 建構失敗:
+        def __init__(self, _路徑): raise ValueError("provider-construction")
+
+    monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 建構失敗)
+    主 = 主資源()
+    try:
+        asyncio.run(安裝管理稽核資源(主, 延遲管理稽核服務(), (tmp_path / "p.sqlite3").resolve()))
+        assert False
+    except ValueError as 錯誤:
+        assert 錯誤.args == ("provider-construction",) and 主.關閉次數 == 1

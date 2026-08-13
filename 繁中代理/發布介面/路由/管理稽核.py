@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import math
+import re
 import secrets
 import time
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from fastapi.responses import JSONResponse
-from pydantic import ConfigDict, create_model
+from pydantic import ConfigDict, Field, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -61,17 +62,67 @@ class 管理員已稽核詳情提供者(Protocol):
     "AdminInvocationList", __config__=ConfigDict(extra="forbid"),
     **{"items": (list[管理員呼叫列表項目回應], ...), "next_cursor": (str | None, ...)},
 )
+def _代碼錯誤文件(代碼: str) -> dict[str, object]:
+    """建立只允許exact code的inline OpenAPI response。"""
+    return {"content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False, "required": ["detail"],
+        "properties": {"detail": {"type": "object", "additionalProperties": False,
+            "required": ["code"], "properties": {"code": {"type": "string", "enum": [代碼]}}}},
+    }}}}
+
+
+def _訊息錯誤文件(訊息: str) -> dict[str, object]:
+    """建立只允許exact message的inline OpenAPI response。"""
+    return {"content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False, "required": ["detail"],
+        "properties": {"detail": {"type": "object", "additionalProperties": False,
+            "required": ["message"], "properties": {"message": {"type": "string", "enum": [訊息]}}}},
+    }}}}
+
+
+未授權錯誤文件 = _代碼錯誤文件("unauthorized")
+認證不可用錯誤文件 = _代碼錯誤文件("auth_unavailable")
+驗證錯誤文件 = _代碼錯誤文件("invalid_request")
+禁止錯誤文件 = _訊息錯誤文件("只有管理者可查看完整呼叫紀錄")
+不存在錯誤文件 = _訊息錯誤文件("找不到呼叫紀錄")
+查詢錯誤文件 = _訊息錯誤文件("呼叫紀錄不可取得")
+稽核錯誤文件 = _訊息錯誤文件("呼叫紀錄暫時不可取得")
+詳情不可用錯誤文件 = {"content": {"application/json": {"schema": {"oneOf": [
+    認證不可用錯誤文件["content"]["application/json"]["schema"],
+    稽核錯誤文件["content"]["application/json"]["schema"],
+]}}}}
+管理員呼叫識別回應 = create_model(
+    "AdminInvocationIdentity", __config__=ConfigDict(extra="forbid"),
+    識別碼=(str, Field(alias="id")), 請求識別碼=(str, Field(alias="request_id")),
+    工作階段識別碼=(str | None, Field(alias="session_id")),
+)
+管理員執行事件回應 = create_model(
+    "AdminRunEvent", __config__=ConfigDict(extra="forbid"),
+    識別碼=(str, Field(alias="id")), 序號=(int, Field(alias="sequence_number")),
+    事件類型=(str, Field(alias="event_type")), 內容=(Any, Field(alias="payload")),
+    建立時間=(float, Field(alias="created_at")),
+)
+管理員工具呼叫回應 = create_model(
+    "AdminToolCall", __config__=ConfigDict(extra="forbid"),
+    識別碼=(str, Field(alias="id")), 執行事件識別碼=(str | None, Field(alias="run_event_id")),
+    序號=(int, Field(alias="sequence_number")), 工具名稱=(str, Field(alias="tool_name")),
+    參數=(Any, Field(alias="arguments")), 結果狀態=(str, Field(alias="outcome")),
+    結果=(Any, Field(alias="result")), 錯誤=(Any, Field(alias="error")),
+    延遲毫秒=(float | None, Field(alias="latency_ms")),
+    重試來源識別碼=(str | None, Field(alias="retry_of_tool_call_id")),
+    建立時間=(float, Field(alias="created_at")),
+)
 管理員呼叫詳情回應 = create_model(
     "AdminInvocationDetail", __config__=ConfigDict(extra="forbid"),
     **{名稱: 定義 for 名稱, 定義 in {
-        "invocation": (dict[str, Any], ...), "endpoint_id": (str, ...),
+        "invocation": (管理員呼叫識別回應, ...), "endpoint_id": (str, ...),
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),
         "message_id": (str | None, ...), "status": (str, ...), "input": (Any, ...),
         "metadata": (dict[str, Any] | None, ...), "output": (Any, ...), "error": (Any, ...),
         "usage": (Any, ...), "metadata_size_bytes": (int, ...), "metadata_sha256": (str | None, ...),
         "latency_ms": (float | None, ...), "pricing_version": (str | None, ...),
         "created_at": (float, ...), "completed_at": (float | None, ...),
-        "run_events": (list[dict[str, Any]], ...), "tool_calls": (list[dict[str, Any]], ...),
+        "run_events": (list[管理員執行事件回應], ...), "tool_calls": (list[管理員工具呼叫回應], ...),
     }.items()},
 )
 
@@ -104,15 +155,17 @@ def 建立管理稽核路由器(
 
     @路由器.get(
         列表路徑, operation_id="admin_list_endpoint_invocations", response_model=管理員呼叫列表回應,
-        responses={401: {}, 403: {}, 422: {}, 500: {}},
+        responses={401: 未授權錯誤文件, 403: 禁止錯誤文件, 422: 驗證錯誤文件,
+                   500: 查詢錯誤文件, 503: 認證不可用錯誤文件},
     )
     async def 列出管理員呼叫(
         請求: Request,
-        端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
+        端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
     ) -> JSONResponse:
         """驗證Admin與strict query後只讀安全metadata投影。"""
         _確認管理員(使用者)
+        _確認路徑識別碼(端點識別碼)
         條件, 游標 = _解析列表查詢(請求, 端點識別碼, 游標編解碼器)
         try:
             頁 = await run_in_threadpool(列表提供者.列出管理員安全呼叫, 條件, 游標)
@@ -127,16 +180,19 @@ def 建立管理稽核路由器(
 
     @路由器.get(
         詳情路徑, operation_id="admin_get_endpoint_invocation", response_model=管理員呼叫詳情回應,
-        responses={401: {}, 403: {}, 404: {}, 422: {}, 500: {}, 503: {}},
+        responses={401: 未授權錯誤文件, 403: 禁止錯誤文件, 404: 不存在錯誤文件,
+                   422: 驗證錯誤文件, 500: 查詢錯誤文件, 503: 詳情不可用錯誤文件},
     )
     async def 取得管理員呼叫詳情(
         請求: Request,
-        端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
-        呼叫識別碼: Annotated[str, Path(alias="invocation_id", pattern=_識別碼格式)],
+        端點識別碼: Annotated[str, Path(alias="endpoint_id")],
+        呼叫識別碼: Annotated[str, Path(alias="invocation_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
     ) -> JSONResponse:
         """只允許Admin，並把server-owned audit資料傳入A18-01 gate。"""
         管理員識別碼 = _確認管理員(使用者)
+        _確認路徑識別碼(端點識別碼)
+        _確認路徑識別碼(呼叫識別碼)
         if 請求.url.query:
             _拋出固定錯誤(422)
         try:
@@ -193,6 +249,13 @@ def _確認管理員(使用者: object) -> str:
     if 安全.角色 != "admin":
         _拋出固定錯誤(403)
     return 安全.識別碼
+
+
+def _確認路徑識別碼(值: object) -> str:
+    """Route-owned exact validator；固定422且不回顯拒絕值。"""
+    if type(值) is not str or re.fullmatch(_識別碼格式, 值) is None:
+        _拋出固定錯誤(422)
+    return cast(str, 值)
 
 
 def _解析列表查詢(請求: Request, 端點識別碼: str, 編解碼器: 管理員呼叫游標編解碼器):
