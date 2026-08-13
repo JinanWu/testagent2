@@ -164,11 +164,11 @@ def test_shutdown先拒絕新租借並等待active_credential操作完成(tmp_pa
         return None
 
     服務.列出憑證 = cast(Any, 阻塞列出)
-    代理.安裝(服務)
+    世代 = 代理.安裝(服務)
     操作 = Thread(target=lambda: 代理.列出憑證(端點識別碼="e", 擁有者使用者識別碼="u"))
     操作.start()
     assert 已進入.wait(1)
-    清除 = Thread(target=lambda: (代理.清除(服務), 清除完成.set()))
+    清除 = Thread(target=lambda: (代理.清除(服務, 世代), 清除完成.set()))
     清除.start()
     assert not 清除完成.wait(0.05)
     try:
@@ -197,15 +197,15 @@ def test_concurrent_shutdown_callers等待同一credential_drain結果(tmp_path)
         return None
 
     服務.列出憑證 = cast(Any, 阻塞列出)
-    代理.安裝(服務)
+    世代 = 代理.安裝(服務)
     操作 = Thread(target=lambda: 代理.列出憑證(端點識別碼="e", 擁有者使用者識別碼="u"))
     操作.start()
     assert 已進入.wait(1)
-    第一 = Thread(target=lambda: (代理.清除(服務), 第一完成.set()))
+    第一 = Thread(target=lambda: (代理.清除(服務, 世代), 第一完成.set()))
     第一.start()
     with 代理._條件:
         assert 代理._服務 is None and 代理._進行中 == 1
-    第二 = Thread(target=lambda: (代理.清除(服務), 第二完成.set()))
+    第二 = Thread(target=lambda: (代理.清除(服務, 世代), 第二完成.set()))
     第二.start()
     assert not 第一完成.wait(0.05)
     assert not 第二完成.wait(0.05)
@@ -216,19 +216,17 @@ def test_concurrent_shutdown_callers等待同一credential_drain結果(tmp_path)
     assert all(not 執行緒.is_alive() for 執行緒 in (操作, 第一, 第二))
 
 
-def test_drain完成可重新安裝且舊identity不能清除新provider(tmp_path) -> None:
-    """完成一代drain後可安裝下一代；遲到的舊清除caller不影響新slot。"""
+def test_drain完成後同一provider重裝時舊generation不能清除新世代(tmp_path) -> None:
+    """同一service object跨世代重裝時，遲到的舊generation不得清除新slot。"""
     代理 = 延遲憑證管理服務()
-    第一 = SQLite憑證管理服務(
+    服務 = SQLite憑證管理服務(
         tmp_path / "first.sqlite3", AESGCM憑證封套({1: b"a" * 32}, 1),
     )
-    第二 = SQLite憑證管理服務(
-        tmp_path / "second.sqlite3", AESGCM憑證封套({1: b"b" * 32}, 1),
-    )
-    代理.安裝(第一)
-    代理.清除(第一)
-    代理.安裝(第二)
-    代理.清除(第一)
-    assert 代理._服務 is 第二
-    代理.清除(第二)
+    第一世代 = 代理.安裝(服務)
+    代理.清除(服務, 第一世代)
+    第二世代 = 代理.安裝(服務)
+    assert 第二世代 != 第一世代
+    代理.清除(服務, 第一世代)
+    assert 代理._服務 is 服務
+    代理.清除(服務, 第二世代)
     assert 代理._服務 is None and 代理._停止中的服務 is None
