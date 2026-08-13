@@ -58,6 +58,14 @@ _狀態集合 = frozenset(
     {"pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key"}
 )
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_最大詳情JSON位元組 = 1_048_576
+_最大詳情JSON節點 = 4096
+_最大詳情JSON深度 = 128
+_事件欄位 = frozenset({"id", "sequence_number", "event_type", "payload", "created_at"})
+_工具欄位 = frozenset({
+    "id", "run_event_id", "sequence_number", "tool_name", "arguments", "outcome",
+    "result", "error", "latency_ms", "retry_of_tool_call_id", "created_at",
+})
 
 
 class 管理員呼叫游標錯誤(ValueError):
@@ -81,23 +89,39 @@ class 管理員呼叫稽核錯誤(查詢投影錯誤):
 
 
 class 管理員呼叫完整詳情:
-    """Admin-only bounded raw detail；repr不揭露內容且序列化回傳新副本。"""
+    """Admin-only bounded raw detail；內部只保存canonical immutable bytes。"""
 
-    __slots__ = ("_值",)
+    __slots__ = ("_內容",)
 
     def __init__(self, 值: dict[str, object], /) -> None:
-        """只接受exact allowlist dict並複製canonical JSON containers。"""
-        if type(值) is not dict or set(值) != ADMIN_INVOCATION_DETAIL_FIELDS:
-            raise ValueError("管理員呼叫完整詳情無效") from None
-        self._值 = {鍵: _複製詳情值(項) for 鍵, 項 in 值.items()}
+        """逐欄驗證exact detail schema、JSON bounds並保存canonical bytes。"""
+        _驗證管理員完整詳情(值)
+        內容 = _編碼bounded_JSON(值)
+        object.__setattr__(self, "_內容", 內容)
+
+    def __setattr__(self, _名稱: str, _值: object) -> None:
+        """建構後拒絕所有一般attribute mutation。"""
+        raise AttributeError("管理員呼叫完整詳情不可變")
 
     def __repr__(self) -> str:
         """避免raw payload因log/debug repr外洩。"""
         return "管理員呼叫完整詳情([REDACTED])"
 
     def 建立JSON(self) -> dict[str, object]:
-        """建立供trusted Admin HTTP adapter使用的全新raw response dict。"""
-        return {鍵: _複製詳情值(值) for 鍵, 值 in self._值.items()}
+        """重驗內部canonical bytes後建立供trusted Admin adapter使用的新dict。"""
+        try:
+            內容 = object.__getattribute__(self, "_內容")
+            if type(內容) is not bytes or not 內容 or len(內容) > _最大詳情JSON位元組:
+                raise ValueError
+            值 = json.loads(內容.decode("ascii"), object_pairs_hook=_拒絕重複鍵)
+            _驗證管理員完整詳情(值)
+            if not hmac.compare_digest(_編碼bounded_JSON(值), 內容):
+                raise ValueError
+            return cast(dict[str, object], 值)
+        except _控制流程:
+            raise
+        except BaseException:
+            raise 管理員呼叫查詢錯誤("呼叫紀錄不可取得") from None
 
 
 def 建立管理員呼叫完整詳情(原始投影: dict[str, object], /) -> 管理員呼叫完整詳情:
@@ -110,42 +134,141 @@ def 建立管理員呼叫完整詳情(原始投影: dict[str, object], /) -> 管
         raise 管理員呼叫查詢錯誤("呼叫紀錄不可取得") from None
 
 
-class 擁有者安全詳情:
-    """Owner-only安全摘要；與Admin raw DTO完全不同且repr不揭露值。"""
+def _驗證管理員完整詳情(值: object) -> None:
+    """逐欄驗證Admin detail及run/tool child schemas。"""
+    if type(值) is not dict or set(值) != ADMIN_INVOCATION_DETAIL_FIELDS:
+        raise ValueError
+    詳情 = cast(dict[str, object], 值)
+    呼叫 = 詳情["invocation"]
+    if (type(呼叫) is not dict or set(呼叫) != {"id", "request_id", "session_id"}
+            or not _是識別碼(呼叫["id"]) or not _是識別碼(呼叫["request_id"])
+            or (呼叫["session_id"] is not None and not _是識別碼(呼叫["session_id"]))
+            or not _是識別碼(詳情["endpoint_id"])
+            or not _是識別碼(詳情["endpoint_version_id"])
+            or (詳情["credential_id"] is not None and not _是識別碼(詳情["credential_id"]))
+            or (詳情["message_id"] is not None and not _是識別碼(詳情["message_id"]))
+            or type(詳情["status"]) is not str or 詳情["status"] not in _狀態集合
+            or (詳情["metadata_size_bytes"] is not None and (
+                type(詳情["metadata_size_bytes"]) is not int or 詳情["metadata_size_bytes"] < 0))
+            or not _是可空SHA256(詳情["metadata_sha256"])
+            or (詳情["latency_ms"] is not None and not _是有限時間(詳情["latency_ms"]))
+            or (詳情["pricing_version"] is not None and (
+                type(詳情["pricing_version"]) is not str or len(詳情["pricing_version"]) > 256))
+            or not _是有限時間(詳情["created_at"])
+            or not _是可空有限時間(詳情["completed_at"])
+            or type(詳情["run_events"]) is not list or len(詳情["run_events"]) > 4096
+            or type(詳情["tool_calls"]) is not list or len(詳情["tool_calls"]) > 4096):
+        raise ValueError
+    for 事件 in cast(list[object], 詳情["run_events"]):
+        if (type(事件) is not dict or set(事件) != _事件欄位
+                or not _是識別碼(事件["id"])
+                or type(事件["sequence_number"]) is not int or 事件["sequence_number"] < 0
+                or type(事件["event_type"]) is not str or not 1 <= len(事件["event_type"]) <= 256
+                or not _是有限時間(事件["created_at"])):
+            raise ValueError
+    for 工具 in cast(list[object], 詳情["tool_calls"]):
+        if (type(工具) is not dict or set(工具) != _工具欄位
+                or not _是識別碼(工具["id"])
+                or (工具["run_event_id"] is not None and not _是識別碼(工具["run_event_id"]))
+                or type(工具["sequence_number"]) is not int or 工具["sequence_number"] < 0
+                or type(工具["tool_name"]) is not str or not 1 <= len(工具["tool_name"]) <= 256
+                or type(工具["outcome"]) is not str or not 1 <= len(工具["outcome"]) <= 256
+                or (工具["latency_ms"] is not None and not _是有限時間(工具["latency_ms"]))
+                or (工具["retry_of_tool_call_id"] is not None
+                    and not _是識別碼(工具["retry_of_tool_call_id"]))
+                or not _是有限時間(工具["created_at"])):
+            raise ValueError
 
-    __slots__ = ("_值",)
+
+def _編碼bounded_JSON(值: object) -> bytes:
+    """Iterative驗證JSON tree bounds後建立canonical bytes。"""
+    待驗證: list[tuple[object, int]] = [(值, 1)]
+    節點 = 0
+    while 待驗證:
+        項, 深度 = 待驗證.pop()
+        節點 += 1
+        if 節點 > _最大詳情JSON節點 or 深度 > _最大詳情JSON深度:
+            raise ValueError
+        if 項 is None or type(項) in (str, bool, int):
+            continue
+        if type(項) is float:
+            if not math.isfinite(cast(float, 項)):
+                raise ValueError
+            continue
+        if type(項) is list:
+            待驗證.extend((子項, 深度 + 1) for 子項 in cast(list[object], 項))
+            continue
+        if type(項) is dict:
+            字典 = cast(dict[object, object], 項)
+            if any(type(鍵) is not str for 鍵 in 字典):
+                raise ValueError
+            待驗證.extend((子項, 深度 + 1) for 子項 in 字典.values())
+            continue
+        raise ValueError
+    內容 = _編碼canonical_JSON(值)
+    if not 內容 or len(內容) > _最大詳情JSON位元組:
+        raise ValueError
+    return 內容
+
+
+class 擁有者安全詳情:
+    """Owner-only安全摘要；以canonical bytes與Admin raw DTO完全分離。"""
+
+    __slots__ = ("_內容",)
 
     def __init__(self, 值: dict[str, object], /) -> None:
-        """逐欄驗證既有Owner-safe projection並深層複製。"""
-        if type(值) is not dict or set(值) != OWNER_SAFE_DETAIL_FIELDS:
-            raise ValueError("擁有者安全詳情無效") from None
-        呼叫 = 值["invocation"]
-        用量 = 值["usage"]
-        工具名稱 = 值["tool_names"]
-        if (type(呼叫) is not dict or set(呼叫) != {"id", "request_id", "session_id"}
-                or not _是識別碼(呼叫["id"]) or not _是識別碼(呼叫["request_id"])
-                or (呼叫["session_id"] is not None and not _是識別碼(呼叫["session_id"]))
-                or not _是識別碼(值["endpoint_version_id"])
-                or type(值["status"]) is not str or 值["status"] not in _狀態集合
-                or not _是可空錯誤碼(值["error_code"])
-                or (值["schema_path"] is not None and (
-                    type(值["schema_path"]) is not str or len(值["schema_path"]) > 512))
-                or (值["latency_ms"] is not None and not _是有限時間(值["latency_ms"]))
-                or type(用量) is not dict or set(用量) != {"total_tokens"}
-                or (用量["total_tokens"] is not None and (
-                    type(用量["total_tokens"]) is not int or 用量["total_tokens"] < 0))
-                or type(工具名稱) is not list or len(工具名稱) > 4096
-                or any(type(名稱) is not str or not 1 <= len(名稱) <= 256 for 名稱 in 工具名稱)):
-            raise ValueError("擁有者安全詳情無效") from None
-        self._值 = {鍵: _複製詳情值(項) for 鍵, 項 in 值.items()}
+        """逐欄驗證既有Owner-safe projection並保存canonical bytes。"""
+        _驗證擁有者安全詳情(值)
+        object.__setattr__(self, "_內容", _編碼bounded_JSON(值))
+
+    def __setattr__(self, _名稱: str, _值: object) -> None:
+        """建構後拒絕所有一般attribute mutation。"""
+        raise AttributeError("擁有者安全詳情不可變")
 
     def __repr__(self) -> str:
         """Owner DTO也不把識別碼或錯誤摘要帶入log。"""
         return "擁有者安全詳情([REDACTED])"
 
     def 建立JSON(self) -> dict[str, object]:
-        """建立全新Owner-safe response dict。"""
-        return {鍵: _複製詳情值(值) for 鍵, 值 in self._值.items()}
+        """重驗內部canonical bytes後建立全新Owner-safe dict。"""
+        try:
+            內容 = object.__getattribute__(self, "_內容")
+            if type(內容) is not bytes or not 內容 or len(內容) > _最大詳情JSON位元組:
+                raise ValueError
+            值 = json.loads(內容.decode("ascii"), object_pairs_hook=_拒絕重複鍵)
+            _驗證擁有者安全詳情(值)
+            if not hmac.compare_digest(_編碼bounded_JSON(值), 內容):
+                raise ValueError
+            return cast(dict[str, object], 值)
+        except _控制流程:
+            raise
+        except BaseException:
+            raise 查詢投影錯誤("呼叫紀錄不可取得") from None
+
+
+def _驗證擁有者安全詳情(值: object) -> None:
+    """逐欄驗證Owner-safe detail schema。"""
+    if type(值) is not dict or set(值) != OWNER_SAFE_DETAIL_FIELDS:
+        raise ValueError
+    詳情 = cast(dict[str, object], 值)
+    呼叫 = 詳情["invocation"]
+    用量 = 詳情["usage"]
+    工具名稱 = 詳情["tool_names"]
+    if (type(呼叫) is not dict or set(呼叫) != {"id", "request_id", "session_id"}
+            or not _是識別碼(呼叫["id"]) or not _是識別碼(呼叫["request_id"])
+            or (呼叫["session_id"] is not None and not _是識別碼(呼叫["session_id"]))
+            or not _是識別碼(詳情["endpoint_version_id"])
+            or type(詳情["status"]) is not str or 詳情["status"] not in _狀態集合
+            or not _是可空錯誤碼(詳情["error_code"])
+            or (詳情["schema_path"] is not None and (
+                type(詳情["schema_path"]) is not str or len(詳情["schema_path"]) > 512))
+            or (詳情["latency_ms"] is not None and not _是有限時間(詳情["latency_ms"]))
+            or type(用量) is not dict or set(用量) != {"total_tokens"}
+            or (用量["total_tokens"] is not None and (
+                type(用量["total_tokens"]) is not int or 用量["total_tokens"] < 0))
+            or type(工具名稱) is not list or len(工具名稱) > 4096
+            or any(type(名稱) is not str or not 1 <= len(名稱) <= 256 for 名稱 in 工具名稱)):
+        raise ValueError
 
 
 def 建立擁有者安全詳情(原始投影: dict[str, object], /) -> 擁有者安全詳情:
@@ -197,6 +320,13 @@ def _是可空有限時間(值: object) -> bool:
 def _是可空錯誤碼(值: object) -> bool:
     """驗證safe error code，不接受內部訊息。"""
     return 值 is None or (type(值) is str and _錯誤碼格式.fullmatch(值) is not None)
+
+
+def _是可空SHA256(值: object) -> bool:
+    """驗證可空lowercase SHA-256文字。"""
+    return 值 is None or (
+        type(值) is str and len(值) == 64 and all(字 in "0123456789abcdef" for 字 in 值)
+    )
 
 
 @dataclass(frozen=True, slots=True)

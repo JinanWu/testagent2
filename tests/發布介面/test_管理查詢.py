@@ -1513,3 +1513,41 @@ def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
         with pytest.raises(Exception) as 錯誤:
             建立管理員呼叫完整詳情(破壞)
         assert "RAW_MARKER" not in repr(錯誤.value)
+
+
+def test_A18完整詳情逐欄bounded且內部儲存不可變():
+    """拒絕巢狀schema漂移、超深JSON與直接slot竄改。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {},
+        "output": None, "error": None, "usage": None, "metadata_size_bytes": 0,
+        "metadata_sha256": None, "latency_ms": None, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    for 破壞 in (
+        {**基本, "invocation": "not-an-object"},
+        {**基本, "run_events": "not-a-list"},
+        {**基本, "tool_calls": 999},
+        {**基本, "run_events": [{"id": "run-1"}]},
+    ):
+        with pytest.raises(Exception) as 錯誤:
+            建立管理員呼叫完整詳情(破壞)
+        assert type(錯誤.value) is not RecursionError
+
+    深值: object = None
+    for _ in range(5000):
+        深值 = [深值]
+    with pytest.raises(Exception) as 錯誤:
+        建立管理員呼叫完整詳情({**基本, "input": 深值})
+    assert type(錯誤.value) is not RecursionError
+    for 過量 in ([None] * 4097, "x" * 1_048_577):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, "input": 過量})
+
+    詳情 = 建立管理員呼叫完整詳情(基本)
+    with pytest.raises((AttributeError, TypeError)):
+        詳情._內容 = b"mutated"
+    object.__setattr__(詳情, "_內容", b"not-json")
+    with pytest.raises(Exception):
+        詳情.建立JSON()
