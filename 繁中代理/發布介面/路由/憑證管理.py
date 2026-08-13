@@ -7,7 +7,7 @@ import secrets
 import time
 from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
 from starlette.concurrency import run_in_threadpool
@@ -164,7 +164,7 @@ def 建立憑證管理路由器(
     )
     async def 列出端點憑證(
         請求: Request,
-        endpoint_id: str,
+        端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
     ) -> JSONResponse:
         """列出權威 session owner 的 safe credential summaries。
@@ -174,7 +174,7 @@ def 建立憑證管理路由器(
         返回值：狀態碼200且本文只含安全憑證摘要列表的JSON回應。
 
         """
-        端點識別碼 = _驗證識別碼(endpoint_id)
+        端點識別碼 = _驗證識別碼(端點識別碼)
         _拒絕查詢參數(請求)
         使用者識別碼, _ = _重建身份(使用者)
         try:
@@ -201,7 +201,7 @@ def 建立憑證管理路由器(
     )
     async def 建立端點憑證(
         請求: Request,
-        endpoint_id: str,
+        端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
@@ -213,7 +213,7 @@ def 建立憑證管理路由器(
         返回值：狀態碼201、只揭露一次初始金鑰並攜帶CSRF接續的JSON回應。
 
         """
-        端點識別碼 = _驗證識別碼(endpoint_id, 回應)
+        端點識別碼 = _驗證識別碼(端點識別碼, 回應)
         _拒絕查詢參數(請求, 回應)
         本文 = await _解析建立本文(請求, 回應)
         使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者)
@@ -257,8 +257,8 @@ def 建立憑證管理路由器(
     )
     async def 撤銷端點憑證(
         請求: Request,
-        endpoint_id: str,
-        credential_id: str,
+        端點識別碼: Annotated[str, Path(alias="endpoint_id")],
+        憑證識別碼: Annotated[str, Path(alias="credential_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
@@ -270,8 +270,8 @@ def 建立憑證管理路由器(
         返回值：狀態碼204、無本文且攜帶CSRF接續的回應。
 
         """
-        端點識別碼 = _驗證識別碼(endpoint_id, 回應)
-        憑證識別碼 = _驗證識別碼(credential_id, 回應)
+        端點識別碼 = _驗證識別碼(端點識別碼, 回應)
+        憑證識別碼 = _驗證識別碼(憑證識別碼, 回應)
         _拒絕查詢參數(請求, 回應)
         await _要求空本文(請求, 回應)
         使用者識別碼, 是否管理者 = _重建雙重身份(使用者, _csrf使用者)

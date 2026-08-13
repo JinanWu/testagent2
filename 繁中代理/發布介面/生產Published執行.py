@@ -150,48 +150,36 @@ class Published生產設定:
 
 class 延遲憑證管理服務:
     """讓 credential routes 在 construction 固定、startup 才取得真實 provider。
-
     描述：讓 credential routes 在 construction 固定、startup 才取得真實 provider。
     參數：建構資料由類別欄位或建構器簽章明確提供，不讀取隱含輸入。
     返回值：可供呼叫端使用的``延遲憑證管理服務``類型或實例。
     """
-
     def __init__(self) -> None:
         """建立未安裝的 per-app provider slot。
-
         描述：建立未安裝的 per-app provider slot。
         參數：無；使用已封裝狀態或固定測試資料。
         返回值：無；建立尚未安裝服務的per-app provider slot。
-
         """
         self._服務: SQLite憑證管理服務 | None = None
-        self._條件 = Condition(RLock())
-        self._進行中 = 0
-        self._正在停止 = False
-
+        self._條件 = Condition(RLock()); self._進行中 = 0; self._正在停止 = False
     def 安裝(self, 服務: SQLite憑證管理服務) -> None:
         """在 startup exact-once 安裝真實 SQLite adapter。
-
         描述：在 startup exact-once 安裝真實 SQLite adapter。
         參數：``服務``。
         返回值：無；exact-once保存啟動中的``SQLite憑證管理服務``。
-
         """
         if type(服務) is not SQLite憑證管理服務:
             raise ValueError("Published憑證管理服務無效") from None
         with self._條件:
             if self._服務 is not None or self._進行中:
                 raise ValueError("Published憑證管理服務無效") from None
-            self._正在停止 = False
-            self._服務 = 服務
-
+            self._正在停止 = False; self._服務 = 服務
     def 清除(self, 服務: SQLite憑證管理服務) -> None:
         """shutdown 只清除本次 startup 的 exact provider reference。
 
         描述：shutdown 只清除本次 startup 的 exact provider reference。
         參數：``服務``。
         返回值：無；只有identity相同時清除目前服務參照。
-
         """
         with self._條件:
             if self._服務 is 服務:
@@ -199,15 +187,11 @@ class 延遲憑證管理服務:
                 self._正在停止 = True
                 while self._進行中:
                     self._條件.wait()
-
     @contextmanager
     def _租借(self):
-        """取得啟動中的 provider，未啟動或已關閉時 fail closed。
-
-        描述：取得啟動中的 provider，未啟動或已關閉時 fail closed。
-        參數：無；使用已封裝狀態或固定測試資料。
-        返回值：目前已安裝且可接受管理操作的``SQLite憑證管理服務``。
-
+        """描述：完整操作期間租借provider，未啟動或draining時fail closed。
+        參數：無。
+        返回值：yield目前已安裝的``SQLite憑證管理服務``。
         """
         with self._條件:
             服務 = self._服務
@@ -221,23 +205,19 @@ class 延遲憑證管理服務:
                 self._進行中 -= 1
                 if self._進行中 == 0:
                     self._條件.notify_all()
-
     def 列出憑證(self, **參數):
         """委派 safe list 操作。
 
         描述：委派 safe list 操作。
-        參數：``**參數``。
-        返回值：真實provider回傳的``憑證列表結果``。
+        參數：``**參數``；返回值：真實provider回傳的``憑證列表結果``。
         """
         with self._租借() as 服務:
             return 服務.列出憑證(**參數)
-
     def 建立憑證(self, **參數):
         """委派 additional credential create 操作。
 
         描述：委派 additional credential create 操作。
-        參數：``**參數``。
-        返回值：真實provider回傳的``一次性憑證建立收據``。
+        參數：``**參數``；返回值：真實provider回傳的``一次性憑證建立收據``。
         """
         with self._租借() as 服務:
             return 服務.建立憑證(**參數)
@@ -246,8 +226,7 @@ class 延遲憑證管理服務:
         """委派 audited idempotent revoke 操作。
 
         描述：委派 audited idempotent revoke 操作。
-        參數：``**參數``。
-        返回值：真實provider回傳的``憑證撤銷收據``。
+        參數：``**參數``；返回值：真實provider回傳的``憑證撤銷收據``。
         """
         with self._租借() as 服務:
             return 服務.撤銷憑證(**參數)
@@ -733,6 +712,10 @@ class 生產Controller建構器:
             網頁.路由器清單 + 發布.路由器清單,
             (建立已隔離Web資源,) + 發布.資源工廠清單,
         )
+
+
+
+
 def _工具摘要(name: str, revision: str, description: str, parameters_json: str) -> str:
     """將快照庫 canonical JSON 轉接到唯一權威工具修訂摘要 helper。
 
