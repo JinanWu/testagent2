@@ -1580,3 +1580,37 @@ def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_p
             建立管理員呼叫完整詳情({**基本, **敏感})
     with pytest.raises(Exception):
         建立管理員呼叫完整詳情({**基本, "metadata": "not-an-object"})
+
+
+def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
+    """敏感資料藏在任意value、run event或tool payload仍須fail closed。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": "合法 scalar raw", "metadata": {},
+        "output": None, "error": None, "usage": None, "metadata_size_bytes": 2,
+        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
+             "payload": {}, "created_at": 1.0}
+    tool = {"id": "tool-1", "run_event_id": "event-1", "sequence_number": 0,
+            "tool_name": "lookup", "arguments": {}, "outcome": "success", "result": None,
+            "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.0}
+    for 破壞 in (
+        {"input": {"note": "Authorization: Bearer TOPSECRET"}},
+        {"metadata": {"note": "Cookie: sid=TOPSECRET"}},
+        {"output": {"detail": "/Users/alice/.ssh/id_rsa"}},
+        {"error": {"detail": "C:\\Users\\alice\\secret.txt"}},
+        {"usage": {"note": "Bearer pk_" + "A" * 43}},
+        {"input": {"signing-private_key": "TOPSECRET"}},
+        {"run_events": [{**event, "payload": {"detail": "/etc/passwd"}}]},
+        {"tool_calls": [{**tool, "arguments": {"note": "PROVIDER_SECRET_123"}}]},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **破壞})
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == "合法 scalar raw"
+    合法路由 = 建立管理員呼叫完整詳情(
+        {**基本, "input": {"route": "/api/v1/items", "text": "bearer market analysis"}}
+    ).建立JSON()
+    assert 合法路由["input"] == {"route": "/api/v1/items", "text": "bearer market analysis"}

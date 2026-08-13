@@ -73,8 +73,16 @@ _禁止敏感鍵 = frozenset({
     "accesstoken", "refreshtoken",
 })
 _檔案路徑鍵 = frozenset({"path", "filepath", "filesystempath", "absolutepath"})
-_平台APIKey格式 = re.compile(r"pk_[A-Za-z0-9_-]{43}\Z")
-_絕對檔案路徑格式 = re.compile(r"(?:/|~/|[A-Za-z]:[\\/]|\\\\)")
+_平台APIKey格式 = re.compile(r"(?<![A-Za-z0-9_-])pk_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
+_絕對檔案路徑格式 = re.compile(
+    r"(?:^|[\s:=\"'])(?:~[/\\]|/(?:Users|home|etc|var|tmp|private|opt|usr|root|proc|sys|dev)/"
+    r"|[A-Za-z]:[\\/]|\\\\)", re.IGNORECASE,
+)
+_內嵌secret格式 = re.compile(
+    r"(?:authorization\s*:|proxy-authorization\s*:|cookie\s*:|set-cookie\s*:|"
+    r"provider[_ -]?secret|credential[_ -]?secret|"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----)", re.IGNORECASE,
+)
 
 
 class 管理員呼叫游標錯誤(ValueError):
@@ -206,7 +214,10 @@ def _驗證raw無禁止secret(值: object) -> None:
         if 節點 > _最大詳情JSON節點 or 深度 > _最大詳情JSON深度:
             raise ValueError
         if type(項) is str:
-            if _平台APIKey格式.fullmatch(cast(str, 項)) is not None:
+            文字 = cast(str, 項)
+            if (_平台APIKey格式.search(文字) is not None
+                    or _絕對檔案路徑格式.search(文字) is not None
+                    or _內嵌secret格式.search(文字) is not None):
                 raise ValueError
             continue
         if type(項) is list:
@@ -227,7 +238,9 @@ def _驗證raw無禁止secret(值: object) -> None:
             if 正規鍵 in _禁止敏感鍵 or any(
                     正規鍵.endswith(尾碼) for 尾碼 in
                     ("authorization", "cookie", "apikey", "credentialsecret",
-                     "credentialciphertext", "credentialhash", "providersecret")):
+                     "credentialciphertext", "credentialhash", "providersecret",
+                     "privatekey", "secretkey", "masterkey", "clientsecret",
+                     "accesstoken", "refreshtoken")):
                 raise ValueError
             if (正規鍵 in _檔案路徑鍵 and type(子項) is str
                     and _絕對檔案路徑格式.match(cast(str, 子項)) is not None):
