@@ -102,6 +102,15 @@ def _建立摘要() -> 憑證摘要:
     )
 
 
+def _讀取錯誤碼綱要(規格: dict, 方法: str, 狀態: str) -> list[str]:
+    """描述：從憑證集合route的OpenAPI response讀取exact code enum。
+    參數：``規格``為paths；``方法``與``狀態``定位response。
+    返回值：OpenAPI宣告的code enum清單。
+    """
+    回應 = 規格["/api/published-endpoints/{endpoint_id}/credentials"][方法]["responses"][狀態]
+    return 回應["content"]["application/json"]["schema"]["properties"]["detail"]["properties"]["code"]["enum"]
+
+
 def test_建立請求與固定HTTP錯誤碼形成封閉契約() -> None:
     """凍結 create exact keys 與 public failure codes。
 
@@ -187,6 +196,14 @@ def test_路由清單方法狀態與相依項形成精確契約() -> None:
     assert 清單["content"]["application/json"]["schema"]["properties"]["items"]["items"]["additionalProperties"] is False
     assert "initial_api_key" in 建立["content"]["application/json"]["schema"]["required"]
     assert "content" not in 撤銷
+    assert _讀取錯誤碼綱要(規格, "get", "404") == ["credential_not_found"]
+    assert _讀取錯誤碼綱要(規格, "get", "422") == ["invalid_request"]
+    assert _讀取錯誤碼綱要(規格, "get", "503") == ["auth_unavailable"]
+    assert _讀取錯誤碼綱要(規格, "post", "401") == ["unauthorized"]
+    assert _讀取錯誤碼綱要(規格, "post", "403") == ["csrf_invalid"]
+    assert _讀取錯誤碼綱要(規格, "post", "503") == ["auth_unavailable"]
+    assert _讀取錯誤碼綱要(規格, "post", "409") == ["endpoint_status_conflict"]
+    assert _讀取錯誤碼綱要(規格, "post", "500") == ["credential_management_failed"]
 
 
 def test_list_create_revoke只使用權威身份且成功狀態固定() -> None:
@@ -247,14 +264,143 @@ def test_mutation錯誤仍交付已輪替的CSRF接續() -> None:
         服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
     ))
     with TestClient(應用, raise_server_exceptions=False) as 客戶端:
-        回應 = 客戶端.post(
-            "/api/published-endpoints/endpoint-1/credentials",
-            json={
-                "name": "production", "purpose": "partner integration", "expires_at": 100.0,
-                "ip_allowlist": [], "rate_limit_requests": 60,
-            },
+        回應們 = [
+            客戶端.post("/api/published-endpoints/endpoint-1/credentials?x=1", json={}),
+            客戶端.post(
+                "/api/published-endpoints/endpoint-1/credentials",
+                content=b"{}", headers={"content-type": "text/plain"},
+            ),
+            客戶端.post(
+                "/api/published-endpoints/endpoint-1/credentials",
+                content=b"{", headers={"content-type": "application/json"},
+            ),
+            客戶端.post(
+                "/api/published-endpoints/endpoint-1/credentials",
+                json={
+                    "name": "production", "purpose": "partner integration", "expires_at": 100.0,
+                    "ip_allowlist": [], "rate_limit_requests": 60,
+                },
+            ),
+        ]
+    assert all(回應.status_code == 422 for 回應 in 回應們)
+    assert all(回應.headers["X-CSRF-Token"] == "successor" for 回應 in 回應們)
+    assert all("csrf_token=successor" in 回應.headers["set-cookie"] for 回應 in 回應們)
+    assert 服務.呼叫 == []
+
+
+def test_revoke逐段讀取真實本文且任何位元組都在副作用前拒絕() -> None:
+    """缺少或偽造 Content-Length 皆不能繞過 byte-exact empty request 契約。"""
+    客戶端, _, 服務, *_ = _建立客戶端()
+    路徑 = "/api/published-endpoints/endpoint-1/credentials/cred-example/revoke"
+    with 客戶端:
+        串流 = 客戶端.post(路徑, content=iter([b"x"]))
+        偽造 = 客戶端.post(路徑, content=b"NOT-EMPTY", headers={"Content-Length": "0"})
+    assert [(回應.status_code, 回應.json()) for 回應 in (串流, 偽造)] == [
+        (422, {"detail": {"code": "invalid_request"}}),
+    ] * 2
+    assert 服務.呼叫 == []
+
+
+def test_malformed路徑固定422且不回顯輸入() -> None:
+    """路徑格式錯誤由 A07 adapter 固定化，不交給 framework validation detail。"""
+    客戶端, _, 服務, *_ = _建立客戶端()
+    with 客戶端:
+        回應們 = (
+            客戶端.get("/api/published-endpoints/bad%21/credentials"),
+            客戶端.post(
+                "/api/published-endpoints/endpoint-1/credentials/bad%21/revoke", content=b"",
+            ),
         )
-    assert 回應.status_code == 422
+    assert [(回應.status_code, 回應.json()) for 回應 in 回應們] == [
+        (422, {"detail": {"code": "invalid_request"}}),
+    ] * 2
+    assert all("bad!" not in 回應.text for 回應 in 回應們)
+    assert 服務.呼叫 == []
+
+
+def test_revoke兩次權威身份的角色漂移時fail_closed() -> None:
+    """CSRF交易重讀到的admin role若與current-session不同，不得進入撤銷服務。"""
+    服務 = _管理服務()
+    session = lambda: 網頁使用者("admin-1", "alice", "admin")
+    def csrf(回應: Response):
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("admin-1", "alice", "member")
+    應用 = FastAPI(redirect_slashes=False)
+    應用.include_router(建立憑證管理路由器(
+        服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
+    ))
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        回應 = 客戶端.post(
+            "/api/published-endpoints/endpoint-1/credentials/cred-example/revoke", content=b"",
+        )
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
     assert 回應.headers["X-CSRF-Token"] == "successor"
     assert "csrf_token=successor" in 回應.headers["set-cookie"]
     assert 服務.呼叫 == []
+
+
+def test_create權威時鐘失敗仍交付CSRF接續() -> None:
+    """CSRF輪替後clock失敗固定500，且合法session仍收到successor。"""
+    服務 = _管理服務()
+    session = lambda: 網頁使用者("owner-1", "alice", "member")
+
+    def csrf(回應: Response):
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("owner-1", "alice", "member")
+
+    應用 = FastAPI(redirect_slashes=False)
+    應用.include_router(建立憑證管理路由器(
+        服務, session, csrf, 時鐘=lambda: float("nan"), 請求識別碼工廠=lambda: "request-1",
+    ))
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        回應 = 客戶端.post("/api/published-endpoints/endpoint-1/credentials", json={
+            "name": "production", "purpose": "partner integration", "expires_at": 200.0,
+            "ip_allowlist": [], "rate_limit_requests": 60,
+        })
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
+    assert 回應.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in 回應.headers["set-cookie"]
+    assert 服務.呼叫 == []
+
+
+def test_create_principal重建失敗仍交付CSRF接續() -> None:
+    """CSRF輪替後任一authoritative principal畸形，固定500且仍交付successor。"""
+    def 畸形使用者(種類: str):
+        if 種類 == "wrong-type":
+            return object()
+        使用者 = object.__new__(網頁使用者)
+        if 種類 != "missing-id":
+            object.__setattr__(使用者, "識別碼", 7 if 種類 == "invalid-id" else "owner-1")
+        if 種類 != "missing-role":
+            object.__setattr__(使用者, "角色", {"empty-role": "", "unknown-role": "root"}.get(種類, "member"))
+        return 使用者
+
+    for 種類 in ("wrong-type", "missing-id", "missing-role", "invalid-id", "empty-role", "unknown-role"):
+        for 無效來源 in ("session", "csrf"):
+            服務 = _管理服務()
+            有效使用者 = 網頁使用者("owner-1", "alice", "member")
+            session = lambda: 畸形使用者(種類) if 無效來源 == "session" else 有效使用者
+
+            def csrf(回應: Response):
+                回應.headers["X-CSRF-Token"] = "successor"
+                回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+                return 畸形使用者(種類) if 無效來源 == "csrf" else 有效使用者
+
+            應用 = FastAPI(redirect_slashes=False)
+            應用.include_router(建立憑證管理路由器(
+                服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
+            ))
+            with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+                回應 = 客戶端.post("/api/published-endpoints/endpoint-1/credentials", json={
+                    "name": "production", "purpose": "partner integration", "expires_at": 200.0,
+                    "ip_allowlist": [], "rate_limit_requests": 60,
+                })
+            assert 回應.status_code == 500, (種類, 無效來源, 回應.text)
+            assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
+            assert 回應.headers["X-CSRF-Token"] == "successor"
+            assert "csrf_token=successor" in 回應.headers["set-cookie"]
+            assert 服務.呼叫 == []
