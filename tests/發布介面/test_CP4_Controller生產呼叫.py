@@ -103,7 +103,9 @@ def _建立live環境(tmp_path, *, provider="fake"):
         return {"fake": model}
 
     production, published = _設定(db, bundles, install, models)
-    return db, 建立CP4ASGI應用程式(production, published), credential.api_key, model, calls
+    app = 建立CP4ASGI應用程式(production, published)
+    app.state.重建canonical應用程式 = lambda: 建立CP4ASGI應用程式(production, published)
+    return db, app, credential.api_key, model, calls
 
 
 def test_app_construction零callback且不建立資料庫(tmp_path):

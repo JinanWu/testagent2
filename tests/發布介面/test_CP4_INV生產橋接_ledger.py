@@ -3,6 +3,7 @@
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -143,6 +144,70 @@ def test_session附加失敗時成功狀態與event同交易rollback且可重試
         assert 連線.execute(
             "SELECT session_id,sequence_number FROM published_session_turn_pairs"
         ).fetchone() == ("case", 1)
+
+
+class _提交失敗連線:
+    """代理 SQLite connection，只在 transaction context COMMIT 點注入失敗。"""
+
+    def __init__(self, 連線):
+        self._連線 = 連線
+
+    def __getattr__(self, 名稱):
+        return getattr(self._連線, 名稱)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, 錯誤型別, 錯誤, traceback):
+        """在成功離開 transaction context 時先回滾，再模擬 COMMIT failure。
+
+        參數：context manager 的 exception triple。
+        返回值：不返回；固定拋普通 SQLite 錯誤。
+        """
+        if 錯誤型別 is None:
+            self._連線.rollback()
+            raise sqlite3.OperationalError("temporary commit failure")
+        return self._連線.__exit__(錯誤型別, 錯誤, traceback)
+
+
+@pytest.mark.parametrize("階段", ["audit", "completion_usage", "commit"])
+def test_completion_usage_audit_commit任一失敗皆不留success或partial_pair(tmp_path, 階段):
+    """逐點注入 audit、completion/usage 與 commit，整筆 terminal transaction 必須回滾。
+
+    參數：``tmp_path`` 為隔離 DB；``階段`` 選擇三個原子提交故障點。
+    返回值：無；running status、零 event 與零 session pair assertions 必須通過。
+    """
+    路徑, 基準儲存庫 = _儲存庫(tmp_path, f"inv-{階段}")
+    呼叫 = InvocationRef(f"inv-{階段}", f"req-inv-{階段}", "case")
+    釘選 = SimpleNamespace(endpoint_id="ep", version_id="ver", service_account_id="svc")
+    請求 = 執行嘗試請求(釘選, {"q": 1}, None, 1, ())
+    InvocationLedger橋接(基準儲存庫).開始執行嘗試(呼叫, 請求)
+    if 階段 == "audit":
+        with sqlite3.connect(路徑) as 連線:
+            連線.execute(
+                "CREATE TRIGGER temporary_audit_failure BEFORE INSERT ON run_events "
+                "BEGIN SELECT RAISE(ABORT,'temporary audit'); END"
+            )
+    elif 階段 == "completion_usage":
+        with sqlite3.connect(路徑) as 連線:
+            連線.execute(
+                "CREATE TRIGGER temporary_usage_failure BEFORE UPDATE OF status,usage_json "
+                "ON endpoint_invocations BEGIN SELECT RAISE(ABORT,'temporary usage'); END"
+            )
+
+    def 建立連線(*參數, **命名):
+        連線 = sqlite3.connect(*參數, **命名)
+        return cast(sqlite3.Connection, _提交失敗連線(連線)) if 階段 == "commit" else 連線
+
+    儲存庫 = SQLite呼叫儲存庫(路徑, 時鐘=lambda: 12, 連線工廠=建立連線)
+    橋接 = InvocationLedger橋接(儲存庫)
+    with pytest.raises(呼叫儲存錯誤):
+        橋接.記錄執行嘗試(
+            呼叫, 請求, 執行嘗試結果("success", {"answer": 1}), True,
+        )
+    assert _狀態與事件(路徑) == (("running", None, None, None), [])
+    with sqlite3.connect(路徑) as 連線:
+        assert 連線.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == (0,)
 
 
 def test_同session兩個completion以CAS恰一成功另一筆不留terminal副作用(tmp_path):
