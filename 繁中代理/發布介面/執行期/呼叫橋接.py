@@ -99,7 +99,8 @@ class 發布執行嘗試橋接:
             return 執行嘗試結果("endpoint_misconfigured")
 
         try:
-            回應 = 執行器.執行單次(發布執行請求(輸入))
+            歷史 = object.__getattribute__(請求, "history")
+            回應 = 執行器.執行單次(發布執行請求(輸入, 歷史))
             return _轉成嘗試結果(回應, 版本.response_schema is not None)
         except _控制流程:
             raise

@@ -43,6 +43,7 @@ from .規劃.版本服務 import (
 )
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
 from .呼叫.儲存庫 import SQLite呼叫儲存庫
+from .呼叫.Published工作階段 import SQLitePublished工作階段儲存庫
 from .呼叫.限流 import 限流決策
 from .呼叫.擷取政策 import 擷取階段, 準備呼叫擷取, 寫入呼叫擷取
 from .呼叫.編排器 import 外部呼叫編排器
@@ -213,16 +214,22 @@ class 延遲外部呼叫編排器:
                 if self._進行中 == 0:
                     self._條件.notify_all()
     def 執行(self, 短名: str, 請求識別: str, API金鑰: str,
-           輸入: object, 中繼資料: object | None, 時間: int | float):
+           輸入: object, 中繼資料: object | None, 時間: int | float, *,
+           工作階段識別: str | None = None):
         """以一個 active lease 委派完整 transport-neutral invocation。
 
-        參數：短名、請求識別、API 金鑰、輸入、中繼資料與呼叫時間皆原樣傳給編排器。
+        參數：短名、請求識別、API 金鑰、輸入、中繼資料、呼叫時間與 optional 工作階段識別皆原樣傳給編排器。
         返回值：真實編排器建立的 invocation response。
         例外：服務不可用固定失敗，編排器例外保持 identity 傳出。
         副作用：租借一次 proxy slot 並執行一次同步 invocation。
         """
         with self._租借() as 編排器:
-            return 編排器.執行(短名, 請求識別, API金鑰, 輸入, 中繼資料, 時間)
+            if 工作階段識別 is None:
+                return 編排器.執行(短名, 請求識別, API金鑰, 輸入, 中繼資料, 時間)
+            return 編排器.執行(
+                短名, 請求識別, API金鑰, 輸入, 中繼資料, 時間,
+                工作階段識別,
+            )
 class 生產Published執行資源:
     """擁有 lazy installation 與 startup-created registries 的 lifespan resource。
 
@@ -719,6 +726,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     套件協調器 = _執行技能套件啟動協調(發布)
     解析器 = SQLite目前版本解析器(資料庫)
     呼叫庫 = SQLite呼叫儲存庫(資料庫)
+    工作階段庫 = SQLitePublished工作階段儲存庫(資料庫)
     憑證 = SQLite憑證驗證服務(資料庫)
     限流器 = SQLite雙層限流器(資料庫)
     快照庫 = SQLite發布快照儲存庫(資料庫, _工具摘要)
@@ -750,6 +758,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             驗證輸入=驗證釘選輸入結構, 開始執行嘗試=台帳.開始執行嘗試,
             執行嘗試=Runtime橋接, 驗證輸出=驗證釘選輸出結構,
             記錄執行嘗試=台帳.記錄執行嘗試,
+            工作階段儲存庫=工作階段庫,
         )
         代理.安裝(編排器)
         if 發布.Planner設定 is not None:

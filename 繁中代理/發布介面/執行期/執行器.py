@@ -255,6 +255,7 @@ class 發布執行請求:
     """只包含一份 detached JSON input；不存在 system/tool role 注入入口。"""
 
     _input_json: str
+    _history_json: str
 
     @property
     def input(self) -> Any:
@@ -275,13 +276,24 @@ class 發布執行請求:
             raise 發布執行錯誤(_固定錯誤) from None
         raise AssertionError
 
-    def __init__(self, input: Any) -> None:
-        """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。"""
+    def __init__(self, input: Any, history: tuple[object, ...] = ()) -> None:
+        """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。
+
+        參數：current input 與有序完整 successful history pairs。
+        返回值：無；保存 canonical input/history JSON 快照。
+        """
         結果 = None
         失敗 = False
         try:
             結果 = 複製JSON(input, 500_000)
             object.__setattr__(self, "_input_json", _建立正規JSON(結果))
+            歷史值 = []
+            for 對話組 in history:
+                歷史值.extend((
+                    object.__getattribute__(對話組, "user_message"),
+                    object.__getattribute__(對話組, "assistant_message"),
+                ))
+            object.__setattr__(self, "_history_json", _建立正規JSON(歷史值))
             return
         except _控制流程:
             self = input = 結果 = None
@@ -624,17 +636,21 @@ def _建立執行模型請求(狀態: tuple[object, ...], 輸入原文: str, 修
         raise
 
 
-def _建立初始訊息(狀態: tuple[object, ...], 輸入原文: str) -> list[dict[str, Any]]:
-    """建立 single-attempt 起始對話；metadata 僅存在不可信 user role。
+def _建立含歷史初始訊息(狀態: tuple[object, ...], 輸入原文: str,
+                 歷史原文: str) -> list[dict[str, Any]]:
+    """固定 Published system prompt，接 bounded successful history，再接 current input。
 
-    參數：sealed executor state 與 canonical input。回傳：fresh messages。
-    例外：輸入失真時傳出驗證例外。副作用：不呼叫 provider 或工具。
+    參數：sealed executor state、canonical current input 與 canonical history JSON。
+    返回值：system → history → current user 的 fresh model messages。
     """
+    歷史 = _解析正規JSON(歷史原文, 500_000)
+    if type(歷史) is not list or any(type(訊息) is not dict for 訊息 in 歷史):
+        raise ValueError
+    訊息 = [{"role": "system", "content": 狀態[1]}]
+    訊息.extend(歷史)
     輸入 = _解析正規JSON(輸入原文, 500_000)
-    return [
-        {"role": "system", "content": 狀態[1]},
-        {"role": "user", "content": 輸入原文, "metadata": {"input_json": 輸入}},
-    ]
+    訊息.append({"role": "user", "content": 輸入原文, "metadata": {"input_json": 輸入}})
+    return 訊息
 
 
 def _建立對話模型請求(狀態: tuple[object, ...], 訊息: list[dict[str, Any]]) -> 模型轉接請求:
@@ -794,7 +810,8 @@ class 發布執行器:
             if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
                 raise ValueError
             輸入原文 = object.__getattribute__(請求, "_input_json")
-            訊息 = _建立初始訊息(狀態, 輸入原文)
+            歷史原文 = object.__getattribute__(請求, "_history_json")
+            訊息 = _建立含歷史初始訊息(狀態, 輸入原文, 歷史原文)
             工具總數 = 0
             for 回合 in range(_最大工具回合 + 1):
                 模型請求 = _建立對話模型請求(狀態, 訊息)

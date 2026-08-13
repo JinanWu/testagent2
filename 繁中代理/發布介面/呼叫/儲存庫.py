@@ -23,6 +23,7 @@ from typing import Callable, cast
 
 from ..嚴格JSON import 建立正規JSON
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移
+from .Published工作階段 import Published成功對話提交, 最大歷史位元組
 
 
 class 呼叫儲存錯誤(RuntimeError):
@@ -282,15 +283,18 @@ class SQLite呼叫儲存庫:
     """只寫入既有endpoint_invocations，不建立任何備援結構。"""
 
     def __init__(self, 資料庫: str | Path, *, 時鐘: Callable[[], float] = time.time,
-                 識別碼工廠: Callable[[], str] | None = None) -> None:
+                 識別碼工廠: Callable[[], str] | None = None,
+                 連線工廠: Callable[..., sqlite3.Connection] | None = None) -> None:
         """保存資料庫位置與可測試依賴；不開啟連線或變更資料庫。"""
         if type(資料庫) not in (str, _Path具體型別) or (type(資料庫) is str and not 資料庫):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
-        if not callable(時鐘) or (識別碼工廠 is not None and not callable(識別碼工廠)):
+        if (not callable(時鐘) or (連線工廠 is not None and not callable(連線工廠))
+                or (識別碼工廠 is not None and not callable(識別碼工廠))):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
         self._資料庫 = Path(資料庫)
         self._時鐘 = 時鐘
         self._識別碼工廠 = 識別碼工廠 or (lambda: f"inv-{secrets.token_hex(16)}")
+        self._連線工廠 = sqlite3.connect if 連線工廠 is None else 連線工廠
 
     def 建立已解析呼叫(
         self, endpoint_id: str, endpoint_version_id: str, request_id: str, input: object, *,
@@ -353,14 +357,17 @@ class SQLite呼叫儲存庫:
         self, invocation_id: str, event_id: str, event_type: str, payload: object,
         expected_sequence: int, *, status: str | None = None, output: object | None = None,
         error: object | None = None, usage: object | None = None,
+        session_pair: Published成功對話提交 | None = None,
     ) -> int:
         """以單一立即交易附加 expected event，並可同時完成 running invocation。
 
         相同 event 已完整提交時回放原序號；任何不完整、衝突或普通失敗皆回滾。
         """
         連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
-        payload快照 = output快照 = error快照 = usage快照 = None
+        payload快照 = output快照 = error快照 = usage快照 = session快照 = None
         payload_json = output_json = error_json = usage_json = None
+        session_user_json = session_assistant_json = None
+        session_pair_size = None
         時間原值 = 時間 = 序號 = None
         try:
             if (any(type(值) is not str or not 值.strip() for 值 in (invocation_id, event_id, event_type))
@@ -368,11 +375,24 @@ class SQLite呼叫儲存庫:
                     or status not in (None, "succeeded", "failed")):
                 raise ValueError
             if status is None:
-                if output is not None or error is not None or usage is not None:
+                if output is not None or error is not None or usage is not None or session_pair is not None:
                     raise ValueError
             elif ((status == "succeeded" and (output is None or error is not None))
                   or (status == "failed" and (output is not None or error is None))):
                 raise ValueError
+            if session_pair is not None:
+                if status != "succeeded" or type(session_pair) is not Published成功對話提交:
+                    raise ValueError
+                session快照 = session_pair.驗證並建立快照()
+                session快照 = session快照[:5] + (
+                    self._建立可信JSON樹(session快照[5]),
+                    self._建立可信JSON樹(session快照[6]), session快照[7],
+                )
+                session_user_json = 建立正規JSON(session快照[5])
+                session_assistant_json = 建立正規JSON(session快照[6])
+                session_pair_size = len(session_user_json.encode("utf-8")) + len(session_assistant_json.encode("utf-8"))
+                if not 0 < session_pair_size <= 最大歷史位元組:
+                    raise ValueError
             with closing(self._開啟連線()) as 連線, 連線:
                 連線.execute("BEGIN IMMEDIATE")
                 payload快照 = self._建立可信JSON樹(payload)
@@ -405,6 +425,16 @@ class SQLite呼叫儲存庫:
                           or 呼叫列[4] is not None or 呼叫列[5] is not None
                           or type(呼叫列[6]) not in (int, float)):
                         raise ValueError
+                    if session快照 is not None:
+                        session列 = 連線.execute(
+                            "SELECT endpoint_version_id,user_message_json,assistant_message_json,pair_size_bytes,token_count "
+                            "FROM published_session_turn_pairs WHERE endpoint_id=? AND service_account_id=? "
+                            "AND session_id=? AND sequence_number=?",
+                            session快照[:3] + (session快照[4],),
+                        ).fetchone()
+                        if session列 != (session快照[3], session_user_json, session_assistant_json,
+                                         session_pair_size, session快照[7]):
+                            raise ValueError
                     return expected_sequence
                 if 呼叫列 != ("running", None, None, None, None, None, None):
                     raise ValueError
@@ -427,6 +457,24 @@ class SQLite呼叫儲存庫:
                     "VALUES (?,?,?,?,?,?)",
                     (event_id, invocation_id, 序號, event_type, payload_json, 時間),
                 )
+                if session快照 is not None:
+                    最大session = 連線.execute(
+                        "SELECT MAX(sequence_number) FROM published_session_turn_pairs "
+                        "WHERE endpoint_id=? AND service_account_id=? AND session_id=?",
+                        session快照[:3],
+                    ).fetchone()
+                    下一session = 1 if 最大session[0] is None else 最大session[0] + 1
+                    if 下一session != session快照[4]:
+                        raise ValueError
+                    連線.execute(
+                        "INSERT INTO published_session_turn_pairs("
+                        "endpoint_id,service_account_id,session_id,sequence_number,endpoint_version_id,"
+                        "user_message_json,assistant_message_json,pair_size_bytes,token_count,created_at) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        session快照[:3] + (session快照[4], session快照[3],
+                                           session_user_json, session_assistant_json,
+                                           session_pair_size, session快照[7], 時間),
+                    )
                 if status is not None:
                     游標 = 連線.execute(
                         "UPDATE endpoint_invocations SET status=?,output_json=?,error_json=?,usage_json=?,"
@@ -438,10 +486,12 @@ class SQLite呼叫儲存庫:
             return expected_sequence
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
-            invocation_id = event_id = event_type = payload = expected_sequence = status = None
+            invocation_id = event_id = event_type = payload = expected_sequence = status = session_pair = None
             output = error = usage = 連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
-            payload快照 = output快照 = error快照 = usage快照 = None
-            payload_json = output_json = error_json = usage_json = 時間原值 = 時間 = 序號 = None
+            payload快照 = output快照 = error快照 = usage快照 = session快照 = None
+            payload_json = output_json = error_json = usage_json = None
+            session_user_json = session_assistant_json = session_pair_size = None
+            時間原值 = 時間 = 序號 = None
             if 是控制流程:
                 raise
         raise 呼叫儲存錯誤("執行事件原子提交失敗") from None
@@ -653,7 +703,7 @@ class SQLite呼叫儲存庫:
             if not stat.S_ISREG(開啟前.st_mode) or 開啟前.st_size <= 0:
                 raise ValueError
             uri = 路徑.as_uri() + "?mode=rw"
-            連線 = sqlite3.connect(uri, uri=True, isolation_level=None)
+            連線 = self._連線工廠(uri, uri=True, isolation_level=None)
             開啟後 = os.lstat(路徑)
             if stat.S_ISLNK(開啟後.st_mode) or (開啟前.st_dev, 開啟前.st_ino) != (開啟後.st_dev, 開啟後.st_ino):
                 raise ValueError
