@@ -81,7 +81,10 @@ _禁止敏感值標記 = frozenset({
 _檔案路徑鍵 = frozenset({"path", "filepath", "filesystempath", "absolutepath"})
 _平台APIKey格式 = re.compile(r"(?<![A-Za-z0-9_-])pk_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 _憑證token形狀 = re.compile(
-    r"(?<![A-Za-z0-9_-])[A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
+    r"(?<![A-Za-z0-9_-])(?:"
+    r"[A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{32,}|"
+    r"[A-Za-z0-9]{2,4}[_-][A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{16,}"
+    r")(?![A-Za-z0-9_-])"
 )
 _絕對檔案路徑格式 = re.compile(
     r"(?:^|[\s:=\"'])(?:~[/\\]|/(?:Users|home|etc|var|tmp|private|opt|usr|root|proc|sys|dev|srv)/"

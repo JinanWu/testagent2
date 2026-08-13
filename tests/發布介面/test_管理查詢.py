@@ -1699,3 +1699,11 @@ def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
     ):
         with pytest.raises(Exception):
             建立管理員呼叫完整詳情({**基本, "input": {"value": key}})
+    for 合法值 in (
+        "550e8400-e29b-41d4-a716-446655440000",
+        "trace-1234567890abcdef",
+        "order_1234567890123456",
+    ):
+        assert 建立管理員呼叫完整詳情(
+            {**基本, "input": {"value": 合法值}}
+        ).建立JSON()["input"] == {"value": 合法值}
