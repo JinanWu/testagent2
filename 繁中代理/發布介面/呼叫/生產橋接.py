@@ -19,6 +19,7 @@ from typing import Callable
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from ...上下文壓縮器 import 估算訊息預算Token
 from ..領域模型 import InvocationRef
 from .儲存庫 import SQLite呼叫儲存庫
 from .Published工作階段 import Published成功對話提交
@@ -295,15 +296,17 @@ class InvocationLedger橋接:
                 釘選 = request.pinned_version
                 歷史 = request.history
                 下一序號 = 1 if not 歷史 else object.__getattribute__(歷史[-1], "sequence_number") + 1
-                token數 = 1 if 用量 is None or 用量.total_tokens is None else max(1, 用量.total_tokens)
+                使用者訊息 = {"role": "user", "content": request.input}
+                助理訊息 = {"role": "assistant", "content": result.data}
+                token數 = 估算訊息預算Token(使用者訊息) + 估算訊息預算Token(助理訊息)
                 工作階段對話組 = Published成功對話提交(
                     endpoint_id=object.__getattribute__(釘選, "endpoint_id"),
                     service_account_id=object.__getattribute__(釘選, "service_account_id"),
                     session_id=工作階段,
                     endpoint_version_id=object.__getattribute__(釘選, "version_id"),
                     sequence_number=下一序號,
-                    user_message={"role": "user", "content": request.input},
-                    assistant_message={"role": "assistant", "content": result.data},
+                    user_message=使用者訊息,
+                    assistant_message=助理訊息,
                     token_count=token數,
                 )
         elif 種類 != "success" or 次數 == 2:

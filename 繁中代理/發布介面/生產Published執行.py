@@ -218,7 +218,7 @@ class 延遲外部呼叫編排器:
            工作階段識別: str | None = None):
         """以一個 active lease 委派完整 transport-neutral invocation。
 
-        參數：短名、請求識別、API 金鑰、輸入、中繼資料與呼叫時間皆原樣傳給編排器。
+        參數：短名、請求識別、API 金鑰、輸入、中繼資料、呼叫時間與 optional 工作階段識別皆原樣傳給編排器。
         返回值：真實編排器建立的 invocation response。
         例外：服務不可用固定失敗，編排器例外保持 identity 傳出。
         副作用：租借一次 proxy slot 並執行一次同步 invocation。
