@@ -152,7 +152,7 @@ class 管理員原始資料稽核閘門:
         端點識別碼: str,
         呼叫識別碼: str,
         /,
-    ) -> dict[str, Any]:
+    ) -> 管理員呼叫完整詳情:
         """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
         失敗 = 稽核已提交 = False
         結果類型 = None
@@ -179,9 +179,9 @@ class 管理員原始資料稽核閘門:
             if not 已授權:
                 失敗 = True
             else:
-                結果 = 原始查詢(端點識別碼, 呼叫識別碼)
-                if type(結果) is not dict:
-                    失敗 = True
+                結果 = 建立管理員呼叫完整詳情(
+                    原始查詢(端點識別碼, 呼叫識別碼)
+                )
         except _控制流程 as 捕捉控制:
             _清理控制鏈(捕捉控制)
             控制 = 捕捉控制
@@ -202,7 +202,7 @@ class 管理員原始資料稽核閘門:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
-        if 失敗 or type(結果) is not dict:
+        if 失敗 or type(結果) is not 管理員呼叫完整詳情:
             結果 = None
             if 結果類型 is 管理員呼叫稽核錯誤:
                 raise 管理員呼叫稽核錯誤("呼叫紀錄暫時不可取得") from None

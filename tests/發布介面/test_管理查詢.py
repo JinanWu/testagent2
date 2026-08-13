@@ -49,6 +49,7 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS,
     管理員呼叫列表結果,
     管理員呼叫列表項目,
+    管理員呼叫投影頁,
     建立管理員呼叫完整詳情,
     管理員呼叫查詢條件,
     管理員呼叫游標位置,
@@ -1450,6 +1451,20 @@ def test_A18安全列表DTO固定欄位且拒絕raw與可變容器():
         項目.狀態 = "succeeded"
     with pytest.raises(ValueError):
         管理員呼叫列表結果([項目], None)
+
+
+def test_A18管理員列表組合DTO重驗污染子項且repr零值():
+    """hostile object.__setattr__不能把raw marker帶入page/result或repr。"""
+    項目 = 管理員呼叫列表項目(
+        "inv-1", "ep-1", "ver-1", "req-1", "failed", None,
+        1.0, 10.0, 11.0, False,
+    )
+    object.__setattr__(項目, "錯誤碼", "RAW_SECRET_MARKER")
+    assert "RAW_SECRET_MARKER" not in repr(項目)
+    with pytest.raises(ValueError):
+        管理員呼叫列表結果((項目,), None)
+    with pytest.raises(ValueError):
+        管理員呼叫投影頁((項目,), None)
 
 
 def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():

@@ -438,7 +438,7 @@ class 管理員呼叫游標位置:
             raise ValueError("管理員呼叫游標位置無效") from None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class 管理員呼叫列表項目:
     """Admin list可公開的安全metadata；不含任何raw JSON。"""
 
@@ -467,8 +467,12 @@ class 管理員呼叫列表項目:
                 or type(self.是否有遮蔽) is not bool):
             raise ValueError("管理員呼叫列表項目無效") from None
 
+    def __repr__(self) -> str:
+        """List metadata不進log/debug repr。"""
+        return "管理員呼叫列表項目([REDACTED])"
 
-@dataclass(frozen=True, slots=True)
+
+@dataclass(frozen=True, slots=True, repr=False)
 class 管理員呼叫列表結果:
     """有界safe list項目與opaque signed cursor。"""
 
@@ -484,9 +488,15 @@ class 管理員呼叫列表結果:
                     or not 1 <= len(self.下一頁游標) <= 4096
                     or re.fullmatch(r"[A-Za-z0-9_.-]+", self.下一頁游標) is None))):
             raise ValueError("管理員呼叫列表結果無效") from None
+        for 項目 in self.項目:
+            項目.__post_init__()
+
+    def __repr__(self) -> str:
+        """組合結果不把child metadata帶入repr。"""
+        return "管理員呼叫列表結果([REDACTED])"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class 管理員呼叫投影頁:
     """SQLite安全投影回傳的項目與未簽章keyset位置。"""
 
@@ -500,6 +510,14 @@ class 管理員呼叫投影頁:
                 or (self.下一頁位置 is not None
                     and type(self.下一頁位置) is not 管理員呼叫游標位置)):
             raise ValueError("管理員呼叫投影頁無效") from None
+        for 項目 in self.項目:
+            項目.__post_init__()
+        if self.下一頁位置 is not None:
+            self.下一頁位置.__post_init__()
+
+    def __repr__(self) -> str:
+        """SQLite projection page不顯示metadata。"""
+        return "管理員呼叫投影頁([REDACTED])"
 
 
 class 管理員呼叫游標編解碼器:

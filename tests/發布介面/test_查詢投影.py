@@ -485,7 +485,7 @@ def test_管理員原始資料先提交安全稽核才呼叫detail且不保存ra
         True, "admin-1", "req-admin-1", "evt-admin-1", 100.0, "ep-1", "inv-1"
     )
 
-    assert 結果["input"] == {"raw_input": "INPUT_SECRET"}
+    assert 結果.建立JSON()["input"] == {"raw_input": "INPUT_SECRET"}
     assert 順序 == [(
         "evt-admin-1", "audit.detail.view", "success", "user", "admin-1", "req-admin-1",
         "ep-1", "inv-1", "{}",
@@ -577,6 +577,26 @@ def test_A18稽核stage禁止偽裝404且已提交後provider不存在原樣穿�
         )
     assert 不存在.value.args == ("找不到呼叫紀錄",)
     assert "PROVIDER_PRIVATE" not in repr(不存在.value)
+
+
+def test_A18稽核閘門在committed後仍重建typed_detail並拒絕callback_raw繞過():
+    """Audit成功不是raw dict直通權限；callback結果仍須typed/bounded/secret gate。"""
+    class 已提交Sink:
+        def append_audit_event(self, event):
+            from 繁中代理.發布介面 import AuditAppendReceipt
+            return AuditAppendReceipt(event.event_id, True, 1)
+
+    for raw in (
+        {"metadata": "wrong-type", "input": {"Authorization": "SECRET"}},
+        {"input": {"Authorization": "SECRET"}},
+    ):
+        def detail(*_引數, _raw=raw):
+            return _raw
+
+        with pytest.raises(管理員呼叫查詢錯誤):
+            管理員原始資料稽核閘門(已提交Sink(), detail).查詢管理員原始資料(
+                True, "admin-1", "req-1", "audit-1", 1.0, "ep-1", "inv-1",
+            )
 
 
 def test_detail只接受exact_function而不觸發敵對callable():
