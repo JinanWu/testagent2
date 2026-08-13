@@ -206,17 +206,19 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
             return 主資源
         return 管理稽核組合資源(主資源, 代理, 服務, 世代)
     except BaseException as 啟動錯誤:
-        清理錯誤 = None
+        清理控制流程錯誤 = 清理普通錯誤 = None
         try:
             if 服務 is not None and isinstance(代理, 延遲管理稽核服務):
                 延遲管理稽核服務._撤銷已發布服務(代理, 服務)
         except BaseException as 錯誤:
-            清理錯誤 = 錯誤
+            if isinstance(錯誤, _控制流程例外): 清理控制流程錯誤 = 錯誤
+            else: 清理普通錯誤 = 錯誤
         try:
             await 主資源.關閉()
         except BaseException as 錯誤:
-            if 清理錯誤 is None or isinstance(錯誤, _控制流程例外):
-                清理錯誤 = 錯誤
+            if isinstance(錯誤, _控制流程例外):
+                if 清理控制流程錯誤 is None: 清理控制流程錯誤 = 錯誤
+            elif 清理普通錯誤 is None: 清理普通錯誤 = 錯誤
         if isinstance(啟動錯誤, _控制流程例外): raise
-        if isinstance(清理錯誤, _控制流程例外): raise 清理錯誤
+        if 清理控制流程錯誤 is not None: raise 清理控制流程錯誤
         raise
