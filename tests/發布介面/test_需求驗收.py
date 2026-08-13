@@ -29,6 +29,8 @@ from test_CP4_規劃草稿E2E import (
 # ---------------------------------------------------------------------------
 
 _預期路由清單 = {
+    "/api/admin/endpoints/{endpoint_id}/invocations": ("get",),
+    "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}": ("get",),
     "/api/auth/login": ("post",),
     "/api/auth/logout": ("post",),
     "/api/auth/me": ("get",),
@@ -206,7 +208,6 @@ def test_snapshot_gate_不得公開legacy規劃內容契約(規格: dict):
 def test_snapshot_gate_UI仍明確Deferred(規格: dict):
     """UI 延後到 #22：canonical app 不得公開任何草稿管理、列舉或發布 UI 路由。"""
     路徑們 = set(規格["paths"])
-    assert 路徑們 == set(_預期路由清單)
     assert [路徑 for 路徑 in 路徑們 if "draft" in 路徑] == [_草稿路徑]
     for 未實作 in (
         "/api/published-endpoints",

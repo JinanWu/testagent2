@@ -13,6 +13,8 @@ import asgi as root_asgi
 
 
 _預期路由清單 = {
+    "/api/admin/endpoints/{endpoint_id}/invocations": ("get",),
+    "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}": ("get",),
     "/api/auth/login": ("post",),
     "/api/auth/logout": ("post",),
     "/api/auth/me": ("get",),
