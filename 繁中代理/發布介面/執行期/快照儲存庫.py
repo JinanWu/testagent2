@@ -32,6 +32,7 @@ from .模型契約 import 設定鍵, 重建設定
 from .服務帳戶 import ServiceAccountContext
 
 _識別 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_工具修訂 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}\Z")
 _雜湊 = re.compile(r"[0-9a-f]{64}\Z")
 _固定錯誤 = "發布快照不可用"
 _來源 = "endpoint_version_snapshot"
@@ -243,7 +244,7 @@ def _重建工具(允許原文: object, 綱要原文: object, 計算器: 工具�
     """按 allowlist/schema exact 順序，以注入 helper 重建 revision DTO。"""
     允許 = _解析允許工具(允許原文)
     綱要 = _解析正規JSON(綱要原文)
-    if type(綱要) is not dict or tuple(dict.keys(綱要)) != 允許:
+    if type(綱要) is not dict or len(綱要) != len(允許) or frozenset(dict.keys(綱要)) != frozenset(允許):
         raise ValueError
     結果 = []
     for 名稱 in 允許:
@@ -251,7 +252,7 @@ def _重建工具(允許原文: object, 綱要原文: object, 計算器: 工具�
         if type(項) is not dict or frozenset(dict.keys(項)) != frozenset({"revision", "description", "parameters"}):
             raise ValueError
         修訂, 說明, 參數 = (dict.__getitem__(項, 鍵) for 鍵 in ("revision", "description", "parameters"))
-        if not _是識別(修訂) or type(說明) is not str or type(參數) is not dict:
+        if not _是工具修訂(修訂) or type(說明) is not str or type(參數) is not dict:
             raise ValueError
         摘要 = 計算器(名稱, 修訂, 說明, _正規JSON(參數))
         if not _是雜湊(摘要):
@@ -349,6 +350,11 @@ def _重拋控制(控制: BaseException) -> NoReturn:
 def _是識別(值: object) -> bool:
     """只接受 exact str 安全識別碼。"""
     return type(值) is str and _識別.fullmatch(值) is not None
+
+
+def _是工具修訂(值: object) -> bool:
+    """工具 revision 可使用固定 release 契約所需的 ``@``，其他 identity 不放寬。"""
+    return type(值) is str and _工具修訂.fullmatch(值) is not None
 
 
 def _是雜湊(值: object) -> bool:

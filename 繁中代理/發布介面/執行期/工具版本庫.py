@@ -23,7 +23,8 @@ from ...工具 import 工具定義
 from ..嚴格JSON import 建立正規JSON, 解析嚴格JSON
 from .工具結果 import 工具設定錯誤, 工具逾時
 
-_識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_名稱識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
+_修訂識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}")
 _雜湊 = re.compile(r"[0-9a-f]{64}")
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _固定錯誤 = "發布工具快照不可用"
@@ -45,8 +46,8 @@ class 工具快照項目:
         """拒絕 forged subclass、非正規識別碼與非小寫 SHA-256。"""
         if (
             type(self) is not 工具快照項目
-            or not _是識別碼(self.name)
-            or not _是識別碼(self.revision)
+            or not _是工具名稱(self.name)
+            or not _是修訂(self.revision)
             or type(self.digest) is not str
             or _雜湊.fullmatch(self.digest) is None
         ):
@@ -115,7 +116,7 @@ class 工具版本庫:
 
     def 取得工具修訂(self, 名稱: str, 修訂名稱: str) -> object:
         """只回傳 exact 修訂的 detached 副本；絕不洩漏 authoritative state。"""
-        if not _是識別碼(名稱) or not _是識別碼(修訂名稱):
+        if not _是工具名稱(名稱) or not _是修訂(修訂名稱):
             return None
         已存 = 欄位 = 副本 = None
         失敗 = False
@@ -153,7 +154,7 @@ class 工具版本庫:
 
     def 移除修訂(self, 名稱: str, 修訂名稱: str) -> None:
         """只移除 live 修訂；永久 identity tombstone 不受影響。"""
-        if _是識別碼(名稱) and _是識別碼(修訂名稱):
+        if _是工具名稱(名稱) and _是修訂(修訂名稱):
             with self._鎖:
                 self._修訂.pop((名稱, 修訂名稱), None)
 
@@ -225,7 +226,7 @@ def 建立版本釘選工具登錄器(
             名稱 = object.__getattribute__(不可信項目, "name")
             修訂名稱 = object.__getattribute__(不可信項目, "revision")
             摘要 = object.__getattribute__(不可信項目, "digest")
-            if not _是識別碼(名稱) or not _是識別碼(修訂名稱) or (
+            if not _是識別碼(名稱) or not _是修訂(修訂名稱) or (
                 type(摘要) is not str or _雜湊.fullmatch(摘要) is None
             ):
                 失敗 = True
@@ -323,7 +324,7 @@ def _建立修訂(修訂名稱: str, 工具: 工具定義) -> _工具修訂:
     except BaseException:
         捕捉失敗 = True
     工具 = None
-    if 捕捉失敗 or not _是識別碼(修訂名稱) or not _是識別碼(名稱) or (
+    if 捕捉失敗 or not _是修訂(修訂名稱) or not _是工具名稱(名稱) or (
         type(說明) is not str or type(參數結構) is not dict or not callable(原處理函數)
     ):
         修訂名稱 = 工具 = 名稱 = 說明 = 參數結構 = 原處理函數 = None
@@ -446,7 +447,7 @@ def _封存處理函數(處理函數: object) -> object:
 def _修訂欄位合法(欄位: tuple[object, ...]) -> bool:
     """驗證提供者 DTO 的所有 exact 欄位。"""
     return (
-        len(欄位) == 6 and _是識別碼(欄位[0]) and _是識別碼(欄位[1])
+        len(欄位) == 6 and _是工具名稱(欄位[0]) and _是修訂(欄位[1])
         and type(欄位[2]) is str and _雜湊.fullmatch(欄位[2]) is not None
         and type(欄位[3]) is str and type(欄位[4]) is str and callable(欄位[5])
     )
@@ -464,7 +465,7 @@ def 計算工具修訂摘要(
     """
     參數 = 資料 = None
     try:
-        if not _是識別碼(name) or not _是識別碼(revision) or type(description) is not str or type(parameters) is not dict:
+        if not _是工具名稱(name) or not _是修訂(revision) or type(description) is not str or type(parameters) is not dict:
             raise 工具快照錯誤(_固定錯誤)
         參數 = _複製JSON物件(parameters)
         資料 = {"name": name, "revision": revision, "description": description, "parameters": 參數}
@@ -529,9 +530,19 @@ def _複製JSON值(目前: Any, 已看: set[int], 禁止底線鍵: bool = False)
         raise
 
 
+def _是工具名稱(值: object) -> bool:
+    """工具名稱維持既有字元集，不接受 revision 專用的 ``@``。"""
+    return type(值) is str and _名稱識別碼.fullmatch(值) is not None
+
+
 def _是識別碼(值: object) -> bool:
-    """只接受固定長度與字元集的 exact str。"""
-    return type(值) is str and _識別碼.fullmatch(值) is not None
+    """保留既有 name-validation seam；revision 必須使用獨立 validator。"""
+    return _是工具名稱(值)
+
+
+def _是修訂(值: object) -> bool:
+    """revision 接受固定 bundle revision 所需的 ``@``。"""
+    return type(值) is str and _修訂識別碼.fullmatch(值) is not None
 
 
 def _失敗結果() -> str:

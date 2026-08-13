@@ -936,7 +936,16 @@ def 建立發布執行器(
         ):
             raise ValueError
         提示 = _建立提示(版本.system_prompt, 套件.files)
-        工具登錄器 = 建立版本釘選工具登錄器(_方法代理(工具方法), 版本.tool_snapshot)
+        if 版本.tool_handler_release == "testagent2-published-skills-v1":
+            from ..生產技能工具 import 建立技能套件釘選工具登錄器
+            工具登錄器 = 建立技能套件釘選工具登錄器(
+                _方法代理(工具方法), 版本.tool_snapshot,
+                tuple((檔案.path, bytes(檔案.content)) for 檔案 in 套件.files),
+            )
+        else:
+            工具登錄器 = 建立版本釘選工具登錄器(
+                _方法代理(工具方法), 版本.tool_snapshot,
+            )
         模型轉接器 = 建立模型轉接器(dict(模型描述), 版本.model_config)
         執行器 = object.__new__(_發布執行器實作)
         with _執行器狀態鎖:
