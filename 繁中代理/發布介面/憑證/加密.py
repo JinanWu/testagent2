@@ -59,7 +59,7 @@ class AESGCM憑證封套:
         返回值：依函式型別標註或既有協定回傳結果。
         """
         copied: dict[int, bytes] = {}
-        primitives: dict[int, AESGCM] = {}
+        加密器: dict[int, AESGCM] = {}
         key: bytes | None = None
         try:
             if type(keys) is not dict or type(active_version) is not int or active_version <= 0:
@@ -70,15 +70,15 @@ class AESGCM憑證封套:
                 copied[version] = key
             if active_version not in copied or not callable(隨機位元組):
                 raise ValueError
-            primitives.update((version, AESGCM(material)) for version, material in copied.items())
+            加密器.update((version, AESGCM(金鑰材料)) for version, 金鑰材料 in copied.items())
         except Exception:
             key = None
             copied.clear()
-            primitives.clear()
+            加密器.clear()
             del keys, copied
             raise 憑證加密錯誤("憑證加密失敗") from None
         copied.clear()
-        self._加密器 = primitives
+        self._加密器 = 加密器
         self._active_version = active_version
         self._隨機位元組 = 隨機位元組
 

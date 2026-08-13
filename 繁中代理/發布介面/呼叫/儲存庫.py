@@ -363,7 +363,7 @@ class SQLite呼叫儲存庫:
         self, invocation_id: str, event_id: str, event_type: str, payload: object,
         expected_sequence: int, *, status: str | None = None, output: object | None = None,
         error: object | None = None, usage: object | None = None,
-        session_pair: Published成功對話提交 | None = None,
+        工作階段對話組: Published成功對話提交 | None = None,
     ) -> int:
         """以單一立即交易附加 expected event，並可同時完成 running invocation。
 
@@ -376,8 +376,8 @@ class SQLite呼叫儲存庫:
         連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
         payload快照 = output快照 = error快照 = usage快照 = session快照 = None
         payload_json = output_json = error_json = usage_json = None
-        session_user_json = session_assistant_json = None
-        session_pair_size = None
+        工作階段使用者JSON = 工作階段助理JSON = None
+        工作階段對話組位元組 = None
         時間原值 = 時間 = 序號 = None
         try:
             if (any(type(值) is not str or not 值.strip() for 值 in (invocation_id, event_id, event_type))
@@ -385,23 +385,23 @@ class SQLite呼叫儲存庫:
                     or status not in (None, "succeeded", "failed")):
                 raise ValueError
             if status is None:
-                if output is not None or error is not None or usage is not None or session_pair is not None:
+                if output is not None or error is not None or usage is not None or 工作階段對話組 is not None:
                     raise ValueError
             elif ((status == "succeeded" and (output is None or error is not None))
                   or (status == "failed" and (output is not None or error is None))):
                 raise ValueError
-            if session_pair is not None:
-                if status != "succeeded" or type(session_pair) is not Published成功對話提交:
+            if 工作階段對話組 is not None:
+                if status != "succeeded" or type(工作階段對話組) is not Published成功對話提交:
                     raise ValueError
-                session快照 = session_pair.驗證並建立快照()
+                session快照 = 工作階段對話組.驗證並建立快照()
                 session快照 = session快照[:5] + (
                     self._建立可信JSON樹(session快照[5]),
                     self._建立可信JSON樹(session快照[6]), session快照[7],
                 )
-                session_user_json = 建立正規JSON(session快照[5])
-                session_assistant_json = 建立正規JSON(session快照[6])
-                session_pair_size = len(session_user_json.encode("utf-8")) + len(session_assistant_json.encode("utf-8"))
-                if not 0 < session_pair_size <= 最大歷史位元組:
+                工作階段使用者JSON = 建立正規JSON(session快照[5])
+                工作階段助理JSON = 建立正規JSON(session快照[6])
+                工作階段對話組位元組 = len(工作階段使用者JSON.encode("utf-8")) + len(工作階段助理JSON.encode("utf-8"))
+                if not 0 < 工作階段對話組位元組 <= 最大歷史位元組:
                     raise ValueError
             with closing(self._開啟連線()) as 連線, 連線:
                 連線.execute("BEGIN IMMEDIATE")
@@ -442,8 +442,8 @@ class SQLite呼叫儲存庫:
                             "AND session_id=? AND sequence_number=?",
                             session快照[:3] + (session快照[4],),
                         ).fetchone()
-                        if session列 != (session快照[3], session_user_json, session_assistant_json,
-                                         session_pair_size, session快照[7]):
+                        if session列 != (session快照[3], 工作階段使用者JSON, 工作階段助理JSON,
+                                         工作階段對話組位元組, session快照[7]):
                             raise ValueError
                     return expected_sequence
                 if 呼叫列 != ("running", None, None, None, None, None, None):
@@ -482,8 +482,8 @@ class SQLite呼叫儲存庫:
                         "user_message_json,assistant_message_json,pair_size_bytes,token_count,created_at) "
                         "VALUES (?,?,?,?,?,?,?,?,?,?)",
                         session快照[:3] + (session快照[4], session快照[3],
-                                           session_user_json, session_assistant_json,
-                                           session_pair_size, session快照[7], 時間),
+                                           工作階段使用者JSON, 工作階段助理JSON,
+                                           工作階段對話組位元組, session快照[7], 時間),
                     )
                 if status is not None:
                     游標 = 連線.execute(
@@ -496,11 +496,11 @@ class SQLite呼叫儲存庫:
             return expected_sequence
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
-            invocation_id = event_id = event_type = payload = expected_sequence = status = session_pair = None
+            invocation_id = event_id = event_type = payload = expected_sequence = status = 工作階段對話組 = None
             output = error = usage = 連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
             payload快照 = output快照 = error快照 = usage快照 = session快照 = None
             payload_json = output_json = error_json = usage_json = None
-            session_user_json = session_assistant_json = session_pair_size = None
+            工作階段使用者JSON = 工作階段助理JSON = 工作階段對話組位元組 = None
             時間原值 = 時間 = 序號 = None
             if 是控制流程:
                 raise
