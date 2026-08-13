@@ -180,6 +180,11 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
     assert all(set(定義) == {"get"} for 定義 in admin.values())
     ids = [定義["get"]["operationId"] for 定義 in admin.values()]
     assert len(ids) == len(set(ids)) == 2
+    list_parameters = admin["/api/admin/endpoints/{endpoint_id}/invocations"]["get"]["parameters"]
+    assert {(項["name"], 項["in"]) for 項 in list_parameters} == {
+        ("endpoint_id", "path"), ("from_at", "query"), ("to_at", "query"),
+        ("status", "query"), ("error_code", "query"), ("limit", "query"), ("cursor", "query"),
+    }
     openapi = str(admin).lower()
     assert "export" not in openapi and "download" not in openapi and "raw_search" not in openapi
     list_ref = admin["/api/admin/endpoints/{endpoint_id}/invocations"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -241,7 +246,7 @@ def test_A18_canonical_app建構零IO且OpenAPI掛載兩條Admin_GET(tmp_path, m
     assert "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}" in paths
     me = next(r for r in app.routes if getattr(r, "path", None) == "/api/auth/me")
     admin = next(r for r in app.routes if getattr(r, "path", None) == "/api/admin/endpoints/{endpoint_id}/invocations")
-    assert me.dependant.dependencies[0].call is admin.dependant.dependencies[0].call
+    assert admin.dependant.dependencies[0].call.__canonical_dependency__ is me.dependant.dependencies[0].call
     回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
     assert 回應.status_code == 401
     assert 回應.json() == {"detail": {"code": "unauthorized"}}
@@ -300,6 +305,27 @@ def test_A18_Admin_proxy清除失敗仍關閉主資源(tmp_path, monkeypatch):
         assert False
     except RuntimeError as 錯誤:
         assert 錯誤.args == ("cleanup",) and 主.關閉次數 == 1
+    try:
+        代理.列出管理員安全呼叫(None, None)
+        assert False
+    except RuntimeError as 錯誤:
+        assert 錯誤.args == ("Published管理稽核服務不可用",)
+
+
+def test_A18_hostile_dependency錯誤不可穿透raw_status或body():
+    from fastapi import HTTPException
+
+    def 敵對相依():
+        raise HTTPException(418, detail={"marker": "RAW_DEPENDENCY_SECRET"})
+
+    app = FastAPI()
+    app.include_router(建立管理稽核路由器(
+        _列表(), _詳情(), 管理員呼叫游標編解碼器(b"k" * 32), 敵對相依,
+    ))
+    回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": {"message": "呼叫紀錄不可取得"}}
+    assert "RAW_DEPENDENCY_SECRET" not in 回應.text
 
 
 def test_A18_partial_install發布後拋錯必須撤銷authority(tmp_path, monkeypatch):

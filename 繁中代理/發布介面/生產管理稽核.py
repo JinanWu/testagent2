@@ -136,6 +136,14 @@ class 管理稽核組合資源:
             await run_in_threadpool(self._代理.清除, self._服務, self._世代)
         except BaseException as 錯誤:
             第一錯誤 = 錯誤
+            try:
+                if isinstance(self._代理, 延遲管理稽核服務):
+                    await run_in_threadpool(
+                        延遲管理稽核服務.清除, self._代理, self._服務, self._世代,
+                    )
+            except BaseException as 撤銷錯誤:
+                if isinstance(撤銷錯誤, _控制流程例外):
+                    第一錯誤 = 撤銷錯誤
         try:
             await self._主資源.關閉()
         except BaseException as 錯誤:

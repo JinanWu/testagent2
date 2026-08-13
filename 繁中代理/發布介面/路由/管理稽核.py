@@ -6,9 +6,10 @@ import math
 import re
 import secrets
 import time
+import inspect
 from typing import Annotated, Any, Protocol, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ConfigDict, Field, create_model
 from starlette.concurrency import run_in_threadpool
@@ -31,8 +32,6 @@ from ..網頁工作階段 import 網頁使用者
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
-
-
 class 管理員安全列表提供者(Protocol):
     """安全metadata投影的最小介面。"""
 
@@ -149,6 +148,31 @@ def 建立管理稽核路由器(
             or not callable(請求識別碼工廠) or not callable(稽核事件識別碼工廠)
             or type(游標編解碼器) is not 管理員呼叫游標編解碼器):
         raise ValueError("管理稽核路由設定無效") from None
+    try:
+        相依參數數 = len(inspect.signature(目前工作階段相依).parameters)
+    except (TypeError, ValueError):
+        raise ValueError("管理稽核路由設定無效") from None
+    if 相依參數數 not in (0, 2):
+        raise ValueError("管理稽核路由設定無效") from None
+
+    def 取得安全工作階段(請求: Request, 回應: Response) -> 網頁使用者:
+        """呼叫canonical session seam並阻止未列入契約的HTTP錯誤穿透。"""
+        try:
+            if 相依參數數 == 0:
+                return 目前工作階段相依()
+            return 目前工作階段相依(請求, 回應)
+        except HTTPException as 錯誤:
+            if 錯誤.status_code == 401 and 錯誤.detail == {"code": "unauthorized"}:
+                raise
+            if 錯誤.status_code == 503 and 錯誤.detail == {"code": "auth_unavailable"}:
+                raise
+            _拋出固定錯誤(500)
+        except _控制流程:
+            raise
+        except BaseException:
+            _拋出固定錯誤(500)
+
+    setattr(取得安全工作階段, "__canonical_dependency__", 目前工作階段相依)
     路由器 = APIRouter(prefix="/api/admin")
     列表路徑 = ADMIN_INVOCATION_LIST_PATH.removeprefix("/api/admin")
     詳情路徑 = ADMIN_INVOCATION_DETAIL_PATH.removeprefix("/api/admin")
@@ -161,9 +185,16 @@ def 建立管理稽核路由器(
     async def 列出管理員呼叫(
         請求: Request,
         端點識別碼: Annotated[str, Path(alias="endpoint_id")],
-        使用者: 網頁使用者 = Depends(目前工作階段相依),
+        使用者: 網頁使用者 = Depends(取得安全工作階段),
+        起始文件: Annotated[str | None, Query(alias="from_at", json_schema_extra={"type": "number", "minimum": 0})] = None,
+        結束文件: Annotated[str | None, Query(alias="to_at", json_schema_extra={"type": "number", "minimum": 0})] = None,
+        狀態文件: Annotated[str | None, Query(alias="status")] = None,
+        錯誤碼文件: Annotated[str | None, Query(alias="error_code")] = None,
+        數量文件: Annotated[str | None, Query(alias="limit", json_schema_extra={"type": "integer", "minimum": 1, "maximum": 100, "default": 50})] = None,
+        游標文件: Annotated[str | None, Query(alias="cursor")] = None,
     ) -> JSONResponse:
         """驗證Admin與strict query後只讀安全metadata投影。"""
+        del 起始文件, 結束文件, 狀態文件, 錯誤碼文件, 數量文件, 游標文件
         _確認管理員(使用者)
         _確認路徑識別碼(端點識別碼)
         條件, 游標 = _解析列表查詢(請求, 端點識別碼, 游標編解碼器)
@@ -187,7 +218,7 @@ def 建立管理稽核路由器(
         請求: Request,
         端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         呼叫識別碼: Annotated[str, Path(alias="invocation_id")],
-        使用者: 網頁使用者 = Depends(目前工作階段相依),
+        使用者: 網頁使用者 = Depends(取得安全工作階段),
     ) -> JSONResponse:
         """只允許Admin，並把server-owned audit資料傳入A18-01 gate。"""
         管理員識別碼 = _確認管理員(使用者)
