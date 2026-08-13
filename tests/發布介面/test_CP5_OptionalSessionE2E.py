@@ -1,18 +1,25 @@
 """A09-04 canonical ASGI 可選工作階段 live／restart 驗收。"""
 
 import sqlite3
+import time
 
 from fastapi.testclient import TestClient
 
-from test_CP4_Controller生產呼叫 import _建立live環境
+from test_CP4_Controller生產呼叫 import _建立live環境, _正規
+from 繁中代理.發布介面.憑證.儲存庫 import SQLite憑證儲存庫
+from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.憑證.服務 import SQLite憑證撤銷服務
+from 繁中代理.發布介面.領域模型 import WebOwnerPrincipal
+from 繁中代理.發布介面.技能套件.發布器 import 技能套件發布器
+from 繁中代理.發布介面.技能套件.儲存庫 import 套件收據儲存庫
 
 
-def _呼叫(client, key, *, session: str | None | object = ...):
+def _呼叫(client, key, *, session: str | None | object = ..., slug="demo"):
     本文: dict[str, object] = {"input": {"question": "CP5"}}
     if session is not ...:
         本文["session_id"] = session
     return client.post(
-        "/v1/endpoints/demo/invoke",
+        f"/v1/endpoints/{slug}/invoke",
         headers={"Authorization": f"Bearer {key}"},
         json=本文,
     )
@@ -74,3 +81,112 @@ def test_canonical真Key多輪隔離null省略與restart都由durable_history驅
         ("case-a", 1, "ver-1"), ("case-a", 2, "ver-1"),
         ("case-a", 3, "ver-1"), ("case-b", 1, "ver-1"),
     ]
+
+
+def test_canonical同服務帳戶不同有效key共享且拒絕key零history寫入(tmp_path):
+    """正式建立的第二把 key 可延續同 SA session；invalid/expired/revoked 全部零附加。"""
+    db, app, 第一金鑰, model, _ = _建立live環境(tmp_path)
+    現在 = time.time()
+    封套 = AESGCM憑證封套({1: b"k" * 32}, 1)
+    第二 = SQLite憑證儲存庫(
+        db, 封套, clock=lambda: 現在, id_factory=lambda: "cred-2",
+    ).建立(
+        "ep-1", WebOwnerPrincipal("owner-1"), name="second", purpose="A09 shared SA",
+        expires_at=現在 + 3600, rate_limit_requests=60,
+    )
+    過期 = SQLite憑證儲存庫(
+        db, 封套, clock=lambda: 現在 - 7200, id_factory=lambda: "cred-expired",
+    ).建立(
+        "ep-1", WebOwnerPrincipal("owner-1"), name="expired", purpose="A09 rejection",
+        expires_at=現在 - 3600, rate_limit_requests=60,
+    )
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert _呼叫(client, 第一金鑰, session="shared").status_code == 200
+        共享 = _呼叫(client, 第二.api_key, session="shared")
+        assert 共享.status_code == 200
+        assert [訊息["role"] for 訊息 in model.calls[-1]["messages"]] == [
+            "system", "user", "assistant", "user",
+        ]
+        with sqlite3.connect(db) as connection:
+            基準 = connection.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone()
+        assert _呼叫(client, "pak_INVALID_KEY", session="shared").status_code == 401
+        assert _呼叫(client, 過期.api_key, session="shared").status_code == 401
+        SQLite憑證撤銷服務(db, clock=lambda: 現在 + 1).撤銷(
+            "ep-1", "cred-2", WebOwnerPrincipal("owner-1"), "revoke-a09",
+        )
+        assert _呼叫(client, 第二.api_key, session="shared").status_code == 401
+    with sqlite3.connect(db) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == 基準
+
+
+def _新增端點或版本(tmp_path, db, *, endpoint, version, owner, account, number, bundle):
+    """以正式 bundle publisher 建立可供 canonical runtime 讀取的 exact snapshot。"""
+    receipt = 技能套件發布器(tmp_path / "bundles").發布(
+        套件識別碼=bundle, 端點識別碼=endpoint, 端點版本識別碼=version,
+        版本號碼=number, 建立時間=float(number + 10), 建立者識別碼=owner,
+        技能表={"cp5": tmp_path / "skill"},
+    )
+    manifest = (receipt.路徑 / "manifest.json").read_text(encoding="utf-8")
+    with sqlite3.connect(db) as connection:
+        if number == 1:
+            connection.execute("INSERT INTO service_accounts VALUES(?,?,NULL)", (account, number + 10))
+            connection.execute(
+                "INSERT INTO published_endpoints VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (endpoint, owner, account, f"demo-{number + 1}", "active", None,
+                 number + 10, number + 10, 60, 60),
+            )
+        基準 = list(connection.execute(
+            "SELECT * FROM published_endpoint_versions WHERE id='ver-1'"
+        ).fetchone())
+        基準[0:5] = [version, endpoint, number, "需求", "第二固定提示"]
+        基準[11] = manifest
+        基準[14:17] = [0, owner, number + 10]
+        connection.execute(
+            "INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            tuple(基準),
+        )
+        套件收據儲存庫(connection).新增(版本識別碼=version, 收據=receipt, 發布時間=float(number + 11))
+        connection.execute("UPDATE published_endpoints SET current_version_id=? WHERE id=?", (version, endpoint))
+
+
+def test_canonical跨endpoint_owner隔離且version_switch保留舊turn_identity(tmp_path):
+    """同名 session 跨 owner/SA 不共享；切版後新 request pin v2、舊 pair 仍標 v1。"""
+    db, app, 第一金鑰, model, _ = _建立live環境(tmp_path)
+    _新增端點或版本(
+        tmp_path, db, endpoint="ep-2", version="ver-foreign", owner="owner-2",
+        account="sa-2", number=1, bundle="bundle-foreign",
+    )
+    現在 = time.time()
+    第二金鑰 = SQLite憑證儲存庫(
+        db, AESGCM憑證封套({1: b"k" * 32}, 1), clock=lambda: 現在,
+        id_factory=lambda: "cred-foreign",
+    ).建立(
+        "ep-2", WebOwnerPrincipal("owner-2"), name="foreign", purpose="A09 isolation",
+        expires_at=現在 + 3600, rate_limit_requests=60,
+    ).api_key
+    with TestClient(app, raise_server_exceptions=False) as client:
+        assert _呼叫(client, 第一金鑰, session="same").status_code == 200
+        foreign = _呼叫(client, 第二金鑰, session="same", slug="demo-2")
+        assert foreign.status_code == 200
+        assert [訊息["role"] for 訊息 in model.calls[-1]["messages"]] == ["system", "user"]
+
+        _新增端點或版本(
+            tmp_path, db, endpoint="ep-1", version="ver-2", owner="owner-1",
+            account="sa-1", number=2, bundle="bundle-2",
+        )
+        switched = _呼叫(client, 第一金鑰, session="same")
+        assert switched.status_code == 200
+        assert switched.json()["endpoint"]["version"] == 2
+        系統提示 = model.calls[-1]["messages"][0]["content"]
+        assert 系統提示.startswith("第二固定提示\n\n")
+        assert "## 技能套件：cp5/SKILL.md" in 系統提示
+        assert "固定提示\n\n## 技能套件：cp4/SKILL.md" not in 系統提示
+    with sqlite3.connect(db) as connection:
+        assert connection.execute(
+            "SELECT endpoint_id,service_account_id,endpoint_version_id,sequence_number "
+            "FROM published_session_turn_pairs ORDER BY endpoint_id,sequence_number"
+        ).fetchall() == [
+            ("ep-1", "sa-1", "ver-1", 1), ("ep-1", "sa-1", "ver-2", 2),
+            ("ep-2", "sa-2", "ver-foreign", 1),
+        ]
