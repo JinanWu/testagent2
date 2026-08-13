@@ -133,6 +133,11 @@ def test_canonical同服務帳戶不同有效key共享且拒絕key零history讀�
         原讀取 = SQLitePublished工作階段儲存庫.讀取成功歷史
 
         def 可觀測讀取(self, *參數):
+            """計數credential gate後是否觸及history reader。
+
+            參數：repository instance與原讀取scope參數。
+            返回值：原repository讀取結果。
+            """
             nonlocal 讀取次數
             讀取次數 += 1
             return 原讀取(self, *參數)

@@ -175,12 +175,27 @@ class _提交失敗連線:
     """代理 SQLite connection，只在 transaction context COMMIT 點注入失敗。"""
 
     def __init__(self, 連線):
+        """保存被代理連線。
+
+        參數：``連線``為真實SQLite connection。
+        返回值：無；建立commit-failure test proxy。
+        """
         self._連線 = 連線
 
     def __getattr__(self, 名稱):
+        """把未覆寫操作委派給真實連線。
+
+        參數：``名稱``為要查找的connection attribute。
+        返回值：真實連線上的同名attribute。
+        """
         return getattr(self._連線, 名稱)
 
     def __enter__(self):
+        """進入代理transaction context。
+
+        參數：無。
+        返回值：本commit-failure proxy。
+        """
         return self
 
     def __exit__(self, 錯誤型別, 錯誤, traceback):
@@ -221,6 +236,11 @@ def test_completion_usage_audit_commit任一失敗皆不留success或partial_pai
             )
 
     def 建立連線(*參數, **命名):
+        """依測試階段建立一般或commit-failure連線。
+
+        參數：原樣轉交``sqlite3.connect``的位置與命名參數。
+        返回值：SQLite connection或具相同測試介面的代理。
+        """
         連線 = sqlite3.connect(*參數, **命名)
         return cast(sqlite3.Connection, _提交失敗連線(連線)) if 階段 == "commit" else 連線
 
@@ -263,6 +283,11 @@ def test_同session兩個completion以CAS恰一成功另一筆不留terminal副�
         橋接.開始執行嘗試(呼叫, 請求)
         項目.append((呼叫, 請求))
     def 完成(項):
+        """嘗試完成一個共享session invocation。
+
+        參數：``項``含invocation與其execution request。
+        返回值：成功receipt；CAS conflict時為``None``。
+        """
         try:
             return 橋接.記錄執行嘗試(項[0], 項[1], 執行嘗試結果("success", {"ok": True}), True)
         except 呼叫儲存錯誤:

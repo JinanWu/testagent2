@@ -100,6 +100,11 @@ def test_metadata省略null或物件(metadata):
 
 @pytest.mark.parametrize("欄位", ["", ',"session_id":null'])
 def test_session_id省略或null維持單輪且authoritative回應為null(欄位):
+    """驗證session省略與null皆維持stateless。
+
+    參數：``欄位``為空字串或明確null JSON片段。
+    返回值：無；編排輸入與回應session皆須為``None``。
+    """
     client, 編排器, _ = _客戶端()
     response = _送出(client, ('{"input":"hi"' + 欄位 + '}').encode())
     assert response.status_code == 200
@@ -108,6 +113,11 @@ def test_session_id省略或null維持單輪且authoritative回應為null(欄位
 
 
 def test_session_id合法UTF8字串原樣傳遞且authoritative回顯():
+    """驗證合法UTF-8 session identity不被normalize。
+
+    參數：無。
+    返回值：無；route forwarding與authoritative echo保持原字串。
+    """
     client, 編排器, _ = _客戶端()
     response = _送出(client, '{"input":"hi","session_id":"案件-甲"}'.encode())
     assert response.status_code == 200
@@ -120,6 +130,11 @@ def test_session_id合法UTF8字串原樣傳遞且authoritative回顯():
     True, 1, [], {},
 ])
 def test_session_id無效值在編排器前拒絕(session_id):
+    """驗證非法session identity在進入編排器前fail closed。
+
+    參數：``session_id``為空白、控制字元、過長或錯誤型別案例。
+    返回值：無；固定400且編排器零呼叫。
+    """
     client, 編排器, _ = _客戶端()
     body = json.dumps({"input": "hi", "session_id": session_id}).encode()
     response = _送出(client, body)
@@ -130,6 +145,11 @@ def test_session_id無效值在編排器前拒絕(session_id):
 
 
 def test_session_id上限依UTF8位元組而非字元數():
+    """驗證128-byte上限使用UTF-8 bytes而非Unicode字元數。
+
+    參數：無。
+    返回值：無；42個中文字合法，43個中文字被拒絕。
+    """
     client, 編排器, _ = _客戶端()
     assert _送出(client, json.dumps({"input": 1, "session_id": "界" * 42}).encode()).status_code == 200
     assert _送出(client, json.dumps({"input": 1, "session_id": "界" * 43}).encode()).status_code == 400
@@ -137,6 +157,11 @@ def test_session_id上限依UTF8位元組而非字元數():
 
 
 def test_A09_G1凍結scope版本失敗歷史與三種bounds():
+    """凍結A09 scope、version、failure-history與三重bounds常數。
+
+    參數：無。
+    返回值：無；所有G1 contract literals必須維持核准值。
+    """
     assert PUBLISHED工作階段SCOPE == ("endpoint_id", "service_account_id", "session_id")
     assert PUBLISHED歷史上限 == {"turn_pairs": 32, "bytes": 262144, "tokens": 32768}
     # 每次 request pin 當下 current version；舊歷史只作 bounded messages，不能改 pin。
