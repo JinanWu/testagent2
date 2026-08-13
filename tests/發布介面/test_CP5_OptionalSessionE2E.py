@@ -74,8 +74,10 @@ def test_canonical真Key多輪隔離null省略與restart都由durable_history驅
         ).fetchall()
     assert before_restart == [("case-a", 1), ("case-a", 2), ("case-b", 1)]
 
-    # 同一 canonical app factory 重新進入 lifespan，會重建 production repository/provider。
-    with TestClient(app, raise_server_exceptions=False) as restarted:
+    # 關閉第一個 app 後，以相同 explicit settings／DB 建立全新 canonical app instance。
+    重啟應用程式 = app.state.重建canonical應用程式()
+    assert 重啟應用程式 is not app
+    with TestClient(重啟應用程式, raise_server_exceptions=False) as restarted:
         第三輪 = _呼叫(restarted, key, session="case-a")
     assert 第三輪.status_code == 200
     assert [訊息["role"] for 訊息 in model.calls[-1]["messages"]] == [

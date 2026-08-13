@@ -21,6 +21,7 @@ from jsonschema.exceptions import SchemaError
 
 from ..領域模型 import InvocationRef
 from .儲存庫 import SQLite呼叫儲存庫
+from .Published工作階段 import Published成功對話提交
 from .編排器 import 執行嘗試結果, 執行嘗試紀錄收據, 執行嘗試請求
 from .限流 import 增加雙層計數並判定, 限流決策
 
@@ -295,12 +296,15 @@ class InvocationLedger橋接:
                 歷史 = request.history
                 下一序號 = 1 if not 歷史 else object.__getattribute__(歷史[-1], "sequence_number") + 1
                 token數 = 1 if 用量 is None or 用量.total_tokens is None else max(1, 用量.total_tokens)
-                工作階段對話組 = (
-                    object.__getattribute__(釘選, "endpoint_id"),
-                    object.__getattribute__(釘選, "service_account_id"), 工作階段,
-                    object.__getattribute__(釘選, "version_id"), 下一序號,
-                    {"role": "user", "content": request.input},
-                    {"role": "assistant", "content": result.data}, token數,
+                工作階段對話組 = Published成功對話提交(
+                    endpoint_id=object.__getattribute__(釘選, "endpoint_id"),
+                    service_account_id=object.__getattribute__(釘選, "service_account_id"),
+                    session_id=工作階段,
+                    endpoint_version_id=object.__getattribute__(釘選, "version_id"),
+                    sequence_number=下一序號,
+                    user_message={"role": "user", "content": request.input},
+                    assistant_message={"role": "assistant", "content": result.data},
+                    token_count=token數,
                 )
         elif 種類 != "success" or 次數 == 2:
             錯誤碼 = 種類 if 種類 != "success" else "model_output_schema_invalid"

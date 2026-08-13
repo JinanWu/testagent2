@@ -23,7 +23,7 @@ from typing import Callable, cast
 
 from ..嚴格JSON import 建立正規JSON
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移
-from .Published工作階段 import 最大歷史TOKEN數, 最大歷史位元組
+from .Published工作階段 import Published成功對話提交, 最大歷史位元組
 
 
 class 呼叫儲存錯誤(RuntimeError):
@@ -283,15 +283,18 @@ class SQLite呼叫儲存庫:
     """只寫入既有endpoint_invocations，不建立任何備援結構。"""
 
     def __init__(self, 資料庫: str | Path, *, 時鐘: Callable[[], float] = time.time,
-                 識別碼工廠: Callable[[], str] | None = None) -> None:
+                 識別碼工廠: Callable[[], str] | None = None,
+                 連線工廠: Callable[..., sqlite3.Connection] | None = None) -> None:
         """保存資料庫位置與可測試依賴；不開啟連線或變更資料庫。"""
         if type(資料庫) not in (str, _Path具體型別) or (type(資料庫) is str and not 資料庫):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
-        if not callable(時鐘) or (識別碼工廠 is not None and not callable(識別碼工廠)):
+        if (not callable(時鐘) or (連線工廠 is not None and not callable(連線工廠))
+                or (識別碼工廠 is not None and not callable(識別碼工廠))):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
         self._資料庫 = Path(資料庫)
         self._時鐘 = 時鐘
         self._識別碼工廠 = 識別碼工廠 or (lambda: f"inv-{secrets.token_hex(16)}")
+        self._連線工廠 = sqlite3.connect if 連線工廠 is None else 連線工廠
 
     def 建立已解析呼叫(
         self, endpoint_id: str, endpoint_version_id: str, request_id: str, input: object, *,
@@ -354,7 +357,7 @@ class SQLite呼叫儲存庫:
         self, invocation_id: str, event_id: str, event_type: str, payload: object,
         expected_sequence: int, *, status: str | None = None, output: object | None = None,
         error: object | None = None, usage: object | None = None,
-        session_pair: tuple[object, ...] | None = None,
+        session_pair: Published成功對話提交 | None = None,
     ) -> int:
         """以單一立即交易附加 expected event，並可同時完成 running invocation。
 
@@ -378,24 +381,12 @@ class SQLite呼叫儲存庫:
                   or (status == "failed" and (output is not None or error is None))):
                 raise ValueError
             if session_pair is not None:
-                if status != "succeeded" or type(session_pair) is not tuple or len(session_pair) != 8:
+                if status != "succeeded" or type(session_pair) is not Published成功對話提交:
                     raise ValueError
-                endpoint, account, session, version, session_sequence, user_message, assistant_message, token_count = session_pair
-                if not all(type(值) is str for 值 in (endpoint, account, session, version)):
-                    raise ValueError
-                endpoint文字, account文字 = str(endpoint), str(account)
-                session文字, version文字 = str(session), str(version)
-                if (any(not 值 or 值 != 值.strip()
-                        for 值 in (endpoint文字, account文字, session文字, version文字))
-                        or len(session文字.encode("utf-8")) > 128
-                        or any(ord(字元) < 32 or 127 <= ord(字元) <= 159 for 字元 in session文字)
-                        or type(session_sequence) is not int or session_sequence < 1
-                        or type(token_count) is not int or not 1 <= token_count <= 最大歷史TOKEN數
-                        or type(user_message) is not dict or type(assistant_message) is not dict):
-                    raise ValueError
-                session快照 = (
-                    endpoint文字, account文字, session文字, version文字, session_sequence,
-                    self._建立可信JSON樹(user_message), self._建立可信JSON樹(assistant_message), token_count,
+                session快照 = session_pair.驗證並建立快照()
+                session快照 = session快照[:5] + (
+                    self._建立可信JSON樹(session快照[5]),
+                    self._建立可信JSON樹(session快照[6]), session快照[7],
                 )
                 session_user_json = 建立正規JSON(session快照[5])
                 session_assistant_json = 建立正規JSON(session快照[6])
@@ -712,7 +703,7 @@ class SQLite呼叫儲存庫:
             if not stat.S_ISREG(開啟前.st_mode) or 開啟前.st_size <= 0:
                 raise ValueError
             uri = 路徑.as_uri() + "?mode=rw"
-            連線 = sqlite3.connect(uri, uri=True, isolation_level=None)
+            連線 = self._連線工廠(uri, uri=True, isolation_level=None)
             開啟後 = os.lstat(路徑)
             if stat.S_ISLNK(開啟後.st_mode) or (開啟前.st_dev, 開啟前.st_ino) != (開啟後.st_dev, 開啟後.st_ino):
                 raise ValueError

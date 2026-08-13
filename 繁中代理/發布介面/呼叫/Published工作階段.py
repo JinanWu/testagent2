@@ -48,6 +48,45 @@ class Published對話組:
     token_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class Published成功對話提交:
+    """承載 invocation completion transaction 所需的具名 session pair。
+
+    參數：英文欄位精確對應 SQL／runtime wire identities 與成功訊息。
+    返回值：不可變的原子提交 DTO；``驗證並建立快照`` 回傳可信 canonical 值。
+    """
+
+    endpoint_id: str
+    service_account_id: str
+    session_id: str
+    endpoint_version_id: str
+    sequence_number: int
+    user_message: dict[str, object]
+    assistant_message: dict[str, object]
+    token_count: int
+
+    def 驗證並建立快照(self) -> tuple[str, str, str, str, int, dict[str, object], dict[str, object], int]:
+        """集中驗證 composite scope、sequence、messages 與 token bound。
+
+        參數：無；讀取本 DTO 的八個 immutable 欄位。
+        返回值：可安全交給 transaction adapter 的具型別八欄快照。
+        """
+        SQLitePublished工作階段儲存庫._驗證scope(
+            self.endpoint_id, self.service_account_id, self.session_id,
+        )
+        if (type(self.endpoint_version_id) is not str or not self.endpoint_version_id.strip()
+                or type(self.sequence_number) is not int or self.sequence_number < 1
+                or type(self.token_count) is not int
+                or not 1 <= self.token_count <= 最大歷史TOKEN數
+                or type(self.user_message) is not dict or type(self.assistant_message) is not dict):
+            raise ValueError
+        return (
+            self.endpoint_id, self.service_account_id, self.session_id,
+            self.endpoint_version_id, self.sequence_number,
+            self.user_message, self.assistant_message, self.token_count,
+        )
+
+
 class SQLitePublished工作階段儲存庫:
     """以單一小介面封裝 composite scope、CAS 與三重 bounded read。
 
