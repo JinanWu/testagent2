@@ -174,7 +174,8 @@ class SQLitePublished工作階段儲存庫:
             if (type(endpoint_version_id) is not str or not endpoint_version_id.strip()
                     or type(expected_sequence) is not int or expected_sequence < 1
                     or type(token_count) is not int or not 1 <= token_count <= 最大歷史TOKEN數
-                    or type(user_message) is not dict or type(assistant_message) is not dict):
+                    or not _是核准訊息(user_message, "user")
+                    or not _是核准訊息(assistant_message, "assistant")):
                 raise ValueError
             user_json = 建立正規JSON(user_message)
             assistant_json = 建立正規JSON(assistant_message)
