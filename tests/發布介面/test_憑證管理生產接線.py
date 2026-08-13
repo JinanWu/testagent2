@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType, MethodType
+
 from fastapi.testclient import TestClient
 
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
@@ -54,8 +56,41 @@ def test_startup_exact_once建立管理provider且shutdown清除reference(tmp_pa
         assert 呼叫 == ["installer", "models"]
         assert resource._憑證管理服務 is not None
         assert resource._憑證管理代理._服務 is resource._憑證管理服務
+        assert not hasattr(resource, "_憑證封套")
     assert resource._憑證管理服務 is None
     assert resource._憑證管理代理 is None
+
+
+def test_master_key_bytes無法從app_state資源圖走訪(tmp_path) -> None:
+    """deployment master key 只轉成 opaque crypto primitive，不留在 app state object graph。"""
+    marker = b"A07-master-key-marker-value-1234"
+    assert len(marker) == 32
+    web, published, *_ = _設定(tmp_path, lambda: AESGCM憑證封套({1: marker}, 1))
+    published.技能套件發布根.mkdir()
+    app = 建立CP4ASGI應用程式(web, published)
+    with TestClient(app):
+        seen: set[int] = set()
+
+        def reachable(value) -> bool:
+            """循環安全地檢查 marker 是否存在於 Python-visible app state graph。"""
+            identity = id(value)
+            if identity in seen:
+                return False
+            seen.add(identity)
+            if type(value) is bytes:
+                return value == marker
+            if type(value) in (str, int, float, bool, type(None), type, bytes):
+                return False
+            if type(value) in (tuple, list, set, frozenset):
+                return any(reachable(item) for item in value)
+            if type(value) in (dict, MappingProxyType):
+                return any(reachable(item) for pair in value.items() for item in pair)
+            if type(value) is MethodType:
+                return reachable(value.__self__)
+            state = getattr(value, "__dict__", None)
+            return type(state) is dict and reachable(state)
+
+        assert not reachable(app.state.發布介面資源)
 
 
 def test_invalid_keyring_factory於startup_fail_closed(tmp_path) -> None:

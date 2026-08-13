@@ -31,6 +31,39 @@ from ..憑證管理契約 import (
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 _本文位元上限 = 32_768
 _控制例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_錯誤綱要 = {
+    "description": "固定錯誤代碼",
+    "content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False, "required": ["detail"],
+        "properties": {"detail": {"type": "object", "additionalProperties": False,
+            "required": ["code"], "properties": {"code": {"type": "string"}}}},
+    }}},
+}
+_摘要綱要 = {
+    "type": "object", "additionalProperties": False,
+    "required": [
+        "credential_id", "name", "purpose", "key_prefix", "key_last4", "status",
+        "expires_at", "last_used_at", "created_at", "revoked_at", "ip_allowlist",
+        "rate_limit_requests",
+    ],
+    "properties": {
+        "credential_id": {"type": "string"}, "name": {"type": "string"},
+        "purpose": {"type": "string"}, "key_prefix": {"type": "string"},
+        "key_last4": {"type": "string"},
+        "status": {"type": "string", "enum": ["active", "inactive", "expired", "revoked"]},
+        "expires_at": {"type": "number"}, "last_used_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "created_at": {"type": "number"}, "revoked_at": {"anyOf": [{"type": "number"}, {"type": "null"}]},
+        "ip_allowlist": {"type": "array", "items": {"type": "string"}},
+        "rate_limit_requests": {"type": "integer"},
+    },
+}
+_列表回應 = {"description": "安全憑證清單", "content": {"application/json": {"schema": {
+    "type": "object", "additionalProperties": False, "required": ["items"],
+    "properties": {"items": {"type": "array", "items": _摘要綱要}},
+}}}}
+_建立回應綱要 = {**_摘要綱要, "required": [*_摘要綱要["required"], "initial_api_key"],
+    "properties": {**_摘要綱要["properties"], "initial_api_key": {"type": "string"}}}
+_建立回應 = {"description": "一次性建立收據", "content": {"application/json": {"schema": _建立回應綱要}}}
 _建立本文綱要 = {
     "requestBody": {"required": True, "content": {"application/json": {"schema": {
         "type": "object", "additionalProperties": False,
@@ -96,7 +129,7 @@ def 建立憑證管理路由器(
 
     @路由器.get(
         "/{endpoint_id}/credentials",
-        responses={401: {}, 404: {}, 422: {}, 500: {}},
+        responses={200: _列表回應, 401: _錯誤綱要, 404: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
     )
     async def 列出端點憑證(
         請求: Request,
@@ -123,7 +156,8 @@ def 建立憑證管理路由器(
 
     @路由器.post(
         "/{endpoint_id}/credentials", status_code=201,
-        responses={401: {}, 403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+        responses={201: _建立回應, 401: _錯誤綱要, 403: _錯誤綱要, 404: _錯誤綱要,
+                   409: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
         openapi_extra=_建立本文綱要,
     )
     async def 建立端點憑證(
@@ -139,7 +173,7 @@ def 建立憑證管理路由器(
         使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者)
         現在 = _讀取時間(時鐘)
         if float(本文.到期時間) <= 現在:
-            _拋出HTTP錯誤(422, "invalid_request")
+            _拋出HTTP錯誤(422, "invalid_request", 回應)
         try:
             命令 = 憑證建立命令(
                 本文.名稱, 本文.用途, float(本文.到期時間), tuple(本文.IP允許清單),
@@ -148,7 +182,7 @@ def 建立憑證管理路由器(
         except _控制例外:
             raise
         except BaseException:
-            _拋出HTTP錯誤(422, "invalid_request")
+            _拋出HTTP錯誤(422, "invalid_request", 回應)
         try:
             結果 = await run_in_threadpool(
                 服務.建立憑證, 端點識別碼=端點識別碼,
@@ -161,17 +195,18 @@ def 建立憑證管理路由器(
         except _控制例外:
             raise
         except 找不到端點憑證錯誤:
-            _拋出HTTP錯誤(404, "credential_not_found")
+            _拋出HTTP錯誤(404, "credential_not_found", 回應)
         except 端點生命週期衝突錯誤:
-            _拋出HTTP錯誤(409, "endpoint_status_conflict")
+            _拋出HTTP錯誤(409, "endpoint_status_conflict", 回應)
         except (ValueError, 憑證管理操作錯誤):
-            _拋出HTTP錯誤(500, "credential_management_failed")
+            _拋出HTTP錯誤(500, "credential_management_failed", 回應)
         except BaseException:
-            _拋出HTTP錯誤(500, "credential_management_failed")
+            _拋出HTTP錯誤(500, "credential_management_failed", 回應)
 
     @路由器.post(
         "/{endpoint_id}/credentials/{credential_id}/revoke", status_code=204,
-        responses={401: {}, 403: {}, 404: {}, 422: {}, 500: {}},
+        responses={204: {"description": "撤銷成功，無回應本文"}, 401: _錯誤綱要,
+                   403: _錯誤綱要, 404: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
     )
     async def 撤銷端點憑證(
         請求: Request,
@@ -184,7 +219,7 @@ def 建立憑證管理路由器(
         """以 composite scope 執行可稽核且 idempotent 的撤銷。"""
         _拒絕查詢參數(請求)
         if 請求.headers.get("content-length") not in (None, "0"):
-            _拋出HTTP錯誤(422, "invalid_request")
+            _拋出HTTP錯誤(422, "invalid_request", 回應)
         使用者識別碼, 是否管理者 = _重建雙重身份(使用者, _csrf使用者)
         try:
             請求識別碼 = 請求識別碼工廠()
@@ -201,9 +236,9 @@ def 建立憑證管理路由器(
         except _控制例外:
             raise
         except 找不到端點憑證錯誤:
-            _拋出HTTP錯誤(404, "credential_not_found")
+            _拋出HTTP錯誤(404, "credential_not_found", 回應)
         except BaseException:
-            _拋出HTTP錯誤(500, "credential_management_failed")
+            _拋出HTTP錯誤(500, "credential_management_failed", 回應)
 
     return 路由器
 
@@ -287,6 +322,16 @@ def _傳遞CSRF接續(來源: Response | None, 目標: Response) -> Response:
     return 目標
 
 
-def _拋出HTTP錯誤(狀態碼: int, 代碼: str) -> NoReturn:
-    """只建立固定 detail code，不保留原始例外或秘密資料。"""
-    raise HTTPException(status_code=狀態碼, detail={"code": 代碼}) from None
+def _拋出HTTP錯誤(狀態碼: int, 代碼: str, 來源: Response | None = None) -> NoReturn:
+    """建立固定錯誤，並保留已輪替的 CSRF successor header/cookie。"""
+    標頭: dict[str, str] = {}
+    if 來源 is not None:
+        接續 = 來源.headers.get(網頁CSRFHeader名稱)
+        if 接續 is not None:
+            標頭[網頁CSRFHeader名稱] = 接續
+        cookies = 來源.headers.getlist("set-cookie")
+        if cookies:
+            標頭["set-cookie"] = cookies[-1]
+    raise HTTPException(
+        status_code=狀態碼, detail={"code": 代碼}, headers=標頭 or None,
+    ) from None

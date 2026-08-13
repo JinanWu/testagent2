@@ -70,7 +70,7 @@ def _可達(value, marker, seen):
     if type(value) is MethodType:
         return _可達(value.__self__, marker, seen)
     if type(value) is AESGCM憑證封套:
-        return _可達(value._keys, marker, seen)
+        return False
     if type(value) is SQLite憑證管理服務:
         return _可達(value.__dict__, marker, seen)
     return False

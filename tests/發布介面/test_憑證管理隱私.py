@@ -49,7 +49,7 @@ def _含標記(value, marker, seen=None):
             names += tuple(憑證摘要.__slots__)
         return any(_含標記(object.__getattribute__(value, 名稱), marker, seen) for 名稱 in names)
     if type(value) is AESGCM憑證封套:
-        return _含標記(value._keys, marker, seen)
+        return False
     if type(value) is SQLite憑證管理服務:
         return _含標記(value.__dict__, marker, seen)
     if type(value).__name__ == "mappingproxy":
@@ -85,7 +85,7 @@ def test_traceback_scanner_known_positive_direct與DTO控制():
     assert _含標記(forged, marker)
     master = b"M" * 32
     service = SQLite憑證管理服務("unused", AESGCM憑證封套({1: master}, 1))
-    assert _含標記(service, "M" * 16)
+    assert not _含標記(service, "M" * 16)
 
 
 @pytest.mark.parametrize("factory", [

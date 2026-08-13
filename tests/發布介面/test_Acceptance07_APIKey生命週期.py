@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import json
 
 from fastapi.testclient import TestClient
 
@@ -14,6 +15,25 @@ from 繁中代理.發布介面.憑證.儲存庫 import SQLite憑證儲存庫
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
 from 繁中代理.發布介面.設定 import 生產設定, 網頁CSRFHeader名稱
 from 繁中代理.發布介面.領域模型 import WebOwnerPrincipal
+from 繁中代理.工具 import 工具定義
+from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
+from 繁中代理.發布介面.技能套件.發布器 import 技能套件發布器
+from 繁中代理.發布介面.技能套件.儲存庫 import 套件收據儲存庫
+from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布描述, 工具發布註冊
+from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
+
+
+class _模型:
+    """回傳固定合法輸出的 production provider test double。"""
+
+    def 產生發布回應(self, **_參數):
+        """回傳符合 endpoint response schema 的結果。"""
+        return 模型回應快照('{"answer":"A07"}', "stop", {"total_tokens": 1}, [])
+
+
+def _正規(值) -> str:
+    """輸出 production schema 使用的 canonical JSON。"""
+    return json.dumps(值, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _建立設定(tmp_path):
@@ -22,9 +42,21 @@ def _建立設定(tmp_path):
         tmp_path / "web.sqlite3", ("http://localhost:5173",), "fake", "fake", None, None,
         Cookie安全=False, 工作階段有效秒數=60,
     )
+    模型 = _模型()
+
+    def 安裝(工具庫) -> None:
+        """安裝 v1 snapshot 釘選的固定工具。"""
+        工具庫.登錄發布(工具發布描述("release-a07", (工具發布註冊(
+            "rev-a07", 工具定義(
+                "lookup", "fixed lookup",
+                {"type": "object", "properties": {}, "additionalProperties": False},
+                lambda _參數: {"ok": True},
+            ),
+        ),)))
+
     published = Published生產設定(
         tmp_path / "published.sqlite3", tmp_path / "bundles",
-        lambda _工具庫: None, lambda: {"fake": object()},
+        安裝, lambda: {"fake": 模型},
         憑證封套工廠=lambda: AESGCM憑證封套({1: b"A" * 32}, 1),
     )
     return web, published
@@ -47,13 +79,66 @@ def _登入(client: TestClient) -> str:
 
 
 def _建立端點圖形(資料庫, owner: str) -> None:
-    """以 production-equivalent SQLite rows 建立 active endpoint authority。"""
+    """建立可真實 invoke 的 endpoint/version/bundle authority 與 wrong-endpoint 對照。"""
+    根 = 資料庫.parent / "source-a07"
+    根.mkdir()
+    (根 / "SKILL.md").write_text("# A07", encoding="utf-8")
+    收據 = 技能套件發布器(資料庫.parent / "bundles").發布(
+        套件識別碼="bundle-a07", 端點識別碼="endpoint-a07", 端點版本識別碼="version-a07",
+        版本號碼=1, 建立時間=1.0, 建立者識別碼=owner, 技能表={"a07": 根},
+    )
+    清單 = (收據.路徑 / "manifest.json").read_text(encoding="utf-8")
+    其他根 = 資料庫.parent / "source-other"
+    其他根.mkdir()
+    (其他根 / "SKILL.md").write_text("# Other", encoding="utf-8")
+    其他收據 = 技能套件發布器(資料庫.parent / "bundles").發布(
+        套件識別碼="bundle-other", 端點識別碼="endpoint-other",
+        端點版本識別碼="version-other", 版本號碼=1, 建立時間=1.0,
+        建立者識別碼=owner, 技能表={"other": 其他根},
+    )
+    其他清單 = (其他收據.路徑 / "manifest.json").read_text(encoding="utf-8")
+    工具綱要 = {"type": "object", "properties": {}, "additionalProperties": False}
+    工具快照 = {"lookup": {"revision": "rev-a07", "description": "fixed lookup", "parameters": 工具綱要}}
+    模型設定 = {"provider": "fake", "model": "fake", "temperature": 0.0,
+                "max_tokens": 20, "timeout_seconds": 3.0,
+                "structured_output": True, "schema_retry_count": 1}
     with sqlite3.connect(資料庫) as 連線:
         連線.execute("INSERT INTO service_accounts VALUES('sa-a07',1,NULL)")
+        連線.execute("INSERT INTO service_accounts VALUES('sa-other',1,NULL)")
         連線.execute(
             "INSERT INTO published_endpoints VALUES(?,?,?,?,?,?,?,?,?,?)",
-            ("endpoint-a07", owner, "sa-a07", "a07", "active", None, 1, 1, 60, 60),
+            ("endpoint-a07", owner, "sa-a07", "a07", "active", "version-a07", 1, 1, 60, 60),
         )
+        連線.execute(
+            "INSERT INTO published_endpoints VALUES(?,?,?,?,?,?,?,?,?,?)",
+            ("endpoint-other", owner, "sa-other", "other", "active", "version-other", 1, 1, 60, 60),
+        )
+        連線.execute(
+            "INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("version-a07", "endpoint-a07", 1, "A07", "fixed prompt", "[]", _正規(["lookup"]),
+             _正規(工具快照), "release-a07", _正規(模型設定), "{}", 清單,
+             _正規({"type": "object", "required": ["question"]}),
+             _正規({"type": "object", "required": ["answer"]}), 0, owner, 1),
+        )
+        連線.execute(
+            "INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("version-other", "endpoint-other", 1, "Other", "fixed prompt", "[]", _正規(["lookup"]),
+             _正規(工具快照), "release-a07", _正規(模型設定), "{}", 其他清單,
+             _正規({"type": "object", "required": ["question"]}),
+             _正規({"type": "object", "required": ["answer"]}), 0, owner, 1),
+        )
+        套件收據儲存庫(連線).新增(版本識別碼="version-a07", 收據=收據, 發布時間=2.0)
+        套件收據儲存庫(連線).新增(
+            版本識別碼="version-other", 收據=其他收據, 發布時間=2.0,
+        )
+
+
+def _invoke(client: TestClient, slug: str, key: str):
+    """經 canonical public route 執行一次 endpoint invocation。"""
+    return client.post(
+        f"/v1/endpoints/{slug}/invoke", json={"input": {"question": "A07"}},
+        headers={"Authorization": f"Bearer {key}"},
+    )
 
 
 def test_create_multi_key_expire_inactive_revoke與restart_readback(tmp_path) -> None:
@@ -88,6 +173,11 @@ def test_create_multi_key_expire_inactive_revoke與restart_readback(tmp_path) ->
         assert type(additional_key) is str and additional_key != initial.api_key
         csrf = 建立.headers[網頁CSRFHeader名稱]
 
+        assert _invoke(client, "a07", initial.api_key).status_code == 200
+        assert _invoke(client, "a07", additional_key).status_code == 200
+        wrong = _invoke(client, "other", additional_key)
+        assert wrong.status_code == 401 and wrong.json()["error"]["code"] == "invalid_api_key"
+
         列表 = client.get("/api/published-endpoints/endpoint-a07/credentials")
         assert 列表.status_code == 200 and "initial_api_key" not in 列表.text
         assert {項目["credential_id"] for 項目 in 列表.json()["items"]} == {
@@ -102,8 +192,24 @@ def test_create_multi_key_expire_inactive_revoke與restart_readback(tmp_path) ->
             )
         過期列表 = client.get("/api/published-endpoints/endpoint-a07/credentials").json()["items"]
         assert {項目["credential_id"]: 項目["status"] for 項目 in 過期列表}["credential-initial"] == "expired"
+        expired = _invoke(client, "a07", initial.api_key)
+        assert expired.status_code == 401 and expired.json()["error"]["code"] == "api_key_expired"
 
         credential_id = 建立.json()["credential_id"]
+        with sqlite3.connect(published.發布資料庫路徑) as 連線:
+            連線.execute(
+                "UPDATE endpoint_credentials SET created_at=?,last_used_at=?,updated_at=? WHERE id=?",
+                (time.time() - 200 * 86_400, time.time() - 179 * 86_400, time.time(), credential_id),
+            )
+        assert _invoke(client, "a07", additional_key).status_code == 200
+        with sqlite3.connect(published.發布資料庫路徑) as 連線:
+            連線.execute(
+                "UPDATE endpoint_credentials SET last_used_at=? WHERE id=?",
+                (time.time() - 180 * 86_400 - 1, credential_id),
+            )
+        inactive = _invoke(client, "a07", additional_key)
+        assert inactive.status_code == 401 and inactive.json()["error"]["code"] == "invalid_api_key"
+
         撤銷 = client.post(
             f"/api/published-endpoints/endpoint-a07/credentials/{credential_id}/revoke",
             headers={網頁CSRFHeader名稱: csrf}, content=b"",
@@ -115,6 +221,8 @@ def test_create_multi_key_expire_inactive_revoke與restart_readback(tmp_path) ->
             headers={網頁CSRFHeader名稱: csrf}, content=b"",
         )
         assert 重複撤銷.status_code == 204 and 重複撤銷.content == b""
+        revoked = _invoke(client, "a07", additional_key)
+        assert revoked.status_code == 401 and revoked.json()["error"]["code"] == "invalid_api_key"
 
     restarted = 建立CP4ASGI應用程式(web, published)
     with TestClient(restarted, raise_server_exceptions=False) as client:
