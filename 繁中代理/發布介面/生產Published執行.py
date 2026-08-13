@@ -583,9 +583,9 @@ class 生產Published執行建構器:
         if type(設定) is not Published生產設定:
             raise ValueError("Published生產組裝無效") from None
         self._設定 = 設定
-        self._草稿規劃代理 = 延遲草稿規劃服務()
-        self._發布管理代理 = 延遲發布管理服務()
+        self._草稿規劃代理, self._發布管理代理 = 延遲草稿規劃服務(), 延遲發布管理服務()
         self._憑證管理代理 = 延遲憑證管理服務()
+        self._管理稽核代理, self._管理稽核游標 = 建立管理稽核權限()
 
     def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
         """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
@@ -640,6 +640,7 @@ class 生產Published執行建構器:
             路由器清單 += (建立憑證管理路由器(
                 self._憑證管理代理, 目前工作階段相依, CSRF相依,
             ),)
+        路由器清單 += (建立管理稽核路由(self._管理稽核代理, self._管理稽核游標, 目前工作階段相依),)
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -650,10 +651,10 @@ class 生產Published執行建構器:
 
             描述：在 threadpool 建立並安裝一次真實 Published composition。
             """
-            return await run_in_threadpool(
+            return await 安裝管理稽核資源(await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
                 self._發布管理代理, self._憑證管理代理,
-            )
+            ), self._管理稽核代理, self._設定.發布資料庫路徑)
         return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
     """依序組合 CP3 Web 與 CP4 Published routers/resources。
@@ -715,7 +716,6 @@ class 生產Controller建構器:
 
 
 
-
 def _工具摘要(name: str, revision: str, description: str, parameters_json: str) -> str:
     """將快照庫 canonical JSON 轉接到唯一權威工具修訂摘要 helper。
 
@@ -728,6 +728,9 @@ def _工具摘要(name: str, revision: str, description: str, parameters_json: s
     if type(參數) is not dict:
         raise ValueError("工具摘要無效") from None
     return 計算工具修訂摘要(name=name, revision=revision, description=description, parameters=參數)
+
+
+from .生產管理稽核 import 建立管理稽核權限, 建立管理稽核路由, 安裝管理稽核資源
 
 
 def _提交協調資料庫(協調資料庫: sqlite3.Connection) -> None:
