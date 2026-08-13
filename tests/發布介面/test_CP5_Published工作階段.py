@@ -44,6 +44,39 @@ def test_fresh_upgrade重跑與結構契約(tmp_path):
         assert 欄位 == ["endpoint_id", "service_account_id", "session_id", "sequence_number", "endpoint_version_id", "user_message_json", "assistant_message_json", "pair_size_bytes", "token_count", "created_at"]
 
 
+def test_scope不修改既有端點索引且錯配寫入fail_closed(tmp_path):
+    db = tmp_path / "scope.db"
+    _建立基準(db)
+    with sqlite3.connect(db) as 連線:
+        assert all("service_account" not in 列[1] for 列 in 連線.execute(
+            "PRAGMA index_list(published_endpoints)"
+        ))
+        with pytest.raises(sqlite3.IntegrityError, match="scope mismatch"):
+            連線.execute(
+                "INSERT INTO published_session_turn_pairs VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("ep1", "sa2", "same", 1, "v1", '{"role":"user"}',
+                 '{"role":"assistant"}', 40, 1, 1),
+            )
+
+
+def test_endpoint法定清除可連同session_history_cascade(tmp_path):
+    db = tmp_path / "retention.db"
+    _建立基準(db)
+    repo = SQLitePublished工作階段儲存庫(db)
+    repo.附加成功對話組(
+        "ep1", "sa1", "case", "v1", {"role": "user"}, {"role": "assistant"},
+        1, expected_sequence=1,
+    )
+    with sqlite3.connect(db) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        連線.execute("DROP TRIGGER published_endpoint_versions_no_delete")
+        連線.execute("DELETE FROM published_endpoint_versions WHERE endpoint_id='ep1'")
+        連線.execute("DELETE FROM published_endpoints WHERE id='ep1'")
+        assert 連線.execute(
+            "SELECT COUNT(*) FROM published_session_turn_pairs WHERE endpoint_id='ep1'"
+        ).fetchone() == (0,)
+
+
 def test_composite_scope_CAS_restart與跨scope隔離(tmp_path):
     db = tmp_path / "history.db"
     _建立基準(db)
