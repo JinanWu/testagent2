@@ -1,6 +1,7 @@
 export const DEFAULT_APP_ROUTE = '/' as const
+export const ADMIN_LOGS_ROUTE = '/admin/invocations' as const
 
-export const APP_ROUTES = Object.freeze([DEFAULT_APP_ROUTE] as const)
+export const APP_ROUTES = Object.freeze([DEFAULT_APP_ROUTE, ADMIN_LOGS_ROUTE] as const)
 export type AppRoute = (typeof APP_ROUTES)[number]
 
 export function isAppRoute(value: unknown): value is AppRoute {
