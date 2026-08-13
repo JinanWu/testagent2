@@ -132,15 +132,24 @@ _索引指紋 = {
 class 管理員原始資料稽核閘門:
     """在任何管理員 raw detail callback 前持久提交 canonical 安全稽核。"""
 
-    __slots__ = ("_sink", "_detail")
+    __slots__ = ("_sink", "_detail", "_pairing_exists")
 
-    def __init__(self, 稽核接收器: AuditEventSink, 原始資料detail: FunctionType | BuiltinFunctionType) -> None:
-        """注入 AuditEventSink 與只接受 endpoint/invocation 識別碼的 exact function。"""
-        if type(原始資料detail) not in (FunctionType, BuiltinFunctionType):
-            稽核接收器 = 原始資料detail = None  # type: ignore[assignment]
+    def __init__(
+        self,
+        稽核接收器: AuditEventSink,
+        原始資料detail: FunctionType | BuiltinFunctionType,
+        配對存在: FunctionType | BuiltinFunctionType,
+    ) -> None:
+        """注入audit sink、raw detail與不讀raw的endpoint/invocation配對判定。"""
+        if (
+            type(原始資料detail) not in (FunctionType, BuiltinFunctionType)
+            or type(配對存在) not in (FunctionType, BuiltinFunctionType)
+        ):
+            稽核接收器 = 原始資料detail = 配對存在 = None  # type: ignore[assignment]
             raise 查詢投影錯誤(_固定錯誤) from None
         self._sink = 稽核接收器
         self._detail = 原始資料detail
+        self._pairing_exists = 配對存在
 
     def 查詢管理員原始資料(
         self,
@@ -154,13 +163,20 @@ class 管理員原始資料稽核閘門:
         /,
     ) -> 管理員呼叫完整詳情:
         """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
-        失敗 = 稽核已提交 = False
+        失敗 = 稽核已提交 = 配對已判定 = 已授權 = 配對存在 = False
         結果類型 = None
         控制 = 結果 = 事件 = None
         接收器 = self._sink
         原始查詢 = self._detail
+        配對查詢 = self._pairing_exists
         try:
             已授權 = type(管理員授權) is bool and 管理員授權 is True
+            配對存在 = False
+            if 已授權:
+                配對存在 = 配對查詢(端點識別碼, 呼叫識別碼)
+                if type(配對存在) is not bool:
+                    raise ValueError
+                配對已判定 = True
             事件 = AuditEvent(
                 event_id=稽核事件識別碼,
                 occurred_at=發生時間,
@@ -169,14 +185,17 @@ class 管理員原始資料稽核閘門:
                 actor=AuditActorRef("user", 管理員識別碼),
                 resource=AuditResourceRef("endpoint.invocation", 呼叫識別碼),
                 request_id=請求識別碼,
-                endpoint_id=端點識別碼,
-                invocation_id=呼叫識別碼,
+                endpoint_id=端點識別碼 if 配對存在 else None,
+                invocation_id=呼叫識別碼 if 配對存在 else None,
                 metadata=AuditMetadata(),
             )
             附加稽核事件或失敗關閉(接收器, 事件)
             稽核已提交 = True
             事件 = 接收器 = None
             if not 已授權:
+                失敗 = True
+            elif not 配對存在:
+                結果類型 = 管理員呼叫不存在錯誤
                 失敗 = True
             else:
                 結果 = 建立管理員呼叫完整詳情(
@@ -187,7 +206,9 @@ class 管理員原始資料稽核閘門:
             控制 = 捕捉控制
             捕捉控制 = None
         except BaseException as 捕捉:
-            if not 稽核已提交:
+            if 已授權 and not 配對已判定:
+                結果類型 = 管理員呼叫查詢錯誤
+            elif not 稽核已提交:
                 結果類型 = 管理員呼叫稽核錯誤
             elif type(捕捉) in (管理員呼叫不存在錯誤, 管理員呼叫查詢錯誤):
                 結果類型 = type(捕捉)
@@ -196,8 +217,8 @@ class 管理員原始資料稽核閘門:
             捕捉 = None
             失敗 = True
         self = 管理員授權 = 管理員識別碼 = 請求識別碼 = 稽核事件識別碼 = None
-        發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = None
-        已授權 = 稽核已提交 = False
+        發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = 配對查詢 = None
+        已授權 = 配對存在 = 稽核已提交 = 配對已判定 = False
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
@@ -352,6 +373,57 @@ class SQLite呼叫查詢投影:
             結果 = None
             raise 管理員呼叫不存在錯誤("找不到呼叫紀錄") from None
         if 失敗 or type(結果) is not dict:
+            結果 = None
+            raise 管理員呼叫查詢錯誤(_固定錯誤) from None
+        return 結果
+
+    def 管理員呼叫配對存在(self, 端點識別碼: str, 呼叫識別碼: str, /) -> bool:
+        """只查exact endpoint/invocation配對存在性，不選取任何raw欄位。"""
+        路徑 = self._path
+        連線 = 游標 = 列 = None
+        結果 = 控制 = None
+        已開始 = 失敗 = False
+        try:
+            if not _安全識別碼(端點識別碼) or not _安全識別碼(呼叫識別碼):
+                raise ValueError
+            連線 = _開啟唯讀快照(路徑)
+            連線.execute("BEGIN")
+            已開始 = True
+            _驗證路徑與結構(連線, 路徑)
+            游標 = 連線.execute(
+                "SELECT 1 FROM endpoint_invocations WHERE endpoint_id=? AND id=? LIMIT 2",
+                (端點識別碼, 呼叫識別碼),
+            )
+            列 = 游標.fetchall()
+            if type(列) is not list or len(列) > 1 or any(項 != (1,) for 項 in 列):
+                raise ValueError
+            結果 = len(列) == 1
+            連線.commit()
+            已開始 = False
+        except _控制流程 as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            控制 = 捕捉控制
+            捕捉控制 = None
+        except BaseException:
+            失敗 = True
+        if 游標 is not None:
+            清理控制 = _清理資源操作(游標, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        if 連線 is not None and 已開始:
+            清理控制 = _清理資源操作(連線, "rollback")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        if 連線 is not None:
+            清理控制 = _清理資源操作(連線, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        self = 端點識別碼 = 呼叫識別碼 = 路徑 = 連線 = 游標 = 列 = 清理控制 = None
+        if 控制 is not None:
+            控制盒 = [控制]
+            控制 = 結果 = None
+            _重拋控制(控制盒.pop())
+        if 失敗 or type(結果) is not bool:
             結果 = None
             raise 管理員呼叫查詢錯誤(_固定錯誤) from None
         return 結果
