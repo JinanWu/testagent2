@@ -78,7 +78,8 @@ class Published成功對話提交:
                 or type(self.sequence_number) is not int or self.sequence_number < 1
                 or type(self.token_count) is not int
                 or not 1 <= self.token_count <= 最大歷史TOKEN數
-                or type(self.user_message) is not dict or type(self.assistant_message) is not dict):
+                or not _是核准訊息(self.user_message, "user")
+                or not _是核准訊息(self.assistant_message, "assistant")):
             raise ValueError
         return (
             self.endpoint_id, self.service_account_id, self.session_id,
@@ -252,8 +253,21 @@ class SQLitePublished工作階段儲存庫:
             raise ValueError
         user = json.loads(user_json)
         assistant = json.loads(assistant_json)
-        if (type(user) is not dict or type(assistant) is not dict
+        if (not _是核准訊息(user, "user") or not _是核准訊息(assistant, "assistant")
                 or 建立正規JSON(user) != user_json or 建立正規JSON(assistant) != assistant_json
                 or len(user_json.encode("utf-8")) + len(assistant_json.encode("utf-8")) != 位元組):
             raise ValueError
         return Published對話組(序號, 版本, user, assistant, 位元組, tokens)
+
+
+def _是核准訊息(訊息: object, 角色: str) -> bool:
+    """驗證 durable history message 的 exact role/content authority shape。
+
+    參數：不可信訊息物件與預期 ``user``／``assistant`` 角色。
+    返回值：只有 exact ``role``、``content`` 且角色吻合時為真。
+    """
+    return (
+        type(訊息) is dict
+        and frozenset(訊息) == frozenset(("role", "content"))
+        and 訊息.get("role") == 角色
+    )
