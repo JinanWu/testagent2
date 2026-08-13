@@ -288,7 +288,6 @@ class 生產Published執行資源:
                  技能套件協調器物件: 技能套件協調器 | None = None,
                  技能套件發布器物件: 技能套件發布器 | None = None,
                  端點發布服務物件: SQLite端點發布服務 | None = None,
-                 憑證封套物件: AESGCM憑證封套 | None = None,
                  憑證管理代理: 延遲憑證管理服務 | None = None,
                  憑證管理服務物件: SQLite憑證管理服務 | None = None) -> None:
         """保存已成功安裝的資源參照。
@@ -306,7 +305,6 @@ class 生產Published執行資源:
         self._技能套件協調器 = 技能套件協調器物件
         self._技能套件發布器 = 技能套件發布器物件
         self._端點發布服務 = 端點發布服務物件
-        self._憑證封套 = 憑證封套物件
         self._憑證管理代理 = 憑證管理代理
         self._憑證管理服務 = 憑證管理服務物件
         self._關閉條件 = Condition(RLock())
@@ -466,7 +464,6 @@ class 生產Published執行資源:
             self._憑證管理代理 = None
             self._發布管理服務 = None
             self._發布管理代理 = None
-            self._憑證封套 = None
             self._端點發布服務 = None
             self._技能套件發布器 = None
             self._技能套件協調器 = None
@@ -876,7 +873,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             管理代理 if 管理服務 is not None else None,
             管理服務,
             套件協調器 if 管理服務 is not None else None,
-            套件發布器, 端點發布服務, 憑證封套,
+            套件發布器, 端點發布服務,
             憑證管理代理 if 憑證管理服務 is not None else None, 憑證管理服務,
         )
     except BaseException as 啟動錯誤:

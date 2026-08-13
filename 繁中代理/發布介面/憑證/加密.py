@@ -7,7 +7,6 @@ import hashlib
 import os
 import re
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Callable, Mapping
 
 from cryptography.exceptions import InvalidTag
@@ -50,6 +49,7 @@ class AESGCM憑證封套:
     ) -> None:
         """複製並驗證AES-256 keyring；key material不進repr或DB。"""
         copied: dict[int, bytes] = {}
+        primitives: dict[int, AESGCM] = {}
         key: bytes | None = None
         try:
             if type(keys) is not dict or type(active_version) is not int or active_version <= 0:
@@ -60,12 +60,15 @@ class AESGCM憑證封套:
                 copied[version] = key
             if active_version not in copied or not callable(隨機位元組):
                 raise ValueError
+            primitives.update((version, AESGCM(material)) for version, material in copied.items())
         except Exception:
             key = None
             copied.clear()
+            primitives.clear()
             del keys, copied
             raise 憑證加密錯誤("憑證加密失敗") from None
-        self._keys = MappingProxyType(copied)
+        copied.clear()
+        self._加密器 = primitives
         self._active_version = active_version
         self._隨機位元組 = 隨機位元組
 
@@ -100,7 +103,7 @@ class AESGCM憑證封套:
             self._驗證APIKey(憑證明文)
             金鑰版本 = self._active_version
             單次隨機值 = self._取得隨機位元組(12)
-            加密內容 = AESGCM(self._keys[金鑰版本]).encrypt(
+            加密內容 = self._加密器[金鑰版本].encrypt(
                 單次隨機值,
                 憑證明文.encode("ascii"),
                 self._AAD(endpoint_id, credential_id, 金鑰版本),
@@ -133,13 +136,13 @@ class AESGCM憑證封套:
             or len(envelope.nonce) != 12
             or type(envelope.ciphertext) is not bytes
             or len(envelope.ciphertext) != 62
-            or envelope.key_version not in self._keys
+            or envelope.key_version not in self._加密器
         ):
             raise 憑證加密錯誤("憑證解密失敗") from None
         plaintext: bytes | None = None
         api_key: str | None = None
         try:
-            plaintext = AESGCM(self._keys[envelope.key_version]).decrypt(
+            plaintext = self._加密器[envelope.key_version].decrypt(
                 envelope.nonce,
                 envelope.ciphertext,
                 self._AAD(endpoint_id, credential_id, envelope.key_version),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -136,6 +136,12 @@ def test_路由清單方法狀態與相依項形成精確契約() -> None:
         規格 = 客戶端.get("/openapi.json").json()["paths"]
     assert set(規格["/api/published-endpoints/{endpoint_id}/credentials"]) == {"get", "post"}
     assert set(規格["/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke"]) == {"post"}
+    清單 = 規格["/api/published-endpoints/{endpoint_id}/credentials"]["get"]["responses"]["200"]
+    建立 = 規格["/api/published-endpoints/{endpoint_id}/credentials"]["post"]["responses"]["201"]
+    撤銷 = 規格["/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke"]["post"]["responses"]["204"]
+    assert 清單["content"]["application/json"]["schema"]["properties"]["items"]["items"]["additionalProperties"] is False
+    assert "initial_api_key" in 建立["content"]["application/json"]["schema"]["required"]
+    assert "content" not in 撤銷
 
 
 def test_list_create_revoke只使用權威身份且成功狀態固定() -> None:
@@ -177,4 +183,33 @@ def test_hostile_create與所有query在service前固定422() -> None:
     assert [(回應.status_code, 回應.json()) for 回應 in 回應們] == [
         (422, {"detail": {"code": "invalid_request"}}),
     ] * 4
+    assert 服務.呼叫 == []
+
+
+def test_mutation錯誤仍交付已輪替的CSRF接續() -> None:
+    """CSRF 已消耗後的 validation error 仍交付 successor，避免鎖死合法工作階段。"""
+    服務 = _管理服務()
+    session = lambda: 網頁使用者("owner-1", "alice", "member")
+
+    def csrf(回應: Response):
+        """模擬 canonical dependency 在 handler 前輪替並寫入 successor。"""
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("owner-1", "alice", "member")
+
+    應用 = FastAPI(redirect_slashes=False)
+    應用.include_router(建立憑證管理路由器(
+        服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
+    ))
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        回應 = 客戶端.post(
+            "/api/published-endpoints/endpoint-1/credentials",
+            json={
+                "name": "production", "purpose": "partner integration", "expires_at": 100.0,
+                "ip_allowlist": [], "rate_limit_requests": 60,
+            },
+        )
+    assert 回應.status_code == 422
+    assert 回應.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in 回應.headers["set-cookie"]
     assert 服務.呼叫 == []

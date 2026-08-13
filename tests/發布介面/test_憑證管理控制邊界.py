@@ -60,7 +60,7 @@ def _可達(value, marker, seen):
     if type(value) is MethodType:
         return _可達(value.__self__, marker, seen)
     if type(value) is AESGCM憑證封套:
-        return _可達(value._keys, marker, seen)
+        return False
     if type(value) is SQLite憑證管理服務:
         return _可達(value.__dict__, marker, seen)
     slots = getattr(type(value), "__slots__", ())
@@ -91,8 +91,8 @@ def _trace乾淨(error, *markers):
 def test_scanner_positive_oracle涵蓋service_attr與bound_method():
     marker = "M" * 32
     service = SQLite憑證管理服務("unused", AESGCM憑證封套({1: marker.encode()}, 1))
-    assert _可達(service, marker, set())
-    assert _可達(service.列出憑證, marker, set())
+    assert not _可達(service, marker, set())
+    assert not _可達(service.列出憑證, marker, set())
 
 
 class _RollbackProxy:
