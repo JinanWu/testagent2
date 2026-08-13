@@ -161,7 +161,7 @@ class 延遲憑證管理服務:
         返回值：無；建立尚未安裝服務的per-app provider slot。
         """
         self._服務: SQLite憑證管理服務 | None = None
-        self._條件 = Condition(RLock()); self._進行中 = 0; self._正在停止 = False
+        self._條件 = Condition(RLock()); self._進行中 = 0; self._正在停止 = False; self._停止中的服務 = None
     def 安裝(self, 服務: SQLite憑證管理服務) -> None:
         """在 startup exact-once 安裝真實 SQLite adapter。
         描述：在 startup exact-once 安裝真實 SQLite adapter。
@@ -173,20 +173,20 @@ class 延遲憑證管理服務:
         with self._條件:
             if self._服務 is not None or self._進行中:
                 raise ValueError("Published憑證管理服務無效") from None
-            self._正在停止 = False; self._服務 = 服務
+            self._正在停止 = False; self._停止中的服務 = None; self._服務 = 服務
     def 清除(self, 服務: SQLite憑證管理服務) -> None:
         """shutdown 只清除本次 startup 的 exact provider reference。
-
         描述：shutdown 只清除本次 startup 的 exact provider reference。
         參數：``服務``。
         返回值：無；只有identity相同時清除目前服務參照。
         """
         with self._條件:
             if self._服務 is 服務:
-                self._服務 = None
-                self._正在停止 = True
-                while self._進行中:
-                    self._條件.wait()
+                self._服務 = None; self._正在停止 = True; self._停止中的服務 = 服務
+                while self._進行中: self._條件.wait()
+                self._停止中的服務 = None; self._條件.notify_all()
+            elif self._停止中的服務 is 服務:
+                while self._停止中的服務 is 服務: self._條件.wait()
     @contextmanager
     def _租借(self):
         """描述：完整操作期間租借provider，未啟動或draining時fail closed。
