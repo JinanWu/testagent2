@@ -70,6 +70,11 @@ def test_root_factory啟動lifespan並公開唯一stable_POST與既有CP3路由(
                 "additionalProperties": False,
                 "properties": {
                     "input": {},
+                    "session_id": {
+                        "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+                        "x-utf8-max-bytes": 128,
+                        "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
+                    },
                     "metadata": {"anyOf": [{"type": "object"}, {"type": "null"}]},
                 },
             }}},
