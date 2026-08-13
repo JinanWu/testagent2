@@ -186,3 +186,23 @@ def test_sequence_gap_history_fail_closed(tmp_path):
         連線.execute("DELETE FROM published_session_turn_pairs WHERE sequence_number=2")
     with pytest.raises(Published工作階段錯誤):
         repo.讀取成功歷史("ep1", "sa1", "gap")
+
+
+def test_較舊區段sequence_gap即使不在最新bounded_window仍fail_closed(tmp_path):
+    """驗證 turns cap 之外的舊 sequence gap 仍由全 scope 摘要偵測。
+
+    參數：``tmp_path`` 提供超過 32 turns 的隔離 SQLite history。
+    返回值：無；刪除舊序號 2 後讀取必須固定拒絕。
+    """
+    db = tmp_path / "old-gap.db"
+    _建立基準(db)
+    repo = SQLitePublished工作階段儲存庫(db)
+    for sequence in range(1, 35):
+        repo.附加成功對話組(
+            "ep1", "sa1", "old-gap", "v1", {"role": "user"}, {"role": "assistant"},
+            1, expected_sequence=sequence,
+        )
+    with sqlite3.connect(db) as 連線:
+        連線.execute("DELETE FROM published_session_turn_pairs WHERE sequence_number=2")
+    with pytest.raises(Published工作階段錯誤):
+        repo.讀取成功歷史("ep1", "sa1", "old-gap")
