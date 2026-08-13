@@ -18,6 +18,8 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫不存在錯誤,
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
+    管理員呼叫完整詳情,
+    擁有者安全詳情,
 )
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
 from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
@@ -122,6 +124,26 @@ def test_管理員原始投影保留權威payload且transport_neutral(呼叫資�
     assert 結果["tool_calls"][0]["arguments"] == {"token": "ARG_SECRET"}
     assert 結果["tool_calls"][0]["result"] == {"secret": "RESULT_SECRET"}
     assert not ({"http_status", "headers", "body"} & 結果.keys())
+
+
+def test_A18管理員與Owner使用不同typed_DTO且無role_switch(呼叫資料庫):
+    """A18 adapter只能依角色呼叫不同method，不得用role flag切換同一schema。"""
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    Owner結果 = 服務.查詢擁有者安全詳情("owner-1", "ep-1", "inv-1")
+    Admin結果 = 服務.查詢管理員完整詳情(True, "ep-1", "inv-1")
+    assert type(Owner結果) is 擁有者安全詳情
+    assert type(Admin結果) is 管理員呼叫完整詳情
+    assert type(Owner結果) is not type(Admin結果)
+    assert set(Owner結果.建立JSON()) == {
+        "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
+        "latency_ms", "usage", "tool_names",
+    }
+    assert Admin結果.建立JSON()["input"] == {"raw_input": "INPUT_SECRET"}
+    for 標記 in ("INPUT_SECRET", "ERROR_SECRET", "ARG_SECRET", "RESULT_SECRET"):
+        assert 標記 not in repr(Owner結果) and 標記 not in repr(Admin結果)
+        assert 標記 not in repr(Owner結果.建立JSON())
+    assert "role" not in inspect.signature(服務.查詢擁有者安全詳情).parameters
+    assert "role" not in inspect.signature(服務.查詢管理員完整詳情).parameters
 
 @pytest.mark.parametrize("authorized", [False, 1, "admin"])
 def test_非精確管理員授權固定為查詢錯誤(呼叫資料庫, authorized):

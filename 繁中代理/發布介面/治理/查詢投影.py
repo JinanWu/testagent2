@@ -27,6 +27,10 @@ from .管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
     查詢投影錯誤,
+    管理員呼叫完整詳情,
+    擁有者安全詳情,
+    建立管理員呼叫完整詳情,
+    建立擁有者安全詳情,
 )
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -310,6 +314,14 @@ class SQLite呼叫查詢投影:
             raise 查詢投影錯誤(_固定錯誤) from None
         return 結果
 
+    def 查詢擁有者安全詳情(
+        self, 擁有者識別碼: str, 端點識別碼: str, 呼叫識別碼: str, /
+    ) -> 擁有者安全詳情:
+        """以既有owner composite authority投影重建獨立typed safe DTO。"""
+        return 建立擁有者安全詳情(
+            self.查詢擁有者診斷(擁有者識別碼, 端點識別碼, 呼叫識別碼)
+        )
+
     def 查詢管理員原始資料(
         self, 管理員授權: bool, 端點識別碼: str, 呼叫識別碼: str, /
     ) -> dict[str, Any]:
@@ -343,6 +355,14 @@ class SQLite呼叫查詢投影:
             結果 = None
             raise 管理員呼叫查詢錯誤(_固定錯誤) from None
         return 結果
+
+    def 查詢管理員完整詳情(
+        self, 管理員授權: bool, 端點識別碼: str, 呼叫識別碼: str, /
+    ) -> 管理員呼叫完整詳情:
+        """以既有exact-admin raw投影重建獨立typed detail DTO。"""
+        return 建立管理員呼叫完整詳情(
+            self.查詢管理員原始資料(管理員授權, 端點識別碼, 呼叫識別碼)
+        )
 
     def 列出管理員安全呼叫(
         self, 條件: 管理員呼叫查詢條件, 位置: 管理員呼叫游標位置 | None, /

@@ -27,6 +27,10 @@ ADMIN_INVOCATION_DETAIL_PATH = (
 ADMIN_INVOCATION_QUERY_KEYS = frozenset(
     {"from_at", "to_at", "status", "error_code", "limit", "cursor"}
 )
+ADMIN_INVOCATION_FORBIDDEN_QUERY_KEYS = frozenset(
+    {"owner_id", "raw_search", "export", "sort"}
+)
+ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS = True
 ADMIN_INVOCATION_AUDIT_ACTION = "audit.detail.view"
 ADMIN_INVOCATION_ERROR_CONTRACT = {
     401: "需要登入",
@@ -41,6 +45,10 @@ ADMIN_INVOCATION_DETAIL_FIELDS = frozenset({
     "status", "input", "metadata", "output", "error", "usage", "metadata_size_bytes",
     "metadata_sha256", "latency_ms", "pricing_version", "created_at", "completed_at",
     "run_events", "tool_calls",
+})
+OWNER_SAFE_DETAIL_FIELDS = frozenset({
+    "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
+    "latency_ms", "usage", "tool_names",
 })
 
 _識別格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
@@ -100,6 +108,54 @@ def 建立管理員呼叫完整詳情(原始投影: dict[str, object], /) -> 管
         raise
     except BaseException:
         raise 管理員呼叫查詢錯誤("呼叫紀錄不可取得") from None
+
+
+class 擁有者安全詳情:
+    """Owner-only安全摘要；與Admin raw DTO完全不同且repr不揭露值。"""
+
+    __slots__ = ("_值",)
+
+    def __init__(self, 值: dict[str, object], /) -> None:
+        """逐欄驗證既有Owner-safe projection並深層複製。"""
+        if type(值) is not dict or set(值) != OWNER_SAFE_DETAIL_FIELDS:
+            raise ValueError("擁有者安全詳情無效") from None
+        呼叫 = 值["invocation"]
+        用量 = 值["usage"]
+        工具名稱 = 值["tool_names"]
+        if (type(呼叫) is not dict or set(呼叫) != {"id", "request_id", "session_id"}
+                or not _是識別碼(呼叫["id"]) or not _是識別碼(呼叫["request_id"])
+                or (呼叫["session_id"] is not None and not _是識別碼(呼叫["session_id"]))
+                or not _是識別碼(值["endpoint_version_id"])
+                or type(值["status"]) is not str or 值["status"] not in _狀態集合
+                or not _是可空錯誤碼(值["error_code"])
+                or (值["schema_path"] is not None and (
+                    type(值["schema_path"]) is not str or len(值["schema_path"]) > 512))
+                or (值["latency_ms"] is not None and not _是有限時間(值["latency_ms"]))
+                or type(用量) is not dict or set(用量) != {"total_tokens"}
+                or (用量["total_tokens"] is not None and (
+                    type(用量["total_tokens"]) is not int or 用量["total_tokens"] < 0))
+                or type(工具名稱) is not list or len(工具名稱) > 4096
+                or any(type(名稱) is not str or not 1 <= len(名稱) <= 256 for 名稱 in 工具名稱)):
+            raise ValueError("擁有者安全詳情無效") from None
+        self._值 = {鍵: _複製詳情值(項) for 鍵, 項 in 值.items()}
+
+    def __repr__(self) -> str:
+        """Owner DTO也不把識別碼或錯誤摘要帶入log。"""
+        return "擁有者安全詳情([REDACTED])"
+
+    def 建立JSON(self) -> dict[str, object]:
+        """建立全新Owner-safe response dict。"""
+        return {鍵: _複製詳情值(值) for 鍵, 值 in self._值.items()}
+
+
+def 建立擁有者安全詳情(原始投影: dict[str, object], /) -> 擁有者安全詳情:
+    """把既有Owner projection重建為module-owned exact DTO。"""
+    try:
+        return 擁有者安全詳情(原始投影)
+    except _控制流程:
+        raise
+    except BaseException:
+        raise 查詢投影錯誤("呼叫紀錄不可取得") from None
 
 
 def _複製詳情值(值: object) -> object:

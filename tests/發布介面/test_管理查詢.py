@@ -38,9 +38,11 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     ADMIN_INVOCATION_AUDIT_ACTION,
     ADMIN_INVOCATION_DETAIL_PATH,
     ADMIN_INVOCATION_ERROR_CONTRACT,
+    ADMIN_INVOCATION_FORBIDDEN_QUERY_KEYS,
     ADMIN_INVOCATION_LIST_PATH,
     ADMIN_INVOCATION_METHOD,
     ADMIN_INVOCATION_QUERY_KEYS,
+    ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS,
     管理員呼叫列表結果,
     管理員呼叫列表項目,
     建立管理員呼叫完整詳情,
@@ -1407,6 +1409,10 @@ def test_A18管理員呼叫route與query_allowlist唯一且禁止export():
     assert ADMIN_INVOCATION_QUERY_KEYS == frozenset(
         {"from_at", "to_at", "status", "error_code", "limit", "cursor"}
     )
+    assert ADMIN_INVOCATION_FORBIDDEN_QUERY_KEYS == frozenset(
+        {"owner_id", "raw_search", "export", "sort"}
+    )
+    assert ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS is True
     assert ADMIN_INVOCATION_AUDIT_ACTION == "audit.detail.view"
     assert all(禁止 not in (ADMIN_INVOCATION_LIST_PATH + ADMIN_INVOCATION_DETAIL_PATH).lower()
                for 禁止 in ("export", "download", "search"))
