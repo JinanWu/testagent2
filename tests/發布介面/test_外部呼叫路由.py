@@ -26,12 +26,29 @@ PUBLISHED歷史上限 = {"turn_pairs": 32, "bytes": 262144, "tokens": 32768}
 
 @dataclass
 class 假編排器:
+    """記錄route forwarding並回傳可控制結果的orchestrator test double。
+
+    描述：兼容stateless舊呼叫與帶session的新呼叫形狀。
+    參數：``結果``為要回傳或拋出的預設結果。
+    返回值：可供FastAPI route測試注入的編排器替身。
+    """
+
     結果: object
 
     def __post_init__(self):
+        """初始化呼叫紀錄。
+
+        參數：無；使用dataclass已保存的``結果``。
+        返回值：無；建立空的呼叫列表。
+        """
         self.呼叫 = []
 
     def 執行(self, slug, request_id, api_key, input, *其餘, **命名):
+        """記錄route傳入的stateless或session invocation。
+
+        參數：slug、request ID、API key、input及兼容形狀的session/metadata/time。
+        返回值：預設結果；未提供時建立固定成功結果。
+        """
         if len(其餘) == 2:
             session_id, (metadata, at) = 命名.get("工作階段識別"), 其餘
         else:
