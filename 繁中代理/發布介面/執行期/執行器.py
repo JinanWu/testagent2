@@ -636,19 +636,6 @@ def _建立執行模型請求(狀態: tuple[object, ...], 輸入原文: str, 修
         raise
 
 
-def _建立初始訊息(狀態: tuple[object, ...], 輸入原文: str) -> list[dict[str, Any]]:
-    """建立 single-attempt 起始對話；metadata 僅存在不可信 user role。
-
-    參數：sealed executor state 與 canonical input。回傳：fresh messages。
-    例外：輸入失真時傳出驗證例外。副作用：不呼叫 provider 或工具。
-    """
-    輸入 = _解析正規JSON(輸入原文, 500_000)
-    return [
-        {"role": "system", "content": 狀態[1]},
-        {"role": "user", "content": 輸入原文, "metadata": {"input_json": 輸入}},
-    ]
-
-
 def _建立含歷史初始訊息(狀態: tuple[object, ...], 輸入原文: str,
                  歷史原文: str) -> list[dict[str, Any]]:
     """固定 Published system prompt，接 bounded successful history，再接 current input。
