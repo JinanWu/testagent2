@@ -1679,3 +1679,23 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
                 建立管理員呼叫完整詳情({**基本, **破壞})
     with pytest.raises(Exception):
         建立管理員呼叫完整詳情({**基本, "input": {"note": "/srv/app/secrets.env"}})
+
+
+def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
+    """#21未凍結前，以保守credential-like token shape拒絕任意品牌API key。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
+        "error": None, "usage": None, "metadata_size_bytes": 0, "metadata_sha256": None,
+        "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    for key in (
+        "pak_" + "A" * 43,
+        "sk-" + "A" * 48,
+        "ghp_" + "A" * 36,
+        "note sk_live_51ABCDEF0123456789",
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, "input": {"value": key}})

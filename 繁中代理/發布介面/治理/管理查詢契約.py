@@ -80,6 +80,9 @@ _禁止敏感值標記 = frozenset({
 })
 _檔案路徑鍵 = frozenset({"path", "filepath", "filesystempath", "absolutepath"})
 _平台APIKey格式 = re.compile(r"(?<![A-Za-z0-9_-])pk_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
+_憑證token形狀 = re.compile(
+    r"(?<![A-Za-z0-9_-])[A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])"
+)
 _絕對檔案路徑格式 = re.compile(
     r"(?:^|[\s:=\"'])(?:~[/\\]|/(?:Users|home|etc|var|tmp|private|opt|usr|root|proc|sys|dev|srv)/"
     r"|[A-Za-z]:[\\/]|\\\\)", re.IGNORECASE,
@@ -219,6 +222,7 @@ def _驗證raw無禁止secret(值: object) -> None:
             文字 = cast(str, 項)
             正規文字 = re.sub(r"[^a-z0-9]", "", 文字.casefold())
             if (_平台APIKey格式.search(文字) is not None
+                    or _憑證token形狀.search(文字) is not None
                     or _絕對檔案路徑格式.search(文字) is not None
                     or any(標記 in 正規文字 for 標記 in _禁止敏感值標記)):
                 raise ValueError
