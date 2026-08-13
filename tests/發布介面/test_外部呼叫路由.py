@@ -31,9 +31,9 @@ class 假編排器:
     def __post_init__(self):
         self.呼叫 = []
 
-    def 執行(self, slug, request_id, api_key, input, *其餘):
+    def 執行(self, slug, request_id, api_key, input, *其餘, **命名):
         if len(其餘) == 2:
-            session_id, (metadata, at) = None, 其餘
+            session_id, (metadata, at) = 命名.get("工作階段識別"), 其餘
         else:
             session_id, metadata, at = 其餘
         self.呼叫.append((slug, request_id, api_key, input, session_id, metadata, at))
