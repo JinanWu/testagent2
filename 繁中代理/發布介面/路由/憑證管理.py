@@ -311,9 +311,13 @@ def _重建身份(使用者: object, 回應: Response | None = None) -> tuple[st
     """
     if type(使用者) is not 網頁使用者:
         _拋出HTTP錯誤(500, "credential_management_failed", 回應)
-    識別碼 = object.__getattribute__(使用者, "識別碼")
-    角色 = object.__getattribute__(使用者, "角色")
-    if type(識別碼) is not str or not 1 <= len(識別碼) <= 128 or type(角色) is not str:
+    try:
+        識別碼 = object.__getattribute__(使用者, "識別碼")
+        角色 = object.__getattribute__(使用者, "角色")
+    except AttributeError:
+        _拋出HTTP錯誤(500, "credential_management_failed", 回應)
+    if (type(識別碼) is not str or not 1 <= len(識別碼) <= 128
+            or type(角色) is not str or 角色 not in {"member", "admin"}):
         _拋出HTTP錯誤(500, "credential_management_failed", 回應)
     return 識別碼, 角色 == "admin"
 
