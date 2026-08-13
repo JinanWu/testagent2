@@ -198,6 +198,8 @@ def test_路由清單方法狀態與相依項形成精確契約() -> None:
     assert "content" not in 撤銷
     assert _讀取錯誤碼綱要(規格, "get", "404") == ["credential_not_found"]
     assert _讀取錯誤碼綱要(規格, "get", "422") == ["invalid_request"]
+    assert _讀取錯誤碼綱要(規格, "post", "401") == ["unauthorized"]
+    assert _讀取錯誤碼綱要(規格, "post", "403") == ["csrf_invalid"]
     assert _讀取錯誤碼綱要(規格, "post", "409") == ["endpoint_status_conflict"]
     assert _讀取錯誤碼綱要(規格, "post", "500") == ["credential_management_failed"]
 

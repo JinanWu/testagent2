@@ -47,7 +47,7 @@ def _建立錯誤綱要(*代碼: str) -> dict[str, object]:
 
 
 _未認證錯誤綱要 = _建立錯誤綱要("unauthorized")
-_禁止錯誤綱要 = _建立錯誤綱要("forbidden")
+_CSRF錯誤綱要 = _建立錯誤綱要("csrf_invalid")
 _找不到錯誤綱要 = _建立錯誤綱要("credential_not_found")
 _衝突錯誤綱要 = _建立錯誤綱要("endpoint_status_conflict")
 _無效請求錯誤綱要 = _建立錯誤綱要("invalid_request")
@@ -194,7 +194,7 @@ def 建立憑證管理路由器(
 
     @路由器.post(
         "/{endpoint_id}/credentials", status_code=201,
-        responses={201: _建立回應, 401: _未認證錯誤綱要, 403: _禁止錯誤綱要,
+        responses={201: _建立回應, 401: _未認證錯誤綱要, 403: _CSRF錯誤綱要,
                    404: _找不到錯誤綱要, 409: _衝突錯誤綱要,
                    422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
         openapi_extra=_建立本文綱要,
@@ -252,7 +252,7 @@ def 建立憑證管理路由器(
     @路由器.post(
         "/{endpoint_id}/credentials/{credential_id}/revoke", status_code=204,
         responses={204: {"description": "撤銷成功，無回應本文"}, 401: _未認證錯誤綱要,
-                   403: _禁止錯誤綱要, 404: _找不到錯誤綱要,
+                   403: _CSRF錯誤綱要, 404: _找不到錯誤綱要,
                    422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
     )
     async def 撤銷端點憑證(
