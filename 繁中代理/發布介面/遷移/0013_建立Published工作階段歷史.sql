@@ -1,6 +1,3 @@
-CREATE UNIQUE INDEX uq_published_endpoints_id_service_account
-  ON published_endpoints(id, service_account_id);
-
 CREATE TABLE published_session_turn_pairs (
   endpoint_id TEXT NOT NULL,
   service_account_id TEXT NOT NULL,
@@ -20,23 +17,29 @@ CREATE TABLE published_session_turn_pairs (
   created_at REAL NOT NULL
     CHECK(typeof(created_at) IN ('real','integer') AND created_at >= 0),
   PRIMARY KEY(endpoint_id, service_account_id, session_id, sequence_number),
-  FOREIGN KEY(endpoint_id, service_account_id)
-    REFERENCES published_endpoints(id, service_account_id) ON DELETE RESTRICT,
+  FOREIGN KEY(endpoint_id)
+    REFERENCES published_endpoints(id) ON DELETE CASCADE,
+  FOREIGN KEY(service_account_id)
+    REFERENCES service_accounts(id) ON DELETE RESTRICT,
   FOREIGN KEY(endpoint_version_id, endpoint_id)
-    REFERENCES published_endpoint_versions(id, endpoint_id) ON DELETE RESTRICT
+    REFERENCES published_endpoint_versions(id, endpoint_id) ON DELETE CASCADE
 );
 
 CREATE INDEX idx_published_session_turn_pairs_latest
   ON published_session_turn_pairs(endpoint_id, service_account_id, session_id, sequence_number DESC);
 
-CREATE TRIGGER published_session_turn_pairs_no_update
-BEFORE UPDATE ON published_session_turn_pairs
+CREATE TRIGGER published_session_turn_pairs_scope_before_insert
+BEFORE INSERT ON published_session_turn_pairs
+WHEN NOT EXISTS (
+  SELECT 1 FROM published_endpoints
+  WHERE id=NEW.endpoint_id AND service_account_id=NEW.service_account_id
+)
 BEGIN
-  SELECT RAISE(ABORT, 'published session history is append only');
+  SELECT RAISE(ABORT, 'published session scope mismatch');
 END;
 
-CREATE TRIGGER published_session_turn_pairs_no_delete
-BEFORE DELETE ON published_session_turn_pairs
+CREATE TRIGGER published_session_turn_pairs_no_update
+BEFORE UPDATE ON published_session_turn_pairs
 BEGIN
   SELECT RAISE(ABORT, 'published session history is append only');
 END;

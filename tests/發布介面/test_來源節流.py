@@ -361,7 +361,7 @@ def test_畸形標頭_peer_config原始標記不出現在固定錯誤產品local
 
 def _建立來源節流資料庫(tmp_path, 名稱="source.sqlite"):
     路徑 = tmp_path / 名稱
-    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 13))
+    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 14))
     return 路徑
 
 
