@@ -161,24 +161,30 @@ def test_management路由只依explicit設定公開可用能力(tmp_path):
     assert tuple(完整路徑["/api/published-endpoints"]) == ("post",)
 
 
-def test_憑證封套設定缺少Planner時建構固定拒絕(tmp_path):
-    """CP4-COMP-05：Create key authority 不得在沒有 Planner authority 時形成部分設定。
+def test_憑證管理可獨立Planner設定且建構不呼叫注入(tmp_path):
+    """CP4-COMP-05：A07 management key authority 不再錯綁 Planner authority。
 
-    參數：``tmp_path`` 提供不會實際讀取的 absolute Published paths。
-    返回值：無；設定必須在純記憶體驗證階段固定拒絕。
-    例外：只接受 exact ``ValueError`` 與固定公開設定錯誤訊息。
+    參數：``tmp_path`` 提供不會在 construction 讀取的 absolute Published paths。
+    返回值：無；設定可建立且 OpenAPI 公開三條 credential routes。
+    例外：組裝或 route inventory 漂移時 assertion 失敗。
     副作用：不得呼叫 envelope factory、installer、model factory 或建立檔案。
     """
     呼叫: list[str] = []
-    with pytest.raises(ValueError, match="^Published生產設定無效$"):
-        Published生產設定(
-            tmp_path / "published.sqlite3", tmp_path / "bundles",
-            lambda _工具庫: 呼叫.append("installer"),
-            lambda: 呼叫.append("models") or {"fake": object()},
-            憑證封套工廠=lambda: 呼叫.append("envelope") or AESGCM憑證封套(
-                {1: b"k" * 32}, 1,
-            ),
-        )
+    Web設定 = 生產設定(
+        tmp_path / "web.sqlite3", ("https://client.example",), "fake", "fake", None, None,
+    )
+    Published設定 = Published生產設定(
+        tmp_path / "published.sqlite3", tmp_path / "bundles",
+        lambda _工具庫: 呼叫.append("installer"),
+        lambda: 呼叫.append("models") or {"fake": object()},
+        憑證封套工廠=lambda: 呼叫.append("envelope") or AESGCM憑證封套(
+            {1: b"k" * 32}, 1,
+        ),
+    )
+    應用 = 建立CP4ASGI應用程式(Web設定, Published設定)
+    路徑 = 應用.openapi()["paths"]
+    assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials"]) == {"get", "post"}
+    assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke"]) == {"post"}
     assert 呼叫 == []
 
 
