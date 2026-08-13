@@ -277,7 +277,11 @@ class 發布執行請求:
         raise AssertionError
 
     def __init__(self, input: Any, history: tuple[object, ...] = ()) -> None:
-        """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。"""
+        """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。
+
+        參數：current input 與有序完整 successful history pairs。
+        返回值：無；保存 canonical input/history JSON 快照。
+        """
         結果 = None
         失敗 = False
         try:
@@ -647,7 +651,11 @@ def _建立初始訊息(狀態: tuple[object, ...], 輸入原文: str) -> list[d
 
 def _建立含歷史初始訊息(狀態: tuple[object, ...], 輸入原文: str,
                  歷史原文: str) -> list[dict[str, Any]]:
-    """固定 Published system prompt，接 bounded successful history，再接 current input。"""
+    """固定 Published system prompt，接 bounded successful history，再接 current input。
+
+    參數：sealed executor state、canonical current input 與 canonical history JSON。
+    返回值：system → history → current user 的 fresh model messages。
+    """
     歷史 = _解析正規JSON(歷史原文, 500_000)
     if type(歷史) is not list or any(type(訊息) is not dict for 訊息 in 歷史):
         raise ValueError

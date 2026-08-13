@@ -135,3 +135,54 @@ def test_bounds與損毀fail_closed(tmp_path):
         連線.execute("UPDATE published_session_turn_pairs SET pair_size_bytes=1 WHERE sequence_number=34")
     with pytest.raises(Published工作階段錯誤):
         repo.讀取成功歷史("ep1", "sa1", "s")
+
+
+@pytest.mark.parametrize("限制欄位", [
+    "pair_size_bytes",
+    "token_count",
+])
+def test_aggregate_bytes_tokens超限只保留最新完整pairs(tmp_path, 限制欄位):
+    """驗證 aggregate bytes/token cap 不截斷 pair，只捨棄更舊完整 pair。
+
+    參數：隔離 DB 與要驗證的 aggregate ledger 欄位。
+    返回值：無；readback 只含最新一組且 aggregate 不超界。
+    """
+    db = tmp_path / f"aggregate-{限制欄位}.db"
+    _建立基準(db)
+    repo = SQLitePublished工作階段儲存庫(db)
+    大內容 = "甲" * 44_000 if 限制欄位 == "pair_size_bytes" else "a"
+    單筆TOKEN = 最大歷史TOKEN數 // 2 + 1 if 限制欄位 == "token_count" else 1
+    for sequence in (1, 2):
+        repo.附加成功對話組(
+            "ep1", "sa1", "bounded", "v1", {"role": "user", "content": str(sequence)},
+            {"role": "assistant", "content": 大內容}, 單筆TOKEN, expected_sequence=sequence,
+        )
+    結果 = repo.讀取成功歷史("ep1", "sa1", "bounded")
+    assert [組.sequence_number for 組 in 結果] == [2]
+    上限 = 最大歷史位元組 if 限制欄位 == "pair_size_bytes" else 最大歷史TOKEN數
+    assert sum(getattr(組, 限制欄位) for 組 in 結果) <= 上限
+    with sqlite3.connect(db) as 連線:
+        全部值 = [列[0] for 列 in 連線.execute(
+            f"SELECT {限制欄位} FROM published_session_turn_pairs ORDER BY sequence_number"
+        )]
+    assert len(全部值) == 2 and sum(全部值) > 上限
+
+
+def test_sequence_gap_history_fail_closed(tmp_path):
+    """驗證最新 bounded window 內 sequence gap 一律視為 corrupt history。
+
+    參數：``tmp_path`` 提供隔離 SQLite authority。
+    返回值：無；讀取必須固定拋 ``Published工作階段錯誤``。
+    """
+    db = tmp_path / "gap.db"
+    _建立基準(db)
+    repo = SQLitePublished工作階段儲存庫(db)
+    for sequence in (1, 2, 3):
+        repo.附加成功對話組(
+            "ep1", "sa1", "gap", "v1", {"role": "user"}, {"role": "assistant"},
+            1, expected_sequence=sequence,
+        )
+    with sqlite3.connect(db) as 連線:
+        連線.execute("DELETE FROM published_session_turn_pairs WHERE sequence_number=2")
+    with pytest.raises(Published工作階段錯誤):
+        repo.讀取成功歷史("ep1", "sa1", "gap")
