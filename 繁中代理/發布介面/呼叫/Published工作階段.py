@@ -115,6 +115,12 @@ class SQLitePublished工作階段儲存庫:
         try:
             self._驗證scope(endpoint_id, service_account_id, session_id)
             with closing(self._開啟連線()) as 連線:
+                序列摘要 = 連線.execute(
+                    "SELECT COUNT(*),MIN(sequence_number),MAX(sequence_number) "
+                    "FROM published_session_turn_pairs "
+                    "WHERE endpoint_id=? AND service_account_id=? AND session_id=?",
+                    (endpoint_id, service_account_id, session_id),
+                ).fetchone()
                 資料列 = 連線.execute(
                     "SELECT sequence_number,endpoint_version_id,user_message_json,assistant_message_json,"
                     "pair_size_bytes,token_count FROM published_session_turn_pairs "
@@ -122,6 +128,15 @@ class SQLitePublished工作階段儲存庫:
                     "ORDER BY sequence_number DESC LIMIT ?",
                     (endpoint_id, service_account_id, session_id, 最大成功對話組數 + 1),
                 ).fetchall()
+            if (type(序列摘要) is not tuple or len(序列摘要) != 3
+                    or type(序列摘要[0]) is not int or 序列摘要[0] < 0):
+                raise ValueError
+            if 序列摘要[0] == 0:
+                if 序列摘要[1:] != (None, None):
+                    raise ValueError
+            elif (type(序列摘要[1]) is not int or type(序列摘要[2]) is not int
+                  or 序列摘要[1] != 1 or 序列摘要[0] != 序列摘要[2]):
+                raise ValueError
             if len(資料列) > 最大成功對話組數:
                 資料列 = 資料列[:最大成功對話組數]
             選取: list[Published對話組] = []
