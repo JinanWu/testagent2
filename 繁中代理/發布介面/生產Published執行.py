@@ -162,7 +162,8 @@ class 延遲憑證管理服務:
         """
         self._服務: SQLite憑證管理服務 | None = None
         self._條件 = Condition(RLock()); self._進行中 = 0; self._正在停止 = False; self._停止中的服務 = None
-    def 安裝(self, 服務: SQLite憑證管理服務) -> None:
+        self._世代 = 0; self._目前世代: int | None = None; self._停止中世代: int | None = None
+    def 安裝(self, 服務: SQLite憑證管理服務) -> int:
         """在 startup exact-once 安裝真實 SQLite adapter。
         描述：在 startup exact-once 安裝真實 SQLite adapter。
         參數：``服務``。
@@ -173,20 +174,22 @@ class 延遲憑證管理服務:
         with self._條件:
             if self._服務 is not None or self._進行中:
                 raise ValueError("Published憑證管理服務無效") from None
-            self._正在停止 = False; self._停止中的服務 = None; self._服務 = 服務
-    def 清除(self, 服務: SQLite憑證管理服務) -> None:
+            self._世代 += 1; self._目前世代 = self._世代
+            self._正在停止 = False; self._停止中的服務 = None; self._停止中世代 = None; self._服務 = 服務
+            return self._世代
+    def 清除(self, 服務: SQLite憑證管理服務, 世代: int) -> None:
         """shutdown 只清除本次 startup 的 exact provider reference。
-        描述：shutdown 只清除本次 startup 的 exact provider reference。
-        參數：``服務``。
+        描述：shutdown 只清除本次 startup 的 exact provider reference。參數：``服務``與``世代``。
         返回值：無；只有identity相同時清除目前服務參照。
         """
         with self._條件:
-            if self._服務 is 服務:
-                self._服務 = None; self._正在停止 = True; self._停止中的服務 = 服務
+            if self._服務 is 服務 and self._目前世代 == 世代:
+                self._服務 = None; self._目前世代 = None
+                self._正在停止 = True; self._停止中的服務 = 服務; self._停止中世代 = 世代
                 while self._進行中: self._條件.wait()
-                self._停止中的服務 = None; self._條件.notify_all()
-            elif self._停止中的服務 is 服務:
-                while self._停止中的服務 is 服務: self._條件.wait()
+                self._停止中的服務 = None; self._停止中世代 = None; self._條件.notify_all()
+            elif self._停止中的服務 is 服務 and self._停止中世代 == 世代:
+                while self._停止中世代 == 世代: self._條件.wait()
     @contextmanager
     def _租借(self):
         """描述：完整操作期間租借provider，未啟動或draining時fail closed。
@@ -342,7 +345,8 @@ class 生產Published執行資源:
                  技能套件發布器物件: 技能套件發布器 | None = None,
                  端點發布服務物件: SQLite端點發布服務 | None = None,
                  憑證管理代理: 延遲憑證管理服務 | None = None,
-                 憑證管理服務物件: SQLite憑證管理服務 | None = None) -> None:
+                 憑證管理服務物件: SQLite憑證管理服務 | None = None,
+                 憑證管理世代: int | None = None) -> None:
         """保存已成功安裝的資源參照。
 
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
@@ -354,14 +358,10 @@ class 生產Published執行資源:
         """
         self._代理, self._編排器 = 代理, 編排器
         self._工具庫, self._模型表 = 工具庫, 模型表
-        self._Planner資源 = Planner資源
-        self._發布管理代理 = 發布管理代理
-        self._發布管理服務 = 發布管理服務
-        self._技能套件協調器 = 技能套件協調器物件
-        self._技能套件發布器 = 技能套件發布器物件
-        self._端點發布服務 = 端點發布服務物件
-        self._憑證管理代理 = 憑證管理代理
-        self._憑證管理服務 = 憑證管理服務物件
+        self._Planner資源, self._發布管理代理, self._發布管理服務 = Planner資源, 發布管理代理, 發布管理服務
+        self._技能套件協調器, self._技能套件發布器 = 技能套件協調器物件, 技能套件發布器物件
+        self._端點發布服務, self._憑證管理代理, self._憑證管理服務 = 端點發布服務物件, 憑證管理代理, 憑證管理服務物件
+        self._憑證管理世代 = 憑證管理世代
         self._關閉條件 = Condition(RLock())
         self._已關閉 = False
         self._關閉狀態 = "尚未開始"
@@ -494,10 +494,9 @@ class 生產Published執行資源:
         描述：由唯一 shutdown owner 清除 Planner、Invocation 與 registries。
         """
         管理代理, 管理服務 = self._發布管理代理, self._發布管理服務
-        憑證代理, 憑證服務 = self._憑證管理代理, self._憑證管理服務
+        憑證代理, 憑證服務, 憑證世代 = self._憑證管理代理, self._憑證管理服務, self._憑證管理世代
         Planner資源, 編排器, 工具庫 = self._Planner資源, self._編排器, self._工具庫
-        控制流程錯誤 = None
-        普通清除錯誤 = None
+        控制流程錯誤 = 普通清除錯誤 = None
         try:
             if 管理代理 is not None and 管理服務 is not None:
                 管理代理.清除(管理服務)
@@ -514,16 +513,17 @@ class 生產Published執行資源:
                     控制流程錯誤 = 撤銷錯誤
                 elif 普通清除錯誤 is None:
                     普通清除錯誤 = 撤銷錯誤
+        try:
+            if 憑證代理 is not None and 憑證服務 is not None and 憑證世代 is not None:
+                憑證代理.清除(憑證服務, 憑證世代)
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通清除錯誤 is None: 普通清除錯誤 = 錯誤
         finally:
-            if 憑證代理 is not None and 憑證服務 is not None:
-                憑證代理.清除(憑證服務)
-            self._憑證管理服務 = None
-            self._憑證管理代理 = None
-            self._發布管理服務 = None
-            self._發布管理代理 = None
-            self._端點發布服務 = None
-            self._技能套件發布器 = None
-            self._技能套件協調器 = None
+            self._憑證管理服務 = self._憑證管理代理 = self._憑證管理世代 = None
+            self._發布管理服務 = self._發布管理代理 = self._端點發布服務 = None
+            self._技能套件發布器 = self._技能套件協調器 = None
         try:
             if Planner資源 is not None:
                 Planner資源._清除同步()
@@ -862,6 +862,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     編排器 = None
     Planner資源 = None
     套件發布器 = 端點發布服務 = 憑證封套 = 管理服務 = 憑證管理服務 = None
+    憑證管理世代 = None
     try:
         發布.工具發布安裝器(工具庫)
         原模型表 = 發布.模型供應商註冊表工廠()
@@ -901,7 +902,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 if type(憑證管理代理) is not 延遲憑證管理服務:
                     raise ValueError("Published生產組裝無效") from None
                 憑證管理服務 = SQLite憑證管理服務(資料庫, 憑證封套)
-                憑證管理代理.安裝(憑證管理服務)
+                憑證管理世代 = 憑證管理代理.安裝(憑證管理服務)
         if 發布.憑證封套工廠 is not None and Planner資源 is not None:
             if type(管理代理) is not 延遲發布管理服務 or type(套件協調器) is not 技能套件協調器:
                 raise ValueError("Published生產組裝無效") from None
@@ -947,7 +948,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             管理服務,
             套件協調器 if 管理服務 is not None else None,
             套件發布器, 端點發布服務,
-            憑證管理代理 if 憑證管理服務 is not None else None, 憑證管理服務,
+            憑證管理代理 if 憑證管理服務 is not None else None, 憑證管理服務, 憑證管理世代,
         )
     except BaseException as 啟動錯誤:
         清理控制流程: BaseException | None = None
@@ -963,9 +964,15 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             except BaseException as 撤銷錯誤:
                 if isinstance(撤銷錯誤, _控制流程例外) and 清理控制流程 is None:
                     清理控制流程 = 撤銷錯誤
+        try:
+            if (type(憑證管理代理) is 延遲憑證管理服務
+                    and type(憑證管理服務) is SQLite憑證管理服務
+                    and type(憑證管理世代) is int):
+                憑證管理代理.清除(憑證管理服務, 憑證管理世代)
+        except BaseException as 清理錯誤:
+            if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
+                清理控制流程 = 清理錯誤
         finally:
-            if type(憑證管理代理) is 延遲憑證管理服務 and type(憑證管理服務) is SQLite憑證管理服務:
-                憑證管理代理.清除(憑證管理服務)
             憑證管理服務 = None
             管理服務 = 憑證封套 = 端點發布服務 = 套件發布器 = None
         try:
