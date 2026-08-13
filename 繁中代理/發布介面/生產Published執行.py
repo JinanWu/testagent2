@@ -165,7 +165,9 @@ class 延遲憑證管理服務:
 
         """
         self._服務: SQLite憑證管理服務 | None = None
-        self._鎖 = RLock()
+        self._條件 = Condition(RLock())
+        self._進行中 = 0
+        self._正在停止 = False
 
     def 安裝(self, 服務: SQLite憑證管理服務) -> None:
         """在 startup exact-once 安裝真實 SQLite adapter。
@@ -177,9 +179,10 @@ class 延遲憑證管理服務:
         """
         if type(服務) is not SQLite憑證管理服務:
             raise ValueError("Published憑證管理服務無效") from None
-        with self._鎖:
-            if self._服務 is not None:
+        with self._條件:
+            if self._服務 is not None or self._進行中:
                 raise ValueError("Published憑證管理服務無效") from None
+            self._正在停止 = False
             self._服務 = 服務
 
     def 清除(self, 服務: SQLite憑證管理服務) -> None:
@@ -190,11 +193,15 @@ class 延遲憑證管理服務:
         返回值：無；只有identity相同時清除目前服務參照。
 
         """
-        with self._鎖:
+        with self._條件:
             if self._服務 is 服務:
                 self._服務 = None
+                self._正在停止 = True
+                while self._進行中:
+                    self._條件.wait()
 
-    def _取得(self) -> SQLite憑證管理服務:
+    @contextmanager
+    def _租借(self):
         """取得啟動中的 provider，未啟動或已關閉時 fail closed。
 
         描述：取得啟動中的 provider，未啟動或已關閉時 fail closed。
@@ -202,11 +209,18 @@ class 延遲憑證管理服務:
         返回值：目前已安裝且可接受管理操作的``SQLite憑證管理服務``。
 
         """
-        with self._鎖:
+        with self._條件:
             服務 = self._服務
-        if 服務 is None:
-            raise RuntimeError("Published服務不可用") from None
-        return 服務
+            if 服務 is None or self._正在停止:
+                raise RuntimeError("Published服務不可用") from None
+            self._進行中 += 1
+        try:
+            yield 服務
+        finally:
+            with self._條件:
+                self._進行中 -= 1
+                if self._進行中 == 0:
+                    self._條件.notify_all()
 
     def 列出憑證(self, **參數):
         """委派 safe list 操作。
@@ -215,7 +229,8 @@ class 延遲憑證管理服務:
         參數：``**參數``。
         返回值：真實provider回傳的``憑證列表結果``。
         """
-        return self._取得().列出憑證(**參數)
+        with self._租借() as 服務:
+            return 服務.列出憑證(**參數)
 
     def 建立憑證(self, **參數):
         """委派 additional credential create 操作。
@@ -224,7 +239,8 @@ class 延遲憑證管理服務:
         參數：``**參數``。
         返回值：真實provider回傳的``一次性憑證建立收據``。
         """
-        return self._取得().建立憑證(**參數)
+        with self._租借() as 服務:
+            return 服務.建立憑證(**參數)
 
     def 撤銷憑證(self, **參數):
         """委派 audited idempotent revoke 操作。
@@ -233,7 +249,8 @@ class 延遲憑證管理服務:
         參數：``**參數``。
         返回值：真實provider回傳的``憑證撤銷收據``。
         """
-        return self._取得().撤銷憑證(**參數)
+        with self._租借() as 服務:
+            return 服務.撤銷憑證(**參數)
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
 

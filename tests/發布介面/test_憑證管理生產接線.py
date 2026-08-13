@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from types import MappingProxyType, MethodType
+from threading import Event, Thread
+from typing import Any, cast
 
 from fastapi.testclient import TestClient
 
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
-from 繁中代理.發布介面.生產Published執行 import Published生產設定
+from 繁中代理.發布介面.生產Published執行 import Published生產設定, 延遲憑證管理服務
+from 繁中代理.發布介面.憑證.管理 import SQLite憑證管理服務
 from 繁中代理.發布介面.設定 import 生產設定
 
 
@@ -113,7 +116,18 @@ def test_master_key_bytes無法從app_state資源圖走訪(tmp_path) -> None:
             if type(value) is MethodType:
                 return 可達(value.__self__)
             state = getattr(value, "__dict__", None)
-            return type(state) is dict and 可達(state)
+            if type(state) is dict and 可達(state):
+                return True
+            slots = getattr(type(value), "__slots__", ())
+            if type(slots) is str:
+                slots = (slots,)
+            for 名稱 in slots if type(slots) in (tuple, list) else ():
+                try:
+                    if 可達(object.__getattribute__(value, 名稱)):
+                        return True
+                except (AttributeError, TypeError):
+                    pass
+            return False
 
         assert not 可達(app.state.發布介面資源)
 
@@ -134,3 +148,35 @@ def test_invalid_keyring_factory於startup_fail_closed(tmp_path) -> None:
     except RuntimeError as 錯誤:
         assert str(錯誤) == "發布介面啟動失敗"
     assert 呼叫 == ["installer", "models"]
+
+
+def test_shutdown先拒絕新租借並等待active_credential操作完成(tmp_path) -> None:
+    """credential proxy 的完整委派持有 lease，清除等待歸零且拒絕新操作。"""
+    代理 = 延遲憑證管理服務()
+    服務 = SQLite憑證管理服務(
+        tmp_path / "published.sqlite3", AESGCM憑證封套({1: b"k" * 32}, 1),
+    )
+    已進入, 允許完成, 清除完成 = Event(), Event(), Event()
+
+    def 阻塞列出(**_參數):
+        已進入.set()
+        assert 允許完成.wait(2)
+        return None
+
+    服務.列出憑證 = cast(Any, 阻塞列出)
+    代理.安裝(服務)
+    操作 = Thread(target=lambda: 代理.列出憑證(端點識別碼="e", 擁有者使用者識別碼="u"))
+    操作.start()
+    assert 已進入.wait(1)
+    清除 = Thread(target=lambda: (代理.清除(服務), 清除完成.set()))
+    清除.start()
+    assert not 清除完成.wait(0.05)
+    try:
+        代理.列出憑證(端點識別碼="e", 擁有者使用者識別碼="u")
+        raise AssertionError("draining 時不得接受新租借")
+    except RuntimeError as 錯誤:
+        assert str(錯誤) == "Published服務不可用"
+    允許完成.set()
+    操作.join(2)
+    清除.join(2)
+    assert 清除完成.is_set() and not 操作.is_alive() and not 清除.is_alive()

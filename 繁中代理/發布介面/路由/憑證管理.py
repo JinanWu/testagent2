@@ -7,7 +7,7 @@ import secrets
 import time
 from typing import Annotated, Any, NoReturn
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator
 from starlette.concurrency import run_in_threadpool
@@ -31,14 +31,27 @@ from ..憑證管理契約 import (
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 _本文位元上限 = 32_768
 _控制例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_錯誤綱要 = {
-    "description": "固定錯誤代碼",
-    "content": {"application/json": {"schema": {
-        "type": "object", "additionalProperties": False, "required": ["detail"],
-        "properties": {"detail": {"type": "object", "additionalProperties": False,
-            "required": ["code"], "properties": {"code": {"type": "string"}}}},
-    }}},
-}
+def _建立錯誤綱要(*代碼: str) -> dict[str, object]:
+    """描述：建立只允許指定public error codes的OpenAPI response綱要。
+    參數：``代碼``為該status允許的exact code集合。
+    返回值：不允許額外欄位且code使用enum的response綱要。
+    """
+    return {
+        "description": "固定錯誤代碼",
+        "content": {"application/json": {"schema": {
+            "type": "object", "additionalProperties": False, "required": ["detail"],
+            "properties": {"detail": {"type": "object", "additionalProperties": False,
+                "required": ["code"], "properties": {"code": {"type": "string", "enum": list(代碼)}}}},
+        }}},
+    }
+
+
+_未認證錯誤綱要 = _建立錯誤綱要("unauthorized")
+_禁止錯誤綱要 = _建立錯誤綱要("forbidden")
+_找不到錯誤綱要 = _建立錯誤綱要("credential_not_found")
+_衝突錯誤綱要 = _建立錯誤綱要("endpoint_status_conflict")
+_無效請求錯誤綱要 = _建立錯誤綱要("invalid_request")
+_管理失敗錯誤綱要 = _建立錯誤綱要("credential_management_failed")
 _摘要綱要 = {
     "type": "object", "additionalProperties": False,
     "required": [
@@ -146,11 +159,12 @@ def 建立憑證管理路由器(
 
     @路由器.get(
         "/{endpoint_id}/credentials",
-        responses={200: _列表回應, 401: _錯誤綱要, 404: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
+        responses={200: _列表回應, 401: _未認證錯誤綱要, 404: _找不到錯誤綱要,
+                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
     )
     async def 列出端點憑證(
         請求: Request,
-        端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
+        endpoint_id: str,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
     ) -> JSONResponse:
         """列出權威 session owner 的 safe credential summaries。
@@ -160,6 +174,7 @@ def 建立憑證管理路由器(
         返回值：狀態碼200且本文只含安全憑證摘要列表的JSON回應。
 
         """
+        端點識別碼 = _驗證識別碼(endpoint_id)
         _拒絕查詢參數(請求)
         使用者識別碼, _ = _重建身份(使用者)
         try:
@@ -179,13 +194,14 @@ def 建立憑證管理路由器(
 
     @路由器.post(
         "/{endpoint_id}/credentials", status_code=201,
-        responses={201: _建立回應, 401: _錯誤綱要, 403: _錯誤綱要, 404: _錯誤綱要,
-                   409: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
+        responses={201: _建立回應, 401: _未認證錯誤綱要, 403: _禁止錯誤綱要,
+                   404: _找不到錯誤綱要, 409: _衝突錯誤綱要,
+                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
         openapi_extra=_建立本文綱要,
     )
     async def 建立端點憑證(
         請求: Request,
-        端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
+        endpoint_id: str,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
@@ -197,8 +213,9 @@ def 建立憑證管理路由器(
         返回值：狀態碼201、只揭露一次初始金鑰並攜帶CSRF接續的JSON回應。
 
         """
-        _拒絕查詢參數(請求)
-        本文 = await _解析建立本文(請求)
+        端點識別碼 = _驗證識別碼(endpoint_id, 回應)
+        _拒絕查詢參數(請求, 回應)
+        本文 = await _解析建立本文(請求, 回應)
         使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者)
         現在 = _讀取時間(時鐘)
         if float(本文.到期時間) <= 現在:
@@ -234,13 +251,14 @@ def 建立憑證管理路由器(
 
     @路由器.post(
         "/{endpoint_id}/credentials/{credential_id}/revoke", status_code=204,
-        responses={204: {"description": "撤銷成功，無回應本文"}, 401: _錯誤綱要,
-                   403: _錯誤綱要, 404: _錯誤綱要, 422: _錯誤綱要, 500: _錯誤綱要},
+        responses={204: {"description": "撤銷成功，無回應本文"}, 401: _未認證錯誤綱要,
+                   403: _禁止錯誤綱要, 404: _找不到錯誤綱要,
+                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
     )
     async def 撤銷端點憑證(
         請求: Request,
-        端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
-        憑證識別碼: Annotated[str, Path(alias="credential_id", pattern=_識別碼格式)],
+        endpoint_id: str,
+        credential_id: str,
         使用者: 網頁使用者 = Depends(目前工作階段相依),
         _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
@@ -252,9 +270,10 @@ def 建立憑證管理路由器(
         返回值：狀態碼204、無本文且攜帶CSRF接續的回應。
 
         """
-        _拒絕查詢參數(請求)
-        if 請求.headers.get("content-length") not in (None, "0"):
-            _拋出HTTP錯誤(422, "invalid_request", 回應)
+        端點識別碼 = _驗證識別碼(endpoint_id, 回應)
+        憑證識別碼 = _驗證識別碼(credential_id, 回應)
+        _拒絕查詢參數(請求, 回應)
+        await _要求空本文(請求, 回應)
         使用者識別碼, 是否管理者 = _重建雙重身份(使用者, _csrf使用者)
         try:
             請求識別碼 = 請求識別碼工廠()
@@ -304,13 +323,24 @@ def _重建雙重身份(使用者: object, csrf使用者: object) -> tuple[str, 
 
     """
     識別碼, 是否管理者 = _重建身份(使用者)
-    csrf識別碼, _ = _重建身份(csrf使用者)
-    if 識別碼 != csrf識別碼:
+    csrf識別碼, csrf是否管理者 = _重建身份(csrf使用者)
+    if 識別碼 != csrf識別碼 or 是否管理者 != csrf是否管理者:
         _拋出HTTP錯誤(500, "credential_management_failed")
     return 識別碼, 是否管理者
 
 
-def _拒絕查詢參數(請求: Request) -> None:
+def _驗證識別碼(值: object, 回應: Response | None = None) -> str:
+    """描述：在handler內固定path格式錯誤，避免框架回顯輸入。
+    參數：``值``為path原值；``回應``攜帶CSRF接續。
+    返回值：格式合法的識別碼。
+    """
+    import re
+    if type(值) is not str or re.fullmatch(_識別碼格式, 值) is None:
+        _拋出HTTP錯誤(422, "invalid_request", 回應)
+    return 值
+
+
+def _拒絕查詢參數(請求: Request, 回應: Response | None = None) -> None:
     """三條管理路由皆拒絕任何 query 或 duplicate query。
 
     描述：三條管理路由皆拒絕任何 query 或 duplicate query。
@@ -319,10 +349,10 @@ def _拒絕查詢參數(請求: Request) -> None:
 
     """
     if 請求.url.query:
-        _拋出HTTP錯誤(422, "invalid_request")
+        _拋出HTTP錯誤(422, "invalid_request", 回應)
 
 
-async def _解析建立本文(請求: Request) -> 憑證建立HTTP請求:
+async def _解析建立本文(請求: Request, 回應: Response | None = None) -> 憑證建立HTTP請求:
     """以 strict JSON、exact content type 與 32 KiB 上限解析 create body。
 
     描述：以 strict JSON、exact content type 與 32 KiB 上限解析 create body。
@@ -352,7 +382,24 @@ async def _解析建立本文(請求: Request) -> 憑證建立HTTP請求:
     except _控制例外:
         raise
     except BaseException:
-        _拋出HTTP錯誤(422, "invalid_request")
+        _拋出HTTP錯誤(422, "invalid_request", 回應)
+
+
+async def _要求空本文(請求: Request, 回應: Response | None) -> None:
+    """描述：逐段驗證request stream byte-exact empty。
+    參數：``請求``提供ASGI stream；``回應``攜帶CSRF接續。
+    返回值：本文確實為空時回傳None。
+    """
+    try:
+        async for 片段 in 請求.stream():
+            if 片段:
+                _拋出HTTP錯誤(422, "invalid_request", 回應)
+    except _控制例外:
+        raise
+    except HTTPException:
+        raise
+    except BaseException:
+        _拋出HTTP錯誤(422, "invalid_request", 回應)
 
 
 def _讀取時間(時鐘) -> float:
