@@ -5,7 +5,7 @@ import time
 
 from fastapi.testclient import TestClient
 
-from test_CP4_Controller生產呼叫 import _建立live環境, _正規
+from test_CP4_Controller生產呼叫 import _建立live環境
 from 繁中代理.發布介面.憑證.儲存庫 import SQLite憑證儲存庫
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
 from 繁中代理.發布介面.憑證.服務 import SQLite憑證撤銷服務
