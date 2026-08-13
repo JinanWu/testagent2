@@ -328,6 +328,27 @@ def test_A18_hostile_dependency錯誤不可穿透raw_status或body():
     assert "RAW_DEPENDENCY_SECRET" not in 回應.text
 
 
+def test_A18_canonical_dependency錯誤不可夾帶敵對headers():
+    from fastapi import HTTPException
+
+    for 狀態, detail, header in (
+        (401, {"code": "unauthorized"}, {"X-Raw-Stage": "RAW_STAGE_SECRET"}),
+        (503, {"code": "auth_unavailable"}, {"X-Error": "RAW_ERROR_SECRET"}),
+    ):
+        def 敵對相依():
+            raise HTTPException(狀態, detail=detail, headers=header)
+
+        app = FastAPI()
+        app.include_router(建立管理稽核路由器(
+            _列表(), _詳情(), 管理員呼叫游標編解碼器(b"k" * 32), 敵對相依,
+        ))
+        回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
+        assert 回應.status_code == 狀態
+        assert 回應.json() == {"detail": detail}
+        assert "x-raw-stage" not in 回應.headers
+        assert "x-error" not in 回應.headers
+
+
 def test_A18_partial_install發布後拋錯必須撤銷authority(tmp_path, monkeypatch):
     class 主資源:
         def __init__(self): self.關閉次數 = 0

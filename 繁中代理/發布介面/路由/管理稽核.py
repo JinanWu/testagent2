@@ -163,9 +163,9 @@ def 建立管理稽核路由器(
             return 目前工作階段相依(請求, 回應)
         except HTTPException as 錯誤:
             if 錯誤.status_code == 401 and 錯誤.detail == {"code": "unauthorized"}:
-                raise
+                raise HTTPException(status_code=401, detail={"code": "unauthorized"}) from None
             if 錯誤.status_code == 503 and 錯誤.detail == {"code": "auth_unavailable"}:
-                raise
+                raise HTTPException(status_code=503, detail={"code": "auth_unavailable"}) from None
             _拋出固定錯誤(500)
         except _控制流程:
             raise
