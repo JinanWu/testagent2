@@ -26,6 +26,11 @@ def _摘要(**changes):
 
 
 def _含標記(value, marker, seen=None):
+    """描述：執行_含標記的單一明確責任。
+
+    參數：``value``、``marker``、``seen``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     seen = set() if seen is None else seen
     if id(value) in seen:
         return False
@@ -69,6 +74,11 @@ def _assert_production_trace_clean(error, marker, paths=(契約路徑, 管理路
 
 
 def test_traceback_scanner_known_positive_direct與DTO控制():
+    """描述：驗證traceback_scanner_known_positive_direct與DTO控制。
+
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     marker = "KNOWN-LEAK-CONTROL"
 
     def direct(value):

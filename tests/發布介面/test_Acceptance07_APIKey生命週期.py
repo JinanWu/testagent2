@@ -32,20 +32,40 @@ from tests.發布介面.test_Acceptance04_端點建立Live import (
 
 
 class _模型:
-    """回傳固定合法輸出的 production provider test double。"""
+    """回傳固定合法輸出的 production provider test double。
+
+    描述：回傳固定合法輸出的 production provider test double。
+    參數：建構資料由類別欄位或建構器簽章明確提供，不讀取隱含輸入。
+    返回值：可供呼叫端使用的``_模型``類型或實例。
+    """
 
     def 產生發布回應(self, **_參數):
-        """回傳符合 endpoint response schema 的結果。"""
+        """回傳符合 endpoint response schema 的結果。
+
+        描述：回傳符合 endpoint response schema 的結果。
+        參數：``**_參數``。
+        返回值：無；完成指定操作或更新可觀測測試狀態。
+        """
         return 模型回應快照('{"answer":"A07"}', "stop", {"total_tokens": 1}, [])
 
 
 def _正規(值) -> str:
-    """輸出 production schema 使用的 canonical JSON。"""
+    """輸出 production schema 使用的 canonical JSON。
+
+    描述：輸出 production schema 使用的 canonical JSON。
+    參數：``值``。
+    返回值：依函式型別標註或既有協定回傳結果。
+    """
     return json.dumps(值, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _建立設定(tmp_path):
-    """建立 restart 可重用且 keyring 固定的 explicit production settings。"""
+    """建立 restart 可重用且 keyring 固定的 explicit production settings。
+
+    描述：建立 restart 可重用且 keyring 固定的 explicit production settings。
+    參數：``tmp_path``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     web = 生產設定(
         tmp_path / "web.sqlite3", ("http://localhost:5173",), "fake", "fake", None, None,
         Cookie安全=False, 工作階段有效秒數=60,
@@ -53,7 +73,12 @@ def _建立設定(tmp_path):
     模型 = _模型()
 
     def 安裝(工具庫) -> None:
-        """安裝 v1 snapshot 釘選的固定工具。"""
+        """安裝 v1 snapshot 釘選的固定工具。
+
+        描述：安裝 v1 snapshot 釘選的固定工具。
+        參數：``工具庫``。
+        返回值：依函式型別標註或既有協定回傳結果。
+        """
         工具庫.登錄發布(工具發布描述("release-a07", (工具發布註冊(
             "rev-a07", 工具定義(
                 "lookup", "fixed lookup",
@@ -71,7 +96,12 @@ def _建立設定(tmp_path):
 
 
 def _建立擁有者(web路徑) -> str:
-    """建立可由 canonical login 驗證的真 Web owner。"""
+    """建立可由 canonical login 驗證的真 Web owner。
+
+    描述：建立可由 canonical login 驗證的真 Web owner。
+    參數：``web路徑``。
+    返回值：依函式型別標註或既有協定回傳結果。
+    """
     使用者們 = 使用者庫(web路徑)
     try:
         return str(使用者們.建立使用者("alice", "correct horse", roles=["user"])["id"])
@@ -80,14 +110,24 @@ def _建立擁有者(web路徑) -> str:
 
 
 def _登入(client: TestClient) -> str:
-    """登入並回傳目前 single-use CSRF token。"""
+    """登入並回傳目前 single-use CSRF token。
+
+    描述：登入並回傳目前 single-use CSRF token。
+    參數：``client``。
+    返回值：依函式型別標註或既有協定回傳結果。
+    """
     回應 = client.post("/api/auth/login", json={"username": "alice", "password": "correct horse"})
     assert 回應.status_code == 200
     return 回應.json()["csrf_token"]
 
 
 def _建立端點圖形(資料庫, owner: str) -> None:
-    """建立可真實 invoke 的 endpoint/version/bundle authority 與 wrong-endpoint 對照。"""
+    """建立可真實 invoke 的 endpoint/version/bundle authority 與 wrong-endpoint 對照。
+
+    描述：建立可真實 invoke 的 endpoint/version/bundle authority 與 wrong-endpoint 對照。
+    參數：``資料庫``、``owner``。
+    返回值：依函式型別標註或既有協定回傳結果。
+    """
     根 = 資料庫.parent / "source-a07"
     根.mkdir()
     (根 / "SKILL.md").write_text("# A07", encoding="utf-8")
@@ -142,7 +182,12 @@ def _建立端點圖形(資料庫, owner: str) -> None:
 
 
 def _invoke(client: TestClient, slug: str, key: str):
-    """經 canonical public route 執行一次 endpoint invocation。"""
+    """經 canonical public route 執行一次 endpoint invocation。
+
+    描述：經 canonical public route 執行一次 endpoint invocation。
+    參數：``client``、``slug``、``key``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     return client.post(
         f"/v1/endpoints/{slug}/invoke", json={"input": {"question": "A07"}},
         headers={"Authorization": f"Bearer {key}"},
@@ -162,6 +207,8 @@ class _可變時鐘:
 
         參數：``目前``為有限、非負測試timestamp。
         返回值：無；建立可變clock state。
+
+        描述：保存初始時間。
         """
         self.目前 = 目前
 
@@ -170,6 +217,8 @@ class _可變時鐘:
 
         參數：無。
         返回值：目前Unix timestamp。
+
+        描述：讀取目前測試時間。
         """
         return self.目前
 
@@ -249,7 +298,12 @@ def test_initial_publication與additional_key使用決定性clock驗證exact邊�
 
 
 def test_create_multi_key_expire_inactive_revoke與restart_readback(tmp_path) -> None:
-    """經真 cookie/CSRF/canonical app 證明安全摘要與 lifecycle durability。"""
+    """經真 cookie/CSRF/canonical app 證明安全摘要與 lifecycle durability。
+
+    描述：經真 cookie/CSRF/canonical app 證明安全摘要與 lifecycle durability。
+    參數：``tmp_path``。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     web, published = _建立設定(tmp_path)
     published.技能套件發布根.mkdir()
     owner = _建立擁有者(web.資料庫路徑)

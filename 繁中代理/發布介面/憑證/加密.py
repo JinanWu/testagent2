@@ -38,7 +38,12 @@ class 新APIKey:
 
 
 class AESGCM憑證封套:
-    """使用DB外multi-key keyring加密endpoint-bound API keys。"""
+    """使用DB外multi-key keyring加密endpoint-bound API keys。
+
+    描述：使用DB外multi-key keyring加密endpoint-bound API keys。
+    參數：建構資料由類別欄位或建構器簽章明確提供，不讀取隱含輸入。
+    返回值：可供呼叫端使用的``AESGCM憑證封套``類型或實例。
+    """
 
     def __init__(
         self,
@@ -47,7 +52,12 @@ class AESGCM憑證封套:
         *,
         隨機位元組: Callable[[int], bytes] = os.urandom,
     ) -> None:
-        """複製並驗證AES-256 keyring；key material不進repr或DB。"""
+        """複製並驗證AES-256 keyring；key material不進repr或DB。
+
+        描述：複製並驗證AES-256 keyring；key material不進repr或DB。
+        參數：``keys``、``active_version``、``隨機位元組``。
+        返回值：依函式型別標註或既有協定回傳結果。
+        """
         copied: dict[int, bytes] = {}
         primitives: dict[int, AESGCM] = {}
         key: bytes | None = None
@@ -93,7 +103,12 @@ class AESGCM憑證封套:
         return result
 
     def 加密(self, api_key: str, endpoint_id: str, credential_id: str) -> 新APIKey:
-        """以endpoint/credential/version AAD加密合法平台API key。"""
+        """以endpoint/credential/version AAD加密合法平台API key。
+
+        描述：以endpoint/credential/version AAD加密合法平台API key。
+        參數：``api_key``、``endpoint_id``、``credential_id``。
+        返回值：依函式型別標註或既有協定回傳結果。
+        """
         憑證明文 = api_key
         del api_key
         result: 新APIKey | None = None
@@ -128,7 +143,12 @@ class AESGCM憑證封套:
         return result
 
     def 解密(self, envelope: AESGCM密文, endpoint_id: str, credential_id: str) -> str:
-        """依envelope version與相同AAD解密；tamper/wrong binding一律固定拒絕。"""
+        """依envelope version與相同AAD解密；tamper/wrong binding一律固定拒絕。
+
+        描述：依envelope version與相同AAD解密；tamper/wrong binding一律固定拒絕。
+        參數：``envelope``、``endpoint_id``、``credential_id``。
+        返回值：依函式型別標註或既有協定回傳結果。
+        """
         if (
             type(envelope) is not AESGCM密文
             or type(envelope.key_version) is not int

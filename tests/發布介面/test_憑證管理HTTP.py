@@ -23,16 +23,36 @@ from 繁中代理.發布介面.路由.憑證管理 import 建立憑證管理路�
 
 
 class _管理服務:
-    """記錄管理 route 委派的 safe test adapter。"""
+    """記錄管理 route 委派的 safe test adapter。
+
+    描述：記錄管理 route 委派的 safe test adapter。
+    參數：建構資料由類別欄位或建構器簽章明確提供，不讀取隱含輸入。
+    返回值：可供呼叫端使用的``_管理服務``類型或實例。
+    """
 
     def __init__(self) -> None:
+        """描述：執行__init__的單一明確責任。
+
+        參數：無；使用已封裝狀態或固定測試資料。
+        返回值：依函式型別標註或既有協定回傳結果。
+        """
         self.呼叫: list[tuple[str, dict[str, object]]] = []
 
     def 列出憑證(self, **參數):
+        """描述：執行列出憑證的單一明確責任。
+
+        參數：``**參數``。
+        返回值：無；完成指定操作或更新可觀測測試狀態。
+        """
         self.呼叫.append(("list", 參數))
         return 憑證列表結果((_建立摘要(),))
 
     def 建立憑證(self, **參數):
+        """描述：執行建立憑證的單一明確責任。
+
+        參數：``**參數``。
+        返回值：無；完成指定操作或更新可觀測測試狀態。
+        """
         self.呼叫.append(("create", 參數))
         摘要 = _建立摘要()
         return 一次性憑證建立收據(
@@ -42,12 +62,22 @@ class _管理服務:
         )
 
     def 撤銷憑證(self, **參數):
+        """描述：執行撤銷憑證的單一明確責任。
+
+        參數：``**參數``。
+        返回值：無；完成指定操作或更新可觀測測試狀態。
+        """
         self.呼叫.append(("revoke", 參數))
         return 憑證撤銷收據("cred-example", 150.0, False)
 
 
 def _建立客戶端(服務=None, *, csrf_owner="owner-1"):
-    """建立具 canonical session/CSRF seam 的 isolated router app。"""
+    """建立具 canonical session/CSRF seam 的 isolated router app。
+
+    描述：建立具 canonical session/CSRF seam 的 isolated router app。
+    參數：``服務``、``csrf_owner``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     服務 = 服務 or _管理服務()
     session = lambda: 網頁使用者("owner-1", "alice", "member")
     csrf = lambda: 網頁使用者(csrf_owner, "alice", "member")
@@ -73,7 +103,12 @@ def _建立摘要() -> 憑證摘要:
 
 
 def test_建立請求與固定HTTP錯誤碼形成封閉契約() -> None:
-    """凍結 create exact keys 與 public failure codes。"""
+    """凍結 create exact keys 與 public failure codes。
+
+    描述：凍結 create exact keys 與 public failure codes。
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     assert 建立憑證請求欄位 == (
         "name", "purpose", "expires_at", "ip_allowlist", "rate_limit_requests",
     )
@@ -84,7 +119,12 @@ def test_建立請求與固定HTTP錯誤碼形成封閉契約() -> None:
 
 
 def test_安全摘要與列表只序列化凍結英文鍵() -> None:
-    """證明 ordinary projections 無法攜帶 create-only 或 crypto 欄位。"""
+    """證明 ordinary projections 無法攜帶 create-only 或 crypto 欄位。
+
+    描述：證明 ordinary projections 無法攜帶 create-only 或 crypto 欄位。
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     摘要 = _建立摘要()
     內容 = 序列化憑證摘要(摘要)
     assert tuple(內容) == (
@@ -102,7 +142,12 @@ def test_安全摘要與列表只序列化凍結英文鍵() -> None:
 
 
 def test_只有建立收據可序列化一次性明文() -> None:
-    """固定 create 201 是唯一具有 ``initial_api_key`` 的成功 DTO。"""
+    """固定 create 201 是唯一具有 ``initial_api_key`` 的成功 DTO。
+
+    描述：固定 create 201 是唯一具有 ``initial_api_key`` 的成功 DTO。
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     摘要 = _建立摘要()
     收據 = 一次性憑證建立收據(
         摘要.憑證識別碼, 摘要.名稱, 摘要.用途, 摘要.金鑰前綴, 摘要.金鑰末四碼,

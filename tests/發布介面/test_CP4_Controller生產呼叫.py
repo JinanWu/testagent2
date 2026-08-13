@@ -170,6 +170,8 @@ def test_憑證管理可獨立Planner設定且建構不呼叫注入(tmp_path):
     返回值：無；設定可建立且 OpenAPI 公開三條 credential routes。
     例外：組裝或 route inventory 漂移時 assertion 失敗。
     副作用：不得呼叫 envelope factory、installer、model factory 或建立檔案。
+
+    描述：CP4-COMP-05：A07 management key authority 不再錯綁 Planner authority。
     """
     呼叫: list[str] = []
     Web設定 = 生產設定(

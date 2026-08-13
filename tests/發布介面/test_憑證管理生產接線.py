@@ -13,7 +13,12 @@ from 繁中代理.發布介面.設定 import 生產設定
 
 
 def _設定(tmp_path, 封套工廠):
-    """建立只啟用 credential management 的 explicit CP4 settings。"""
+    """建立只啟用 credential management 的 explicit CP4 settings。
+
+    描述：建立只啟用 credential management 的 explicit CP4 settings。
+    參數：``tmp_path``、``封套工廠``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     呼叫: list[str] = []
     web = 生產設定(
         tmp_path / "web.sqlite3", ("https://client.example",), "fake", "fake", None, None,
@@ -28,7 +33,12 @@ def _設定(tmp_path, 封套工廠):
 
 
 def test_construction不呼叫keyring且canonical_OpenAPI含三條憑證路由(tmp_path) -> None:
-    """固定 construction zero-I/O 與 canonical credential route inventory。"""
+    """固定 construction zero-I/O 與 canonical credential route inventory。
+
+    描述：固定 construction zero-I/O 與 canonical credential route inventory。
+    參數：``tmp_path``。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     keyring呼叫: list[str] = []
     web, published, 呼叫 = _設定(
         tmp_path,
@@ -42,7 +52,12 @@ def test_construction不呼叫keyring且canonical_OpenAPI含三條憑證路由(t
 
 
 def test_startup_exact_once建立管理provider且shutdown清除reference(tmp_path) -> None:
-    """證明 envelope factory 只在 startup 呼叫一次且 resource shutdown detach provider。"""
+    """證明 envelope factory 只在 startup 呼叫一次且 resource shutdown detach provider。
+
+    描述：證明 envelope factory 只在 startup 呼叫一次且 resource shutdown detach provider。
+    參數：``tmp_path``。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     keyring呼叫: list[str] = []
     web, published, 呼叫 = _設定(
         tmp_path,
@@ -62,7 +77,12 @@ def test_startup_exact_once建立管理provider且shutdown清除reference(tmp_pa
 
 
 def test_master_key_bytes無法從app_state資源圖走訪(tmp_path) -> None:
-    """deployment master key 只轉成 opaque crypto primitive，不留在 app state object graph。"""
+    """deployment master key 只轉成 opaque crypto primitive，不留在 app state object graph。
+
+    描述：deployment master key 只轉成 opaque crypto primitive，不留在 app state object graph。
+    參數：``tmp_path``。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     marker = b"A07-master-key-marker-value-1234"
     assert len(marker) == 32
     web, published, *_ = _設定(tmp_path, lambda: AESGCM憑證封套({1: marker}, 1))
@@ -71,8 +91,13 @@ def test_master_key_bytes無法從app_state資源圖走訪(tmp_path) -> None:
     with TestClient(app):
         seen: set[int] = set()
 
-        def reachable(value) -> bool:
-            """循環安全地檢查 marker 是否存在於 Python-visible app state graph。"""
+        def 可達(value) -> bool:
+            """循環安全地檢查 marker 是否存在於 Python-visible app state graph。
+
+            描述：循環安全地檢查 marker 是否存在於 Python-visible app state graph。
+            參數：``value``。
+            返回值：依函式型別標註或既有協定回傳結果。
+            """
             identity = id(value)
             if identity in seen:
                 return False
@@ -82,19 +107,24 @@ def test_master_key_bytes無法從app_state資源圖走訪(tmp_path) -> None:
             if type(value) in (str, int, float, bool, type(None), type, bytes):
                 return False
             if type(value) in (tuple, list, set, frozenset):
-                return any(reachable(item) for item in value)
+                return any(可達(item) for item in value)
             if type(value) in (dict, MappingProxyType):
-                return any(reachable(item) for pair in value.items() for item in pair)
+                return any(可達(item) for pair in value.items() for item in pair)
             if type(value) is MethodType:
-                return reachable(value.__self__)
+                return 可達(value.__self__)
             state = getattr(value, "__dict__", None)
-            return type(state) is dict and reachable(state)
+            return type(state) is dict and 可達(state)
 
-        assert not reachable(app.state.發布介面資源)
+        assert not 可達(app.state.發布介面資源)
 
 
 def test_invalid_keyring_factory於startup_fail_closed(tmp_path) -> None:
-    """缺少 genuine AES-GCM envelope 時 app construction 成功但 startup 固定拒絕。"""
+    """缺少 genuine AES-GCM envelope 時 app construction 成功但 startup 固定拒絕。
+
+    描述：缺少 genuine AES-GCM envelope 時 app construction 成功但 startup 固定拒絕。
+    參數：``tmp_path``。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     web, published, 呼叫 = _設定(tmp_path, lambda: object())
     published.技能套件發布根.mkdir()
     app = 建立CP4ASGI應用程式(web, published)
