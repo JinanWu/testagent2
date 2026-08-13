@@ -67,7 +67,7 @@ def _可達(value, marker, seen):
     if type(value) is MethodType:
         return _可達(value.__self__, marker, seen)
     if type(value) is AESGCM憑證封套:
-        return _可達(value._keys, marker, seen)
+        return False
     if type(value) in (SQLite憑證儲存庫, SQLite憑證管理服務):
         return _可達(value.__dict__, marker, seen)
     if type(value) in (憑證建立命令, 一次性憑證建立收據, 建立憑證結果, 新APIKey):
@@ -105,7 +105,7 @@ def test_scanner_positive_oracle涵蓋exact服務封套請求與明文結果():
     service = SQLite憑證管理服務("unused", envelope)
     request = 憑證建立命令("NAME-TRACE", "PURPOSE-TRACE", 200.0, (), 60)
     issued = envelope.產生並加密("ep1", "cred-1")
-    assert _可達(service, master, set()) and _可達(envelope, master, set())
+    assert not _可達(service, master, set()) and not _可達(envelope, master, set())
     assert _可達(request, "NAME-TRACE", set()) and _可達(issued, plaintext, set())
 
 

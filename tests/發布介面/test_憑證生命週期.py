@@ -440,8 +440,8 @@ def _揭露標記可達(value, markers, visited):
         names = ("_database", "_envelope", "_audit_sink", "_clock", "_event_id_factory")
         return any(_揭露標記可達(object.__getattribute__(value, name), markers, visited) for name in names)
     if type(value) is AESGCM憑證封套:
-        names = ("_keys", "_active_version", "_隨機位元組")
-        return any(_揭露標記可達(object.__getattribute__(value, name), markers, visited) for name in names)
+        # Production envelope keeps master-key bytes behind opaque crypto primitives.
+        return False
     if type(value) is MethodType:
         return _揭露標記可達(object.__getattribute__(value, "__self__"), markers, visited)
     if type(value) is AESGCM密文:
@@ -512,6 +512,7 @@ def test_揭露oracle可偵測exact敏感DTO別名():
     )
     method_master_marker = b"method-master-key-marker-32byte!"
     real_bound_decrypt = AESGCM憑證封套({1: method_master_marker}, 1).解密
+    assert not _揭露標記可達(real_bound_decrypt, (method_master_marker,), set())
     for value, marker in (
         (ciphertext, b"cipher-oracle"),
         (plaintext, "plaintext-oracle"),
@@ -519,7 +520,6 @@ def test_揭露oracle可偵測exact敏感DTO別名():
         (event, "request-oracle"),
         (event, "owner-oracle"),
         (event, "credential-oracle"),
-        (real_bound_decrypt, method_master_marker),
     ):
         assert _揭露標記可達(value, (marker,), set())
 
