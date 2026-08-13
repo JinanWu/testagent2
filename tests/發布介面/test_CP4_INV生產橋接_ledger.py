@@ -2,6 +2,7 @@
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,6 +115,75 @@ def test_terminal更新失敗時event同交易rollback且重試可成功(tmp_pat
     收據 = 橋接.記錄執行嘗試(呼叫, 請求, 執行嘗試結果("model_timeout"), None)
     assert 收據 == 執行嘗試紀錄收據("inv-rollback", 1, True, 1)
     assert len(_狀態與事件(路徑)[1]) == 1
+
+
+def test_session附加失敗時成功狀態與event同交易rollback且可重試(tmp_path):
+    """session pair INSERT 失敗不得先留下 succeeded invocation 或 attempt event。"""
+    路徑, 儲存庫 = _儲存庫(tmp_path, "inv-session")
+    橋接 = InvocationLedger橋接(儲存庫)
+    呼叫 = InvocationRef("inv-session", "req-inv-session", "case")
+    釘選 = SimpleNamespace(endpoint_id="ep", version_id="ver", service_account_id="svc")
+    請求 = 執行嘗試請求(釘選, {"q": 1}, None, 1, ())
+    結果 = 執行嘗試結果("success", {"answer": 1})
+    橋接.開始執行嘗試(呼叫, 請求)
+    with sqlite3.connect(路徑) as 連線:
+        連線.execute(
+            "CREATE TRIGGER temporary_session_failure BEFORE INSERT ON published_session_turn_pairs "
+            "BEGIN SELECT RAISE(ABORT,'temporary'); END"
+        )
+    with pytest.raises(呼叫儲存錯誤, match="^執行事件原子提交失敗$"):
+        橋接.記錄執行嘗試(呼叫, 請求, 結果, True)
+    assert _狀態與事件(路徑) == (("running", None, None, None), [])
+    with sqlite3.connect(路徑) as 連線:
+        assert 連線.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == (0,)
+        連線.execute("DROP TRIGGER temporary_session_failure")
+    assert 橋接.記錄執行嘗試(呼叫, 請求, 結果, True).committed is True
+    assert _狀態與事件(路徑)[0][0] == "succeeded"
+    with sqlite3.connect(路徑) as 連線:
+        assert 連線.execute(
+            "SELECT session_id,sequence_number FROM published_session_turn_pairs"
+        ).fetchone() == ("case", 1)
+
+
+def test_同session兩個completion以CAS恰一成功另一筆不留terminal副作用(tmp_path):
+    """兩個已讀相同 sequence 的 invocation 由 BEGIN IMMEDIATE 決出一勝一明確 conflict。"""
+    共同 = tmp_path / "same-session.sqlite3"
+    初始化發布介面資料庫(共同)
+    with sqlite3.connect(共同) as 連線:
+        連線.execute("INSERT INTO service_accounts VALUES ('svc',0,NULL)")
+        連線.execute(
+            "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,current_version_id,created_at,updated_at) "
+            "VALUES ('ep','owner','svc','demo','active',NULL,0,0)"
+        )
+        連線.execute(
+            "INSERT INTO published_endpoint_versions VALUES "
+            "('ver','ep',1,'需求','提示','[]','[]','{}','rev','{}','{}','{}',NULL,'{}',0,'owner',0)"
+        )
+        連線.execute("UPDATE published_endpoints SET current_version_id='ver' WHERE id='ep'")
+    ids = iter(("inv-a", "inv-b"))
+    儲存庫 = SQLite呼叫儲存庫(共同, 時鐘=lambda: 12, 識別碼工廠=lambda: next(ids))
+    for 名稱 in ("a", "b"):
+        儲存庫.建立已解析呼叫("ep", "ver", f"req-{名稱}", {"q": 名稱})
+    橋接 = InvocationLedger橋接(儲存庫)
+    釘選 = SimpleNamespace(endpoint_id="ep", version_id="ver", service_account_id="svc")
+    項目 = []
+    for 名稱 in ("a", "b"):
+        呼叫 = InvocationRef(f"inv-{名稱}", f"req-{名稱}", "case")
+        請求 = 執行嘗試請求(釘選, {"q": 名稱}, None, 1, ())
+        橋接.開始執行嘗試(呼叫, 請求)
+        項目.append((呼叫, 請求))
+    def 完成(項):
+        try:
+            return 橋接.記錄執行嘗試(項[0], 項[1], 執行嘗試結果("success", {"ok": True}), True)
+        except 呼叫儲存錯誤:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as 執行池:
+        結果 = list(執行池.map(完成, 項目))
+    assert sum(值 is not None for 值 in 結果) == 1
+    with sqlite3.connect(共同) as 連線:
+        assert 連線.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == (1,)
+        assert 連線.execute("SELECT COUNT(*) FROM run_events").fetchone() == (1,)
+        assert sorted(列[0] for 列 in 連線.execute("SELECT status FROM endpoint_invocations")) == ["running", "succeeded"]
 
 
 def test_相同terminal操作並行只提交一筆event並回放相同收據(tmp_path):

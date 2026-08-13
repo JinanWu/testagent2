@@ -282,12 +282,26 @@ class InvocationLedger橋接:
         if (種類 == "success") != (schema_valid is not None):
             raise 生產橋接錯誤("invocation ledger記錄失敗") from None
         狀態 = 輸出 = 錯誤 = 用量資料 = None
+        工作階段對話組 = None
         if 種類 == "success" and schema_valid is True:
             用量 = result.usage
             用量資料 = None if 用量 is None else {
                 "total_tokens": object.__getattribute__(用量, "total_tokens"),
             }
             狀態, 輸出 = "succeeded", result.data
+            工作階段 = invocation.session_id
+            if 工作階段 is not None:
+                釘選 = request.pinned_version
+                歷史 = request.history
+                下一序號 = 1 if not 歷史 else object.__getattribute__(歷史[-1], "sequence_number") + 1
+                token數 = 1 if 用量 is None or 用量.total_tokens is None else max(1, 用量.total_tokens)
+                工作階段對話組 = (
+                    object.__getattribute__(釘選, "endpoint_id"),
+                    object.__getattribute__(釘選, "service_account_id"), 工作階段,
+                    object.__getattribute__(釘選, "version_id"), 下一序號,
+                    {"role": "user", "content": request.input},
+                    {"role": "assistant", "content": result.data}, token數,
+                )
         elif 種類 != "success" or 次數 == 2:
             錯誤碼 = 種類 if 種類 != "success" else "model_output_schema_invalid"
             狀態, 錯誤 = "failed", {"code": 錯誤碼}
@@ -295,5 +309,6 @@ class InvocationLedger橋接:
             invocation.id, f"{invocation.id}:attempt:{次數}", "model_attempt",
             {"attempt": 次數, "kind": 種類, "schema_valid": schema_valid}, 次數,
             status=狀態, output=輸出, error=錯誤, usage=用量資料,
+            session_pair=工作階段對話組,
         )
         return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號)
