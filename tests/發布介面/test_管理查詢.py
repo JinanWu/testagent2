@@ -1614,3 +1614,36 @@ def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
         {**基本, "input": {"route": "/api/v1/items", "text": "bearer market analysis"}}
     ).建立JSON()
     assert 合法路由["input"] == {"route": "/api/v1/items", "text": "bearer market analysis"}
+
+
+def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
+    """主raw、event及tool payload須共用同一完整敏感value規則。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
+        "error": None, "usage": None, "metadata_size_bytes": 2, "metadata_sha256": "a" * 64,
+        "latency_ms": 1.0, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
+             "payload": {}, "created_at": 1.0}
+    tool = {"id": "tool-1", "run_event_id": "event-1", "sequence_number": 0,
+            "tool_name": "lookup", "arguments": {}, "outcome": "success", "result": None,
+            "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.0}
+    敏感值 = (
+        "note Authorization", "Cookie", "signing-private_key", "client_secret=TOPSECRET",
+        "access_token=TOPSECRET", "refresh_token=TOPSECRET", "master_key=TOPSECRET",
+        "credential_hash=TOPSECRET", "credential_ciphertext=TOPSECRET",
+        "password=TOPSECRET", "secret_key=TOPSECRET", "provider-secret TOPSECRET",
+    )
+    for 值 in 敏感值:
+        for 破壞 in (
+            {"input": {"note": 值}},
+            {"run_events": [{**event, "payload": {"note": 值}}]},
+            {"tool_calls": [{**tool, "arguments": {"note": 值}}]},
+            {"tool_calls": [{**tool, "result": {"note": 值}}]},
+            {"tool_calls": [{**tool, "error": {"note": 值}}]},
+        ):
+            with pytest.raises(Exception):
+                建立管理員呼叫完整詳情({**基本, **破壞})
