@@ -36,6 +36,7 @@ from .生產Published管理 import (
     建立生產Planner資源,
 )
 from .憑證.加密 import AESGCM憑證封套
+from .憑證.管理 import SQLite憑證管理服務
 from .規劃.發布管理 import 發布管理協調器
 from .規劃.端點發布 import SQLite端點發布服務
 from .規劃.版本服務 import (
@@ -60,6 +61,7 @@ from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 技能套件協調器
 from .技能套件.發布器 import 技能套件發布器
 from .路由.外部呼叫 import 建立外部呼叫路由
+from .路由.憑證管理 import 建立憑證管理路由器
 from .路由.規劃發布 import (
     建立安全規劃發布路由器, 建立安全草稿端點建立路由器, 建立安全草稿路由器,
 )
@@ -137,9 +139,52 @@ class Published生產設定:
                 or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
                 or (type(保留秒數) is float and not math.isfinite(保留秒數))
                 or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)
-                or (封套工廠 is not None and not callable(封套工廠))
-                or (封套工廠 is not None and Planner組裝 is None)):
+                or (封套工廠 is not None and not callable(封套工廠))):
             raise ValueError("Published生產設定無效") from None
+
+
+class 延遲憑證管理服務:
+    """讓 credential routes 在 construction 固定、startup 才取得真實 provider。"""
+
+    def __init__(self) -> None:
+        """建立未安裝的 per-app provider slot。"""
+        self._服務: SQLite憑證管理服務 | None = None
+        self._鎖 = RLock()
+
+    def 安裝(self, 服務: SQLite憑證管理服務) -> None:
+        """在 startup exact-once 安裝真實 SQLite adapter。"""
+        if type(服務) is not SQLite憑證管理服務:
+            raise ValueError("Published憑證管理服務無效") from None
+        with self._鎖:
+            if self._服務 is not None:
+                raise ValueError("Published憑證管理服務無效") from None
+            self._服務 = 服務
+
+    def 清除(self, 服務: SQLite憑證管理服務) -> None:
+        """shutdown 只清除本次 startup 的 exact provider reference。"""
+        with self._鎖:
+            if self._服務 is 服務:
+                self._服務 = None
+
+    def _取得(self) -> SQLite憑證管理服務:
+        """取得啟動中的 provider，未啟動或已關閉時 fail closed。"""
+        with self._鎖:
+            服務 = self._服務
+        if 服務 is None:
+            raise RuntimeError("Published服務不可用") from None
+        return 服務
+
+    def 列出憑證(self, **參數):
+        """委派 safe list 操作。"""
+        return self._取得().列出憑證(**參數)
+
+    def 建立憑證(self, **參數):
+        """委派 additional credential create 操作。"""
+        return self._取得().建立憑證(**參數)
+
+    def 撤銷憑證(self, **參數):
+        """委派 audited idempotent revoke 操作。"""
+        return self._取得().撤銷憑證(**參數)
 class 延遲外部呼叫編排器:
     """固定 route identity，並以 active lease 支援 shutdown drain。
 
@@ -243,7 +288,9 @@ class 生產Published執行資源:
                  技能套件協調器物件: 技能套件協調器 | None = None,
                  技能套件發布器物件: 技能套件發布器 | None = None,
                  端點發布服務物件: SQLite端點發布服務 | None = None,
-                 憑證封套物件: AESGCM憑證封套 | None = None) -> None:
+                 憑證封套物件: AESGCM憑證封套 | None = None,
+                 憑證管理代理: 延遲憑證管理服務 | None = None,
+                 憑證管理服務物件: SQLite憑證管理服務 | None = None) -> None:
         """保存已成功安裝的資源參照。
 
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
@@ -260,6 +307,8 @@ class 生產Published執行資源:
         self._技能套件發布器 = 技能套件發布器物件
         self._端點發布服務 = 端點發布服務物件
         self._憑證封套 = 憑證封套物件
+        self._憑證管理代理 = 憑證管理代理
+        self._憑證管理服務 = 憑證管理服務物件
         self._關閉條件 = Condition(RLock())
         self._已關閉 = False
         self._關閉狀態 = "尚未開始"
@@ -390,6 +439,7 @@ class 生產Published執行資源:
         副作用：drain 兩個 proxy，清空模型表與工具發布 authority 並移除強參照。
         """
         管理代理, 管理服務 = self._發布管理代理, self._發布管理服務
+        憑證代理, 憑證服務 = self._憑證管理代理, self._憑證管理服務
         Planner資源, 編排器, 工具庫 = self._Planner資源, self._編排器, self._工具庫
         控制流程錯誤 = None
         普通清除錯誤 = None
@@ -410,6 +460,10 @@ class 生產Published執行資源:
                 elif 普通清除錯誤 is None:
                     普通清除錯誤 = 撤銷錯誤
         finally:
+            if 憑證代理 is not None and 憑證服務 is not None:
+                憑證代理.清除(憑證服務)
+            self._憑證管理服務 = None
+            self._憑證管理代理 = None
             self._發布管理服務 = None
             self._發布管理代理 = None
             self._憑證封套 = None
@@ -473,6 +527,7 @@ class 生產Published執行建構器:
         self._設定 = 設定
         self._草稿規劃代理 = 延遲草稿規劃服務()
         self._發布管理代理 = 延遲發布管理服務()
+        self._憑證管理代理 = 延遲憑證管理服務()
 
     def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
         """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
@@ -511,11 +566,20 @@ class 生產Published執行建構器:
                 self._草稿規劃代理, 目前工作階段相依, CSRF相依,
             )
         else:
-            管理路由器 = 建立安全規劃發布路由器(
-                self._草稿規劃代理, self._發布管理代理,
-                目前工作階段相依, CSRF相依,
-            )
+            if self._設定.Planner設定 is None:
+                管理路由器 = 建立安全草稿路由器(
+                    self._草稿規劃代理, 目前工作階段相依, CSRF相依,
+                )
+            else:
+                管理路由器 = 建立安全規劃發布路由器(
+                    self._草稿規劃代理, self._發布管理代理,
+                    目前工作階段相依, CSRF相依,
+                )
         路由器清單 += (管理路由器,)
+        if self._設定.憑證封套工廠 is not None:
+            路由器清單 += (建立憑證管理路由器(
+                self._憑證管理代理, 目前工作階段相依, CSRF相依,
+            ),)
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -526,7 +590,7 @@ class 生產Published執行建構器:
             """
             return await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
-                self._發布管理代理,
+                self._發布管理代理, self._憑證管理代理,
             )
         return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
@@ -697,7 +761,8 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 技能套�
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                     代理: 延遲外部呼叫編排器,
                     草稿代理: 延遲草稿規劃服務 | None = None,
-                    管理代理: 延遲發布管理服務 | None = None) -> 生產Published執行資源:
+                    管理代理: 延遲發布管理服務 | None = None,
+                    憑證管理代理: 延遲憑證管理服務 | None = None) -> 生產Published執行資源:
     """startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
 
     參數：
@@ -727,7 +792,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     模型表: dict[str, object] = {}
     編排器 = None
     Planner資源 = None
-    套件發布器 = 端點發布服務 = 憑證封套 = 管理服務 = None
+    套件發布器 = 端點發布服務 = 憑證封套 = 管理服務 = 憑證管理服務 = None
     try:
         發布.工具發布安裝器(工具庫)
         原模型表 = 發布.模型供應商註冊表工廠()
@@ -758,6 +823,14 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             Planner資源 = 建立生產Planner資源(
                 發布.Planner設定, 生產.資料庫路徑, 工具庫, 草稿代理,
             )
+        if 發布.憑證封套工廠 is not None:
+            if type(憑證管理代理) is not 延遲憑證管理服務:
+                raise ValueError("Published生產組裝無效") from None
+            憑證封套 = 發布.憑證封套工廠()
+            if type(憑證封套) is not AESGCM憑證封套:
+                raise ValueError("Published憑證封套無效") from None
+            憑證管理服務 = SQLite憑證管理服務(資料庫, 憑證封套)
+            憑證管理代理.安裝(憑證管理服務)
         if 發布.憑證封套工廠 is not None and Planner資源 is not None:
             if type(管理代理) is not 延遲發布管理服務 or type(套件協調器) is not 技能套件協調器:
                 raise ValueError("Published生產組裝無效") from None
@@ -778,9 +851,6 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             版本服務 = SQLite版本配置服務(
                 資料庫, lambda: f"version-{uuid.uuid4().hex}", time.time,
             )
-            憑證封套 = 發布.憑證封套工廠()
-            if type(憑證封套) is not AESGCM憑證封套:
-                raise ValueError("Published憑證封套無效") from None
             管理服務 = 發布管理協調器(
                 草稿服務=草稿Aggregate,
                 擁有者解析器=擁有者解析器,
@@ -806,6 +876,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             管理服務,
             套件協調器 if 管理服務 is not None else None,
             套件發布器, 端點發布服務, 憑證封套,
+            憑證管理代理 if 憑證管理服務 is not None else None, 憑證管理服務,
         )
     except BaseException as 啟動錯誤:
         清理控制流程: BaseException | None = None
@@ -822,6 +893,9 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 if isinstance(撤銷錯誤, _控制流程例外) and 清理控制流程 is None:
                     清理控制流程 = 撤銷錯誤
         finally:
+            if type(憑證管理代理) is 延遲憑證管理服務 and type(憑證管理服務) is SQLite憑證管理服務:
+                憑證管理代理.清除(憑證管理服務)
+            憑證管理服務 = None
             管理服務 = 憑證封套 = 端點發布服務 = 套件發布器 = None
         try:
             if Planner資源 is not None:
@@ -853,5 +927,5 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
         raise
 __all__ = (
     "Published生產設定", "延遲外部呼叫編排器", "生產Published執行資源",
-    "生產Published執行建構器", "生產Controller建構器",
+    "生產Published執行建構器", "生產Controller建構器", "延遲憑證管理服務",
 )
