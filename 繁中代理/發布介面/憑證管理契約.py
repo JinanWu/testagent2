@@ -18,6 +18,20 @@ class 憑證管理狀態(str, Enum):
     已撤銷 = "revoked"
 
 
+class 憑證管理HTTP錯誤碼(str, Enum):
+    """憑證管理路由可公開的固定錯誤代碼。"""
+
+    找不到憑證 = "credential_not_found"
+    端點狀態衝突 = "endpoint_status_conflict"
+    請求無效 = "invalid_request"
+    管理失敗 = "credential_management_failed"
+
+
+建立憑證請求欄位 = (
+    "name", "purpose", "expires_at", "ip_allowlist", "rate_limit_requests",
+)
+
+
 class 憑證管理錯誤(RuntimeError):
     """不暴露資料庫或憑證內容的管理錯誤基底。"""
 
@@ -225,3 +239,62 @@ class 憑證管理服務(Protocol):
     ) -> 憑證撤銷收據:
         """依複合範圍撤銷憑證。"""
         ...
+
+
+def 序列化憑證摘要(摘要: 憑證摘要) -> dict[str, object]:
+    """將安全摘要投影成凍結的英文 JSON 鍵。
+
+    描述：只公開 display metadata 與衍生生命週期狀態，不接受子類或 crypto 材料。
+    參數：``摘要`` 是 exact ``憑證摘要``。
+    返回值：具有十二個固定英文鍵的全新字典。
+    例外：輸入型別不符時拋出 ``ValueError``。
+    """
+    if type(摘要) is not 憑證摘要:
+        raise ValueError("憑證摘要無效")
+    return {
+        "credential_id": 摘要.憑證識別碼,
+        "name": 摘要.名稱,
+        "purpose": 摘要.用途,
+        "key_prefix": 摘要.金鑰前綴,
+        "key_last4": 摘要.金鑰末四碼,
+        "status": 摘要.狀態.value,
+        "expires_at": 摘要.到期時間,
+        "last_used_at": 摘要.最後使用時間,
+        "created_at": 摘要.建立時間,
+        "revoked_at": 摘要.撤銷時間,
+        "ip_allowlist": list(摘要.IP允許清單),
+        "rate_limit_requests": 摘要.速率限制請求數,
+    }
+
+
+def 序列化憑證列表(結果: 憑證列表結果) -> dict[str, object]:
+    """將有界憑證列表序列化為 safe summaries。
+
+    描述：逐筆經 exact 摘要 serializer 重建，不讓 ordinary list 攜帶一次性明文。
+    參數：``結果`` 是 exact ``憑證列表結果``。
+    返回值：只含 ``items`` 的全新字典。
+    例外：結果型別或項目型別不符時拋出 ``ValueError``。
+    """
+    if type(結果) is not 憑證列表結果:
+        raise ValueError("憑證列表無效")
+    return {"items": [序列化憑證摘要(摘要) for 摘要 in 結果.項目]}
+
+
+def 序列化一次性憑證建立收據(收據: 一次性憑證建立收據) -> dict[str, object]:
+    """序列化 durable create 後唯一可交付明文的收據。
+
+    描述：先重建 ordinary safe summary，再於 create-only 投影附加 ``initial_api_key``。
+    參數：``收據`` 是 exact ``一次性憑證建立收據``。
+    返回值：safe summary 加一次性明文的全新字典。
+    例外：型別不符時拋出 ``ValueError``。
+    """
+    if type(收據) is not 一次性憑證建立收據:
+        raise ValueError("憑證建立收據無效")
+    摘要 = 憑證摘要(
+        收據.憑證識別碼, 收據.名稱, 收據.用途, 收據.金鑰前綴, 收據.金鑰末四碼,
+        收據.狀態, 收據.到期時間, 收據.最後使用時間, 收據.建立時間,
+        收據.撤銷時間, 收據.IP允許清單, 收據.速率限制請求數,
+    )
+    內容 = 序列化憑證摘要(摘要)
+    內容["initial_api_key"] = 收據.初始金鑰
+    return 內容
