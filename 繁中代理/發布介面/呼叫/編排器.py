@@ -598,7 +598,9 @@ class 外部呼叫編排器:
     ) -> 呼叫成功結果 | 錯誤映射結果:
         """完成 I03 gate 後最多執行兩次；recorder 只能接觸 disposable DTO。
 
-        參數：短名、請求與憑證資料、輸入、中繼資料及驗證時間。
+        參數：短名、請求識別、API 金鑰、輸入資料、中繼資料及驗證時間；
+            ``工作階段識別`` 為 ``str | None``，省略或 ``None`` 時維持 stateless，
+            提供時則在執行前載入並於成功後原子追加 durable history。
         回傳：成功信封或 canonical 錯誤映射結果。
         例外：控制流程保留 identity；普通 runtime／recorder 異常固定為 internal error。
         副作用：依序執行 I03、attempt-1 pre-hook、模型嘗試、驗證與 ledger callback。
