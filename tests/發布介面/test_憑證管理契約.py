@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from inspect import Parameter, signature
 
 import pytest
 
@@ -95,6 +96,15 @@ def test_建立收據明文不進repr而撤銷收據只有安全欄位():
 
 
 def test_管理協定公開三個單次服務呼叫簽章():
-    assert 憑證管理服務.__protocol_attrs__ >= {"列出憑證", "建立憑證", "撤銷憑證"}
+    預期參數 = {
+        "列出憑證": ("self", "端點識別碼", "擁有者使用者識別碼"),
+        "建立憑證": ("self", "端點識別碼", "擁有者使用者識別碼", "請求"),
+        "撤銷憑證": ("self", "端點識別碼", "憑證識別碼", "擁有者使用者識別碼", "是否管理者", "請求識別碼"),
+    }
+    for 名稱, 參數名稱 in 預期參數.items():
+        方法 = getattr(憑證管理服務, 名稱)
+        參數 = tuple(signature(方法).parameters.values())
+        assert tuple(項目.name for 項目 in 參數) == 參數名稱
+        assert all(項目.kind is Parameter.KEYWORD_ONLY for 項目 in 參數[1:])
     註解 = 憑證管理服務.撤銷憑證.__annotations__
     assert 註解["請求識別碼"] == "str" and 註解["是否管理者"] == "bool"
