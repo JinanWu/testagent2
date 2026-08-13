@@ -48,6 +48,7 @@ def _建立錯誤綱要(*代碼: str) -> dict[str, object]:
 
 _未認證錯誤綱要 = _建立錯誤綱要("unauthorized")
 _CSRF錯誤綱要 = _建立錯誤綱要("csrf_invalid")
+_認證不可用錯誤綱要 = _建立錯誤綱要("auth_unavailable")
 _找不到錯誤綱要 = _建立錯誤綱要("credential_not_found")
 _衝突錯誤綱要 = _建立錯誤綱要("endpoint_status_conflict")
 _無效請求錯誤綱要 = _建立錯誤綱要("invalid_request")
@@ -196,7 +197,8 @@ def 建立憑證管理路由器(
         "/{endpoint_id}/credentials", status_code=201,
         responses={201: _建立回應, 401: _未認證錯誤綱要, 403: _CSRF錯誤綱要,
                    404: _找不到錯誤綱要, 409: _衝突錯誤綱要,
-                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
+                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要,
+                   503: _認證不可用錯誤綱要},
         openapi_extra=_建立本文綱要,
     )
     async def 建立端點憑證(
@@ -216,8 +218,8 @@ def 建立憑證管理路由器(
         端點識別碼 = _驗證識別碼(端點識別碼, 回應)
         _拒絕查詢參數(請求, 回應)
         本文 = await _解析建立本文(請求, 回應)
-        使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者)
-        現在 = _讀取時間(時鐘)
+        使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者, 回應)
+        現在 = _讀取時間(時鐘, 回應)
         if float(本文.到期時間) <= 現在:
             _拋出HTTP錯誤(422, "invalid_request", 回應)
         try:
@@ -253,7 +255,8 @@ def 建立憑證管理路由器(
         "/{endpoint_id}/credentials/{credential_id}/revoke", status_code=204,
         responses={204: {"description": "撤銷成功，無回應本文"}, 401: _未認證錯誤綱要,
                    403: _CSRF錯誤綱要, 404: _找不到錯誤綱要,
-                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要},
+                   422: _無效請求錯誤綱要, 500: _管理失敗錯誤綱要,
+                   503: _認證不可用錯誤綱要},
     )
     async def 撤銷端點憑證(
         請求: Request,
@@ -274,7 +277,7 @@ def 建立憑證管理路由器(
         憑證識別碼 = _驗證識別碼(憑證識別碼, 回應)
         _拒絕查詢參數(請求, 回應)
         await _要求空本文(請求, 回應)
-        使用者識別碼, 是否管理者 = _重建雙重身份(使用者, _csrf使用者)
+        使用者識別碼, 是否管理者 = _重建雙重身份(使用者, _csrf使用者, 回應)
         try:
             請求識別碼 = 請求識別碼工廠()
             if type(請求識別碼) is not str or not 1 <= len(請求識別碼) <= 128:
@@ -314,7 +317,9 @@ def _重建身份(使用者: object) -> tuple[str, bool]:
     return 識別碼, 角色 == "admin"
 
 
-def _重建雙重身份(使用者: object, csrf使用者: object) -> tuple[str, bool]:
+def _重建雙重身份(
+    使用者: object, csrf使用者: object, 回應: Response | None = None,
+) -> tuple[str, bool]:
     """要求 session 與 single-use CSRF 回傳同一 authoritative principal。
 
     描述：要求 session 與 single-use CSRF 回傳同一 authoritative principal。
@@ -325,7 +330,7 @@ def _重建雙重身份(使用者: object, csrf使用者: object) -> tuple[str, 
     識別碼, 是否管理者 = _重建身份(使用者)
     csrf識別碼, csrf是否管理者 = _重建身份(csrf使用者)
     if 識別碼 != csrf識別碼 or 是否管理者 != csrf是否管理者:
-        _拋出HTTP錯誤(500, "credential_management_failed")
+        _拋出HTTP錯誤(500, "credential_management_failed", 回應)
     return 識別碼, 是否管理者
 
 
@@ -402,7 +407,7 @@ async def _要求空本文(請求: Request, 回應: Response | None) -> None:
         _拋出HTTP錯誤(422, "invalid_request", 回應)
 
 
-def _讀取時間(時鐘) -> float:
+def _讀取時間(時鐘, 回應: Response | None = None) -> float:
     """只接受 authoritative clock 的有限非負數值。
 
     描述：只接受 authoritative clock 的有限非負數值。
@@ -418,7 +423,7 @@ def _讀取時間(時鐘) -> float:
     except _控制例外:
         raise
     except BaseException:
-        _拋出HTTP錯誤(500, "credential_management_failed")
+        _拋出HTTP錯誤(500, "credential_management_failed", 回應)
 
 
 def _傳遞CSRF接續(來源: Response | None, 目標: Response) -> Response:

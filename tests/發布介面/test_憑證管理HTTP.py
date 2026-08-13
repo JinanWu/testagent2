@@ -200,6 +200,7 @@ def test_路由清單方法狀態與相依項形成精確契約() -> None:
     assert _讀取錯誤碼綱要(規格, "get", "422") == ["invalid_request"]
     assert _讀取錯誤碼綱要(規格, "post", "401") == ["unauthorized"]
     assert _讀取錯誤碼綱要(規格, "post", "403") == ["csrf_invalid"]
+    assert _讀取錯誤碼綱要(規格, "post", "503") == ["auth_unavailable"]
     assert _讀取錯誤碼綱要(規格, "post", "409") == ["endpoint_status_conflict"]
     assert _讀取錯誤碼綱要(規格, "post", "500") == ["credential_management_failed"]
 
@@ -320,7 +321,10 @@ def test_revoke兩次權威身份的角色漂移時fail_closed() -> None:
     """CSRF交易重讀到的admin role若與current-session不同，不得進入撤銷服務。"""
     服務 = _管理服務()
     session = lambda: 網頁使用者("admin-1", "alice", "admin")
-    csrf = lambda: 網頁使用者("admin-1", "alice", "member")
+    def csrf(回應: Response):
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("admin-1", "alice", "member")
     應用 = FastAPI(redirect_slashes=False)
     應用.include_router(建立憑證管理路由器(
         服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
@@ -331,4 +335,32 @@ def test_revoke兩次權威身份的角色漂移時fail_closed() -> None:
         )
     assert 回應.status_code == 500
     assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
+    assert 回應.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in 回應.headers["set-cookie"]
+    assert 服務.呼叫 == []
+
+
+def test_create權威時鐘失敗仍交付CSRF接續() -> None:
+    """CSRF輪替後clock失敗固定500，且合法session仍收到successor。"""
+    服務 = _管理服務()
+    session = lambda: 網頁使用者("owner-1", "alice", "member")
+
+    def csrf(回應: Response):
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("owner-1", "alice", "member")
+
+    應用 = FastAPI(redirect_slashes=False)
+    應用.include_router(建立憑證管理路由器(
+        服務, session, csrf, 時鐘=lambda: float("nan"), 請求識別碼工廠=lambda: "request-1",
+    ))
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        回應 = 客戶端.post("/api/published-endpoints/endpoint-1/credentials", json={
+            "name": "production", "purpose": "partner integration", "expires_at": 200.0,
+            "ip_allowlist": [], "rate_limit_requests": 60,
+        })
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
+    assert 回應.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in 回應.headers["set-cookie"]
     assert 服務.呼叫 == []
