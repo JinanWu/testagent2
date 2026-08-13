@@ -12,6 +12,7 @@ from 繁中代理.發布介面.憑證.服務 import SQLite憑證撤銷服務
 from 繁中代理.發布介面.領域模型 import WebOwnerPrincipal
 from 繁中代理.發布介面.技能套件.發布器 import 技能套件發布器
 from 繁中代理.發布介面.技能套件.儲存庫 import 套件收據儲存庫
+from 繁中代理.發布介面.呼叫.Published工作階段 import SQLitePublished工作階段儲存庫
 
 
 def _呼叫(client, key, *, session: str | None | object = ..., slug="demo"):
@@ -95,7 +96,7 @@ def test_canonical真Key多輪隔離null省略與restart都由durable_history驅
     ]
 
 
-def test_canonical同服務帳戶不同有效key共享且拒絕key零history寫入(tmp_path):
+def test_canonical同服務帳戶不同有效key共享且拒絕key零history讀寫(tmp_path, monkeypatch):
     """驗證第二把 key 延續同 SA session，三類拒絕 key 全部零附加。
 
     參數：``tmp_path`` 提供 canonical app 的隔離資源。
@@ -126,12 +127,22 @@ def test_canonical同服務帳戶不同有效key共享且拒絕key零history寫�
         ]
         with sqlite3.connect(db) as connection:
             基準 = connection.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone()
+        讀取次數 = 0
+        原讀取 = SQLitePublished工作階段儲存庫.讀取成功歷史
+
+        def 可觀測讀取(self, *參數):
+            nonlocal 讀取次數
+            讀取次數 += 1
+            return 原讀取(self, *參數)
+
+        monkeypatch.setattr(SQLitePublished工作階段儲存庫, "讀取成功歷史", 可觀測讀取)
         assert _呼叫(client, "pak_INVALID_KEY", session="shared").status_code == 401
         assert _呼叫(client, 過期.api_key, session="shared").status_code == 401
         SQLite憑證撤銷服務(db, clock=lambda: 現在 + 1).撤銷(
             "ep-1", "cred-2", WebOwnerPrincipal("owner-1"), "revoke-a09",
         )
         assert _呼叫(client, 第二.api_key, session="shared").status_code == 401
+        assert 讀取次數 == 0
     with sqlite3.connect(db) as connection:
         assert connection.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == 基準
 

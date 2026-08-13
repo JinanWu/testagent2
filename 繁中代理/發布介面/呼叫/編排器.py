@@ -251,7 +251,11 @@ class 執行嘗試請求:
 
     def __init__(self, 釘選版本: object, 輸入: object, 中繼資料: object | None, 嘗試次數: int,
                  歷史: tuple[object, ...] = ()) -> None:
-        """驗證並保存一次釘選執行嘗試的不可變請求。"""
+        """驗證並保存一次釘選執行嘗試的不可變請求。
+
+        參數：釘選版本、輸入、中繼資料、attempt 1/2 與 bounded successful history。
+        返回值：無；完成 detached immutable request 的初始化。
+        """
         if 釘選版本 is None or type(嘗試次數) is not int or 嘗試次數 not in (1, 2):
             釘選版本 = 輸入 = 中繼資料 = 嘗試次數 = None
             raise ValueError("執行嘗試請求不符合契約") from None
