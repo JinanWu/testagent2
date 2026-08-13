@@ -285,7 +285,13 @@ class SQLite呼叫儲存庫:
     def __init__(self, 資料庫: str | Path, *, 時鐘: Callable[[], float] = time.time,
                  識別碼工廠: Callable[[], str] | None = None,
                  連線工廠: Callable[..., sqlite3.Connection] | None = None) -> None:
-        """保存資料庫位置與可測試依賴；不開啟連線或變更資料庫。"""
+        """保存資料庫位置與可測試依賴；不開啟連線或變更資料庫。
+
+        描述：建立 invocation ledger repository，並延後到操作時才開啟 SQLite。
+        參數：``資料庫`` 為 Published DB 路徑；``時鐘``、``識別碼工廠``與
+            ``連線工廠``為可選、可注入的時間、ID與連線依賴。
+        返回值：無；完成 repository instance 初始化。
+        """
         if type(資料庫) not in (str, _Path具體型別) or (type(資料庫) is str and not 資料庫):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
         if (not callable(時鐘) or (連線工廠 is not None and not callable(連線工廠))
@@ -361,6 +367,10 @@ class SQLite呼叫儲存庫:
     ) -> int:
         """以單一立即交易附加 expected event，並可同時完成 running invocation。
 
+        描述：將terminal event、invocation completion與可選session pair原子提交。
+        參數：invocation/event identity、event payload與expected sequence；terminal
+            ``status/output/error/usage``及``session_pair``皆為可選結案資料。
+        返回值：新提交或idempotent replay的event sequence number。
         相同 event 已完整提交時回放原序號；任何不完整、衝突或普通失敗皆回滾。
         """
         連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
