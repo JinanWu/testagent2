@@ -1481,15 +1481,19 @@ def test_A18游標拒絕有效HMAC但JSON非canonical的token():
     金鑰 = b"k" * 32
     codec = 管理員呼叫游標編解碼器(金鑰)
     條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", None, 25)
-    非canonical = json.dumps(
-        {"position": [10.0, "inv-1"], "scope": ["ep-1", 1.0, 20.0, "failed", None, 25], "v": 1},
-        ensure_ascii=True,
-    ).encode("ascii")
-    簽章 = hmac.new(金鑰, 非canonical, hashlib.sha256).digest()
     編碼 = lambda 值: base64.urlsafe_b64encode(值).rstrip(b"=").decode("ascii")
-    token = 編碼(非canonical) + "." + 編碼(簽章)
-    with pytest.raises(管理員呼叫游標錯誤):
-        codec.解碼(token, 條件)
+    payload = {"position": [10.0, "inv-1"],
+               "scope": ["ep-1", 1.0, 20.0, "failed", None, 25], "v": 1}
+    for 非canonical in (
+        json.dumps(payload, ensure_ascii=True).encode("ascii"),
+        b'{"v":1,"scope":["ep-1",1.0,20.0,"failed",null,25],'
+        b'"position":[10.0,"inv-1"]}',
+        b'{"position":[10.0,"inv-1"],"scope":["ep-1",1e0,20.0,"failed",null,25],"v":1}',
+    ):
+        簽章 = hmac.new(金鑰, 非canonical, hashlib.sha256).digest()
+        token = 編碼(非canonical) + "." + 編碼(簽章)
+        with pytest.raises(管理員呼叫游標錯誤):
+            codec.解碼(token, 條件)
 
 
 def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
