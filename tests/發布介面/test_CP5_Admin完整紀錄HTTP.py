@@ -442,3 +442,83 @@ def test_A18_provider建構失敗保留原錯且關閉主資源(tmp_path, monkey
         assert False
     except ValueError as 錯誤:
         assert 錯誤.args == ("provider-construction",) and 主.關閉次數 == 1
+
+
+def test_A18_production_public_clear_silent_noop仍由module_revoke_fail_closed(tmp_path, monkeypatch):
+    class 主資源:
+        def __init__(self): self.原清理次數 = 0
+        def _執行關閉同步(self): self.原清理次數 += 1
+
+    class 服務:
+        def __init__(self, _路徑): pass
+        def 列出管理員安全呼叫(self, *_參數): return "LIVE"
+        def 查詢管理員原始資料(self, *_參數): return "LIVE"
+
+    monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 服務)
+    主, 代理 = 主資源(), 延遲管理稽核服務()
+    資源 = asyncio.run(安裝管理稽核資源(主, 代理, (tmp_path / "p.sqlite3").resolve()))
+    monkeypatch.setattr(代理, "清除", lambda *_參數: None)
+    資源._執行關閉同步()
+    assert 主.原清理次數 == 1
+    try:
+        代理.列出管理員安全呼叫(None, None)
+        assert False
+    except RuntimeError as 錯誤:
+        assert 錯誤.args == ("Published管理稽核服務不可用",)
+
+
+def test_A18_startup普通錯誤不被cleanup普通錯誤覆蓋(tmp_path, monkeypatch):
+    啟動錯誤 = RuntimeError("startup")
+
+    class 主資源:
+        async def 關閉(self): raise ValueError("cleanup")
+
+    class 建構失敗:
+        def __init__(self, _路徑): raise 啟動錯誤
+
+    monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 建構失敗)
+    try:
+        asyncio.run(安裝管理稽核資源(
+            主資源(), 延遲管理稽核服務(), (tmp_path / "p.sqlite3").resolve(),
+        ))
+        assert False
+    except BaseException as 錯誤:
+        assert 錯誤 is 啟動錯誤
+
+
+def test_A18_cleanup多個控制流程保留第一個identity且仍執行全部(tmp_path, monkeypatch):
+    第一 = KeyboardInterrupt("public")
+    第二 = SystemExit("revoke")
+    第三 = GeneratorExit("published")
+    次序 = []
+
+    class 主資源:
+        def _執行關閉同步(self):
+            次序.append("published")
+            raise 第三
+
+    class 服務:
+        def __init__(self, _路徑): pass
+        def 列出管理員安全呼叫(self, *_參數): return "LIVE"
+        def 查詢管理員原始資料(self, *_參數): return "LIVE"
+
+    class 敵對代理(延遲管理稽核服務):
+        def 清除(self, *_參數):
+            次序.append("public")
+            raise 第一
+
+    monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 服務)
+    主, 代理 = 主資源(), 敵對代理()
+    資源 = asyncio.run(安裝管理稽核資源(主, 代理, (tmp_path / "p.sqlite3").resolve()))
+
+    def 壞撤銷(*_參數):
+        次序.append("revoke")
+        raise 第二
+
+    monkeypatch.setattr(延遲管理稽核服務, "清除", 壞撤銷)
+    try:
+        資源._執行關閉同步()
+        assert False
+    except BaseException as 錯誤:
+        assert 錯誤 is 第一
+    assert 次序 == ["public", "revoke", "published"]

@@ -135,27 +135,30 @@ class 管理稽核組合資源:
 
     async def 關閉(self) -> None:
         """撤銷查詢authority後關閉主資源；控制流程優先。"""
-        第一錯誤 = None
+        控制流程錯誤 = 普通錯誤 = None
         try:
             await run_in_threadpool(self._代理.清除, self._服務, self._世代)
         except BaseException as 錯誤:
-            第一錯誤 = 錯誤
-            try:
-                if isinstance(self._代理, 延遲管理稽核服務):
-                    await run_in_threadpool(
-                        延遲管理稽核服務.清除, self._代理, self._服務, self._世代,
-                    )
-            except BaseException as 撤銷錯誤:
-                if isinstance(撤銷錯誤, _控制流程例外):
-                    第一錯誤 = 撤銷錯誤
+            if isinstance(錯誤, _控制流程例外): 控制流程錯誤 = 錯誤
+            else: 普通錯誤 = 錯誤
+        try:
+            if isinstance(self._代理, 延遲管理稽核服務):
+                await run_in_threadpool(
+                    延遲管理稽核服務.清除, self._代理, self._服務, self._世代,
+                )
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通錯誤 is None: 普通錯誤 = 錯誤
         try:
             await self._主資源.關閉()
         except BaseException as 錯誤:
-            if 第一錯誤 is None or isinstance(錯誤, _控制流程例外):
-                第一錯誤 = 錯誤
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通錯誤 is None: 普通錯誤 = 錯誤
         self._代理 = self._服務 = self._世代 = None
-        if 第一錯誤 is not None:
-            raise 第一錯誤
+        if 控制流程錯誤 is not None: raise 控制流程錯誤
+        if 普通錯誤 is not None: raise 普通錯誤
 
 
 def 建立管理稽核權限():
@@ -178,28 +181,26 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
         if callable(原始同步清理):
             def 清除含管理稽核() -> None:
                 """先撤銷Admin authority，再盡力完成既有Published同步清理。"""
-                管理錯誤 = 原始錯誤 = None
+                控制流程錯誤 = 普通錯誤 = None
                 try:
                     代理.清除(服務, 世代)
                 except BaseException as 錯誤:
-                    管理錯誤 = 錯誤
-                    try:
-                        延遲管理稽核服務.清除(代理, 服務, 世代)
-                    except BaseException as 撤銷錯誤:
-                        if isinstance(撤銷錯誤, _控制流程例外):
-                            管理錯誤 = 撤銷錯誤
+                    if isinstance(錯誤, _控制流程例外): 控制流程錯誤 = 錯誤
+                    else: 普通錯誤 = 錯誤
+                try:
+                    延遲管理稽核服務.清除(代理, 服務, 世代)
+                except BaseException as 錯誤:
+                    if isinstance(錯誤, _控制流程例外):
+                        if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+                    elif 普通錯誤 is None: 普通錯誤 = 錯誤
                 try:
                     原始同步清理()
                 except BaseException as 錯誤:
-                    原始錯誤 = 錯誤
-                if isinstance(管理錯誤, _控制流程例外):
-                    raise 管理錯誤
-                if isinstance(原始錯誤, _控制流程例外):
-                    raise 原始錯誤
-                if 管理錯誤 is not None:
-                    raise 管理錯誤
-                if 原始錯誤 is not None:
-                    raise 原始錯誤
+                    if isinstance(錯誤, _控制流程例外):
+                        if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+                    elif 普通錯誤 is None: 普通錯誤 = 錯誤
+                if 控制流程錯誤 is not None: raise 控制流程錯誤
+                if 普通錯誤 is not None: raise 普通錯誤
 
             主資源._執行關閉同步 = 清除含管理稽核
             return 主資源
@@ -216,8 +217,6 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
         except BaseException as 錯誤:
             if 清理錯誤 is None or isinstance(錯誤, _控制流程例外):
                 清理錯誤 = 錯誤
-        if isinstance(啟動錯誤, _控制流程例外):
-            raise
-        if 清理錯誤 is not None:
-            raise 清理錯誤
+        if isinstance(啟動錯誤, _控制流程例外): raise
+        if isinstance(清理錯誤, _控制流程例外): raise 清理錯誤
         raise
