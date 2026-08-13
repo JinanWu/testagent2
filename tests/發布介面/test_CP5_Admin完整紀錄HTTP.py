@@ -488,7 +488,6 @@ def test_A18_startup普通錯誤不被cleanup普通錯誤覆蓋(tmp_path, monkey
 
 def test_A18_cleanup多個控制流程保留第一個identity且仍執行全部(tmp_path, monkeypatch):
     第一 = KeyboardInterrupt("public")
-    第二 = SystemExit("revoke")
     第三 = GeneratorExit("published")
     次序 = []
 
@@ -511,17 +510,17 @@ def test_A18_cleanup多個控制流程保留第一個identity且仍執行全部(
     主, 代理 = 主資源(), 敵對代理()
     資源 = asyncio.run(安裝管理稽核資源(主, 代理, (tmp_path / "p.sqlite3").resolve()))
 
-    def 壞撤銷(*_參數):
-        次序.append("revoke")
-        raise 第二
-
-    monkeypatch.setattr(延遲管理稽核服務, "清除", 壞撤銷)
     try:
         資源._執行關閉同步()
         assert False
     except BaseException as 錯誤:
         assert 錯誤 is 第一
-    assert 次序 == ["public", "revoke", "published"]
+    assert 次序 == ["public", "published"]
+    try:
+        代理.列出管理員安全呼叫(None, None)
+        assert False
+    except RuntimeError as 錯誤:
+        assert 錯誤.args == ("Published管理稽核服務不可用",)
 
 
 def test_A18_startup_rollback多個控制流程保留第一個identity且仍執行全部(tmp_path, monkeypatch):
@@ -550,11 +549,17 @@ def test_A18_startup_rollback多個控制流程保留第一個identity且仍執�
 
     monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 服務)
     monkeypatch.setattr(延遲管理稽核服務, "_撤銷已發布服務", 壞撤銷)
+    代理 = 發布後失敗代理()
     try:
         asyncio.run(安裝管理稽核資源(
-            主資源(), 發布後失敗代理(), (tmp_path / "p.sqlite3").resolve(),
+            主資源(), 代理, (tmp_path / "p.sqlite3").resolve(),
         ))
         assert False
     except BaseException as 錯誤:
         assert 錯誤 is 第一
     assert 次序 == ["module-revoke", "main-close"]
+    try:
+        代理.列出管理員安全呼叫(None, None)
+        assert False
+    except RuntimeError as 錯誤:
+        assert 錯誤.args == ("Published管理稽核服務不可用",)

@@ -86,7 +86,7 @@ class 延遲管理稽核服務:
         with self._條件:
             世代 = self._目前世代 if self._服務 is 服務 else None
         if type(世代) is int:
-            延遲管理稽核服務.清除(self, 服務, 世代)
+            _可信清除管理稽核服務(self, 服務, 世代)
 
     def 列出管理員安全呼叫(self, 條件, 位置, /):
         """租借並委派safe-list provider。"""
@@ -97,6 +97,9 @@ class 延遲管理稽核服務:
         """租借並委派audit-before-detail provider。"""
         with self._租借() as 服務:
             return 服務.查詢管理員原始資料(*參數)
+
+
+_可信清除管理稽核服務 = 延遲管理稽核服務.清除
 
 
 class 管理稽核提供者:
@@ -144,7 +147,7 @@ class 管理稽核組合資源:
         try:
             if isinstance(self._代理, 延遲管理稽核服務):
                 await run_in_threadpool(
-                    延遲管理稽核服務.清除, self._代理, self._服務, self._世代,
+                    _可信清除管理稽核服務, self._代理, self._服務, self._世代,
                 )
         except BaseException as 錯誤:
             if isinstance(錯誤, _控制流程例外):
@@ -188,7 +191,7 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
                     if isinstance(錯誤, _控制流程例外): 控制流程錯誤 = 錯誤
                     else: 普通錯誤 = 錯誤
                 try:
-                    延遲管理稽核服務.清除(代理, 服務, 世代)
+                    _可信清除管理稽核服務(代理, 服務, 世代)
                 except BaseException as 錯誤:
                     if isinstance(錯誤, _控制流程例外):
                         if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
@@ -213,6 +216,13 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
         except BaseException as 錯誤:
             if isinstance(錯誤, _控制流程例外): 清理控制流程錯誤 = 錯誤
             else: 清理普通錯誤 = 錯誤
+        try:
+            if 服務 is not None and isinstance(代理, 延遲管理稽核服務):
+                _可信清除管理稽核服務(代理, 服務, 代理._目前世代)
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 清理控制流程錯誤 is None: 清理控制流程錯誤 = 錯誤
+            elif 清理普通錯誤 is None: 清理普通錯誤 = 錯誤
         try:
             await 主資源.關閉()
         except BaseException as 錯誤:
