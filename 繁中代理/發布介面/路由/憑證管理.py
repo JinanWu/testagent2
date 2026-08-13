@@ -301,20 +301,20 @@ def 建立憑證管理路由器(
     return 路由器
 
 
-def _重建身份(使用者: object) -> tuple[str, bool]:
+def _重建身份(使用者: object, 回應: Response | None = None) -> tuple[str, bool]:
     """重建權威 Web principal；role 只供既有 admin revoke capability。
 
     描述：重建權威 Web principal；role 只供既有 admin revoke capability。
-    參數：``使用者``。
+    參數：``使用者``與可能攜帶CSRF successor的``回應``。
     返回值：權威使用者識別碼及是否具管理者角色的二元組。
 
     """
     if type(使用者) is not 網頁使用者:
-        _拋出HTTP錯誤(500, "credential_management_failed")
+        _拋出HTTP錯誤(500, "credential_management_failed", 回應)
     識別碼 = object.__getattribute__(使用者, "識別碼")
     角色 = object.__getattribute__(使用者, "角色")
     if type(識別碼) is not str or not 1 <= len(識別碼) <= 128 or type(角色) is not str:
-        _拋出HTTP錯誤(500, "credential_management_failed")
+        _拋出HTTP錯誤(500, "credential_management_failed", 回應)
     return 識別碼, 角色 == "admin"
 
 
@@ -328,8 +328,8 @@ def _重建雙重身份(
     返回值：兩個身份一致時的權威使用者識別碼及管理者旗標。
 
     """
-    識別碼, 是否管理者 = _重建身份(使用者)
-    csrf識別碼, csrf是否管理者 = _重建身份(csrf使用者)
+    識別碼, 是否管理者 = _重建身份(使用者, 回應)
+    csrf識別碼, csrf是否管理者 = _重建身份(csrf使用者, 回應)
     if 識別碼 != csrf識別碼 or 是否管理者 != csrf是否管理者:
         _拋出HTTP錯誤(500, "credential_management_failed", 回應)
     return 識別碼, 是否管理者

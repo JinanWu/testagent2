@@ -182,7 +182,14 @@ class 延遲憑證管理服務:
         描述：shutdown 只清除本次 startup 的 exact provider reference。參數：``服務``與``世代``。
         返回值：無；只有identity相同時清除目前服務參照。
         """
+        self._撤銷並等待(服務, 世代)
+    def _撤銷並等待(
+        self, 服務: SQLite憑證管理服務, 世代: int | None, *, 允許解析目前世代: bool = False,
+    ) -> None:
+        """由production owner繞過可失敗wrapper，依世代撤銷slot並等待active lease。"""
         with self._條件:
+            if 世代 is None and 允許解析目前世代 and self._服務 is 服務:
+                世代 = self._目前世代
             if self._服務 is 服務 and self._目前世代 == 世代:
                 self._服務 = None; self._目前世代 = None
                 self._正在停止 = True; self._停止中的服務 = 服務; self._停止中世代 = 世代
@@ -309,7 +316,6 @@ class 延遲外部呼叫編排器:
            輸入: object, 中繼資料: object | None, 時間: int | float, *,
            工作階段識別: str | None = None):
         """以一個 active lease 委派完整 transport-neutral invocation。
-
         參數：短名、請求識別、API 金鑰、輸入、中繼資料、呼叫時間與 optional 工作階段識別皆原樣傳給編排器。
         返回值：真實編排器建立的 invocation response。
         例外：服務不可用固定失敗，編排器例外保持 identity 傳出。
@@ -324,7 +330,6 @@ class 延遲外部呼叫編排器:
             )
 class 生產Published執行資源:
     """擁有 lazy installation 與 startup-created registries 的 lifespan resource。
-
     參數：
         由成功 startup 傳入 proxy、編排器、工具庫及 detached 模型表。
     返回值：
@@ -333,7 +338,6 @@ class 生產Published執行資源:
         shutdown control/ordinary drain 例外在完成 reference cleanup 後傳出。
     副作用：
         保存並於關閉時釋放本 composition 的所有 live handler/model authority。
-
     描述：擁有 lazy installation 與 startup-created registries 的 lifespan resource。
     """
     def __init__(self, 代理: 延遲外部呼叫編排器, 編排器: 外部呼叫編排器,
@@ -348,12 +352,10 @@ class 生產Published執行資源:
                  憑證管理服務物件: SQLite憑證管理服務 | None = None,
                  憑證管理世代: int | None = None) -> None:
         """保存已成功安裝的資源參照。
-
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
         返回值：``None``；Python 建構完成 lifespan resource。
         例外：只有鎖配置錯誤可能由 runtime 原樣傳出。
         副作用：保存強參照與配置 exact-once 關閉鎖，不執行額外 I/O。
-
         描述：保存已成功安裝的資源參照。
         """
         self._代理, self._編排器 = 代理, 編排器
@@ -369,7 +371,6 @@ class 生產Published執行資源:
 
     def 取得Planner資源(self) -> 生產Planner資源 | None:
         """取得仍由本次 Published lifespan 擁有的 Planner resource。
-
         參數：無。
         返回值：啟動期間回傳 exact Planner resource；關閉後回傳 ``None``。
         例外：無預期例外。
@@ -379,7 +380,6 @@ class 生產Published執行資源:
 
     def 取得規劃服務(self):
         """取得後續 #4 必須共用的唯一 Draft Aggregate。
-
         參數：無。
         返回值：Planner 啟用時回傳 exact ``規劃服務``；未啟用或關閉後回傳 ``None``。
         例外：無預期例外。
@@ -390,7 +390,6 @@ class 生產Published執行資源:
 
     def 取得發布管理服務(self) -> 發布管理協調器 | None:
         """取得仍由 lifespan 擁有且已安裝的 exact management coordinator。
-
         參數：無。
         返回值：management 啟用期間回傳 exact 協調器；未啟用或關閉後回傳 ``None``。
         例外：無預期例外。
@@ -399,7 +398,6 @@ class 生產Published執行資源:
         return self._發布管理服務
     async def 關閉(self) -> None:
         """讓任意 event loop 的 concurrent callers 等待同一 exact-once shutdown。
-
         參數：無。
         返回值：``None``。
         例外：cleanup error 對所有 caller 保留 identity；caller cancellation 延至清理完成後傳出。
@@ -451,7 +449,6 @@ class 生產Published執行資源:
 
     def _清除同步(self) -> None:
         """以 Condition 協調跨 loop callers 並 exact-once 發布同步清理結果。
-
         參數：無。
         返回值：None。
         例外：所有 caller 在唯一清理完成後取得同一 exact 第一錯誤物件。
@@ -485,12 +482,10 @@ class 生產Published執行資源:
 
     def _執行關閉同步(self) -> None:
         """由唯一 shutdown owner 清除 Planner、Invocation 與 registries。
-
         參數：無。
         返回值：None。
         例外：所有清理都嘗試後，控制流程優先於第一個 ordinary failure。
         副作用：drain 兩個 proxy，清空模型表與工具發布 authority 並移除強參照。
-
         描述：由唯一 shutdown owner 清除 Planner、Invocation 與 registries。
         """
         管理代理, 管理服務 = self._發布管理代理, self._發布管理服務
@@ -521,6 +516,13 @@ class 生產Published執行資源:
                 if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
             elif 普通清除錯誤 is None: 普通清除錯誤 = 錯誤
         finally:
+            try:
+                if 憑證代理 is not None and 憑證服務 is not None and 憑證世代 is not None:
+                    延遲憑證管理服務._撤銷並等待(憑證代理, 憑證服務, 憑證世代)
+            except BaseException as 錯誤:
+                if isinstance(錯誤, _控制流程例外):
+                    if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+                elif 普通清除錯誤 is None: 普通清除錯誤 = 錯誤
             self._憑證管理服務 = self._憑證管理代理 = self._憑證管理世代 = None
             self._發布管理服務 = self._發布管理代理 = self._端點發布服務 = None
             self._技能套件發布器 = self._技能套件協調器 = None
@@ -562,12 +564,10 @@ class 生產Published執行資源:
             raise 普通清除錯誤
 class 生產Published執行建構器:
     """建立 CP4 invoke router 與單一 Published lifespan resource factory。
-
     參數：建構時只接受 exact ``Published生產設定``。
     返回值：透過 ``建立附加相依項`` 回傳 router 與 resource factory。
     例外：設定或 dependency 違約時固定 ``ValueError``。
     副作用：app construction 只建立 proxy、router 與 closure，不執行 callback 或 I/O。
-
     描述：建立 CP4 invoke router 與單一 Published lifespan resource factory。
     """
     def __init__(self, 設定: Published生產設定) -> None:
@@ -973,6 +973,15 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
             if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
                 清理控制流程 = 清理錯誤
         finally:
+            try:
+                if (type(憑證管理代理) is 延遲憑證管理服務
+                        and type(憑證管理服務) is SQLite憑證管理服務):
+                    延遲憑證管理服務._撤銷並等待(
+                        憑證管理代理, 憑證管理服務, 憑證管理世代, 允許解析目前世代=True,
+                    )
+            except BaseException as 清理錯誤:
+                if isinstance(清理錯誤, _控制流程例外) and 清理控制流程 is None:
+                    清理控制流程 = 清理錯誤
             憑證管理服務 = None
             管理服務 = 憑證封套 = 端點發布服務 = 套件發布器 = None
         try:

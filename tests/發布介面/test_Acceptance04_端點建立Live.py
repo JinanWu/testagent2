@@ -939,8 +939,9 @@ def test_shutdown_management_planner_invoke多重失敗保留第一個identity(
 
 
 @pytest.mark.parametrize("錯誤", [RuntimeError("credential clear"), SystemExit("credential clear")])
+@pytest.mark.parametrize("失敗時機", ["before", "after"])
 def test_shutdown_credential清除失敗仍完成後續清理並保留exact錯誤(
-    tmp_path, monkeypatch: pytest.MonkeyPatch, 錯誤: BaseException,
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 錯誤: BaseException, 失敗時機: str,
 ):
     """credential clear失敗不得短路Planner、Invocation、registries與強參照清理。"""
     Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理 = _建立直接Published組裝(tmp_path)
@@ -957,9 +958,12 @@ def test_shutdown_credential清除失敗仍完成後續清理並保留exact錯�
     原Planner清除 = Planner資源._清除同步
     原Invocation清除 = 呼叫代理.清除
     原工具清除 = 工具庫.清除所有發布
+    原Credential清除 = 憑證代理.清除
 
     def credential失敗(_服務, _世代) -> None:
         事件.append("credential")
+        if 失敗時機 == "after":
+            原Credential清除(_服務, _世代)
         raise 錯誤
 
     def planner清除() -> None:
@@ -985,6 +989,31 @@ def test_shutdown_credential清除失敗仍完成後續清理並保留exact錯�
     assert 資源._憑證管理代理 is None and 資源._憑證管理服務 is None
     assert 資源._Planner資源 is None and 資源._編排器 is None
     assert 資源._工具庫 is None and 資源._模型表 == {}
+    with pytest.raises(RuntimeError, match="Published服務不可用"):
+        憑證代理.列出憑證(端點識別碼="endpoint-1", 擁有者使用者識別碼="owner-1")
+
+
+@pytest.mark.parametrize("錯誤", [RuntimeError("credential install"), SystemExit("credential install")])
+def test_startup_credential安裝後拋錯仍撤銷provider_authority(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, 錯誤: BaseException,
+):
+    """真實credential install完成但wrapper拋錯時，startup cleanup仍關閉route authority。"""
+    Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理 = _建立直接Published組裝(tmp_path)
+    憑證代理 = 生產Published執行模組.延遲憑證管理服務()
+    原安裝 = 憑證代理.安裝
+
+    def 安裝後失敗(服務):
+        原安裝(服務)
+        raise 錯誤
+
+    monkeypatch.setattr(憑證代理, "安裝", 安裝後失敗)
+    with pytest.raises(type(錯誤)) as 捕捉:
+        生產Published執行模組._建立Published資源(
+            Web設定, Published設定, 呼叫代理, 草稿代理, 管理代理, 憑證代理,
+        )
+    assert 捕捉.value is 錯誤
+    with pytest.raises(RuntimeError, match="Published服務不可用"):
+        憑證代理.列出憑證(端點識別碼="endpoint-1", 擁有者使用者識別碼="owner-1")
 
 
 @pytest.mark.parametrize("請求方法", ["GET", "PUT", "PATCH", "DELETE"])

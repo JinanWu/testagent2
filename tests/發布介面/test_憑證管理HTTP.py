@@ -365,3 +365,31 @@ def test_create權威時鐘失敗仍交付CSRF接續() -> None:
     assert 回應.headers["X-CSRF-Token"] == "successor"
     assert "csrf_token=successor" in 回應.headers["set-cookie"]
     assert 服務.呼叫 == []
+
+
+def test_create_principal重建失敗仍交付CSRF接續() -> None:
+    """CSRF輪替後任一authoritative principal無效，固定500且仍交付successor。"""
+    for 無效來源 in ("session", "csrf"):
+        服務 = _管理服務()
+        有效使用者 = 網頁使用者("owner-1", "alice", "member")
+        session = lambda: object() if 無效來源 == "session" else 有效使用者
+
+        def csrf(回應: Response):
+            回應.headers["X-CSRF-Token"] = "successor"
+            回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+            return object() if 無效來源 == "csrf" else 有效使用者
+
+        應用 = FastAPI(redirect_slashes=False)
+        應用.include_router(建立憑證管理路由器(
+            服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
+        ))
+        with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+            回應 = 客戶端.post("/api/published-endpoints/endpoint-1/credentials", json={
+                "name": "production", "purpose": "partner integration", "expires_at": 200.0,
+                "ip_allowlist": [], "rate_limit_requests": 60,
+            })
+        assert 回應.status_code == 500
+        assert 回應.json() == {"detail": {"code": "credential_management_failed"}}
+        assert 回應.headers["X-CSRF-Token"] == "successor"
+        assert "csrf_token=successor" in 回應.headers["set-cookie"]
+        assert 服務.呼叫 == []
