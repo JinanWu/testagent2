@@ -129,6 +129,10 @@ class 管理稽核組合資源:
         """保存同一次startup的主資源、proxy、provider與generation。"""
         self._主資源, self._代理, self._服務, self._世代 = 主資源, 代理, 服務, 世代
 
+    def __getattr__(self, 名稱: str):
+        """將既有Published resource介面透明委派給被包裝的主資源。"""
+        return getattr(self._主資源, 名稱)
+
     async def 關閉(self) -> None:
         """撤銷查詢authority後關閉主資源；控制流程優先。"""
         第一錯誤 = None
@@ -149,7 +153,7 @@ class 管理稽核組合資源:
         except BaseException as 錯誤:
             if 第一錯誤 is None or isinstance(錯誤, _控制流程例外):
                 第一錯誤 = 錯誤
-        self._主資源 = self._代理 = self._服務 = self._世代 = None
+        self._代理 = self._服務 = self._世代 = None
         if 第一錯誤 is not None:
             raise 第一錯誤
 
@@ -170,6 +174,35 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
     try:
         服務 = 管理稽核提供者(資料庫路徑)
         世代 = 代理.安裝(服務)
+        原始同步清理 = getattr(主資源, "_執行關閉同步", None)
+        if callable(原始同步清理):
+            def 清除含管理稽核() -> None:
+                """先撤銷Admin authority，再盡力完成既有Published同步清理。"""
+                管理錯誤 = 原始錯誤 = None
+                try:
+                    代理.清除(服務, 世代)
+                except BaseException as 錯誤:
+                    管理錯誤 = 錯誤
+                    try:
+                        延遲管理稽核服務.清除(代理, 服務, 世代)
+                    except BaseException as 撤銷錯誤:
+                        if isinstance(撤銷錯誤, _控制流程例外):
+                            管理錯誤 = 撤銷錯誤
+                try:
+                    原始同步清理()
+                except BaseException as 錯誤:
+                    原始錯誤 = 錯誤
+                if isinstance(管理錯誤, _控制流程例外):
+                    raise 管理錯誤
+                if isinstance(原始錯誤, _控制流程例外):
+                    raise 原始錯誤
+                if 管理錯誤 is not None:
+                    raise 管理錯誤
+                if 原始錯誤 is not None:
+                    raise 原始錯誤
+
+            主資源._執行關閉同步 = 清除含管理稽核
+            return 主資源
         return 管理稽核組合資源(主資源, 代理, 服務, 世代)
     except BaseException as 啟動錯誤:
         清理錯誤 = None
