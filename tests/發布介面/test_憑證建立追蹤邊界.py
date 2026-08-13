@@ -49,6 +49,11 @@ def _準備(path):
 
 
 def _可達(value, marker, seen):
+    """描述：執行_可達的單一明確責任。
+
+    參數：``value``、``marker``、``seen``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     if id(value) in seen:
         return False
     seen.add(id(value))
@@ -99,6 +104,11 @@ def _trace乾淨(error, *markers):
 
 
 def test_scanner_positive_oracle涵蓋exact服務封套請求與明文結果():
+    """描述：驗證scanner_positive_oracle涵蓋exact服務封套請求與明文結果。
+
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     master = "M" * 32
     plaintext = "pk_" + base64.urlsafe_b64encode(b"P" * 32).rstrip(b"=").decode()
     envelope = AESGCM憑證封套({1: master.encode()}, 1, 隨機位元組=lambda size: b"P" * size)

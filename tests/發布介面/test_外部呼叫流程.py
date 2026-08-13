@@ -174,7 +174,7 @@ class 假政策:
 
 
 def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=None, 記錄執行嘗試=None,
-        釘選類型: type = 釘選, 驗證輸入=None):
+        釘選類型: type = 釘選, 驗證輸入=None, 工作階段儲存庫=None):
     if 記錄執行嘗試 is None:
         記錄執行嘗試 = lambda invocation, request, result, schema_valid: 執行嘗試紀錄收據(
             invocation.id, request.attempt, True, request.attempt,
@@ -188,7 +188,110 @@ def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=
         階段型別=階段, 準備擷取=政策.準備, 寫入擷取=政策.寫入,
         限流決策型別=限流決策, 提交雙層計數=政策.計數, 驗證輸入=驗證輸入,
         執行嘗試=執行嘗試, 驗證輸出=驗證輸出, 記錄執行嘗試=記錄執行嘗試,
+        工作階段儲存庫=工作階段儲存庫,
     )
+
+
+class 假工作階段儲存庫:
+    """提供可觀測的session repository test double。
+
+    描述：保存固定成功歷史，並記錄所有讀取與附加呼叫。
+    參數：無；建構器不接受外部依賴。
+    返回值：可供編排器測試注入的repository替身。
+    """
+
+    def __init__(self):
+        """建立可觀測的session repository test double。
+
+        參數：無。
+        返回值：無；初始化讀寫紀錄與一組成功歷史。
+        """
+        self.讀取 = []
+        self.附加 = []
+        self.歷史 = (SimpleNamespace(
+            sequence_number=1, endpoint_version_id="ver",
+            user_message={"role": "user", "content": "先前"},
+            assistant_message={"role": "assistant", "content": "收到"},
+        ),)
+
+    def 讀取成功歷史(self, *scope):
+        """記錄並回傳固定成功歷史。
+
+        參數：``scope``為endpoint、service account與session identity。
+        返回值：預設不可變成功歷史。
+        """
+        self.讀取.append(scope)
+        return self.歷史
+
+    def 附加成功對話組(self, *args, **kwargs):
+        """記錄成功pair append而不進行持久化。
+
+        參數：原樣保存append位置與命名參數。
+        返回值：呼叫方提供的expected sequence。
+        """
+        self.附加.append((args, kwargs))
+        return kwargs["expected_sequence"]
+
+
+def test_session_string依服務帳戶scope讀取並只在成功後附加完整pair():
+    """驗證明確session依三元scope讀取並交由ledger成功路徑結案。
+
+    參數：無；使用隔離test doubles。
+    返回值：無；scope、history transport與completion assertions必須通過。
+    """
+    解析器 = 假解析器(釘選("ep", "ver", 1, "sa-default"))
+    憑證 = 假憑證服務(驗證結果(狀態.有效, "cred", "ep", "active", 30, 60))
+    政策 = 假政策()
+    工作階段 = 假工作階段儲存庫()
+    看到歷史 = []
+    紀錄請求 = []
+
+    def 執行(request):
+        """記錄runtime收到的bounded history並回成功結果。
+
+        參數：``request``為execution attempt DTO。
+        返回值：固定成功attempt result。
+        """
+        看到歷史.append(request.history)
+        return 執行嘗試結果("success", {"answer": "ok"}, PublishedUsage(7), ())
+
+    def 紀錄(invocation, request, result, schema_valid):
+        """記錄terminal callback所見session與history。
+
+        參數：invocation、request、result與schema validity。
+        返回值：固定已提交execution receipt。
+        """
+        紀錄請求.append((invocation.session_id, request.history, result.data, schema_valid))
+        return 執行嘗試紀錄收據(invocation.id, request.attempt, True, request.attempt)
+
+    編排器 = _編排(
+        解析器, 憑證, 政策, 執行嘗試=執行, 驗證輸出=lambda *_: True,
+        工作階段儲存庫=工作階段, 記錄執行嘗試=紀錄,
+    )
+    結果 = 編排器.執行("demo", "req", "key", {"q": 1}, None, 1, "case-1")
+
+    assert 結果.轉為JSON()["envelope"]["invocation"]["session_id"] == "case-1"
+    assert 工作階段.讀取 == [("ep", "sa-default", "case-1")]
+    assert 看到歷史 == [工作階段.歷史]
+    assert 紀錄請求 == [("case-1", 工作階段.歷史, {"answer": "ok"}, True)]
+    assert 工作階段.附加 == []
+
+
+def test_session省略時history_repository零讀零寫():
+    """驗證省略session維持stateless且history repository零接觸。
+
+    參數：無；使用隔離test doubles。
+    返回值：無；HTTP成功且read/write紀錄皆空。
+    """
+    工作階段 = 假工作階段儲存庫()
+    編排器 = _編排(
+        假解析器(釘選("ep", "ver", 1)),
+        假憑證服務(驗證結果(狀態.有效, "cred", "ep", "active", 30, 60)),
+        假政策(), 執行嘗試=lambda _: 執行嘗試結果("success", {"ok": True}),
+        驗證輸出=lambda *_: True, 工作階段儲存庫=工作階段,
+    )
+    assert 編排器.執行("demo", "req", "key", {}, None, 1).status_code == 200
+    assert 工作階段.讀取 == [] and 工作階段.附加 == []
 
 
 def _邊界錯誤編排(boundary, error):

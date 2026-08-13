@@ -25,6 +25,7 @@ from ..執行期.工具發布庫 import 工具發布庫, 工具發布註冊
 from .權限協調 import 能力摘要
 
 _識別 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_工具修訂 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}\Z")
 _控制流 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _固定錯誤 = "擁有者發布能力不可用"
 
@@ -167,15 +168,18 @@ class 擁有者能力轉接器:
                 raise ValueError
             資料 = self._重建(擁有者)
             技能表 = {項目.名稱: 項目 for 項目 in 資料.快照.技能}
-            工具表 = {項目.名稱: 項目 for 項目 in 資料.快照.工具}
+            工具名稱 = {項目.名稱 for 項目 in pinned摘要.工具}
+            權威已選工具 = tuple(
+                項目 for 項目 in 資料.快照.工具 if 項目.名稱 in 工具名稱
+            )
             if (pinned摘要.權限修訂 != 資料.快照.權限修訂
                     or tuple(技能表.get(項目.名稱) for 項目 in pinned摘要.技能) != pinned摘要.技能
-                    or tuple(工具表.get(項目.名稱) for 項目 in pinned摘要.工具) != pinned摘要.工具):
+                    or 權威已選工具 != pinned摘要.工具):
                 raise ValueError
             描述表 = {項目.名稱: 項目 for 項目 in 資料.描述}
             來源 = tuple(發布技能來源(名稱, Path(描述表[名稱].來源目錄), 描述表[名稱].內容sha256)
                        for 名稱 in (項目.名稱 for 項目 in pinned摘要.技能))
-            已選工具 = tuple(工具表[項目.名稱] for 項目 in pinned摘要.工具)
+            已選工具 = 權威已選工具
             已選技能 = tuple(技能表[項目.名稱] for 項目 in pinned摘要.技能)
             工具結構 = {
                 項目.名稱: 資料.工具結構快照[項目.名稱] for 項目 in pinned摘要.工具
@@ -225,7 +229,7 @@ class 擁有者能力轉接器:
             if type(註冊) is not 工具發布註冊 or type(註冊.tool) is not 工具定義:
                 raise ValueError
             名稱, 說明, 結構 = 註冊.tool.名稱, 註冊.tool.說明, 註冊.tool.參數結構
-            if not _是識別(名稱) or not _是識別(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
+            if not _是識別(名稱) or not _是工具修訂(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
                 raise ValueError
             結構JSON = 建立正規JSON(結構)
             if len(結構JSON.encode("utf-8")) > 32768:
@@ -233,8 +237,6 @@ class 擁有者能力轉接器:
             if 工具限制 is None or 名稱 in 工具限制:
                 工具資料.append({"name": 名稱, "revision": 註冊.revision, "description": 說明, "parameters": 解析嚴格JSON(結構JSON)})
                 授權工具列.append(授權工具(名稱, 註冊.revision))
-        授權工具列.sort(key=lambda 項目: 項目.名稱)
-        工具資料.sort(key=lambda 項目: 項目["name"])
         授權技能列 = tuple(授權技能(項目.名稱, 項目.摘要 or 項目.名稱, 項目.內容sha256) for 項目 in 描述)
         投影 = {"owner": 擁有者, "roles": list(角色),
               "skill_roots": [{"path": str(根.路徑), "device": 根.裝置, "inode": 根.節點,
@@ -266,6 +268,11 @@ def _是識別(值: object) -> bool:
     副作用：無外部副作用。
     """
     return type(值) is str and _識別.fullmatch(值) is not None
+
+
+def _是工具修訂(值: object) -> bool:
+    """只允許工具修訂使用固定 bundle revision 所需的 ``@``。"""
+    return type(值) is str and _工具修訂.fullmatch(值) is not None
 
 
 def _正規集合(值: Any, 容器型別: type, 上限: int) -> tuple[str, ...]:

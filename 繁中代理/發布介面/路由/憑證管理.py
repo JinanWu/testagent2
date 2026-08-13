@@ -80,7 +80,12 @@ _建立本文綱要 = {
 
 
 class 憑證建立HTTP請求(BaseModel):
-    """拒絕額外欄位與型別轉換的 create request。"""
+    """拒絕額外欄位與型別轉換的 create request。
+
+    描述：拒絕額外欄位與型別轉換的 create request。
+    參數：建構資料由類別欄位或建構器簽章明確提供，不讀取隱含輸入。
+    返回值：可供呼叫端使用的``憑證建立HTTP請求``類型或實例。
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True, populate_by_name=False)
 
@@ -93,7 +98,13 @@ class 憑證建立HTTP請求(BaseModel):
     @field_validator("名稱", "用途")
     @classmethod
     def 驗證安全文字(cls, 值: str) -> str:
-        """拒絕空白、控制字元與疑似秘密文字。"""
+        """拒絕空白、控制字元與疑似秘密文字。
+
+        描述：拒絕空白、控制字元與疑似秘密文字。
+        參數：``值``。
+        返回值：通過格式與秘密標記檢查的原始文字。
+
+        """
         小寫 = 值.lower()
         if 值 != 值.strip() or any(ord(字元) < 32 for 字元 in 值) or any(
             標記 in 小寫 for 標記 in ("pk_", "sk_", "sk-", "bearer")
@@ -104,7 +115,13 @@ class 憑證建立HTTP請求(BaseModel):
     @field_validator("到期時間")
     @classmethod
     def 驗證有限時間(cls, 值: float | int) -> float | int:
-        """拒絕非有限時間。"""
+        """拒絕非有限時間。
+
+        描述：拒絕非有限時間。
+        參數：``值``。
+        返回值：通過有限值檢查的原始整數或浮點時間。
+
+        """
         if not math.isfinite(float(值)):
             raise ValueError("時間無效")
         return 值
@@ -113,7 +130,7 @@ class 憑證建立HTTP請求(BaseModel):
 def 建立憑證管理路由器(
     服務: 憑證管理服務,
     目前工作階段相依,
-    csrf相依,
+    CSRF相依,
     *,
     時鐘=time.time,
     請求識別碼工廠=lambda: "request-" + secrets.token_hex(16),
@@ -136,7 +153,13 @@ def 建立憑證管理路由器(
         端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
     ) -> JSONResponse:
-        """列出權威 session owner 的 safe credential summaries。"""
+        """列出權威 session owner 的 safe credential summaries。
+
+        描述：列出權威 session owner 的 safe credential summaries。
+        參數：``請求``、``端點識別碼``、``使用者``。
+        返回值：狀態碼200且本文只含安全憑證摘要列表的JSON回應。
+
+        """
         _拒絕查詢參數(請求)
         使用者識別碼, _ = _重建身份(使用者)
         try:
@@ -164,10 +187,16 @@ def 建立憑證管理路由器(
         請求: Request,
         端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
-        _csrf使用者: 網頁使用者 = Depends(csrf相依),
+        _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
     ) -> JSONResponse:
-        """建立 additional credential 並只在 durable success 回傳一次明文。"""
+        """建立 additional credential 並只在 durable success 回傳一次明文。
+
+        描述：建立 additional credential 並只在 durable success 回傳一次明文。
+        參數：``請求``、``端點識別碼``、``使用者``、``_csrf使用者``、``回應``。
+        返回值：狀態碼201、只揭露一次初始金鑰並攜帶CSRF接續的JSON回應。
+
+        """
         _拒絕查詢參數(請求)
         本文 = await _解析建立本文(請求)
         使用者識別碼, _ = _重建雙重身份(使用者, _csrf使用者)
@@ -213,10 +242,16 @@ def 建立憑證管理路由器(
         端點識別碼: Annotated[str, Path(alias="endpoint_id", pattern=_識別碼格式)],
         憑證識別碼: Annotated[str, Path(alias="credential_id", pattern=_識別碼格式)],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
-        _csrf使用者: 網頁使用者 = Depends(csrf相依),
+        _csrf使用者: 網頁使用者 = Depends(CSRF相依),
         回應: Response = None,
     ) -> Response:
-        """以 composite scope 執行可稽核且 idempotent 的撤銷。"""
+        """以 composite scope 執行可稽核且 idempotent 的撤銷。
+
+        描述：以 composite scope 執行可稽核且 idempotent 的撤銷。
+        參數：``請求``、``端點識別碼``、``憑證識別碼``、``使用者``、``_csrf使用者``、``回應``。
+        返回值：狀態碼204、無本文且攜帶CSRF接續的回應。
+
+        """
         _拒絕查詢參數(請求)
         if 請求.headers.get("content-length") not in (None, "0"):
             _拋出HTTP錯誤(422, "invalid_request", 回應)
@@ -244,7 +279,13 @@ def 建立憑證管理路由器(
 
 
 def _重建身份(使用者: object) -> tuple[str, bool]:
-    """重建權威 Web principal；role 只供既有 admin revoke capability。"""
+    """重建權威 Web principal；role 只供既有 admin revoke capability。
+
+    描述：重建權威 Web principal；role 只供既有 admin revoke capability。
+    參數：``使用者``。
+    返回值：權威使用者識別碼及是否具管理者角色的二元組。
+
+    """
     if type(使用者) is not 網頁使用者:
         _拋出HTTP錯誤(500, "credential_management_failed")
     識別碼 = object.__getattribute__(使用者, "識別碼")
@@ -255,7 +296,13 @@ def _重建身份(使用者: object) -> tuple[str, bool]:
 
 
 def _重建雙重身份(使用者: object, csrf使用者: object) -> tuple[str, bool]:
-    """要求 session 與 single-use CSRF 回傳同一 authoritative principal。"""
+    """要求 session 與 single-use CSRF 回傳同一 authoritative principal。
+
+    描述：要求 session 與 single-use CSRF 回傳同一 authoritative principal。
+    參數：``使用者``、``csrf使用者``。
+    返回值：兩個身份一致時的權威使用者識別碼及管理者旗標。
+
+    """
     識別碼, 是否管理者 = _重建身份(使用者)
     csrf識別碼, _ = _重建身份(csrf使用者)
     if 識別碼 != csrf識別碼:
@@ -264,13 +311,25 @@ def _重建雙重身份(使用者: object, csrf使用者: object) -> tuple[str, 
 
 
 def _拒絕查詢參數(請求: Request) -> None:
-    """三條管理路由皆拒絕任何 query 或 duplicate query。"""
+    """三條管理路由皆拒絕任何 query 或 duplicate query。
+
+    描述：三條管理路由皆拒絕任何 query 或 duplicate query。
+    參數：``請求``。
+    返回值：無；查詢字串為空時完成檢查，否則拋出固定HTTP錯誤。
+
+    """
     if 請求.url.query:
         _拋出HTTP錯誤(422, "invalid_request")
 
 
 async def _解析建立本文(請求: Request) -> 憑證建立HTTP請求:
-    """以 strict JSON、exact content type 與 32 KiB 上限解析 create body。"""
+    """以 strict JSON、exact content type 與 32 KiB 上限解析 create body。
+
+    描述：以 strict JSON、exact content type 與 32 KiB 上限解析 create body。
+    參數：``請求``。
+    返回值：通過本文大小、媒體型別、嚴格JSON及欄位驗證的建立請求。
+
+    """
     try:
         if 請求.headers.get("content-type") != "application/json":
             raise ValueError
@@ -297,7 +356,13 @@ async def _解析建立本文(請求: Request) -> 憑證建立HTTP請求:
 
 
 def _讀取時間(時鐘) -> float:
-    """只接受 authoritative clock 的有限非負數值。"""
+    """只接受 authoritative clock 的有限非負數值。
+
+    描述：只接受 authoritative clock 的有限非負數值。
+    參數：``時鐘``。
+    返回值：權威時鐘產生的有限非負浮點秒數。
+
+    """
     try:
         值 = 時鐘()
         if type(值) not in (int, float) or not math.isfinite(float(值)) or 值 < 0:
@@ -310,7 +375,13 @@ def _讀取時間(時鐘) -> float:
 
 
 def _傳遞CSRF接續(來源: Response | None, 目標: Response) -> Response:
-    """把 canonical CSRF dependency 的 successor header/cookie 移到實際回應。"""
+    """把 canonical CSRF dependency 的 successor header/cookie 移到實際回應。
+
+    描述：把 canonical CSRF dependency 的 successor header/cookie 移到實際回應。
+    參數：``來源``、``目標``。
+    返回值：已複製CSRF successor header及cookie的目標回應；無來源時原樣回傳目標。
+
+    """
     if 來源 is None:
         return 目標
     接續 = 來源.headers.get(網頁CSRFHeader名稱)
@@ -323,15 +394,21 @@ def _傳遞CSRF接續(來源: Response | None, 目標: Response) -> Response:
 
 
 def _拋出HTTP錯誤(狀態碼: int, 代碼: str, 來源: Response | None = None) -> NoReturn:
-    """建立固定錯誤，並保留已輪替的 CSRF successor header/cookie。"""
+    """建立固定錯誤，並保留已輪替的 CSRF successor header/cookie。
+
+    描述：建立固定錯誤，並保留已輪替的 CSRF successor header/cookie。
+    參數：``狀態碼``、``代碼``、``來源``。
+    返回值：不返回；固定拋出帶公開錯誤代碼及可用CSRF接續的HTTP例外。
+
+    """
     標頭: dict[str, str] = {}
     if 來源 is not None:
         接續 = 來源.headers.get(網頁CSRFHeader名稱)
         if 接續 is not None:
             標頭[網頁CSRFHeader名稱] = 接續
-        cookies = 來源.headers.getlist("set-cookie")
-        if cookies:
-            標頭["set-cookie"] = cookies[-1]
+        Cookie清單 = 來源.headers.getlist("set-cookie")
+        if Cookie清單:
+            標頭["set-cookie"] = Cookie清單[-1]
     raise HTTPException(
         status_code=狀態碼, detail={"code": 代碼}, headers=標頭 or None,
     ) from None

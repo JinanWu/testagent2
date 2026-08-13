@@ -10,6 +10,7 @@ from .領域模型 import AuditAppendReceipt
 from .領域模型 import AuditEvent
 
 _識別格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_工具修訂格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}\Z")
 _sha256格式 = re.compile(r"[0-9a-f]{64}\Z")
 _固定錯誤 = "無法取得規劃權限快照"
 _控制流 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -39,6 +40,11 @@ class 規劃權限查詢錯誤(Exception):
 def _是識別(值: object) -> bool:
     """確認值是 canonical 安全識別字串。"""
     return type(值) is str and _識別格式.fullmatch(值) is not None
+
+
+def _是工具修訂(值: object) -> bool:
+    """確認值是允許 ``@`` 分隔符的 canonical 工具修訂。"""
+    return type(值) is str and _工具修訂格式.fullmatch(值) is not None
 
 
 def _是摘要(值: object) -> bool:
@@ -90,7 +96,7 @@ class 授權工具:
         try:
             名稱 = object.__getattribute__(self, "名稱")
             釘選修訂 = object.__getattribute__(self, "釘選修訂")
-            if not _是識別(名稱) or not _是識別(釘選修訂):
+            if not _是識別(名稱) or not _是工具修訂(釘選修訂):
                 失敗 = True
         except _控制流:
             del self, 名稱, 釘選修訂, 失敗
@@ -111,8 +117,8 @@ class 規劃權限快照:
     工具: tuple[授權工具, ...]
 
     def __post_init__(self) -> None:
-        """驗證 exact 容器、DTO、唯一性及決定性排序。"""
-        權限修訂 = 技能 = 工具 = 項目 = 名稱 = 摘要 = 內容參照 = 釘選修訂 = 前一名稱 = None
+        """驗證 exact 容器與 DTO；技能排序，工具則保留唯一的 release authority 順序。"""
+        權限修訂 = 技能 = 工具 = 項目 = 名稱 = 摘要 = 內容參照 = 釘選修訂 = 前一名稱 = 已見工具 = None
         失敗 = False
         try:
             權限修訂 = object.__getattribute__(self, "權限修訂")
@@ -141,7 +147,7 @@ class 規劃權限快照:
                             break
                         名稱 = object.__getattribute__(項目, "名稱")
                         釘選修訂 = object.__getattribute__(項目, "釘選修訂")
-                        if not _是識別(名稱) or not _是識別(釘選修訂):
+                        if not _是識別(名稱) or not _是工具修訂(釘選修訂):
                             失敗 = True
                             break
                 if not 失敗:
@@ -153,20 +159,20 @@ class 規劃權限快照:
                             break
                         前一名稱 = 名稱
                 if not 失敗:
-                    前一名稱 = None
+                    已見工具 = set()
                     for 項目 in 工具:
                         名稱 = object.__getattribute__(項目, "名稱")
-                        if 前一名稱 is not None and 名稱 <= 前一名稱:
+                        if 名稱 in 已見工具:
                             失敗 = True
                             break
-                        前一名稱 = 名稱
+                        已見工具.add(名稱)
         except _控制流:
-            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 失敗
+            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 已見工具, 失敗
             raise
         except BaseException:
             失敗 = True
         if 失敗:
-            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 失敗
+            del self, 權限修訂, 技能, 工具, 項目, 名稱, 摘要, 內容參照, 釘選修訂, 前一名稱, 已見工具, 失敗
             raise ValueError("規劃權限快照無效") from None
 
 
@@ -174,7 +180,7 @@ class Planner權限查詢(Protocol):
     """只提供 owner-scoped 完整權威快照；不得使用全域、即時或 fallback 來源。"""
 
     def 查詢規劃權限(self, 擁有者: str, /) -> 規劃權限快照:
-        """回傳該擁有者目前完整且決定性排序的授權能力。"""
+        """回傳該擁有者目前完整、技能排序且工具依 release authority 排列的能力。"""
         ...
 
 
@@ -217,7 +223,7 @@ def 安全查詢規劃權限(查詢器: Planner權限查詢, 擁有者: str, /) 
                 raise ValueError
             名稱 = object.__getattribute__(項目, "名稱")
             釘選修訂 = object.__getattribute__(項目, "釘選修訂")
-            if not _是識別(名稱) or not _是識別(釘選修訂):
+            if not _是識別(名稱) or not _是工具修訂(釘選修訂):
                 raise ValueError
             工具清單.append(授權工具(名稱, 釘選修訂))
 

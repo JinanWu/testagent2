@@ -28,14 +28,24 @@ _JSON最大深度 = 8
 _JSON最大節點 = 1024
 _JSON最大容器項目 = 128
 _JSON最大字串位元組 = 32768
+_工作階段識別最大位元組 = 128
 class 外部呼叫介面(Protocol):
-    """I04 transport-neutral orchestrator 的最小注入契約。"""
+    """I04 transport-neutral orchestrator 的最小注入契約。
+
+    參數：由 ``執行`` 接受 endpoint、request、credential、payload、時間與 optional session。
+    返回值：一次 transport-neutral invocation 結果。
+    """
 
     def 執行(
         self, 短名: str, 請求識別: str, API金鑰: str,
-        輸入: object, 中繼資料: object | None, 時間: int | float,
-    ) -> 呼叫成功結果 | 錯誤映射結果:
-        """執行一次已解析的外部呼叫。"""
+        輸入: object, 中繼資料: object | None, 時間: int | float, *,
+        工作階段識別: str | None = None,
+    ) -> object:
+        """執行一次已解析的外部呼叫；工作階段值不得由 metadata 傳遞。
+
+        參數：已驗證 transport 欄位與原樣 optional ``工作階段識別``。
+        返回值：供 HTTP adapter 映射的 invocation 結果物件。
+        """
 class _請求拒絕(Exception):
     """只攜帶固定 HTTP 分類，不攜帶 untrusted value。"""
 
@@ -71,7 +81,15 @@ def 建立外部呼叫路由(
         "/{slug}/invoke",
         openapi_extra={"requestBody": {"required": True, "content": {"application/json": {"schema": {
             "type": "object", "required": ["input"], "additionalProperties": False,
-            "properties": {"input": {}, "metadata": {"anyOf": [{"type": "object"}, {"type": "null"}]}}
+            "properties": {
+                "input": {},
+                "session_id": {
+                    "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+                    "x-utf8-max-bytes": 128,
+                    "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
+                },
+                "metadata": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+            }
         }}}}},
     )
     async def 呼叫端點(請求: Request, 路徑短名: str = Path(alias="slug")) -> JSONResponse:
@@ -92,8 +110,10 @@ def 建立外部呼叫路由(
             本文 = _解析本文(原始本文)
             原始本文 = None
             輸入 = 本文["input"]
+            工作階段識別 = 本文.get("session_id")
             中繼資料 = 本文.get("metadata")
             本文 = None
+            _驗證工作階段識別(工作階段識別)
             _驗證有界JSON(輸入)
             if 中繼資料 is not None:
                 _驗證有界JSON(中繼資料)
@@ -103,10 +123,16 @@ def 建立外部呼叫路由(
                     or len(請求識別.encode("utf-8")) > 128
                     or type(現在) not in (int, float) or not math.isfinite(float(現在)) or 現在 < 0):
                 raise ValueError
-            結果 = await run_in_threadpool(
-                編排器.執行, 短名, 請求識別, 金鑰, 輸入, 中繼資料, 現在,
-            )
-            金鑰 = 輸入 = 中繼資料 = 請求識別 = 現在 = None
+            if 工作階段識別 is None:
+                結果 = await run_in_threadpool(
+                    編排器.執行, 短名, 請求識別, 金鑰, 輸入, 中繼資料, 現在,
+                )
+            else:
+                結果 = await run_in_threadpool(
+                    編排器.執行, 短名, 請求識別, 金鑰, 輸入, 中繼資料, 現在,
+                    工作階段識別=工作階段識別,
+                )
+            金鑰 = 輸入 = 工作階段識別 = 中繼資料 = 請求識別 = 現在 = None
             投影 = _轉換結果(結果)
             結果 = None
             return JSONResponse(
@@ -199,13 +225,36 @@ def _解析本文(原始本文: bytes) -> dict[str, Any]:
     except (UnicodeError, json.JSONDecodeError, ValueError, OverflowError, RecursionError):
         原始本文 = None
         raise _請求拒絕(*_請求無效) from None
-    if type(結果) is not dict or tuple(結果) not in (("input",), ("input", "metadata"), ("metadata", "input")):
+    合法欄位 = frozenset({"input", "session_id", "metadata"})
+    if type(結果) is not dict or "input" not in 結果 or not frozenset(結果) <= 合法欄位:
         結果 = None
         raise _請求拒絕(*_請求無效)
     if "metadata" in 結果 and 結果["metadata"] is not None and type(結果["metadata"]) is not dict:
         結果 = None
         raise _請求拒絕(*_請求無效)
     return 結果
+def _驗證工作階段識別(工作階段識別: object) -> None:
+    """接受 null 或原樣安全識別值，不 trim、不正規化。
+
+    參數：不可信 JSON ``session_id`` 值。
+    返回值：無；合法 null/string 正常返回，違約固定拋 request rejection。
+    """
+    if 工作階段識別 is None:
+        return
+    try:
+        合法 = (
+            type(工作階段識別) is str
+            and bool(工作階段識別)
+            and not 工作階段識別[0].isspace()
+            and not 工作階段識別[-1].isspace()
+            and not any(ord(字元) < 32 or 127 <= ord(字元) <= 159 for 字元 in 工作階段識別)
+            and len(工作階段識別.encode("utf-8")) <= _工作階段識別最大位元組
+        )
+    except (UnicodeError, IndexError):
+        合法 = False
+    if not 合法:
+        工作階段識別 = None
+        raise _請求拒絕(*_請求無效)
 def _驗證有界JSON(根: object) -> None:
     """限制 input/metadata 深度、節點、容器寬度與字串 bytes。"""
     計數 = [0]

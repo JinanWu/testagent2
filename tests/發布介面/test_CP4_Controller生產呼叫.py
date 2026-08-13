@@ -103,7 +103,9 @@ def _建立live環境(tmp_path, *, provider="fake"):
         return {"fake": model}
 
     production, published = _設定(db, bundles, install, models)
-    return db, 建立CP4ASGI應用程式(production, published), credential.api_key, model, calls
+    app = 建立CP4ASGI應用程式(production, published)
+    app.state.重建canonical應用程式 = lambda: 建立CP4ASGI應用程式(production, published)
+    return db, app, credential.api_key, model, calls
 
 
 def test_app_construction零callback且不建立資料庫(tmp_path):
@@ -168,6 +170,8 @@ def test_憑證管理可獨立Planner設定且建構不呼叫注入(tmp_path):
     返回值：無；設定可建立且 OpenAPI 公開三條 credential routes。
     例外：組裝或 route inventory 漂移時 assertion 失敗。
     副作用：不得呼叫 envelope factory、installer、model factory 或建立檔案。
+
+    描述：CP4-COMP-05：A07 management key authority 不再錯綁 Planner authority。
     """
     呼叫: list[str] = []
     Web設定 = 生產設定(
