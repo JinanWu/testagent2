@@ -6,7 +6,7 @@ import { useSession } from '../app/SessionProvider'
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
-export default function ChatPage() {
+export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => void }) {
   const { user, logout, replaceSession } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
@@ -132,6 +132,9 @@ export default function ChatPage() {
           invalidate()
           void logout().catch(() => { setError(AUTH_ERROR_MESSAGE) })
         }}>登出</button>
+        {user?.role === 'admin' && onOpenAdminLogs && (
+          <button type="button" onClick={onOpenAdminLogs}>完整呼叫紀錄</button>
+        )}
         <nav aria-label="工作階段">
           <button type="button" onClick={newConversation}>新增對話</button>
           {sessions.map((session) => {

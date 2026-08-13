@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react'
 import ChatPage from '../pages/ChatPage'
+import InvocationLogsPage from '../pages/InvocationLogsPage'
 import LoginPage from '../pages/LoginPage'
 import { SessionProvider, useSession } from './SessionProvider'
 import {
+  ADMIN_LOGS_ROUTE,
   DEFAULT_APP_ROUTE,
   currentAppRoute,
   replaceAppRoute,
@@ -10,7 +12,7 @@ import {
 } from './routes'
 
 function RouteShell() {
-  const { status } = useSession()
+  const { status, user } = useSession()
   const [route, setRoute] = useState<AppRoute | null>(currentAppRoute)
 
   useEffect(() => {
@@ -25,15 +27,22 @@ function RouteShell() {
     }
   }
 
+  function openAdminLogs() {
+    if (user?.role === 'admin' && replaceAppRoute(ADMIN_LOGS_ROUTE)) {
+      setRoute(ADMIN_LOGS_ROUTE)
+    }
+  }
+
   // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
   useEffect(() => {
-    if (status !== 'authenticated' || route === DEFAULT_APP_ROUTE) {
+    if (status !== 'authenticated' || route === DEFAULT_APP_ROUTE ||
+        (route === ADMIN_LOGS_ROUTE && user?.role === 'admin')) {
       return
     }
     if (replaceAppRoute(DEFAULT_APP_ROUTE)) {
       setRoute(DEFAULT_APP_ROUTE)
     }
-  }, [status, route])
+  }, [status, route, user?.role])
 
   if (status === 'initializing') {
     return (
@@ -46,7 +55,10 @@ function RouteShell() {
     return <LoginPage onAuthenticated={openDefaultRoute} />
   }
   if (route === DEFAULT_APP_ROUTE) {
-    return <ChatPage />
+    return <ChatPage onOpenAdminLogs={openAdminLogs} />
+  }
+  if (route === ADMIN_LOGS_ROUTE && user?.role === 'admin') {
+    return <InvocationLogsPage onClose={openDefaultRoute} />
   }
   return (
     <main className="app-shell">
