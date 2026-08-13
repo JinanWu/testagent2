@@ -1466,6 +1466,20 @@ def test_A18管理員列表組合DTO重驗污染子項且repr零值():
     with pytest.raises(ValueError):
         管理員呼叫投影頁((項目,), None)
 
+    原始 = 管理員呼叫列表項目(
+        "inv-2", "ep-1", "ver-1", "req-2", "failed", None,
+        1.0, 10.0, 11.0, False,
+    )
+    結果 = 管理員呼叫列表結果((原始,), None)
+    頁 = 管理員呼叫投影頁((原始,), 管理員呼叫游標位置(10.0, "inv-2"))
+    object.__setattr__(原始, "錯誤碼", "RAW_SECRET_MARKER")
+    assert 結果.項目[0].錯誤碼 is None and 頁.項目[0].錯誤碼 is None
+    原始位置 = 管理員呼叫游標位置(10.0, "inv-2")
+    頁 = 管理員呼叫投影頁((), 原始位置)
+    object.__setattr__(原始位置, "呼叫識別碼", "RAW_SECRET_MARKER")
+    assert 頁.下一頁位置 is not None and 頁.下一頁位置.呼叫識別碼 == "inv-2"
+    assert "RAW_SECRET_MARKER" not in repr(原始位置) and "RAW_SECRET_MARKER" not in repr(頁)
+
 
 def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
     """Cursor不能跨endpoint/filter/window重放，也不能由client竄改position。"""
@@ -1648,6 +1662,7 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
             "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.0}
     敏感值 = (
         "note Authorization", "Cookie", "signing-private_key", "client_secret=TOPSECRET",
+        "api_key=TOPSECRET", "API KEY TOPSECRET",
         "access_token=TOPSECRET", "refresh_token=TOPSECRET", "master_key=TOPSECRET",
         "credential_hash=TOPSECRET", "credential_ciphertext=TOPSECRET",
         "password=TOPSECRET", "secret_key=TOPSECRET", "provider-secret TOPSECRET",
@@ -1662,3 +1677,5 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
         ):
             with pytest.raises(Exception):
                 建立管理員呼叫完整詳情({**基本, **破壞})
+    with pytest.raises(Exception):
+        建立管理員呼叫完整詳情({**基本, "input": {"note": "/srv/app/secrets.env"}})

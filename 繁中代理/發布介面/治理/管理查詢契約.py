@@ -73,7 +73,7 @@ _禁止敏感鍵 = frozenset({
     "accesstoken", "refreshtoken",
 })
 _禁止敏感值標記 = frozenset({
-    "authorization", "proxyauthorization", "cookie", "setcookie",
+    "authorization", "proxyauthorization", "cookie", "setcookie", "apikey",
     "credentialsecret", "credentialciphertext", "credentialhash", "masterkey",
     "providersecret", "clientsecret", "secretkey", "privatekey", "password",
     "accesstoken", "refreshtoken",
@@ -81,7 +81,7 @@ _禁止敏感值標記 = frozenset({
 _檔案路徑鍵 = frozenset({"path", "filepath", "filesystempath", "absolutepath"})
 _平台APIKey格式 = re.compile(r"(?<![A-Za-z0-9_-])pk_[A-Za-z0-9_-]{43}(?![A-Za-z0-9_-])")
 _絕對檔案路徑格式 = re.compile(
-    r"(?:^|[\s:=\"'])(?:~[/\\]|/(?:Users|home|etc|var|tmp|private|opt|usr|root|proc|sys|dev)/"
+    r"(?:^|[\s:=\"'])(?:~[/\\]|/(?:Users|home|etc|var|tmp|private|opt|usr|root|proc|sys|dev|srv)/"
     r"|[A-Za-z]:[\\/]|\\\\)", re.IGNORECASE,
 )
 
@@ -425,7 +425,7 @@ class 管理員呼叫查詢條件:
             raise ValueError("管理員呼叫查詢條件無效") from None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class 管理員呼叫游標位置:
     """固定created_at DESC、id DESC排序的下一頁位置。"""
 
@@ -436,6 +436,10 @@ class 管理員呼叫游標位置:
         """驗證有限時間及呼叫識別碼。"""
         if not _是有限時間(self.建立時間) or not _是識別碼(self.呼叫識別碼):
             raise ValueError("管理員呼叫游標位置無效") from None
+
+    def __repr__(self) -> str:
+        """Cursor position不把識別碼帶入repr。"""
+        return "管理員呼叫游標位置([REDACTED])"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -490,6 +494,7 @@ class 管理員呼叫列表結果:
             raise ValueError("管理員呼叫列表結果無效") from None
         for 項目 in self.項目:
             項目.__post_init__()
+        object.__setattr__(self, "項目", tuple(_重建列表項目(項目) for 項目 in self.項目))
 
     def __repr__(self) -> str:
         """組合結果不把child metadata帶入repr。"""
@@ -512,12 +517,24 @@ class 管理員呼叫投影頁:
             raise ValueError("管理員呼叫投影頁無效") from None
         for 項目 in self.項目:
             項目.__post_init__()
+        object.__setattr__(self, "項目", tuple(_重建列表項目(項目) for 項目 in self.項目))
         if self.下一頁位置 is not None:
             self.下一頁位置.__post_init__()
+            object.__setattr__(self, "下一頁位置", 管理員呼叫游標位置(
+                self.下一頁位置.建立時間, self.下一頁位置.呼叫識別碼,
+            ))
 
     def __repr__(self) -> str:
         """SQLite projection page不顯示metadata。"""
         return "管理員呼叫投影頁([REDACTED])"
+
+
+def _重建列表項目(項目: 管理員呼叫列表項目) -> 管理員呼叫列表項目:
+    """驗證後建立fresh safe-list snapshot，切斷caller alias。"""
+    return 管理員呼叫列表項目(
+        項目.呼叫識別碼, 項目.端點識別碼, 項目.端點版本識別碼, 項目.請求識別碼,
+        項目.狀態, 項目.錯誤碼, 項目.延遲毫秒, 項目.建立時間, 項目.完成時間, 項目.是否有遮蔽,
+    )
 
 
 class 管理員呼叫游標編解碼器:
