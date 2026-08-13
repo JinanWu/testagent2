@@ -15,9 +15,14 @@ from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫, 
 from 繁中代理.發布介面.遷移執行器 import 執行遷移
 
 
-def _建立基準(db):
-    初始化發布介面資料庫(db)
-    with sqlite3.connect(db) as 連線:
+def _建立基準(資料庫):
+    """建立兩組 endpoint／service-account authority 的正式測試資料。
+
+    參數：``資料庫`` 為 pytest 隔離 SQLite 路徑。
+    返回值：無；完成 migration 與兩組 immutable version graph。
+    """
+    初始化發布介面資料庫(資料庫)
+    with sqlite3.connect(資料庫) as 連線:
         連線.execute("PRAGMA foreign_keys=ON")
         連線.executemany("INSERT INTO service_accounts(id,created_at) VALUES(?,1)", [("sa1",), ("sa2",)])
         連線.executemany(
@@ -32,19 +37,29 @@ def _建立基準(db):
 
 
 def test_fresh_upgrade重跑與結構契約(tmp_path):
-    fresh = tmp_path / "fresh.db"
-    assert 初始化發布介面資料庫(fresh) == tuple(range(1, 14))
-    assert 初始化發布介面資料庫(fresh) == ()
-    upgrade = tmp_path / "upgrade.db"
-    assert 執行遷移(upgrade, 載入發布介面遷移()[:12]) == tuple(range(1, 13))
-    assert 初始化發布介面資料庫(upgrade) == (13,)
-    with sqlite3.connect(upgrade) as 連線:
+    """驗證 fresh、upgrade 與 rerun 得到同一 migration 13 結構。
+
+    參數：``tmp_path`` 提供隔離資料庫路徑。
+    返回值：無；所有結構與 ledger assertions 必須通過。
+    """
+    新資料庫 = tmp_path / "fresh.db"
+    assert 初始化發布介面資料庫(新資料庫) == tuple(range(1, 14))
+    assert 初始化發布介面資料庫(新資料庫) == ()
+    升級資料庫 = tmp_path / "upgrade.db"
+    assert 執行遷移(升級資料庫, 載入發布介面遷移()[:12]) == tuple(range(1, 13))
+    assert 初始化發布介面資料庫(升級資料庫) == (13,)
+    with sqlite3.connect(升級資料庫) as 連線:
         assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
         欄位 = [列[1] for 列 in 連線.execute("PRAGMA table_info(published_session_turn_pairs)")]
         assert 欄位 == ["endpoint_id", "service_account_id", "session_id", "sequence_number", "endpoint_version_id", "user_message_json", "assistant_message_json", "pair_size_bytes", "token_count", "created_at"]
 
 
 def test_scope不修改既有端點索引且錯配寫入fail_closed(tmp_path):
+    """驗證新 scope 不侵入舊 endpoint index 且錯配寫入 fail closed。
+
+    參數：``tmp_path`` 提供隔離資料庫。
+    返回值：無；schema inventory 與 trigger assertions 必須通過。
+    """
     db = tmp_path / "scope.db"
     _建立基準(db)
     with sqlite3.connect(db) as 連線:
@@ -60,6 +75,11 @@ def test_scope不修改既有端點索引且錯配寫入fail_closed(tmp_path):
 
 
 def test_endpoint法定清除可連同session_history_cascade(tmp_path):
+    """驗證法定 endpoint retention 可 cascade 清除 session history。
+
+    參數：``tmp_path`` 提供隔離資料庫。
+    返回值：無；刪除 graph 後 history row 必須為零。
+    """
     db = tmp_path / "retention.db"
     _建立基準(db)
     repo = SQLitePublished工作階段儲存庫(db)
@@ -78,6 +98,11 @@ def test_endpoint法定清除可連同session_history_cascade(tmp_path):
 
 
 def test_composite_scope_CAS_restart與跨scope隔離(tmp_path):
+    """驗證 composite scope、stale CAS、restart 與跨 scope 隔離。
+
+    參數：``tmp_path`` 提供 durable restart 資料庫。
+    返回值：無；有序讀回與隔離 assertions 必須通過。
+    """
     db = tmp_path / "history.db"
     _建立基準(db)
     repo = SQLitePublished工作階段儲存庫(db, 時鐘=lambda: 5)
@@ -92,6 +117,11 @@ def test_composite_scope_CAS_restart與跨scope隔離(tmp_path):
 
 
 def test_bounds與損毀fail_closed(tmp_path):
+    """驗證 turns／bytes／tokens bounds 與 corrupt row fail closed。
+
+    參數：``tmp_path`` 提供隔離資料庫。
+    返回值：無；bounded read 與損毀拒絕 assertions 必須通過。
+    """
     assert (最大成功對話組數, 最大歷史位元組, 最大歷史TOKEN數) == (32, 262144, 32768)
     db = tmp_path / "bounds.db"
     _建立基準(db)

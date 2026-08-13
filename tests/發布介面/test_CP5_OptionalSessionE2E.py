@@ -15,6 +15,11 @@ from 繁中代理.發布介面.技能套件.儲存庫 import 套件收據儲存�
 
 
 def _呼叫(client, key, *, session: str | None | object = ..., slug="demo"):
+    """經 canonical live route 呼叫指定 Published endpoint。
+
+    參數：TestClient、API key、optional session wire value 與 endpoint slug。
+    返回值：live HTTP response。
+    """
     本文: dict[str, object] = {"input": {"question": "CP5"}}
     if session is not ...:
         本文["session_id"] = session
@@ -26,6 +31,11 @@ def _呼叫(client, key, *, session: str | None | object = ..., slug="demo"):
 
 
 def test_canonical真Key多輪隔離null省略與restart都由durable_history驅動(tmp_path):
+    """驗證真 key 多輪、null／省略與 app restart 使用 durable history。
+
+    參數：``tmp_path`` 提供 canonical app 的隔離資源。
+    返回值：無；live response、prompt 與 durable rows assertions 必須通過。
+    """
     db, app, key, model, _ = _建立live環境(tmp_path)
 
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -84,7 +94,11 @@ def test_canonical真Key多輪隔離null省略與restart都由durable_history驅
 
 
 def test_canonical同服務帳戶不同有效key共享且拒絕key零history寫入(tmp_path):
-    """正式建立的第二把 key 可延續同 SA session；invalid/expired/revoked 全部零附加。"""
+    """驗證第二把 key 延續同 SA session，三類拒絕 key 全部零附加。
+
+    參數：``tmp_path`` 提供 canonical app 的隔離資源。
+    返回值：無；live prompt、HTTP status 與 row count assertions 必須通過。
+    """
     db, app, 第一金鑰, model, _ = _建立live環境(tmp_path)
     現在 = time.time()
     封套 = AESGCM憑證封套({1: b"k" * 32}, 1)
@@ -121,7 +135,11 @@ def test_canonical同服務帳戶不同有效key共享且拒絕key零history寫�
 
 
 def _新增端點或版本(tmp_path, db, *, endpoint, version, owner, account, number, bundle):
-    """以正式 bundle publisher 建立可供 canonical runtime 讀取的 exact snapshot。"""
+    """以正式 bundle publisher 建立 canonical runtime exact snapshot。
+
+    參數：隔離根、資料庫，以及 wire identity／version／bundle 欄位。
+    返回值：無；完成可信 bundle receipt、version 與 current pointer。
+    """
     receipt = 技能套件發布器(tmp_path / "bundles").發布(
         套件識別碼=bundle, 端點識別碼=endpoint, 端點版本識別碼=version,
         版本號碼=number, 建立時間=float(number + 10), 建立者識別碼=owner,
@@ -151,7 +169,11 @@ def _新增端點或版本(tmp_path, db, *, endpoint, version, owner, account, n
 
 
 def test_canonical跨endpoint_owner隔離且version_switch保留舊turn_identity(tmp_path):
-    """同名 session 跨 owner/SA 不共享；切版後新 request pin v2、舊 pair 仍標 v1。"""
+    """驗證跨 owner／SA 隔離及切版後新 pin、舊 turn identity。
+
+    參數：``tmp_path`` 提供 canonical app 與正式 bundle graph。
+    返回值：無；live prompt、version echo 與 durable identity assertions 必須通過。
+    """
     db, app, 第一金鑰, model, _ = _建立live環境(tmp_path)
     _新增端點或版本(
         tmp_path, db, endpoint="ep-2", version="ver-foreign", owner="owner-2",

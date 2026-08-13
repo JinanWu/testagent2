@@ -1,4 +1,8 @@
-"""Published Endpoint／Service Account scoped 的有界工作階段歷史。"""
+"""Published Endpoint／Service Account scoped 的有界工作階段歷史。
+
+參數：本模組公開儲存庫接受 SQLite 路徑、工作階段 scope 與成功對話組。
+返回值：提供不可變對話組、bounded read 與 CAS append。
+"""
 
 from __future__ import annotations
 
@@ -21,12 +25,20 @@ _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 class Published工作階段錯誤(RuntimeError):
-    """歷史輸入、結構、CAS 或持久化狀態不符合契約。"""
+    """表示歷史輸入、結構、CAS 或持久化狀態不符合契約。
+
+    參數：沿用 ``RuntimeError`` 的固定公開訊息。
+    返回值：建立供 Published 邊界固定映射的錯誤實例。
+    """
 
 
 @dataclass(frozen=True, slots=True)
 class Published對話組:
-    """一個原子成功 user/assistant pair 與其 pinned endpoint version。"""
+    """保存一個原子成功 user/assistant pair 與 pinned endpoint version。
+
+    參數：欄位名稱沿用 runtime／ledger DTO wire contract。
+    返回值：不可變的單一成功對話組快照。
+    """
 
     sequence_number: int
     endpoint_version_id: str
@@ -37,9 +49,18 @@ class Published對話組:
 
 
 class SQLitePublished工作階段儲存庫:
-    """以單一小介面封裝 composite scope、CAS 與三重 bounded read。"""
+    """以單一小介面封裝 composite scope、CAS 與三重 bounded read。
+
+    參數：建構時接收資料庫路徑與可注入時鐘。
+    返回值：提供 durable read／append 操作的儲存庫物件。
+    """
 
     def __init__(self, 資料庫: str | Path, *, 時鐘: Callable[[], float] = time.time) -> None:
+        """保存 durable SQLite authority 與建立時間來源。
+
+        參數：``資料庫`` 為 Published DB；``時鐘`` 回傳非負有限 epoch 秒。
+        返回值：無；完成可重用儲存庫的初始化。
+        """
         if not isinstance(資料庫, (str, Path)) or not str(資料庫) or not callable(時鐘):
             raise Published工作階段錯誤("Published工作階段初始化失敗") from None
         self._資料庫 = Path(資料庫)
@@ -47,7 +68,11 @@ class SQLitePublished工作階段儲存庫:
 
     def 讀取成功歷史(self, endpoint_id: str, service_account_id: str,
                 session_id: str) -> tuple[Published對話組, ...]:
-        """只讀 exact scope 最新完整 pair，任一損毀或單 pair 超限即 fail closed。"""
+        """只讀 exact scope 最新完整 pair，任一損毀或單 pair 超限即 fail closed。
+
+        參數：三個英文名稱精確對應 schema composite scope 欄位。
+        返回值：依 sequence 正序排列的 bounded 不可變對話組。
+        """
         try:
             self._驗證scope(endpoint_id, service_account_id, session_id)
             with closing(self._開啟連線()) as 連線:
@@ -84,7 +109,11 @@ class SQLitePublished工作階段儲存庫:
                   endpoint_version_id: str, user_message: dict[str, object],
                   assistant_message: dict[str, object], token_count: int, *,
                   expected_sequence: int) -> int:
-        """以 BEGIN IMMEDIATE + expected sequence 原子附加完整成功 pair。"""
+        """以 BEGIN IMMEDIATE + expected sequence 原子附加完整成功 pair。
+
+        參數：schema scope、pinned version、兩個 wire message、token 數與預期序號。
+        返回值：提交成功的 exact sequence number。
+        """
         try:
             self._驗證scope(endpoint_id, service_account_id, session_id)
             if (type(endpoint_version_id) is not str or not endpoint_version_id.strip()
@@ -127,6 +156,11 @@ class SQLitePublished工作階段儲存庫:
         raise Published工作階段錯誤("Published工作階段附加失敗") from None
 
     def _開啟連線(self) -> sqlite3.Connection:
+        """開啟啟用 foreign keys 的短生命週期 SQLite 連線。
+
+        參數：無；使用建構時保存的 Published DB。
+        返回值：已確認 foreign keys 開啟的連線。
+        """
         連線 = sqlite3.connect(str(self._資料庫), timeout=30.0, isolation_level=None)
         連線.execute("PRAGMA foreign_keys=ON")
         if 連線.execute("PRAGMA foreign_keys").fetchone() != (1,):
@@ -136,6 +170,11 @@ class SQLitePublished工作階段儲存庫:
 
     @staticmethod
     def _驗證scope(endpoint_id: object, service_account_id: object, session_id: object) -> None:
+        """驗證三個 schema scope identifiers 的 lexical 契約。
+
+        參數：英文名稱精確對應資料庫欄位，不接受隱性 trim／normalize。
+        返回值：無；合法時正常返回，違約時拋 ``ValueError``。
+        """
         if any(type(值) is not str or not 值 or 值 != 值.strip() for 值 in (endpoint_id, service_account_id, session_id)):
             raise ValueError
         session文字 = str(session_id)
@@ -144,6 +183,11 @@ class SQLitePublished工作階段儲存庫:
 
     @staticmethod
     def _重建對話組(資料列: object) -> Published對話組:
+        """從不可信 SQLite row 重建並驗證 canonical 對話組。
+
+        參數：``資料列`` 為六欄 query row。
+        返回值：完整驗證後的不可變 ``Published對話組``。
+        """
         if type(資料列) is not tuple or len(資料列) != 6:
             raise ValueError
         序號, 版本, user_json, assistant_json, 位元組, tokens = 資料列
