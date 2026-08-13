@@ -193,6 +193,13 @@ def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=
 
 
 class 假工作階段儲存庫:
+    """提供可觀測的session repository test double。
+
+    描述：保存固定成功歷史，並記錄所有讀取與附加呼叫。
+    參數：無；建構器不接受外部依賴。
+    返回值：可供編排器測試注入的repository替身。
+    """
+
     def __init__(self):
         """建立可觀測的session repository test double。
 
