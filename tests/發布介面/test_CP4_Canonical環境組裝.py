@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -21,6 +23,11 @@ def _環境(tmp_path: Path) -> dict[str, str]:
         "TESTAGENT2_MODEL_NAME": "gemini-2.5-flash-lite",
         "AIAGENT_GCP_PROJECT": "example-project",
         "AIAGENT_GCP_LOCATION": "global",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION": "2",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
+            "1": base64.urlsafe_b64encode(b"J" * 32).rstrip(b"=").decode("ascii"),
+            "2": base64.urlsafe_b64encode(b"K" * 32).rstrip(b"=").decode("ascii"),
+        }, separators=(",", ":")),
     }
 
 
@@ -86,6 +93,59 @@ def test_construction零IO且root_app已包含stable_route(tmp_path: Path, monke
     assert not Path(環境["TESTAGENT2_PUBLISHED_BUNDLE_ROOT"]).exists()
     assert tuple(app.openapi()["paths"]["/v1/endpoints/{slug}/invoke"]) == ("post",)
     assert tuple(root_app.openapi()["paths"]["/v1/endpoints/{slug}/invoke"]) == ("post",)
+    for 目前應用 in (app, root_app):
+        路徑 = 目前應用.openapi()["paths"]
+        assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials"]) == {"get", "post"}
+        assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke"]) == {"post"}
+
+
+@pytest.mark.parametrize(
+    ("刪除鍵", "覆寫鍵", "覆寫值"),
+    (
+        ("TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION", None, None),
+        ("TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON", None, None),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION", "0"),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION", "01"),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION", "3"),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON", "not-json"),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON", '{"1":"not-base64"}'),
+        (None, "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON", json.dumps({"1": base64.urlsafe_b64encode(b"short").rstrip(b"=").decode("ascii")})),
+    ),
+)
+def test_canonical憑證keyring環境缺漏或畸形皆固定拒絕(
+    tmp_path: Path, 刪除鍵: str | None, 覆寫鍵: str | None, 覆寫值: str | None,
+):
+    """A07/A08整合：root keyring authority必填、canonical且exact 32 bytes。
+
+    描述：拒絕缺一欄、非正規版本、非Base64URL與錯誤AES-256長度。
+    參數：隔離路徑及單一刪除或覆寫案例。
+    返回值：無；每個案例皆須只回固定設定錯誤，且不反射秘密值。
+    """
+    環境 = _環境(tmp_path)
+    if 刪除鍵 is not None:
+        del 環境[刪除鍵]
+    if 覆寫鍵 is not None and 覆寫值 is not None:
+        環境[覆寫鍵] = 覆寫值
+    with pytest.raises(ValueError, match="^Canonical環境設定無效$") as 捕捉:
+        asgi模組.解析Canonical環境設定(環境)
+    assert 覆寫值 is None or 覆寫值 not in str(捕捉.value)
+
+
+def test_canonical憑證keyring保留舊版本並以active版本加密(tmp_path: Path):
+    """A07 D5：root deployment keyring可讀舊版本且新密文固定使用active version。
+
+    描述：由公開canonical parser取得startup factory，驗證多版本rotation契約。
+    參數：``tmp_path``提供不觸碰I/O的absolute configuration paths。
+    返回值：無；舊版本解密與active版本加密assertions必須通過。
+    """
+    _, Published設定 = asgi模組.解析Canonical環境設定(_環境(tmp_path))
+    assert Published設定.憑證封套工廠 is not None
+    封套 = Published設定.憑證封套工廠()
+    舊封套 = asgi模組.AESGCM憑證封套({1: b"J" * 32}, 1, 隨機位元組=lambda 長度: b"N" * 長度)
+    舊資料 = 舊封套.加密("pk_" + "A" * 43, "ep", "cred")
+    assert 封套.解密(舊資料.envelope, "ep", "cred") == 舊資料.api_key
+    新金鑰 = "pk_" + base64.urlsafe_b64encode(b"B" * 32).rstrip(b"=").decode("ascii")
+    assert 封套.加密(新金鑰, "ep", "new").envelope.key_version == 2
 
 
 def test_resolved_symlink與inode_alias在lifespan先於provider拒絕(tmp_path: Path):
@@ -158,4 +218,9 @@ def test_lifespan成功時固定authority各建立一次且shutdown只清理一�
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
         assert 次數 == {"installer": 1, "model": 1, "shutdown": 0}
+        Published資源 = app.state.發布介面資源[1]
+        assert Published資源._憑證管理服務 is not None
+        assert Published資源._憑證管理代理._服務 is Published資源._憑證管理服務
     assert 次數 == {"installer": 1, "model": 1, "shutdown": 1}
+    assert Published資源._憑證管理服務 is None
+    assert Published資源._憑證管理代理 is None
