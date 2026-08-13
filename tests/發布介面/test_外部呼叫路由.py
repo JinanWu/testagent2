@@ -75,7 +75,9 @@ def test_精確路徑方法與OpenAPI且不重導斜線():
     assert schema["required"] == ["input"] and schema["additionalProperties"] is False
     assert list(schema["properties"]) == ["input", "session_id", "metadata"]
     assert schema["properties"]["session_id"] == {
-        "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}]
+        "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+        "x-utf8-max-bytes": 128,
+        "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
     }
 
 

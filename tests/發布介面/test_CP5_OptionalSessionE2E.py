@@ -45,7 +45,9 @@ def test_canonical真Key多輪隔離null省略與restart都由durable_history驅
             "content"
         ]["application/json"]["schema"]["properties"]["session_id"]
         assert session_schema == {
-            "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}]
+            "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+            "x-utf8-max-bytes": 128,
+            "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
         }
 
         第一輪 = _呼叫(client, key, session="case-a")

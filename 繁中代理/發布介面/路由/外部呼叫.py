@@ -83,7 +83,11 @@ def 建立外部呼叫路由(
             "type": "object", "required": ["input"], "additionalProperties": False,
             "properties": {
                 "input": {},
-                "session_id": {"anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}]},
+                "session_id": {
+                    "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+                    "x-utf8-max-bytes": 128,
+                    "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
+                },
                 "metadata": {"anyOf": [{"type": "object"}, {"type": "null"}]},
             }
         }}}}},

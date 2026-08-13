@@ -9,7 +9,7 @@ import pytest
 
 import 繁中代理.發布介面.呼叫.編排器 as 編排模組
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
-from 繁中代理.發布介面.領域模型 import EndpointRef, InvocationRef
+from 繁中代理.發布介面.領域模型 import EndpointRef, InvocationRef, PublishedUsage
 from 繁中代理.發布介面.呼叫.儲存庫 import SQLite呼叫儲存庫, 呼叫儲存錯誤
 from 繁中代理.發布介面.呼叫.生產橋接 import InvocationLedger橋接
 from 繁中代理.發布介面.呼叫.編排器 import (
@@ -144,6 +144,31 @@ def test_session附加失敗時成功狀態與event同交易rollback且可重試
         assert 連線.execute(
             "SELECT session_id,sequence_number FROM published_session_turn_pairs"
         ).fetchone() == ("case", 1)
+
+
+def test_session_pair_token_count只估本輪成功pair不重複計入provider_total(tmp_path):
+    """history token ledger 只估 user/assistant pair，不保存含舊 prompt 的 invocation usage。
+
+    參數：``tmp_path`` 提供隔離 invocation/session SQLite authority。
+    返回值：無；pair token count 必須小於刻意放大的 provider total_tokens。
+    """
+    路徑, 儲存庫 = _儲存庫(tmp_path, "inv-pair-token")
+    橋接 = InvocationLedger橋接(儲存庫)
+    呼叫 = InvocationRef("inv-pair-token", "req-inv-pair-token", "case")
+    釘選 = SimpleNamespace(endpoint_id="ep", version_id="ver", service_account_id="svc")
+    請求 = 執行嘗試請求(釘選, {"q": "短"}, None, 1, ())
+    使用量 = PublishedUsage(30_000)
+    橋接.開始執行嘗試(呼叫, 請求)
+    橋接.記錄執行嘗試(
+        呼叫, 請求, 執行嘗試結果("success", {"answer": "短"}, 使用量), True,
+    )
+    with sqlite3.connect(路徑) as 連線:
+        pair_token, usage_json = 連線.execute(
+            "SELECT h.token_count,i.usage_json FROM published_session_turn_pairs h "
+            "JOIN endpoint_invocations i ON i.id='inv-pair-token'"
+        ).fetchone()
+    assert 1 <= pair_token < 30_000
+    assert '"total_tokens":30000' in usage_json
 
 
 class _提交失敗連線:
