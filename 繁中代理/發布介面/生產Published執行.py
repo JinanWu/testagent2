@@ -824,13 +824,14 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 發布.Planner設定, 生產.資料庫路徑, 工具庫, 草稿代理,
             )
         if 發布.憑證封套工廠 is not None:
-            if type(憑證管理代理) is not 延遲憑證管理服務:
-                raise ValueError("Published生產組裝無效") from None
             憑證封套 = 發布.憑證封套工廠()
             if type(憑證封套) is not AESGCM憑證封套:
                 raise ValueError("Published憑證封套無效") from None
-            憑證管理服務 = SQLite憑證管理服務(資料庫, 憑證封套)
-            憑證管理代理.安裝(憑證管理服務)
+            if 憑證管理代理 is not None:
+                if type(憑證管理代理) is not 延遲憑證管理服務:
+                    raise ValueError("Published生產組裝無效") from None
+                憑證管理服務 = SQLite憑證管理服務(資料庫, 憑證封套)
+                憑證管理代理.安裝(憑證管理服務)
         if 發布.憑證封套工廠 is not None and Planner資源 is not None:
             if type(管理代理) is not 延遲發布管理服務 or type(套件協調器) is not 技能套件協調器:
                 raise ValueError("Published生產組裝無效") from None
