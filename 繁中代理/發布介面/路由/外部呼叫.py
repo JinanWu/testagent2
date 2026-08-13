@@ -32,8 +32,12 @@ _工作階段識別最大位元組 = 128
 class 外部呼叫介面(Protocol):
     """I04 transport-neutral orchestrator 的最小注入契約。"""
 
-    def 執行(self, *參數: object) -> object:
-        """執行一次已解析的外部呼叫；A09-03 將統一 optional session transport。"""
+    def 執行(
+        self, 短名: str, 請求識別: str, API金鑰: str,
+        輸入: object, 中繼資料: object | None, 時間: int | float, *,
+        工作階段識別: str | None = None,
+    ) -> object:
+        """執行一次已解析的外部呼叫；工作階段值不得由 metadata 傳遞。"""
 class _請求拒絕(Exception):
     """只攜帶固定 HTTP 分類，不攜帶 untrusted value。"""
 
