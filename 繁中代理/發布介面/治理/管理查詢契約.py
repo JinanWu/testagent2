@@ -66,6 +66,15 @@ _工具欄位 = frozenset({
     "id", "run_event_id", "sequence_number", "tool_name", "arguments", "outcome",
     "result", "error", "latency_ms", "retry_of_tool_call_id", "created_at",
 })
+_禁止敏感鍵 = frozenset({
+    "authorization", "proxyauthorization", "cookie", "setcookie", "apikey",
+    "credentialsecret", "credentialciphertext", "credentialhash", "masterkey",
+    "providersecret", "clientsecret", "secretkey", "privatekey", "password",
+    "accesstoken", "refreshtoken",
+})
+_檔案路徑鍵 = frozenset({"path", "filepath", "filesystempath", "absolutepath"})
+_平台APIKey格式 = re.compile(r"pk_[A-Za-z0-9_-]{43}\Z")
+_絕對檔案路徑格式 = re.compile(r"(?:/|~/|[A-Za-z]:[\\/]|\\\\)")
 
 
 class 管理員呼叫游標錯誤(ValueError):
@@ -148,6 +157,7 @@ def _驗證管理員完整詳情(值: object) -> None:
             or (詳情["credential_id"] is not None and not _是識別碼(詳情["credential_id"]))
             or (詳情["message_id"] is not None and not _是識別碼(詳情["message_id"]))
             or type(詳情["status"]) is not str or 詳情["status"] not in _狀態集合
+            or (詳情["metadata"] is not None and type(詳情["metadata"]) is not dict)
             or (詳情["metadata_size_bytes"] is not None and (
                 type(詳情["metadata_size_bytes"]) is not int or 詳情["metadata_size_bytes"] < 0))
             or not _是可空SHA256(詳情["metadata_sha256"])
@@ -159,6 +169,8 @@ def _驗證管理員完整詳情(值: object) -> None:
             or type(詳情["run_events"]) is not list or len(詳情["run_events"]) > 4096
             or type(詳情["tool_calls"]) is not list or len(詳情["tool_calls"]) > 4096):
         raise ValueError
+    for raw值 in (詳情["input"], 詳情["metadata"], 詳情["output"], 詳情["error"], 詳情["usage"]):
+        _驗證raw無禁止secret(raw值)
     for 事件 in cast(list[object], 詳情["run_events"]):
         if (type(事件) is not dict or set(事件) != _事件欄位
                 or not _是識別碼(事件["id"])
@@ -166,6 +178,7 @@ def _驗證管理員完整詳情(值: object) -> None:
                 or type(事件["event_type"]) is not str or not 1 <= len(事件["event_type"]) <= 256
                 or not _是有限時間(事件["created_at"])):
             raise ValueError
+        _驗證raw無禁止secret(事件["payload"])
     for 工具 in cast(list[object], 詳情["tool_calls"]):
         if (type(工具) is not dict or set(工具) != _工具欄位
                 or not _是識別碼(工具["id"])
@@ -178,6 +191,48 @@ def _驗證管理員完整詳情(值: object) -> None:
                     and not _是識別碼(工具["retry_of_tool_call_id"]))
                 or not _是有限時間(工具["created_at"])):
             raise ValueError
+        for raw值 in (工具["arguments"], 工具["result"], 工具["error"]):
+            _驗證raw無禁止secret(raw值)
+
+
+def _驗證raw無禁止secret(值: object) -> None:
+    """Iterative拒絕raw tree中的治理secret key、平台API key與絕對filesystem path。"""
+    待驗證: list[tuple[object, int]] = [(值, 1)]
+    已見容器: set[int] = set()
+    節點 = 0
+    while 待驗證:
+        項, 深度 = 待驗證.pop()
+        節點 += 1
+        if 節點 > _最大詳情JSON節點 or 深度 > _最大詳情JSON深度:
+            raise ValueError
+        if type(項) is str:
+            if _平台APIKey格式.fullmatch(cast(str, 項)) is not None:
+                raise ValueError
+            continue
+        if type(項) is list:
+            if id(項) in 已見容器:
+                raise ValueError
+            已見容器.add(id(項))
+            待驗證.extend((子項, 深度 + 1) for 子項 in cast(list[object], 項))
+            continue
+        if type(項) is not dict:
+            continue
+        if id(項) in 已見容器:
+            raise ValueError
+        已見容器.add(id(項))
+        for 鍵, 子項 in cast(dict[object, object], 項).items():
+            if type(鍵) is not str:
+                raise ValueError
+            正規鍵 = re.sub(r"[^a-z0-9]", "", cast(str, 鍵).casefold())
+            if 正規鍵 in _禁止敏感鍵 or any(
+                    正規鍵.endswith(尾碼) for 尾碼 in
+                    ("authorization", "cookie", "apikey", "credentialsecret",
+                     "credentialciphertext", "credentialhash", "providersecret")):
+                raise ValueError
+            if (正規鍵 in _檔案路徑鍵 and type(子項) is str
+                    and _絕對檔案路徑格式.match(cast(str, 子項)) is not None):
+                raise ValueError
+            待驗證.append((子項, 深度 + 1))
 
 
 def _編碼bounded_JSON(值: object) -> bytes:

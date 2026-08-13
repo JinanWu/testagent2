@@ -1555,3 +1555,28 @@ def test_A18完整詳情逐欄bounded且內部儲存不可變():
     object.__setattr__(詳情, "_內容", b"not-json")
     with pytest.raises(Exception):
         詳情.建立JSON()
+
+
+def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_path():
+    """Full Logs允許scalar raw；敏感key、平台API key與filesystem path必須fail closed。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": 7, "metadata": {},
+        "output": 3.14, "error": False, "usage": [1], "metadata_size_bytes": 2,
+        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == 7
+    for 敏感 in (
+        {"metadata": {"Authorization": "Bearer secret"}},
+        {"input": {"nested": {"api-key": "secret"}}},
+        {"output": {"filesystem_path": "/private/data"}},
+        {"error": {"path": "/Users/private/secret.txt"}},
+        {"usage": {"provider_secret": "secret"}},
+        {"input": "pk_" + "A" * 43},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **敏感})
+    with pytest.raises(Exception):
+        建立管理員呼叫完整詳情({**基本, "metadata": "not-an-object"})
