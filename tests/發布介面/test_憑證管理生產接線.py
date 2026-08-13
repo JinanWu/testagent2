@@ -180,3 +180,55 @@ def test_shutdown先拒絕新租借並等待active_credential操作完成(tmp_pa
     操作.join(2)
     清除.join(2)
     assert 清除完成.is_set() and not 操作.is_alive() and not 清除.is_alive()
+
+
+def test_concurrent_shutdown_callers等待同一credential_drain結果(tmp_path) -> None:
+    """相同provider的兩個concurrent清除caller都不得在active operation前返回。"""
+    代理 = 延遲憑證管理服務()
+    服務 = SQLite憑證管理服務(
+        tmp_path / "published.sqlite3", AESGCM憑證封套({1: b"k" * 32}, 1),
+    )
+    已進入, 允許完成 = Event(), Event()
+    第一完成, 第二完成 = Event(), Event()
+
+    def 阻塞列出(**_參數):
+        已進入.set()
+        assert 允許完成.wait(2)
+        return None
+
+    服務.列出憑證 = cast(Any, 阻塞列出)
+    代理.安裝(服務)
+    操作 = Thread(target=lambda: 代理.列出憑證(端點識別碼="e", 擁有者使用者識別碼="u"))
+    操作.start()
+    assert 已進入.wait(1)
+    第一 = Thread(target=lambda: (代理.清除(服務), 第一完成.set()))
+    第一.start()
+    with 代理._條件:
+        assert 代理._服務 is None and 代理._進行中 == 1
+    第二 = Thread(target=lambda: (代理.清除(服務), 第二完成.set()))
+    第二.start()
+    assert not 第一完成.wait(0.05)
+    assert not 第二完成.wait(0.05)
+    允許完成.set()
+    for 執行緒 in (操作, 第一, 第二):
+        執行緒.join(2)
+    assert 第一完成.is_set() and 第二完成.is_set()
+    assert all(not 執行緒.is_alive() for 執行緒 in (操作, 第一, 第二))
+
+
+def test_drain完成可重新安裝且舊identity不能清除新provider(tmp_path) -> None:
+    """完成一代drain後可安裝下一代；遲到的舊清除caller不影響新slot。"""
+    代理 = 延遲憑證管理服務()
+    第一 = SQLite憑證管理服務(
+        tmp_path / "first.sqlite3", AESGCM憑證封套({1: b"a" * 32}, 1),
+    )
+    第二 = SQLite憑證管理服務(
+        tmp_path / "second.sqlite3", AESGCM憑證封套({1: b"b" * 32}, 1),
+    )
+    代理.安裝(第一)
+    代理.清除(第一)
+    代理.安裝(第二)
+    代理.清除(第一)
+    assert 代理._服務 is 第二
+    代理.清除(第二)
+    assert 代理._服務 is None and 代理._停止中的服務 is None
