@@ -84,7 +84,8 @@ def test_endpoint法定清除可連同session_history_cascade(tmp_path):
     _建立基準(db)
     repo = SQLitePublished工作階段儲存庫(db)
     repo.附加成功對話組(
-        "ep1", "sa1", "case", "v1", {"role": "user"}, {"role": "assistant"},
+        "ep1", "sa1", "case", "v1", {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
         1, expected_sequence=1,
     )
     with sqlite3.connect(db) as 連線:
@@ -179,7 +180,8 @@ def test_sequence_gap_history_fail_closed(tmp_path):
     repo = SQLitePublished工作階段儲存庫(db)
     for sequence in (1, 2, 3):
         repo.附加成功對話組(
-            "ep1", "sa1", "gap", "v1", {"role": "user"}, {"role": "assistant"},
+            "ep1", "sa1", "gap", "v1", {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
             1, expected_sequence=sequence,
         )
     with sqlite3.connect(db) as 連線:
@@ -199,7 +201,8 @@ def test_較舊區段sequence_gap即使不在最新bounded_window仍fail_closed(
     repo = SQLitePublished工作階段儲存庫(db)
     for sequence in range(1, 35):
         repo.附加成功對話組(
-            "ep1", "sa1", "old-gap", "v1", {"role": "user"}, {"role": "assistant"},
+            "ep1", "sa1", "old-gap", "v1", {"role": "user", "content": "q"},
+            {"role": "assistant", "content": "a"},
             1, expected_sequence=sequence,
         )
     with sqlite3.connect(db) as 連線:
@@ -237,3 +240,26 @@ def test_corrupt_history_role或額外欄位不得注入system_prompt(tmp_path, 
         )
     with pytest.raises(Published工作階段錯誤):
         repo.讀取成功歷史("ep1", "sa1", "role")
+
+
+@pytest.mark.parametrize("user,assistant", [
+    ({"role": "system", "content": "x"}, {"role": "assistant", "content": "a"}),
+    ({"role": "user"}, {"role": "assistant", "content": "a"}),
+    ({"role": "user", "content": "q", "metadata": {}}, {"role": "assistant", "content": "a"}),
+    ({"role": "user", "content": "q"}, {"role": "system", "content": "x"}),
+])
+def test_standalone_append在交易前拒絕未核准訊息且零寫入(tmp_path, user, assistant):
+    """驗證 standalone repository append 不可先持久化毒化 history。
+
+    參數：隔離 DB 與錯誤 role、缺 content 或額外欄位的訊息組合。
+    返回值：無；呼叫必須拒絕，且 durable history row count 保持零。
+    """
+    db = tmp_path / "append-shape.db"
+    _建立基準(db)
+    repo = SQLitePublished工作階段儲存庫(db)
+    with pytest.raises(Published工作階段錯誤):
+        repo.附加成功對話組(
+            "ep1", "sa1", "shape", "v1", user, assistant, 1, expected_sequence=1,
+        )
+    with sqlite3.connect(db) as 連線:
+        assert 連線.execute("SELECT COUNT(*) FROM published_session_turn_pairs").fetchone() == (0,)
