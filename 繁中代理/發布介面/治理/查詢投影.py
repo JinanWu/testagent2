@@ -17,6 +17,17 @@ from ..領域模型 import AuditActorRef, AuditEvent, AuditMetadata, AuditResour
 from ..領域模型 import InvocationRef, PublishedUsage
 from .稽核結構 import _LEDGER
 from .遮蔽 import _確認墓碑, _解析路徑, _驗證遮蔽schema
+from .管理查詢契約 import (
+    ADMIN_INVOCATION_AUDIT_ACTION,
+    管理員呼叫列表項目,
+    管理員呼叫投影頁,
+    管理員呼叫查詢條件,
+    管理員呼叫游標位置,
+    管理員呼叫不存在錯誤,
+    管理員呼叫查詢錯誤,
+    管理員呼叫稽核錯誤,
+    查詢投影錯誤,
+)
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _固定錯誤 = "呼叫紀錄不可取得"
@@ -114,10 +125,6 @@ _索引指紋 = {
 }
 
 
-class 查詢投影錯誤(RuntimeError):
-    """查詢投影無法安全授權或驗證資料庫時的固定錯誤。"""
-
-
 class 管理員原始資料稽核閘門:
     """在任何管理員 raw detail callback 前持久提交 canonical 安全稽核。"""
 
@@ -143,7 +150,8 @@ class 管理員原始資料稽核閘門:
         /,
     ) -> dict[str, Any]:
         """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
-        失敗 = False
+        失敗 = 稽核已提交 = False
+        結果類型 = None
         控制 = 結果 = 事件 = None
         接收器 = self._sink
         原始查詢 = self._detail
@@ -152,7 +160,7 @@ class 管理員原始資料稽核閘門:
             事件 = AuditEvent(
                 event_id=稽核事件識別碼,
                 occurred_at=發生時間,
-                action="audit.detail.view",
+                action=ADMIN_INVOCATION_AUDIT_ACTION,
                 outcome="success" if 已授權 else "denied",
                 actor=AuditActorRef("user", 管理員識別碼),
                 resource=AuditResourceRef("endpoint.invocation", 呼叫識別碼),
@@ -162,6 +170,7 @@ class 管理員原始資料稽核閘門:
                 metadata=AuditMetadata(),
             )
             附加稽核事件或失敗關閉(接收器, 事件)
+            稽核已提交 = True
             事件 = 接收器 = None
             if not 已授權:
                 失敗 = True
@@ -173,18 +182,29 @@ class 管理員原始資料稽核閘門:
             _清理控制鏈(捕捉控制)
             控制 = 捕捉控制
             捕捉控制 = None
-        except BaseException:
+        except BaseException as 捕捉:
+            if not 稽核已提交:
+                結果類型 = 管理員呼叫稽核錯誤
+            elif type(捕捉) in (管理員呼叫不存在錯誤, 管理員呼叫查詢錯誤):
+                結果類型 = type(捕捉)
+            else:
+                結果類型 = 管理員呼叫查詢錯誤
+            捕捉 = None
             失敗 = True
         self = 管理員授權 = 管理員識別碼 = 請求識別碼 = 稽核事件識別碼 = None
         發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = None
-        已授權 = False
+        已授權 = 稽核已提交 = False
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
         if 失敗 or type(結果) is not dict:
             結果 = None
-            raise 查詢投影錯誤(_固定錯誤) from None
+            if 結果類型 is 管理員呼叫稽核錯誤:
+                raise 管理員呼叫稽核錯誤("呼叫紀錄暫時不可取得") from None
+            if 結果類型 is 管理員呼叫不存在錯誤:
+                raise 管理員呼叫不存在錯誤("找不到呼叫紀錄") from None
+            raise 管理員呼叫查詢錯誤(_固定錯誤) from None
         return 結果
 
 
@@ -294,7 +314,7 @@ class SQLite呼叫查詢投影:
         self, 管理員授權: bool, 端點識別碼: str, 呼叫識別碼: str, /
     ) -> dict[str, Any]:
         """僅在 exact admin boundary 回傳 endpoint-scoped authoritative raw payload。"""
-        失敗 = False
+        失敗 = 不存在 = False
         控制 = 結果 = None
         路徑 = self._path
         try:
@@ -307,6 +327,8 @@ class SQLite呼叫查詢投影:
             _清理控制鏈(捕捉控制)
             控制 = 捕捉控制
             捕捉控制 = None
+        except 管理員呼叫不存在錯誤:
+            不存在 = True
         except BaseException:
             失敗 = True
         self = 管理員授權 = 端點識別碼 = 呼叫識別碼 = 路徑 = None
@@ -314,10 +336,136 @@ class SQLite呼叫查詢投影:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
+        if 不存在:
+            結果 = None
+            raise 管理員呼叫不存在錯誤("找不到呼叫紀錄") from None
         if 失敗 or type(結果) is not dict:
             結果 = None
-            raise 查詢投影錯誤(_固定錯誤) from None
+            raise 管理員呼叫查詢錯誤(_固定錯誤) from None
         return 結果
+
+    def 列出管理員安全呼叫(
+        self, 條件: 管理員呼叫查詢條件, 位置: 管理員呼叫游標位置 | None, /
+    ) -> 管理員呼叫投影頁:
+        """依endpoint與safe filters回傳created_at/id倒序的bounded metadata頁。
+
+        描述：不選取raw JSON；error只在SQLite內投影 ``$.code``，redaction只查存在性。
+        參數：``條件`` 是exact查詢scope；``位置`` 是已由adapter驗簽的keyset位置。
+        返回值：最多limit筆safe DTO及下一頁未簽章位置。
+        例外：資料、結構、型別或資源失敗固定為 ``查詢投影錯誤``；控制流程原樣。
+        副作用：建立唯讀SQLite snapshot並在所有路徑關閉資源。
+        """
+        連線 = 游標 = 資料列 = 原始列 = 結果 = None
+        安全條件: 管理員呼叫查詢條件 | None = None
+        安全位置: 管理員呼叫游標位置 | None = None
+        已開始 = 失敗 = False
+        控制 = None
+        路徑 = self._path
+        try:
+            if type(條件) is not 管理員呼叫查詢條件:
+                raise ValueError
+            安全條件 = 管理員呼叫查詢條件(*(
+                object.__getattribute__(條件, 名稱) for 名稱 in 管理員呼叫查詢條件.__slots__
+            ))
+            if 位置 is None:
+                安全位置 = None
+            elif type(位置) is 管理員呼叫游標位置:
+                安全位置 = 管理員呼叫游標位置(*(
+                    object.__getattribute__(位置, 名稱) for 名稱 in 管理員呼叫游標位置.__slots__
+                ))
+            else:
+                raise ValueError
+            連線 = _開啟唯讀快照(路徑)
+            連線.execute("BEGIN")
+            已開始 = True
+            _驗證路徑與結構(連線, 路徑)
+            _驗證遮蔽schema(連線)
+            位置時間 = None if 安全位置 is None else 安全位置.建立時間
+            位置識別碼 = None if 安全位置 is None else 安全位置.呼叫識別碼
+            游標 = 連線.execute(
+                "SELECT i.id,i.endpoint_id,i.endpoint_version_id,i.request_id,i.status,"
+                "json_extract(i.error_json,'$.code'),i.latency_ms,i.created_at,i.completed_at,"
+                "EXISTS(SELECT 1 FROM endpoint_redactions AS r WHERE r.invocation_id=i.id) "
+                "FROM endpoint_invocations AS i WHERE i.endpoint_id=? "
+                "AND (? IS NULL OR i.created_at>=?) AND (? IS NULL OR i.created_at<=?) "
+                "AND (? IS NULL OR i.status=?) "
+                "AND (? IS NULL OR json_extract(i.error_json,'$.code')=?) "
+                "AND (? IS NULL OR i.created_at<? OR (i.created_at=? AND i.id<?)) "
+                "ORDER BY i.created_at DESC,i.id DESC LIMIT ?",
+                (
+                    安全條件.端點識別碼,
+                    安全條件.起始時間, 安全條件.起始時間,
+                    安全條件.結束時間, 安全條件.結束時間,
+                    安全條件.狀態, 安全條件.狀態,
+                    安全條件.錯誤碼, 安全條件.錯誤碼,
+                    位置時間, 位置時間, 位置時間, 位置識別碼,
+                    安全條件.數量上限 + 1,
+                ),
+            )
+            原始列 = []
+            資料列 = 游標.fetchone()
+            while 資料列 is not None:
+                if (len(原始列) > 安全條件.數量上限
+                        or type(資料列) is not tuple or len(資料列) != 10):
+                    raise ValueError
+                原始列.append(資料列)
+                資料列 = 游標.fetchone()
+            游標.close()
+            游標 = None
+            有下一頁 = len(原始列) > 安全條件.數量上限
+            顯示列 = 原始列[:安全條件.數量上限]
+            項目 = tuple(_重建管理員列表項目(列) for 列 in 顯示列)
+            下一頁位置 = None
+            if 有下一頁 and 項目:
+                下一頁位置 = 管理員呼叫游標位置(項目[-1].建立時間, 項目[-1].呼叫識別碼)
+            結果 = 管理員呼叫投影頁(項目, 下一頁位置)
+            連線.commit()
+            已開始 = False
+        except _控制流程 as 捕捉控制:
+            _清理控制鏈(捕捉控制)
+            控制 = 捕捉控制
+            捕捉控制 = None
+        except BaseException:
+            失敗 = True
+        if 游標 is not None:
+            清理控制 = _清理資源操作(游標, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        if 連線 is not None and 已開始:
+            清理控制 = _清理資源操作(連線, "rollback")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        if 連線 is not None:
+            清理控制 = _清理資源操作(連線, "close")
+            if 控制 is None and 清理控制:
+                控制 = 清理控制.pop()
+        self = 條件 = 位置 = 路徑 = 安全條件 = 安全位置 = None
+        連線 = 游標 = 資料列 = 原始列 = 顯示列 = 項目 = 下一頁位置 = 清理控制 = None
+        位置時間 = 位置識別碼 = None
+        if 控制 is not None:
+            控制盒 = [控制]
+            控制 = 結果 = None
+            _重拋控制(控制盒.pop())
+        if 失敗 or type(結果) is not 管理員呼叫投影頁:
+            結果 = None
+            raise 管理員呼叫查詢錯誤(_固定錯誤) from None
+        return 結果
+
+
+def _重建管理員列表項目(列: tuple[Any, ...]) -> 管理員呼叫列表項目:
+    """把exact十欄SQLite metadata列重建成安全DTO。
+
+    描述：逐欄驗證，僅將SQLite EXISTS的exact 0/1轉成bool。
+    參數：``列`` 是不含raw JSON的十欄tuple。
+    返回值：全新 ``管理員呼叫列表項目``。
+    例外：欄數、動態型別或值不符時拋出 ``ValueError``。
+    """
+    if type(列) is not tuple or len(列) != 10 or type(列[9]) is not int or 列[9] not in (0, 1):
+        raise ValueError
+    return 管理員呼叫列表項目(
+        列[0], 列[1], 列[2], 列[3], 列[4], 列[5],
+        列[6], 列[7], 列[8], bool(列[9]),
+    )
 
 
 def _讀取管理員原始資料(
@@ -327,7 +475,7 @@ def _讀取管理員原始資料(
     連線 = 游標 = 列 = 項 = 內容列 = 事件列 = 工具列 = 結果 = None
     遮蔽列 = None
     輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 事件 = 工具 = None
-    已開始 = 失敗 = False
+    已開始 = 失敗 = 不存在 = False
     控制 = None
     預算 = [0, 0]
     子列數 = 0
@@ -349,6 +497,8 @@ def _讀取管理員原始資料(
             (端點識別碼, 呼叫識別碼),
         )
         列 = 游標.fetchone()
+        if 列 is None:
+            raise 管理員呼叫不存在錯誤("找不到呼叫紀錄") from None
         if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 24:
             raise ValueError
         _驗證管理員呼叫列(列, 預算)
@@ -450,6 +600,8 @@ def _讀取管理員原始資料(
         _清理控制鏈(捕捉控制)
         控制 = 捕捉控制
         捕捉控制 = None
+    except 管理員呼叫不存在錯誤:
+        不存在 = True
     except BaseException:
         失敗 = True
     if 游標 is not None:
@@ -471,6 +623,9 @@ def _讀取管理員原始資料(
         控制盒 = [控制]
         控制 = 結果 = None
         _重拋控制(控制盒.pop())
+    if 不存在:
+        結果 = None
+        raise 管理員呼叫不存在錯誤("找不到呼叫紀錄") from None
     if 失敗 or type(結果) is not dict:
         結果 = None
         raise ValueError("invalid raw projection") from None

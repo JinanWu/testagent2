@@ -3,6 +3,7 @@
 import inspect
 import sys
 import threading
+from dataclasses import FrozenInstanceError
 from types import MethodType
 
 from fastapi import FastAPI, HTTPException
@@ -32,6 +33,21 @@ from 繁中代理.發布介面.路由.規劃發布 import (
     端點發布結果,
     版本建立結果,
     管理操作錯誤,
+)
+from 繁中代理.發布介面.治理.管理查詢契約 import (
+    ADMIN_INVOCATION_AUDIT_ACTION,
+    ADMIN_INVOCATION_DETAIL_PATH,
+    ADMIN_INVOCATION_ERROR_CONTRACT,
+    ADMIN_INVOCATION_LIST_PATH,
+    ADMIN_INVOCATION_METHOD,
+    ADMIN_INVOCATION_QUERY_KEYS,
+    管理員呼叫列表結果,
+    管理員呼叫列表項目,
+    建立管理員呼叫完整詳情,
+    管理員呼叫查詢條件,
+    管理員呼叫游標位置,
+    管理員呼叫游標錯誤,
+    管理員呼叫游標編解碼器,
 )
 
 
@@ -1379,3 +1395,95 @@ def test_M02外層快照真實行KISG單一finally逐框清理(例外類型, 公
     if 公開路徑:
         assert {"_重建草稿結果", "_呼叫服務", "_建立發布草稿"} <= set(框架)
     _生產traceback不含marker(捕捉.value, marker)
+
+
+def test_A18管理員呼叫route與query_allowlist唯一且禁止export():
+    """A18-01只凍結兩條GET path與六個allowlisted query keys。"""
+    assert ADMIN_INVOCATION_LIST_PATH == "/api/admin/endpoints/{endpoint_id}/invocations"
+    assert ADMIN_INVOCATION_METHOD == "GET"
+    assert ADMIN_INVOCATION_DETAIL_PATH == (
+        "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}"
+    )
+    assert ADMIN_INVOCATION_QUERY_KEYS == frozenset(
+        {"from_at", "to_at", "status", "error_code", "limit", "cursor"}
+    )
+    assert ADMIN_INVOCATION_AUDIT_ACTION == "audit.detail.view"
+    assert all(禁止 not in (ADMIN_INVOCATION_LIST_PATH + ADMIN_INVOCATION_DETAIL_PATH).lower()
+               for 禁止 in ("export", "download", "search"))
+    assert ADMIN_INVOCATION_ERROR_CONTRACT == {
+        401: "需要登入",
+        403: "只有管理者可查看完整呼叫紀錄",
+        404: "找不到呼叫紀錄",
+        422: None,
+        503: "呼叫紀錄暫時不可取得",
+        500: "呼叫紀錄不可取得",
+    }
+
+
+def test_A18安全列表DTO固定欄位且拒絕raw與可變容器():
+    """List DTO只含營運metadata，不含任何raw payload或secret-bearing欄位。"""
+    項目 = 管理員呼叫列表項目(
+        "inv-1", "ep-1", "ver-1", "req-1", "failed", "schema_invalid",
+        12.5, 10.0, 11.0, True,
+    )
+    結果 = 管理員呼叫列表結果((項目,), "signed-cursor")
+    assert set(項目.__slots__) == {
+        "呼叫識別碼", "端點識別碼", "端點版本識別碼", "請求識別碼", "狀態",
+        "錯誤碼", "延遲毫秒", "建立時間", "完成時間", "是否有遮蔽",
+    }
+    assert set(結果.__slots__) == {"項目", "下一頁游標"}
+    assert not hasattr(項目, "__dict__") and not hasattr(結果, "__dict__")
+    for 禁止 in ("input", "metadata", "output", "error", "usage", "arguments", "result",
+               "credential_id", "api_key", "authorization", "cookie", "path"):
+        assert 禁止 not in repr(項目).lower()
+    with pytest.raises((FrozenInstanceError, AttributeError)):
+        項目.狀態 = "succeeded"
+    with pytest.raises(ValueError):
+        管理員呼叫列表結果([項目], None)
+
+
+def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
+    """Cursor不能跨endpoint/filter/window重放，也不能由client竄改position。"""
+    codec = 管理員呼叫游標編解碼器(b"k" * 32)
+    條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", "schema_invalid", 25)
+    位置 = 管理員呼叫游標位置(10.0, "inv-1")
+    cursor = codec.編碼(條件, 位置)
+
+    assert codec.解碼(cursor, 條件) == 位置
+    for 其他條件 in (
+        管理員呼叫查詢條件("ep-2", 1.0, 20.0, "failed", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 2.0, 20.0, "failed", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 1.0, 20.0, "succeeded", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", "schema_invalid", 24),
+    ):
+        with pytest.raises(管理員呼叫游標錯誤):
+            codec.解碼(cursor, 其他條件)
+    竄改 = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(竄改, 條件)
+    object.__setattr__(條件, "端點識別碼", "ep-tampered")
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(cursor, 條件)
+
+
+def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
+    """A18-02只能透過exact rebuild seam序列化已稽核raw provider結果。"""
+    原始 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {"raw": "RAW_MARKER"},
+        "metadata": {}, "output": None, "error": {"code": "timeout"}, "usage": None,
+        "metadata_size_bytes": 1, "metadata_sha256": "a" * 64, "latency_ms": 1.0,
+        "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    詳情 = 建立管理員呼叫完整詳情(原始)
+    assert "RAW_MARKER" not in repr(詳情)
+    第一份 = 詳情.建立JSON()
+    原始["input"]["raw"] = "MUTATED"  # type: ignore[index]
+    第一份["input"]["raw"] = "REUSED"  # type: ignore[index]
+    assert 詳情.建立JSON()["input"] == {"raw": "RAW_MARKER"}
+    for 破壞 in ({**原始, "extra": 1}, {鍵: 值 for 鍵, 值 in 原始.items() if 鍵 != "input"}):
+        with pytest.raises(Exception) as 錯誤:
+            建立管理員呼叫完整詳情(破壞)
+        assert "RAW_MARKER" not in repr(錯誤.value)
