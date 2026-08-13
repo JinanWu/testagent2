@@ -255,7 +255,7 @@ class 發布執行請求:
     """只包含一份 detached JSON input；不存在 system/tool role 注入入口。"""
 
     _input_json: str
-    _history_json: str
+    _歷史JSON: str
 
     @property
     def input(self) -> Any:
@@ -276,7 +276,7 @@ class 發布執行請求:
             raise 發布執行錯誤(_固定錯誤) from None
         raise AssertionError
 
-    def __init__(self, input: Any, history: tuple[object, ...] = ()) -> None:
+    def __init__(self, input: Any, 歷史: tuple[object, ...] = ()) -> None:
         """立即 bounded detach caller JSON，拒絕 subclass、循環與非有限數。
 
         參數：current input 與有序完整 successful history pairs。
@@ -288,12 +288,12 @@ class 發布執行請求:
             結果 = 複製JSON(input, 500_000)
             object.__setattr__(self, "_input_json", _建立正規JSON(結果))
             歷史值 = []
-            for 對話組 in history:
+            for 對話組 in 歷史:
                 歷史值.extend((
                     object.__getattribute__(對話組, "user_message"),
                     object.__getattribute__(對話組, "assistant_message"),
                 ))
-            object.__setattr__(self, "_history_json", _建立正規JSON(歷史值))
+            object.__setattr__(self, "_歷史JSON", _建立正規JSON(歷史值))
             return
         except _控制流程:
             self = input = 結果 = None
@@ -810,7 +810,7 @@ class 發布執行器:
             if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
                 raise ValueError
             輸入原文 = object.__getattribute__(請求, "_input_json")
-            歷史原文 = object.__getattribute__(請求, "_history_json")
+            歷史原文 = object.__getattribute__(請求, "_歷史JSON")
             訊息 = _建立含歷史初始訊息(狀態, 輸入原文, 歷史原文)
             工具總數 = 0
             for 回合 in range(_最大工具回合 + 1):

@@ -316,6 +316,6 @@ class InvocationLedger橋接:
             invocation.id, f"{invocation.id}:attempt:{次數}", "model_attempt",
             {"attempt": 次數, "kind": 種類, "schema_valid": schema_valid}, 次數,
             status=狀態, output=輸出, error=錯誤, usage=用量資料,
-            session_pair=工作階段對話組,
+            工作階段對話組=工作階段對話組,
         )
         return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號)

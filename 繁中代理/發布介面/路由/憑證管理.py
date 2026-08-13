@@ -406,9 +406,9 @@ def _拋出HTTP錯誤(狀態碼: int, 代碼: str, 來源: Response | None = Non
         接續 = 來源.headers.get(網頁CSRFHeader名稱)
         if 接續 is not None:
             標頭[網頁CSRFHeader名稱] = 接續
-        cookies = 來源.headers.getlist("set-cookie")
-        if cookies:
-            標頭["set-cookie"] = cookies[-1]
+        Cookie清單 = 來源.headers.getlist("set-cookie")
+        if Cookie清單:
+            標頭["set-cookie"] = Cookie清單[-1]
     raise HTTPException(
         status_code=狀態碼, detail={"code": 代碼}, headers=標頭 or None,
     ) from None
