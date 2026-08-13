@@ -1,6 +1,10 @@
 """MGT M01 擁有者與管理者發布端點查詢契約測試。"""
 
 import inspect
+import base64
+import hashlib
+import hmac
+import json
 import sys
 import threading
 from dataclasses import FrozenInstanceError
@@ -1470,6 +1474,22 @@ def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
     object.__setattr__(條件, "端點識別碼", "ep-tampered")
     with pytest.raises(管理員呼叫游標錯誤):
         codec.解碼(cursor, 條件)
+
+
+def test_A18游標拒絕有效HMAC但JSON非canonical的token():
+    """Signature只證明bytes真實；decode仍須拒絕空白／key順序等非canonical表示。"""
+    金鑰 = b"k" * 32
+    codec = 管理員呼叫游標編解碼器(金鑰)
+    條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", None, 25)
+    非canonical = json.dumps(
+        {"position": [10.0, "inv-1"], "scope": ["ep-1", 1.0, 20.0, "failed", None, 25], "v": 1},
+        ensure_ascii=True,
+    ).encode("ascii")
+    簽章 = hmac.new(金鑰, 非canonical, hashlib.sha256).digest()
+    編碼 = lambda 值: base64.urlsafe_b64encode(值).rstrip(b"=").decode("ascii")
+    token = 編碼(非canonical) + "." + 編碼(簽章)
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(token, 條件)
 
 
 def test_A18完整詳情由module_owned_DTO深複製且repr零raw():

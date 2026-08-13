@@ -316,7 +316,7 @@ class 管理員呼叫游標編解碼器:
         """建立canonical payload並附加HMAC-SHA256簽章。"""
         try:
             payload = _建立游標payload(條件, 位置)
-            內容 = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii")
+            內容 = _編碼canonical_JSON(payload)
             簽章 = hmac.new(self._金鑰, 內容, hashlib.sha256).digest()
             return _編碼base64url(內容) + "." + _編碼base64url(簽章)
         except _控制流程:
@@ -337,6 +337,8 @@ class 管理員呼叫游標編解碼器:
                 raise ValueError
             payload = json.loads(內容.decode("ascii"), object_pairs_hook=_拒絕重複鍵)
             if _編碼base64url(內容) != 內容文字 or type(payload) is not dict:
+                raise ValueError
+            if not hmac.compare_digest(_編碼canonical_JSON(payload), 內容):
                 raise ValueError
             預期scope = _建立scope(條件)
             if set(payload) != {"v", "scope", "position"} or payload["v"] != 1:
@@ -372,6 +374,13 @@ def _建立游標payload(
                                     for 名稱 in 管理員呼叫游標位置.__slots__))
     return {"v": 1, "scope": _建立scope(條件),
             "position": [安全位置.建立時間, 安全位置.呼叫識別碼]}
+
+
+def _編碼canonical_JSON(值: object) -> bytes:
+    """使用游標唯一JSON表示，拒絕NaN/Infinity並固定排序與空白。"""
+    return json.dumps(
+        值, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("ascii")
 
 
 def _編碼base64url(內容: bytes) -> str:
