@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -43,30 +45,46 @@ def _設定(path: Path) -> 生產設定:
 
 def test_root_asgi真正fresh_process_import與factory皆不建DB(tmp_path):
     """新直譯器只import root入口，再呼叫其建立應用程式，兩步皆無DB I/O。"""
-    db = tmp_path / "fresh.sqlite3"
+    web_db = tmp_path / "web.sqlite3"
+    published_db = tmp_path / "published.sqlite3"
+    bundle_root = tmp_path / "bundles"
     code = """
 from pathlib import Path
 import asgi
-p = Path(__import__('os').environ['TESTAGENT2_DB_PATH'])
-assert not p.exists()
+env = __import__('os').environ
+paths = tuple(Path(env[name]) for name in (
+    'TESTAGENT2_DB_PATH', 'TESTAGENT2_PUBLISHED_DB_PATH',
+    'TESTAGENT2_PUBLISHED_BUNDLE_ROOT',
+))
+assert all(not path.exists() for path in paths)
 app = asgi.建立應用程式()
-assert not p.exists()
+assert all(not path.exists() for path in paths)
 assert app.title == '繁中代理發布介面'
 print('FRESH_ROOT_FACTORY_OK')
 """
-    env = os.environ | {
-        "TESTAGENT2_DB_PATH": str(db),
+    env = {
+        名稱: 值 for 名稱, 值 in os.environ.items()
+        if not 名稱.startswith(("TESTAGENT2_", "AIAGENT_"))
+    } | {
+        "TESTAGENT2_DB_PATH": str(web_db),
+        "TESTAGENT2_PUBLISHED_DB_PATH": str(published_db),
+        "TESTAGENT2_PUBLISHED_BUNDLE_ROOT": str(bundle_root),
         "TESTAGENT2_WEB_ORIGINS": '["http://localhost:5173"]',
-        "TESTAGENT2_MODEL_PROVIDER": "fake",
-        "TESTAGENT2_MODEL_NAME": "fake",
+        "TESTAGENT2_MODEL_NAME": "gemini-test",
         "TESTAGENT2_COOKIE_SECURE": "false",
+        "AIAGENT_GCP_PROJECT": "test-project",
+        "AIAGENT_GCP_LOCATION": "global",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
+            "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
+        }, separators=(",", ":")),
     }
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=Path(__file__).parents[2], env=env,
         text=True, capture_output=True, check=False,
     )
     assert (result.returncode, result.stdout.strip(), result.stderr) == (0, "FRESH_ROOT_FACTORY_OK", "")
-    assert not db.exists()
+    assert all(not path.exists() for path in (web_db, published_db, bundle_root))
 
 
 def test_async_startup慢同步工廠不阻塞同一event_loop(tmp_path, monkeypatch):

@@ -560,12 +560,15 @@ _FRESH_PROCESS_INVOKE_SCRIPT = r'''
 import json
 import os
 import runpy
+import sys
 from pathlib import Path
+
+repo = Path(os.environ["A5_REPO"])
+sys.path.insert(0, str(repo))
 
 from fastapi.testclient import TestClient
 import 繁中代理.發布介面.執行期.執行器 as 執行器模組
 
-repo = Path(os.environ["A5_REPO"])
 tmp = Path(os.environ["A5_TMP"])
 api_key = os.environ.pop("A5_API_KEY")
 expected_sa = os.environ["A5_EXPECTED_SA"]

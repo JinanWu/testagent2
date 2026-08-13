@@ -79,6 +79,22 @@ def test_三個介面共用exact_authority並重建完整DTO(tmp_path):
     )
 
 
+def test_工具revision允許at且canonical_schema鍵序不取代allowlist順序():
+    """schema只核對exact inventory；執行順序永遠由版本allowlist固定。"""
+    綱要 = {
+        "alpha": {"revision": "alpha@bundle-v1", "description": "甲", "parameters": {}},
+        "zeta": {"revision": "zeta@bundle-v1", "description": "乙", "parameters": {}},
+    }
+    工具 = 模組._重建工具(_正規(["zeta", "alpha"]), _正規(綱要), _工具摘要)
+    assert [(項.name, 項.revision) for 項 in 工具] == [
+        ("zeta", "zeta@bundle-v1"), ("alpha", "alpha@bundle-v1"),
+    ]
+
+    綱要["extra"] = {"revision": "extra@bundle-v1", "description": "多餘", "parameters": {}}
+    with pytest.raises(ValueError):
+        模組._重建工具(_正規(["zeta", "alpha"]), _正規(綱要), _工具摘要)
+
+
 def test_SQL只依exact_version且schema驗證與查詢在同一BEGIN交易(tmp_path, monkeypatch):
     路徑 = _建立資料庫(tmp_path)
     事件 = []

@@ -18,18 +18,47 @@ from 繁中代理.發布介面.領域模型 import EndpointRef, InvocationRef
 端點 = EndpointRef("ep", "demo", 2)
 呼叫 = InvocationRef("inv", "req-fixed")
 
+# A09-G1 決策：scope 不含 credential/user/Web Session；每 request 固定當下版本；
+# 只有完整成功 pair 可進後續歷史。Bounds 以完整成功 pair 由新到舊讀取。
+PUBLISHED工作階段SCOPE = ("endpoint_id", "service_account_id", "session_id")
+PUBLISHED歷史上限 = {"turn_pairs": 32, "bytes": 262144, "tokens": 32768}
+
 
 @dataclass
 class 假編排器:
+    """記錄route forwarding並回傳可控制結果的orchestrator test double。
+
+    描述：兼容stateless舊呼叫與帶session的新呼叫形狀。
+    參數：``結果``為要回傳或拋出的預設結果。
+    返回值：可供FastAPI route測試注入的編排器替身。
+    """
+
     結果: object
 
     def __post_init__(self):
+        """初始化呼叫紀錄。
+
+        參數：無；使用dataclass已保存的``結果``。
+        返回值：無；建立空的呼叫列表。
+        """
         self.呼叫 = []
 
-    def 執行(self, slug, request_id, api_key, input, metadata, at):
-        self.呼叫.append((slug, request_id, api_key, input, metadata, at))
+    def 執行(self, slug, request_id, api_key, input, *其餘, **命名):
+        """記錄route傳入的stateless或session invocation。
+
+        參數：slug、request ID、API key、input及兼容形狀的session/metadata/time。
+        返回值：預設結果；未提供時建立固定成功結果。
+        """
+        if len(其餘) == 2:
+            session_id, (metadata, at) = 命名.get("工作階段識別"), 其餘
+        else:
+            session_id, metadata, at = 其餘
+        self.呼叫.append((slug, request_id, api_key, input, session_id, metadata, at))
         if isinstance(self.結果, BaseException):
             raise self.結果
+        if self.結果 is None:
+            invocation = InvocationRef("inv", request_id, session_id)
+            return 呼叫成功結果(建立成功信封(端點, invocation, {"answer": 1}))
         return self.結果
 
 
@@ -38,7 +67,7 @@ def _成功():
 
 
 def _客戶端(結果=None, *, 最大=65536, 產生器=lambda: "req-fixed"):
-    編排器 = 假編排器(_成功() if 結果 is None else 結果)
+    編排器 = 假編排器(結果)
     app = FastAPI(redirect_slashes=False)
     app.include_router(建立外部呼叫路由(編排器, 請求識別產生器=產生器, 時鐘=lambda: 123.5, 本文最大位元組=最大))
     return TestClient(app, raise_server_exceptions=False), 編排器, app
@@ -61,6 +90,12 @@ def test_精確路徑方法與OpenAPI且不重導斜線():
     assert list(路徑["/v1/endpoints/{slug}/invoke"]) == ["post"]
     schema = 路徑["/v1/endpoints/{slug}/invoke"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     assert schema["required"] == ["input"] and schema["additionalProperties"] is False
+    assert list(schema["properties"]) == ["input", "session_id", "metadata"]
+    assert schema["properties"]["session_id"] == {
+        "anyOf": [{"type": "string", "maxLength": 128}, {"type": "null"}],
+        "x-utf8-max-bytes": 128,
+        "description": "Optional Published session identifier；上限 128 UTF-8 bytes。",
+    }
 
 
 def test_成功傳入精確欄位且回fresh七欄JSON():
@@ -69,7 +104,7 @@ def test_成功傳入精確欄位且回fresh七欄JSON():
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/json"
     assert list(response.json()) == ["ok", "endpoint", "invocation", "data", "usage", "warnings", "error"]
-    assert 編排器.呼叫 == [("demo", "req-fixed", "raw-secret", [1, True, None], {"trace": "x"}, 123.5)]
+    assert 編排器.呼叫 == [("demo", "req-fixed", "raw-secret", [1, True, None], None, {"trace": "x"}, 123.5)]
     assert "retry-after" not in response.headers
 
 
@@ -77,7 +112,81 @@ def test_成功傳入精確欄位且回fresh七欄JSON():
 def test_metadata省略null或物件(metadata):
     client, 編排器, _ = _客戶端()
     assert _送出(client, ('{"input":"hi"' + metadata + '}').encode()).status_code == 200
-    assert 編排器.呼叫[0][4] is None or 編排器.呼叫[0][4] == {}
+    assert 編排器.呼叫[0][5] is None or 編排器.呼叫[0][5] == {}
+
+
+@pytest.mark.parametrize("欄位", ["", ',"session_id":null'])
+def test_session_id省略或null維持單輪且authoritative回應為null(欄位):
+    """驗證session省略與null皆維持stateless。
+
+    參數：``欄位``為空字串或明確null JSON片段。
+    返回值：無；編排輸入與回應session皆須為``None``。
+    """
+    client, 編排器, _ = _客戶端()
+    response = _送出(client, ('{"input":"hi"' + 欄位 + '}').encode())
+    assert response.status_code == 200
+    assert 編排器.呼叫[0][4] is None
+    assert response.json()["invocation"]["session_id"] is None
+
+
+def test_session_id合法UTF8字串原樣傳遞且authoritative回顯():
+    """驗證合法UTF-8 session identity不被normalize。
+
+    參數：無。
+    返回值：無；route forwarding與authoritative echo保持原字串。
+    """
+    client, 編排器, _ = _客戶端()
+    response = _送出(client, '{"input":"hi","session_id":"案件-甲"}'.encode())
+    assert response.status_code == 200
+    assert 編排器.呼叫[0][4] == "案件-甲"
+    assert response.json()["invocation"]["session_id"] == "案件-甲"
+
+
+@pytest.mark.parametrize("session_id", [
+    "", " ", " leading", "trailing ", "line\nfeed", "a" * 129,
+    True, 1, [], {},
+])
+def test_session_id無效值在編排器前拒絕(session_id):
+    """驗證非法session identity在進入編排器前fail closed。
+
+    參數：``session_id``為空白、控制字元、過長或錯誤型別案例。
+    返回值：無；固定400且編排器零呼叫。
+    """
+    client, 編排器, _ = _客戶端()
+    body = json.dumps({"input": "hi", "session_id": session_id}).encode()
+    response = _送出(client, body)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert list(response.json()) == ["ok", "endpoint", "invocation", "data", "usage", "warnings", "error"]
+    assert 編排器.呼叫 == []
+
+
+def test_session_id上限依UTF8位元組而非字元數():
+    """驗證128-byte上限使用UTF-8 bytes而非Unicode字元數。
+
+    參數：無。
+    返回值：無；42個中文字合法，43個中文字被拒絕。
+    """
+    client, 編排器, _ = _客戶端()
+    assert _送出(client, json.dumps({"input": 1, "session_id": "界" * 42}).encode()).status_code == 200
+    assert _送出(client, json.dumps({"input": 1, "session_id": "界" * 43}).encode()).status_code == 400
+    assert len(編排器.呼叫) == 1
+
+
+def test_A09_G1凍結scope版本失敗歷史與三種bounds():
+    """凍結A09 scope、version、failure-history與三重bounds常數。
+
+    參數：無。
+    返回值：無；所有G1 contract literals必須維持核准值。
+    """
+    assert PUBLISHED工作階段SCOPE == ("endpoint_id", "service_account_id", "session_id")
+    assert PUBLISHED歷史上限 == {"turn_pairs": 32, "bytes": 262144, "tokens": 32768}
+    # 每次 request pin 當下 current version；舊歷史只作 bounded messages，不能改 pin。
+    version_switch = "pin_current_version_per_request_and_store_endpoint_version_per_pair"
+    # Invocation audit 可留；provider/完成失敗不得形成後續可讀的孤立 user turn。
+    failure_history = "only_complete_successful_user_assistant_pairs_are_readable"
+    assert version_switch == "pin_current_version_per_request_and_store_endpoint_version_per_pair"
+    assert failure_history == "only_complete_successful_user_assistant_pairs_are_readable"
 
 
 @pytest.mark.parametrize("body", [

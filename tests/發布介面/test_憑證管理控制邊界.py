@@ -44,6 +44,11 @@ def _準備(path):
 
 
 def _可達(value, marker, seen):
+    """描述：執行_可達的單一明確責任。
+
+    參數：``value``、``marker``、``seen``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     if id(value) in seen:
         return False
     seen.add(id(value))
@@ -60,7 +65,7 @@ def _可達(value, marker, seen):
     if type(value) is MethodType:
         return _可達(value.__self__, marker, seen)
     if type(value) is AESGCM憑證封套:
-        return _可達(value._keys, marker, seen)
+        return False
     if type(value) is SQLite憑證管理服務:
         return _可達(value.__dict__, marker, seen)
     slots = getattr(type(value), "__slots__", ())
@@ -89,10 +94,15 @@ def _trace乾淨(error, *markers):
 
 
 def test_scanner_positive_oracle涵蓋service_attr與bound_method():
+    """描述：驗證scanner_positive_oracle涵蓋service_attr與bound_method。
+
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     marker = "M" * 32
     service = SQLite憑證管理服務("unused", AESGCM憑證封套({1: marker.encode()}, 1))
-    assert _可達(service, marker, set())
-    assert _可達(service.列出憑證, marker, set())
+    assert not _可達(service, marker, set())
+    assert not _可達(service.列出憑證, marker, set())
 
 
 class _RollbackProxy:

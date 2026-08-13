@@ -223,8 +223,8 @@ def test_所有關鍵索引刪除或替換均失敗(資料庫, 名稱, 錯誤SQL
 
 def test_額外ledger列最多只讀expected加一即失敗(資料庫, monkeypatch):
     with closing(sqlite3.connect(資料庫)) as 連線, 連線:
-        連線.execute("INSERT INTO published_api_schema_migrations VALUES(13,'ADVERSARIAL_EXTRA_G05',0)")
-        連線.execute("INSERT INTO published_api_schema_migrations VALUES(14,'UNREAD_EXTRA_G05',0)")
+        連線.execute("INSERT INTO published_api_schema_migrations VALUES(14,'ADVERSARIAL_EXTRA_G05',0)")
+        連線.execute("INSERT INTO published_api_schema_migrations VALUES(15,'UNREAD_EXTRA_G05',0)")
     代理 = _注入(monkeypatch, 資料庫)
     with pytest.raises(保存候選規劃錯誤):
         SQLite保存候選規劃器(str(資料庫)).規劃(2000000000)

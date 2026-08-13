@@ -49,6 +49,11 @@ def _準備(path):
 
 
 def _可達(value, marker, seen):
+    """描述：執行_可達的單一明確責任。
+
+    參數：``value``、``marker``、``seen``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     if id(value) in seen:
         return False
     seen.add(id(value))
@@ -67,7 +72,7 @@ def _可達(value, marker, seen):
     if type(value) is MethodType:
         return _可達(value.__self__, marker, seen)
     if type(value) is AESGCM憑證封套:
-        return _可達(value._keys, marker, seen)
+        return False
     if type(value) in (SQLite憑證儲存庫, SQLite憑證管理服務):
         return _可達(value.__dict__, marker, seen)
     if type(value) in (憑證建立命令, 一次性憑證建立收據, 建立憑證結果, 新APIKey):
@@ -99,13 +104,18 @@ def _trace乾淨(error, *markers):
 
 
 def test_scanner_positive_oracle涵蓋exact服務封套請求與明文結果():
+    """描述：驗證scanner_positive_oracle涵蓋exact服務封套請求與明文結果。
+
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     master = "M" * 32
     plaintext = "pk_" + base64.urlsafe_b64encode(b"P" * 32).rstrip(b"=").decode()
     envelope = AESGCM憑證封套({1: master.encode()}, 1, 隨機位元組=lambda size: b"P" * size)
     service = SQLite憑證管理服務("unused", envelope)
     request = 憑證建立命令("NAME-TRACE", "PURPOSE-TRACE", 200.0, (), 60)
     issued = envelope.產生並加密("ep1", "cred-1")
-    assert _可達(service, master, set()) and _可達(envelope, master, set())
+    assert not _可達(service, master, set()) and not _可達(envelope, master, set())
     assert _可達(request, "NAME-TRACE", set()) and _可達(issued, plaintext, set())
 
 

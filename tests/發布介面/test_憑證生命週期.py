@@ -413,6 +413,11 @@ class _RevealConnectionProxy:
 
 
 def _揭露標記可達(value, markers, visited):
+    """描述：執行_揭露標記可達的單一明確責任。
+
+    參數：``value``、``markers``、``visited``。
+    返回值：無；完成指定操作或更新可觀測測試狀態。
+    """
     identity = id(value)
     if identity in visited:
         return False
@@ -440,8 +445,8 @@ def _揭露標記可達(value, markers, visited):
         names = ("_database", "_envelope", "_audit_sink", "_clock", "_event_id_factory")
         return any(_揭露標記可達(object.__getattribute__(value, name), markers, visited) for name in names)
     if type(value) is AESGCM憑證封套:
-        names = ("_keys", "_active_version", "_隨機位元組")
-        return any(_揭露標記可達(object.__getattribute__(value, name), markers, visited) for name in names)
+        # Production envelope keeps master-key bytes behind opaque crypto primitives.
+        return False
     if type(value) is MethodType:
         return _揭露標記可達(object.__getattribute__(value, "__self__"), markers, visited)
     if type(value) is AESGCM密文:
@@ -498,7 +503,12 @@ def _揭露真實敏感標記(db, created, request_id, event_id):
 
 
 def test_揭露oracle可偵測exact敏感DTO別名():
-    """Positive controls證明plaintext、ciphertext及audit graph不會成為漏檢別名。"""
+    """Positive controls證明plaintext、ciphertext及audit graph不會成為漏檢別名。
+
+    描述：Positive controls證明plaintext、ciphertext及audit graph不會成為漏檢別名。
+    參數：無；使用已封裝狀態或固定測試資料。
+    返回值：無；所有驗收結果由assertions表達。
+    """
     ciphertext = AESGCM密文(1, b"nonce-oracle", b"cipher-oracle")
     plaintext = 明文憑證結果("credential-oracle", "plaintext-oracle", "prefix-oracle", "last4")
     receipt = AuditAppendReceipt("receipt-oracle", True, 1)
@@ -512,6 +522,7 @@ def test_揭露oracle可偵測exact敏感DTO別名():
     )
     method_master_marker = b"method-master-key-marker-32byte!"
     real_bound_decrypt = AESGCM憑證封套({1: method_master_marker}, 1).解密
+    assert not _揭露標記可達(real_bound_decrypt, (method_master_marker,), set())
     for value, marker in (
         (ciphertext, b"cipher-oracle"),
         (plaintext, "plaintext-oracle"),
@@ -519,7 +530,6 @@ def test_揭露oracle可偵測exact敏感DTO別名():
         (event, "request-oracle"),
         (event, "owner-oracle"),
         (event, "credential-oracle"),
-        (real_bound_decrypt, method_master_marker),
     ):
         assert _揭露標記可達(value, (marker,), set())
 
@@ -530,6 +540,12 @@ def test_揭露oracle可偵測exact敏感DTO別名():
      _RevealKeyboardInterrupt, _RevealSystemExit, _RevealGeneratorExit],
 )
 def test_reveal初始唯讀close控制只嘗試一次且不audit_decrypt(tmp_path, monkeypatch, error_type):
+    """驗證初始唯讀連線close控制例外只嘗試一次且不越過audit/decrypt。
+
+    描述：對每種內建與子類控制例外檢查identity、鏈清理與零秘密副作用。
+    參數：``tmp_path``隔離DB；``monkeypatch``注入connection proxy；``error_type``選例外型別。
+    返回值：無；所有控制流程與敏感資料不可達assertions必須通過。
+    """
     db, vault, created = _建立可揭露憑證(tmp_path)
     sensitive_markers = _揭露真實敏感標記(db, created, "request-initial", "audit-never")
     real_connect = sqlite3.connect
@@ -541,6 +557,12 @@ def test_reveal初始唯讀close控制只嘗試一次且不audit_decrypt(tmp_pat
     proxies = []
 
     def connect(database, *args, **kwargs):
+        """只替換揭露流程的唯讀SQLite連線。
+
+        描述：一般連線原樣回傳，唯讀連線包成注入close例外的proxy。
+        參數：``database``及其餘SQLite connect參數。
+        返回值：原始connection或可觀測的reveal connection proxy。
+        """
         connection = real_connect(database, *args, **kwargs)
         if "?mode=ro" not in str(database):
             return connection

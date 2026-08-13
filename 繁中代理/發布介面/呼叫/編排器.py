@@ -246,16 +246,23 @@ class 執行嘗試請求:
     pinned_version: object
     input: object
     metadata: object | None
+    history: tuple[object, ...]
     attempt: int
 
-    def __init__(self, 釘選版本: object, 輸入: object, 中繼資料: object | None, 嘗試次數: int) -> None:
-        """驗證並保存一次釘選執行嘗試的不可變請求。"""
+    def __init__(self, 釘選版本: object, 輸入: object, 中繼資料: object | None, 嘗試次數: int,
+                 歷史: tuple[object, ...] = ()) -> None:
+        """驗證並保存一次釘選執行嘗試的不可變請求。
+
+        參數：釘選版本、輸入、中繼資料、attempt 1/2 與 bounded successful history。
+        返回值：無；完成 detached immutable request 的初始化。
+        """
         if 釘選版本 is None or type(嘗試次數) is not int or 嘗試次數 not in (1, 2):
             釘選版本 = 輸入 = 中繼資料 = 嘗試次數 = None
             raise ValueError("執行嘗試請求不符合契約") from None
         object.__setattr__(self, "pinned_version", 釘選版本)
         object.__setattr__(self, "input", 輸入)
         object.__setattr__(self, "metadata", 中繼資料)
+        object.__setattr__(self, "history", tuple(歷史))
         object.__setattr__(self, "attempt", 嘗試次數)
 
 
@@ -556,6 +563,7 @@ class 外部呼叫編排器:
         記錄執行嘗試: Callable[
             [InvocationRef, 執行嘗試請求, 執行嘗試結果, bool | None], 執行嘗試紀錄收據
         ] | None = None,
+        工作階段儲存庫: object | None = None,
     ) -> None:
         """保存已組合的 exact dependency types 與 callback 邊界。
 
@@ -581,21 +589,31 @@ class 外部呼叫編排器:
         self._執行嘗試 = 執行嘗試
         self._驗證輸出 = 驗證輸出
         self._記錄執行嘗試 = 記錄執行嘗試
+        self._工作階段儲存庫 = 工作階段儲存庫
 
     def 執行(
         self, 短名: str, 請求識別: str, 提供的API金鑰: str,
         輸入資料: object, 中繼資料: object | None, 驗證時間: int | float,
+        工作階段識別: str | None = None,
     ) -> 呼叫成功結果 | 錯誤映射結果:
         """完成 I03 gate 後最多執行兩次；recorder 只能接觸 disposable DTO。
 
-        參數：短名、請求與憑證資料、輸入、中繼資料及驗證時間。
+        參數：短名、請求識別、API 金鑰、輸入資料、中繼資料及驗證時間；
+            ``工作階段識別`` 為 ``str | None``，省略或 ``None`` 時維持 stateless，
+            提供時則在執行前載入並於成功後原子追加 durable history。
         回傳：成功信封或 canonical 錯誤映射結果。
         例外：控制流程保留 identity；普通 runtime／recorder 異常固定為 internal error。
         副作用：依序執行 I03、attempt-1 pre-hook、模型嘗試、驗證與 ledger callback。
         """
         入口 = None
         try:
-            入口 = self.開始(短名, 請求識別, 提供的API金鑰, 輸入資料, 中繼資料, 驗證時間)
+            if 工作階段識別 is None:
+                入口 = self.開始(短名, 請求識別, 提供的API金鑰, 輸入資料, 中繼資料, 驗證時間)
+            else:
+                入口 = self.開始(
+                    短名, 請求識別, 提供的API金鑰, 輸入資料, 中繼資料, 驗證時間,
+                    工作階段識別,
+                )
         except _控制流程 as 控制:
             self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = 入口 = None
             _清理並重拋(控制)
@@ -626,6 +644,13 @@ class 外部呼叫編排器:
             私有呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
             私有快照 = object.__getattribute__(入口, "_續行快照")
             私有釘選 = object.__getattribute__(入口, "pinned_version")
+            歷史 = ()
+            if 工作階段識別 is not None:
+                if self._工作階段儲存庫 is None:
+                    raise ValueError
+                歷史 = self._工作階段儲存庫.讀取成功歷史(
+                    端點識別, object.__getattribute__(私有釘選, "service_account_id"), 工作階段識別,
+                )
             if type(私有快照) is not _正規呼叫快照 or 私有釘選 is None:
                 raise ValueError
             入口 = None
@@ -636,7 +661,7 @@ class 外部呼叫編排器:
             else:
                 for 次數 in (1, 2):
                     請求 = 執行嘗試請求(
-                        私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                        私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數, 歷史,
                     )
                     if 次數 == 1 and 開始函式 is not None:
                         開始函式(
@@ -668,6 +693,7 @@ class 外部呼叫編排器:
                     紀錄呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
                     紀錄請求 = 執行嘗試請求(
                         私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                        歷史,
                     )
                     紀錄結果 = 終局快照.建立結果()
                     收據 = 紀錄函式(紀錄呼叫, 紀錄請求, 紀錄結果, 終局快照.結構有效)
@@ -719,6 +745,7 @@ class 外部呼叫編排器:
     def 開始(
         self, 短名: str, 請求識別: str, 提供的API金鑰: str,
         輸入資料: object, 中繼資料: object | None, 驗證時間: int | float,
+        工作階段識別: str | None = None,
     ) -> 外部呼叫入口:
         """認證成功後刷新、提交雙層計數，再依 D20 status/rate/input 決定。"""
         釘選 = 驗證結果 = 擷取命令 = 端點 = 呼叫 = 結果 = 決策 = 快照 = None
@@ -807,11 +834,11 @@ class 外部呼叫編排器:
                 raise ValueError
             呼叫識別 = self._寫入擷取(
                 self._呼叫儲存庫, 擷取命令, 端點識別, 版本識別, 請求識別,
-                credential_id=憑證識別,
+                credential_id=憑證識別, session_id=工作階段識別,
             )
             if type(呼叫識別) is not str or not 呼叫識別:
                 raise ValueError
-            呼叫 = InvocationRef(呼叫識別, 請求識別)
+            呼叫 = InvocationRef(呼叫識別, 請求識別, 工作階段識別)
             if 狀態值 != "authenticated":
                 錯誤碼 = "api_key_expired" if 狀態值 == "api_key_expired" else "invalid_api_key"
                 結果 = 外部呼叫入口(

@@ -19,8 +19,10 @@ from typing import Callable
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
+from ...上下文壓縮器 import 估算訊息預算Token
 from ..領域模型 import InvocationRef
 from .儲存庫 import SQLite呼叫儲存庫
+from .Published工作階段 import Published成功對話提交
 from .編排器 import 執行嘗試結果, 執行嘗試紀錄收據, 執行嘗試請求
 from .限流 import 增加雙層計數並判定, 限流決策
 
@@ -282,12 +284,31 @@ class InvocationLedger橋接:
         if (種類 == "success") != (schema_valid is not None):
             raise 生產橋接錯誤("invocation ledger記錄失敗") from None
         狀態 = 輸出 = 錯誤 = 用量資料 = None
+        工作階段對話組 = None
         if 種類 == "success" and schema_valid is True:
             用量 = result.usage
             用量資料 = None if 用量 is None else {
                 "total_tokens": object.__getattribute__(用量, "total_tokens"),
             }
             狀態, 輸出 = "succeeded", result.data
+            工作階段 = invocation.session_id
+            if 工作階段 is not None:
+                釘選 = request.pinned_version
+                歷史 = request.history
+                下一序號 = 1 if not 歷史 else object.__getattribute__(歷史[-1], "sequence_number") + 1
+                使用者訊息 = {"role": "user", "content": request.input}
+                助理訊息 = {"role": "assistant", "content": result.data}
+                token數 = 估算訊息預算Token(使用者訊息) + 估算訊息預算Token(助理訊息)
+                工作階段對話組 = Published成功對話提交(
+                    endpoint_id=object.__getattribute__(釘選, "endpoint_id"),
+                    service_account_id=object.__getattribute__(釘選, "service_account_id"),
+                    session_id=工作階段,
+                    endpoint_version_id=object.__getattribute__(釘選, "version_id"),
+                    sequence_number=下一序號,
+                    user_message=使用者訊息,
+                    assistant_message=助理訊息,
+                    token_count=token數,
+                )
         elif 種類 != "success" or 次數 == 2:
             錯誤碼 = 種類 if 種類 != "success" else "model_output_schema_invalid"
             狀態, 錯誤 = "failed", {"code": 錯誤碼}
@@ -295,5 +316,6 @@ class InvocationLedger橋接:
             invocation.id, f"{invocation.id}:attempt:{次數}", "model_attempt",
             {"attempt": 次數, "kind": 種類, "schema_valid": schema_valid}, 次數,
             status=狀態, output=輸出, error=錯誤, usage=用量資料,
+            工作階段對話組=工作階段對話組,
         )
         return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號)

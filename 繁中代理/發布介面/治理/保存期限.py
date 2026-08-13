@@ -26,8 +26,8 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
-_完整結構數 = 62
-_完整結構雜湊 = "db1725e191c07c6cf6503bab2719ef4f4cf953fced7a8c63351e0b9d38bc4113"
+_完整結構數 = 66
+_完整結構雜湊 = "035d356cb6b0c8a4b3b6ea27484281bd6e6fc3eaf010832c12c8fc43a8b5a2c9"
 _單一結構SQL最大位元組 = 65536
 _完整結構SQL總最大位元組 = 1048576
 _完整結構物件 = tuple(
@@ -42,6 +42,7 @@ _完整結構物件 = tuple(
             "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_retention_invocation_id",
             "idx_endpoint_tool_calls_invocation_created", "idx_endpoint_tool_calls_retention_invocation_id",
             "idx_published_draft_consumptions_time", "idx_published_endpoints_owner_status",
+            "idx_published_session_turn_pairs_latest",
             "idx_published_skill_bundles_state_time", "idx_run_events_retention_invocation_id",
             "idx_web_sessions_user_revoked_expires", "uq_endpoint_credentials_id_endpoint",
         )),
@@ -50,7 +51,8 @@ _完整結構物件 = tuple(
             "endpoint_invocations", "endpoint_redactions",
             "endpoint_tool_calls", "published_api_schema_migrations", "published_draft_consumptions",
             "published_endpoint_version_metadata", "published_endpoint_versions", "published_endpoints",
-            "published_skill_bundles", "rate_limit_counters", "run_events", "service_accounts", "web_sessions",
+            "published_session_turn_pairs", "published_skill_bundles", "rate_limit_counters", "run_events",
+            "service_accounts", "web_sessions",
         )),
         ("trigger", (
             "audit_events_no_delete", "audit_events_no_update",
@@ -62,8 +64,10 @@ _完整結構物件 = tuple(
             "published_endpoint_version_metadata_no_delete", "published_endpoint_version_metadata_no_update",
             "published_endpoint_versions_no_delete", "published_endpoint_versions_no_update",
             "published_endpoints_rate_limit_positive_before_insert",
-            "published_endpoints_rate_limit_positive_before_update", "published_skill_bundles_no_delete",
-            "published_skill_bundles_no_update", "redacted_invocation_payload_no_update",
+            "published_endpoints_rate_limit_positive_before_update",
+            "published_session_turn_pairs_no_update", "published_session_turn_pairs_scope_before_insert",
+            "published_skill_bundles_no_delete", "published_skill_bundles_no_update",
+            "redacted_invocation_payload_no_update",
             "redacted_run_event_no_delete", "redacted_run_event_no_update", "redacted_tool_call_no_delete",
             "redacted_tool_call_no_update",
         )),

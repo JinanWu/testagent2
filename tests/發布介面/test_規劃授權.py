@@ -167,6 +167,21 @@ def test_無效選擇在可判定時零查詢並fail_closed(技能, 工具, 呼�
     assert 查詢器.呼叫 == 呼叫次數
 
 
+def test_工具選擇接受完整快照release有序authority():
+    快照 = 規劃權限快照(
+        "perm-v1",
+        (授權技能("research", "可信研究", "a" * 64),),
+        (
+            授權工具("skills_list", "skills_list@bundle-v1"),
+            授權工具("skill_view", "skill_view@bundle-v1"),
+        ),
+    )
+    摘要 = 權限協調器(_查詢器(快照)).建立能力摘要(
+        "owner-a", ("research",), ("skills_list", "skill_view"),
+    )
+    assert [項目.名稱 for 項目 in 摘要.工具] == ["skills_list", "skill_view"]
+
+
 def test_撤銷使同一P01草稿原子永久stale且不再查詢():
     查詢器 = _查詢器(_快照())
     服務 = _服務(查詢器)
