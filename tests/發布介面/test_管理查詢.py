@@ -1,8 +1,13 @@
 """MGT M01 擁有者與管理者發布端點查詢契約測試。"""
 
 import inspect
+import base64
+import hashlib
+import hmac
+import json
 import sys
 import threading
+from dataclasses import FrozenInstanceError
 from types import MethodType
 
 from fastapi import FastAPI, HTTPException
@@ -32,6 +37,24 @@ from 繁中代理.發布介面.路由.規劃發布 import (
     端點發布結果,
     版本建立結果,
     管理操作錯誤,
+)
+from 繁中代理.發布介面.治理.管理查詢契約 import (
+    ADMIN_INVOCATION_AUDIT_ACTION,
+    ADMIN_INVOCATION_DETAIL_PATH,
+    ADMIN_INVOCATION_ERROR_CONTRACT,
+    ADMIN_INVOCATION_FORBIDDEN_QUERY_KEYS,
+    ADMIN_INVOCATION_LIST_PATH,
+    ADMIN_INVOCATION_METHOD,
+    ADMIN_INVOCATION_QUERY_KEYS,
+    ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS,
+    管理員呼叫列表結果,
+    管理員呼叫列表項目,
+    管理員呼叫投影頁,
+    建立管理員呼叫完整詳情,
+    管理員呼叫查詢條件,
+    管理員呼叫游標位置,
+    管理員呼叫游標錯誤,
+    管理員呼叫游標編解碼器,
 )
 
 
@@ -1379,3 +1402,308 @@ def test_M02外層快照真實行KISG單一finally逐框清理(例外類型, 公
     if 公開路徑:
         assert {"_重建草稿結果", "_呼叫服務", "_建立發布草稿"} <= set(框架)
     _生產traceback不含marker(捕捉.value, marker)
+
+
+def test_A18管理員呼叫route與query_allowlist唯一且禁止export():
+    """A18-01只凍結兩條GET path與六個allowlisted query keys。"""
+    assert ADMIN_INVOCATION_LIST_PATH == "/api/admin/endpoints/{endpoint_id}/invocations"
+    assert ADMIN_INVOCATION_METHOD == "GET"
+    assert ADMIN_INVOCATION_DETAIL_PATH == (
+        "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}"
+    )
+    assert ADMIN_INVOCATION_QUERY_KEYS == frozenset(
+        {"from_at", "to_at", "status", "error_code", "limit", "cursor"}
+    )
+    assert ADMIN_INVOCATION_FORBIDDEN_QUERY_KEYS == frozenset(
+        {"owner_id", "raw_search", "export", "sort"}
+    )
+    assert ADMIN_INVOCATION_REJECT_DUPLICATE_QUERY_KEYS is True
+    assert ADMIN_INVOCATION_AUDIT_ACTION == "audit.detail.view"
+    assert all(禁止 not in (ADMIN_INVOCATION_LIST_PATH + ADMIN_INVOCATION_DETAIL_PATH).lower()
+               for 禁止 in ("export", "download", "search"))
+    assert ADMIN_INVOCATION_ERROR_CONTRACT == {
+        401: "需要登入",
+        403: "只有管理者可查看完整呼叫紀錄",
+        404: "找不到呼叫紀錄",
+        422: None,
+        503: "呼叫紀錄暫時不可取得",
+        500: "呼叫紀錄不可取得",
+    }
+
+
+def test_A18安全列表DTO固定欄位且拒絕raw與可變容器():
+    """List DTO只含營運metadata，不含任何raw payload或secret-bearing欄位。"""
+    項目 = 管理員呼叫列表項目(
+        "inv-1", "ep-1", "ver-1", "req-1", "failed", "schema_invalid",
+        12.5, 10.0, 11.0, True,
+    )
+    結果 = 管理員呼叫列表結果((項目,), "signed-cursor")
+    assert set(項目.__slots__) == {
+        "呼叫識別碼", "端點識別碼", "端點版本識別碼", "請求識別碼", "狀態",
+        "錯誤碼", "延遲毫秒", "建立時間", "完成時間", "是否有遮蔽",
+    }
+    assert set(結果.__slots__) == {"項目", "下一頁游標"}
+    assert not hasattr(項目, "__dict__") and not hasattr(結果, "__dict__")
+    for 禁止 in ("input", "metadata", "output", "error", "usage", "arguments", "result",
+               "credential_id", "api_key", "authorization", "cookie", "path"):
+        assert 禁止 not in repr(項目).lower()
+    with pytest.raises((FrozenInstanceError, AttributeError)):
+        項目.狀態 = "succeeded"
+    with pytest.raises(ValueError):
+        管理員呼叫列表結果([項目], None)
+
+
+def test_A18管理員列表組合DTO重驗污染子項且repr零值():
+    """hostile object.__setattr__不能把raw marker帶入page/result或repr。"""
+    項目 = 管理員呼叫列表項目(
+        "inv-1", "ep-1", "ver-1", "req-1", "failed", None,
+        1.0, 10.0, 11.0, False,
+    )
+    object.__setattr__(項目, "錯誤碼", "RAW_SECRET_MARKER")
+    assert "RAW_SECRET_MARKER" not in repr(項目)
+    with pytest.raises(ValueError):
+        管理員呼叫列表結果((項目,), None)
+    with pytest.raises(ValueError):
+        管理員呼叫投影頁((項目,), None)
+
+    原始 = 管理員呼叫列表項目(
+        "inv-2", "ep-1", "ver-1", "req-2", "failed", None,
+        1.0, 10.0, 11.0, False,
+    )
+    結果 = 管理員呼叫列表結果((原始,), None)
+    頁 = 管理員呼叫投影頁((原始,), 管理員呼叫游標位置(10.0, "inv-2"))
+    object.__setattr__(原始, "錯誤碼", "RAW_SECRET_MARKER")
+    assert 結果.項目[0].錯誤碼 is None and 頁.項目[0].錯誤碼 is None
+    原始位置 = 管理員呼叫游標位置(10.0, "inv-2")
+    頁 = 管理員呼叫投影頁((), 原始位置)
+    object.__setattr__(原始位置, "呼叫識別碼", "RAW_SECRET_MARKER")
+    assert 頁.下一頁位置 is not None and 頁.下一頁位置.呼叫識別碼 == "inv-2"
+    assert "RAW_SECRET_MARKER" not in repr(原始位置) and "RAW_SECRET_MARKER" not in repr(頁)
+
+
+def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
+    """Cursor不能跨endpoint/filter/window重放，也不能由client竄改position。"""
+    codec = 管理員呼叫游標編解碼器(b"k" * 32)
+    條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", "schema_invalid", 25)
+    位置 = 管理員呼叫游標位置(10.0, "inv-1")
+    cursor = codec.編碼(條件, 位置)
+
+    assert codec.解碼(cursor, 條件) == 位置
+    for 其他條件 in (
+        管理員呼叫查詢條件("ep-2", 1.0, 20.0, "failed", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 2.0, 20.0, "failed", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 1.0, 20.0, "succeeded", "schema_invalid", 25),
+        管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", "schema_invalid", 24),
+    ):
+        with pytest.raises(管理員呼叫游標錯誤):
+            codec.解碼(cursor, 其他條件)
+    竄改 = cursor[:-1] + ("A" if cursor[-1] != "A" else "B")
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(竄改, 條件)
+    object.__setattr__(條件, "端點識別碼", "ep-tampered")
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(cursor, 條件)
+
+
+def test_A18游標拒絕有效HMAC但JSON非canonical的token():
+    """Signature只證明bytes真實；decode仍須拒絕空白／key順序等非canonical表示。"""
+    金鑰 = b"k" * 32
+    codec = 管理員呼叫游標編解碼器(金鑰)
+    條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", None, 25)
+    編碼 = lambda 值: base64.urlsafe_b64encode(值).rstrip(b"=").decode("ascii")
+    payload = {"position": [10.0, "inv-1"],
+               "scope": ["ep-1", 1.0, 20.0, "failed", None, 25], "v": 1}
+    for 非canonical in (
+        json.dumps(payload, ensure_ascii=True).encode("ascii"),
+        b'{"v":1,"scope":["ep-1",1.0,20.0,"failed",null,25],'
+        b'"position":[10.0,"inv-1"]}',
+        b'{"position":[10.0,"inv-1"],"scope":["ep-1",1e0,20.0,"failed",null,25],"v":1}',
+    ):
+        簽章 = hmac.new(金鑰, 非canonical, hashlib.sha256).digest()
+        token = 編碼(非canonical) + "." + 編碼(簽章)
+        with pytest.raises(管理員呼叫游標錯誤):
+            codec.解碼(token, 條件)
+
+
+def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
+    """A18-02只能透過exact rebuild seam序列化已稽核raw provider結果。"""
+    原始 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {"raw": "RAW_MARKER"},
+        "metadata": {}, "output": None, "error": {"code": "timeout"}, "usage": None,
+        "metadata_size_bytes": 1, "metadata_sha256": "a" * 64, "latency_ms": 1.0,
+        "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    詳情 = 建立管理員呼叫完整詳情(原始)
+    assert "RAW_MARKER" not in repr(詳情)
+    第一份 = 詳情.建立JSON()
+    原始["input"]["raw"] = "MUTATED"  # type: ignore[index]
+    第一份["input"]["raw"] = "REUSED"  # type: ignore[index]
+    assert 詳情.建立JSON()["input"] == {"raw": "RAW_MARKER"}
+    for 破壞 in ({**原始, "extra": 1}, {鍵: 值 for 鍵, 值 in 原始.items() if 鍵 != "input"}):
+        with pytest.raises(Exception) as 錯誤:
+            建立管理員呼叫完整詳情(破壞)
+        assert "RAW_MARKER" not in repr(錯誤.value)
+
+
+def test_A18完整詳情逐欄bounded且內部儲存不可變():
+    """拒絕巢狀schema漂移、超深JSON與直接slot竄改。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {},
+        "output": None, "error": None, "usage": None, "metadata_size_bytes": 0,
+        "metadata_sha256": None, "latency_ms": None, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    for 破壞 in (
+        {**基本, "invocation": "not-an-object"},
+        {**基本, "run_events": "not-a-list"},
+        {**基本, "tool_calls": 999},
+        {**基本, "run_events": [{"id": "run-1"}]},
+    ):
+        with pytest.raises(Exception) as 錯誤:
+            建立管理員呼叫完整詳情(破壞)
+        assert type(錯誤.value) is not RecursionError
+
+    深值: object = None
+    for _ in range(5000):
+        深值 = [深值]
+    with pytest.raises(Exception) as 錯誤:
+        建立管理員呼叫完整詳情({**基本, "input": 深值})
+    assert type(錯誤.value) is not RecursionError
+    for 過量 in ([None] * 4097, "x" * 1_048_577):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, "input": 過量})
+
+    詳情 = 建立管理員呼叫完整詳情(基本)
+    with pytest.raises((AttributeError, TypeError)):
+        詳情._內容 = b"mutated"
+    object.__setattr__(詳情, "_內容", b"not-json")
+    with pytest.raises(Exception):
+        詳情.建立JSON()
+
+
+def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_path():
+    """Full Logs允許scalar raw；敏感key、平台API key與filesystem path必須fail closed。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": 7, "metadata": {},
+        "output": 3.14, "error": False, "usage": [1], "metadata_size_bytes": 2,
+        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == 7
+    for 敏感 in (
+        {"metadata": {"Authorization": "Bearer secret"}},
+        {"input": {"nested": {"api-key": "secret"}}},
+        {"output": {"filesystem_path": "/private/data"}},
+        {"error": {"path": "/Users/private/secret.txt"}},
+        {"usage": {"provider_secret": "secret"}},
+        {"input": "pk_" + "A" * 43},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **敏感})
+    with pytest.raises(Exception):
+        建立管理員呼叫完整詳情({**基本, "metadata": "not-an-object"})
+
+
+def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
+    """敏感資料藏在任意value、run event或tool payload仍須fail closed。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": "合法 scalar raw", "metadata": {},
+        "output": None, "error": None, "usage": None, "metadata_size_bytes": 2,
+        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+    }
+    event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
+             "payload": {}, "created_at": 1.0}
+    tool = {"id": "tool-1", "run_event_id": "event-1", "sequence_number": 0,
+            "tool_name": "lookup", "arguments": {}, "outcome": "success", "result": None,
+            "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.0}
+    for 破壞 in (
+        {"input": {"note": "Authorization: Bearer TOPSECRET"}},
+        {"metadata": {"note": "Cookie: sid=TOPSECRET"}},
+        {"output": {"detail": "/Users/alice/.ssh/id_rsa"}},
+        {"error": {"detail": "C:\\Users\\alice\\secret.txt"}},
+        {"usage": {"note": "Bearer pk_" + "A" * 43}},
+        {"input": {"signing-private_key": "TOPSECRET"}},
+        {"run_events": [{**event, "payload": {"detail": "/etc/passwd"}}]},
+        {"tool_calls": [{**tool, "arguments": {"note": "PROVIDER_SECRET_123"}}]},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **破壞})
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == "合法 scalar raw"
+    合法路由 = 建立管理員呼叫完整詳情(
+        {**基本, "input": {"route": "/api/v1/items", "text": "bearer market analysis"}}
+    ).建立JSON()
+    assert 合法路由["input"] == {"route": "/api/v1/items", "text": "bearer market analysis"}
+
+
+def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
+    """主raw、event及tool payload須共用同一完整敏感value規則。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
+        "error": None, "usage": None, "metadata_size_bytes": 2, "metadata_sha256": "a" * 64,
+        "latency_ms": 1.0, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
+             "payload": {}, "created_at": 1.0}
+    tool = {"id": "tool-1", "run_event_id": "event-1", "sequence_number": 0,
+            "tool_name": "lookup", "arguments": {}, "outcome": "success", "result": None,
+            "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.0}
+    敏感值 = (
+        "note Authorization", "Cookie", "signing-private_key", "client_secret=TOPSECRET",
+        "api_key=TOPSECRET", "API KEY TOPSECRET",
+        "access_token=TOPSECRET", "refresh_token=TOPSECRET", "master_key=TOPSECRET",
+        "credential_hash=TOPSECRET", "credential_ciphertext=TOPSECRET",
+        "password=TOPSECRET", "secret_key=TOPSECRET", "provider-secret TOPSECRET",
+    )
+    for 值 in 敏感值:
+        for 破壞 in (
+            {"input": {"note": 值}},
+            {"run_events": [{**event, "payload": {"note": 值}}]},
+            {"tool_calls": [{**tool, "arguments": {"note": 值}}]},
+            {"tool_calls": [{**tool, "result": {"note": 值}}]},
+            {"tool_calls": [{**tool, "error": {"note": 值}}]},
+        ):
+            with pytest.raises(Exception):
+                建立管理員呼叫完整詳情({**基本, **破壞})
+    with pytest.raises(Exception):
+        建立管理員呼叫完整詳情({**基本, "input": {"note": "/srv/app/secrets.env"}})
+
+
+def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
+    """#21未凍結前，以保守credential-like token shape拒絕任意品牌API key。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
+        "error": None, "usage": None, "metadata_size_bytes": 0, "metadata_sha256": None,
+        "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [],
+    }
+    for key in (
+        "pak_" + "A" * 43,
+        "sk-" + "A" * 48,
+        "ghp_" + "A" * 36,
+        "note sk_live_51ABCDEF0123456789",
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, "input": {"value": key}})
+    for 合法值 in (
+        "550e8400-e29b-41d4-a716-446655440000",
+        "trace-1234567890abcdef",
+        "order_1234567890123456",
+    ):
+        assert 建立管理員呼叫完整詳情(
+            {**基本, "input": {"value": 合法值}}
+        ).建立JSON()["input"] == {"value": 合法值}
