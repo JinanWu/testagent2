@@ -687,6 +687,7 @@ class 外部呼叫編排器:
                     紀錄呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
                     紀錄請求 = 執行嘗試請求(
                         私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                        歷史,
                     )
                     紀錄結果 = 終局快照.建立結果()
                     收據 = 紀錄函式(紀錄呼叫, 紀錄請求, 紀錄結果, 終局快照.結構有效)
@@ -707,17 +708,6 @@ class 外部呼叫編排器:
                             warnings=object.__getattribute__(安全結果, "warnings"),
                         )
                         結果 = 呼叫成功結果(信封)
-                        if 工作階段識別 is not None:
-                            用量 = object.__getattribute__(安全結果, "usage")
-                            token數 = 1 if 用量 is None or 用量.total_tokens is None else max(1, 用量.total_tokens)
-                            下一序號 = 1 if not 歷史 else object.__getattribute__(歷史[-1], "sequence_number") + 1
-                            self._工作階段儲存庫.附加成功對話組(
-                                端點識別, object.__getattribute__(私有釘選, "service_account_id"),
-                                工作階段識別, object.__getattribute__(私有釘選, "version_id"),
-                                {"role": "user", "content": 私有快照.建立輸入()},
-                                {"role": "assistant", "content": object.__getattribute__(安全結果, "data")},
-                                token數, expected_sequence=下一序號,
-                            )
                         請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
                         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
                         開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = 入口 = None
