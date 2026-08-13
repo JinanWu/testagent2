@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -72,6 +74,10 @@ print('FRESH_ROOT_FACTORY_OK')
         "TESTAGENT2_COOKIE_SECURE": "false",
         "AIAGENT_GCP_PROJECT": "test-project",
         "AIAGENT_GCP_LOCATION": "global",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
+            "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
+        }, separators=(",", ":")),
     }
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=Path(__file__).parents[2], env=env,

@@ -56,7 +56,8 @@ class AESGCM憑證封套:
 
         描述：複製並驗證AES-256 keyring；key material不進repr或DB。
         參數：``keys``、``active_version``、``隨機位元組``。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：無；完成已驗證AES-GCM keyring與active version初始化。
+
         """
         copied: dict[int, bytes] = {}
         加密器: dict[int, AESGCM] = {}
@@ -107,7 +108,8 @@ class AESGCM憑證封套:
 
         描述：以endpoint/credential/version AAD加密合法平台API key。
         參數：``api_key``、``endpoint_id``、``credential_id``。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：含一次性明文、lookup hash、安全摘要與AES-GCM密文的``新APIKey``。
+
         """
         憑證明文 = api_key
         del api_key
@@ -147,7 +149,8 @@ class AESGCM憑證封套:
 
         描述：依envelope version與相同AAD解密；tamper/wrong binding一律固定拒絕。
         參數：``envelope``、``endpoint_id``、``credential_id``。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：通過AAD、密文完整性與平台格式驗證的明文API key。
+
         """
         if (
             type(envelope) is not AESGCM密文

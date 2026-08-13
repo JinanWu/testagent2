@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -21,6 +22,7 @@ from fastapi import FastAPI
 
 from ..模型供應商 import GeminiADC供應商
 from .嚴格JSON import 解析嚴格JSON
+from .憑證.加密 import AESGCM憑證封套
 from .生產Web代理 import 生產Web代理建構器
 from .生產Published執行 import Published生產設定, 生產Controller建構器
 from .生產技能工具 import 安裝生產技能工具
@@ -38,11 +40,14 @@ Gemini位置環境名稱 = "AIAGENT_GCP_LOCATION"
 Web資料庫環境名稱 = 資料庫環境名稱
 Published資料庫環境名稱 = "TESTAGENT2_PUBLISHED_DB_PATH"
 技能套件根環境名稱 = "TESTAGENT2_PUBLISHED_BUNDLE_ROOT"
+憑證Active版本環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION"
+憑證Keyring環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON"
 _錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
 _核准設定環境名稱 = frozenset((
     資料庫環境名稱, 來源環境名稱, 供應器環境名稱, 安全Cookie環境名稱,
     工作階段TTL環境名稱, 模型名稱環境名稱, Gemini專案環境名稱,
     Gemini位置環境名稱, Published資料庫環境名稱, 技能套件根環境名稱,
+    憑證Active版本環境名稱, 憑證Keyring環境名稱,
 ))
 _來源JSON最大位元組 = 16_384
 _來源最大數量 = 64
@@ -167,12 +172,45 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         Web文字 = 環境.get(Web資料庫環境名稱)
         Published文字 = 環境.get(Published資料庫環境名稱)
         根文字 = 環境.get(技能套件根環境名稱)
+        Active版本文字 = 環境.get(憑證Active版本環境名稱)
+        Keyring文字 = 環境.get(憑證Keyring環境名稱)
         if any(type(值) is not str or not 值 for 值 in (Web文字, Published文字, 根文字)):
             raise ValueError
         Web路徑, Published路徑, 根路徑 = Path(Web文字), Path(Published文字), Path(根文字)
         if any(not 路徑.is_absolute() or ".." in 路徑.parts for 路徑 in (Web路徑, Published路徑, 根路徑)):
             raise ValueError
         if Web路徑 == Published路徑:
+            raise ValueError
+        if (
+            type(Active版本文字) is not str or not Active版本文字.isascii()
+            or not Active版本文字.isdecimal() or Active版本文字.startswith("0")
+            or type(Keyring文字) is not str or not Keyring文字
+            or len(Keyring文字.encode("utf-8")) > 16_384
+        ):
+            raise ValueError
+        Active版本 = int(Active版本文字)
+        Keyring值 = 解析嚴格JSON(Keyring文字)
+        if type(Keyring值) is not dict or not Keyring值 or len(Keyring值) > 64:
+            raise ValueError
+        Keyring文字副本: dict[int, str] = {}
+        for 版本文字, 金鑰文字 in Keyring值.items():
+            if (
+                type(版本文字) is not str or not 版本文字.isascii()
+                or not 版本文字.isdecimal() or 版本文字.startswith("0")
+                or type(金鑰文字) is not str or len(金鑰文字) != 43
+                or not 金鑰文字.isascii()
+            ):
+                raise ValueError
+            版本 = int(版本文字)
+            材料 = base64.b64decode(金鑰文字 + "=", altchars=b"-_", validate=True)
+            if (
+                版本 <= 0 or len(材料) != 32
+                or base64.urlsafe_b64encode(材料).rstrip(b"=").decode("ascii") != 金鑰文字
+            ):
+                raise ValueError
+            Keyring文字副本[版本] = 金鑰文字
+            材料 = None
+        if Active版本 not in Keyring文字副本:
             raise ValueError
         明示供應器 = 環境.get(供應器環境名稱)
         if 明示供應器 not in (None, "gemini-adc"):
@@ -190,8 +228,22 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
                 cast(str, Web設定.Gemini位置),
             )}
 
+        def 建立憑證封套() -> AESGCM憑證封套:
+            """於lifespan startup由canonical deployment keyring建立opaque AES-GCM封套。
+
+            描述：重新解碼已由parser驗證的單一active AES-256 key，不使用fallback。
+            參數：無；只讀取immutable closure內的canonical active版本與多版本Base64URL文字。
+            返回值：可讀舊版本且以active版本加密的``AESGCM憑證封套``。
+            """
+            金鑰環 = {
+                版本: base64.b64decode(金鑰文字 + "=", altchars=b"-_", validate=True)
+                for 版本, 金鑰文字 in Keyring文字副本.items()
+            }
+            return AESGCM憑證封套(金鑰環, Active版本)
+
         Published設定 = Published生產設定(
             Published路徑, 根路徑, 安裝生產技能工具, 建立模型註冊表,
+            憑證封套工廠=建立憑證封套,
         )
         return Web設定, Published設定
     except (KeyboardInterrupt, SystemExit, GeneratorExit):

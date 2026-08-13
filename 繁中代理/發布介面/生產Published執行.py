@@ -161,7 +161,8 @@ class 延遲憑證管理服務:
 
         描述：建立未安裝的 per-app provider slot。
         參數：無；使用已封裝狀態或固定測試資料。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：無；建立尚未安裝服務的per-app provider slot。
+
         """
         self._服務: SQLite憑證管理服務 | None = None
         self._鎖 = RLock()
@@ -171,7 +172,8 @@ class 延遲憑證管理服務:
 
         描述：在 startup exact-once 安裝真實 SQLite adapter。
         參數：``服務``。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：無；exact-once保存啟動中的``SQLite憑證管理服務``。
+
         """
         if type(服務) is not SQLite憑證管理服務:
             raise ValueError("Published憑證管理服務無效") from None
@@ -185,7 +187,8 @@ class 延遲憑證管理服務:
 
         描述：shutdown 只清除本次 startup 的 exact provider reference。
         參數：``服務``。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：無；只有identity相同時清除目前服務參照。
+
         """
         with self._鎖:
             if self._服務 is 服務:
@@ -196,7 +199,8 @@ class 延遲憑證管理服務:
 
         描述：取得啟動中的 provider，未啟動或已關閉時 fail closed。
         參數：無；使用已封裝狀態或固定測試資料。
-        返回值：依函式型別標註或既有協定回傳結果。
+        返回值：目前已安裝且可接受管理操作的``SQLite憑證管理服務``。
+
         """
         with self._鎖:
             服務 = self._服務
