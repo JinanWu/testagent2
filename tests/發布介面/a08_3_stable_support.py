@@ -1,5 +1,6 @@
 """A08-3 hermetic root-app fixture, model gate, SQL trace and corruption helpers."""
 from __future__ import annotations
+import base64
 
 import copy
 import json
@@ -65,6 +66,10 @@ def _設定環境(monkeypatch, web: Path, db: Path, bundles: Path) -> None:
         "TESTAGENT2_WEB_ORIGINS": '["https://client.example"]',
         "TESTAGENT2_MODEL_NAME": "gemini-root", "AIAGENT_GCP_PROJECT": "test-project",
         "AIAGENT_GCP_LOCATION": "global",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
+            "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
+        }, separators=(",", ":")),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)

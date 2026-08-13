@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 from pathlib import Path
 
@@ -16,6 +18,8 @@ _預期路由清單 = {
     "/api/auth/me": ("get",),
     "/api/auth/session": ("get",),
     "/api/chat": ("post",),
+    "/api/published-endpoints/{endpoint_id}/credentials": ("get", "post"),
+    "/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke": ("post",),
     "/api/published-endpoints/draft": ("post",),
     "/api/sessions": ("get",),
     "/api/sessions/{session_id}": ("get",),
@@ -38,6 +42,10 @@ def _設定Canonical環境(tmp_path: Path, monkeypatch) -> None:
         "TESTAGENT2_MODEL_NAME": "gemini-2.5-flash-lite",
         "AIAGENT_GCP_PROJECT": "example-project",
         "AIAGENT_GCP_LOCATION": "global",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION": "1",
+        "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
+            "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
+        }, separators=(",", ":")),
     }
     for 名稱 in tuple(os.environ):
         if 名稱.startswith("TESTAGENT2_") or 名稱.startswith("AIAGENT_"):
