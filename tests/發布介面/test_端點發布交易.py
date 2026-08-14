@@ -620,7 +620,7 @@ def test_資料庫路徑與完整schema漂移拒絕且不建立不follow(tmp_pat
         connection.close()
     elif kind == "ledger-extra":
         connection = sqlite3.connect(real)
-        connection.execute("INSERT INTO published_api_schema_migrations VALUES(14,'0014_unknown.sql',0)")
+        connection.execute("INSERT INTO published_api_schema_migrations VALUES(15,'0015_unknown.sql',0)")
         connection.commit()
         connection.close()
     elif kind == "ledger-rename":

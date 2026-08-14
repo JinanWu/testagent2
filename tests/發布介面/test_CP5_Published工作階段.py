@@ -37,17 +37,17 @@ def _建立基準(資料庫):
 
 
 def test_fresh_upgrade重跑與結構契約(tmp_path):
-    """驗證 fresh、upgrade 與 rerun 得到同一 migration 13 結構。
+    """驗證 fresh、upgrade 與 rerun 得到同一 migration 14 結構。
 
     參數：``tmp_path`` 提供隔離資料庫路徑。
     返回值：無；所有結構與 ledger assertions 必須通過。
     """
     新資料庫 = tmp_path / "fresh.db"
-    assert 初始化發布介面資料庫(新資料庫) == tuple(range(1, 14))
+    assert 初始化發布介面資料庫(新資料庫) == tuple(range(1, 15))
     assert 初始化發布介面資料庫(新資料庫) == ()
     升級資料庫 = tmp_path / "upgrade.db"
     assert 執行遷移(升級資料庫, 載入發布介面遷移()[:12]) == tuple(range(1, 13))
-    assert 初始化發布介面資料庫(升級資料庫) == (13,)
+    assert 初始化發布介面資料庫(升級資料庫) == (13, 14)
     with sqlite3.connect(升級資料庫) as 連線:
         assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
         欄位 = [列[1] for 列 in 連線.execute("PRAGMA table_info(published_session_turn_pairs)")]

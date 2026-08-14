@@ -26,8 +26,8 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
-_完整結構數 = 66
-_完整結構雜湊 = "035d356cb6b0c8a4b3b6ea27484281bd6e6fc3eaf010832c12c8fc43a8b5a2c9"
+_完整結構數 = 70
+_完整結構雜湊 = "b4746cd11498f4ab58ab98ff9032080140a53bf2d038bc738c870205113433dc"
 _單一結構SQL最大位元組 = 65536
 _完整結構SQL總最大位元組 = 1048576
 _完整結構物件 = tuple(
@@ -36,6 +36,7 @@ _完整結構物件 = tuple(
             "idx_audit_events_endpoint_time", "idx_audit_events_invocation_time",
             "idx_audit_events_resource_time", "idx_audit_events_retention_invocation_id",
             "idx_auth_failure_rate_counters_window_start", "idx_endpoint_credentials_endpoint_lifecycle",
+            "idx_endpoint_invocation_safe_errors_code",
             "idx_endpoint_invocations_credential_created",
             "idx_endpoint_invocations_endpoint_created", "idx_endpoint_invocations_retention_candidates",
             "idx_endpoint_invocations_status_created", "idx_endpoint_redactions_audit",
@@ -48,7 +49,7 @@ _完整結構物件 = tuple(
         )),
         ("table", (
             "audit_events", "auth_failure_rate_counters", "endpoint_credentials",
-            "endpoint_invocations", "endpoint_redactions",
+            "endpoint_invocation_safe_errors", "endpoint_invocations", "endpoint_redactions",
             "endpoint_tool_calls", "published_api_schema_migrations", "published_draft_consumptions",
             "published_endpoint_version_metadata", "published_endpoint_versions", "published_endpoints",
             "published_session_turn_pairs", "published_skill_bundles", "rate_limit_counters", "run_events",
@@ -57,6 +58,7 @@ _完整結構物件 = tuple(
         ("trigger", (
             "audit_events_no_delete", "audit_events_no_update",
             "endpoint_credentials_allowlist_insert_check", "endpoint_credentials_allowlist_update_check",
+            "endpoint_invocation_safe_error_after_insert", "endpoint_invocation_safe_error_after_update",
             "endpoint_redactions_no_delete", "endpoint_redactions_no_update",
             "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
             "finite_endpoint_credentials_insert", "finite_endpoint_credentials_update",

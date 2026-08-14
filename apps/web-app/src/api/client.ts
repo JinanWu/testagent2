@@ -239,13 +239,45 @@ export async function apiRequest(
   let parsed: unknown
   try {
     throwIfAborted(options.signal)
-    parsed = JSON.parse(text) as unknown
+    parsed = parseSafeJson(text)
   } catch {
     throwIfAborted(options.signal)
     throw new ApiFormatError()
   }
   throwIfAborted(options.signal)
   return parsed
+}
+
+export function parseSafeJson(text: string): unknown {
+  if (typeof text !== 'string' || text.length === 0) throw new ApiFormatError()
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') inString = false
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      continue
+    }
+    if (character !== '-' && (character < '0' || character > '9')) continue
+    const match = /^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(text.slice(index))
+    if (match === null) continue
+    const numeric = Number(match[0])
+    if (!Number.isFinite(numeric) || (Number.isInteger(numeric) && !Number.isSafeInteger(numeric))) {
+      throw new ApiFormatError()
+    }
+    index += match[0].length - 1
+  }
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    throw new ApiFormatError()
+  }
 }
 
 export function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {

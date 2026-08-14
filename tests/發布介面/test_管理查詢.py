@@ -1562,7 +1562,8 @@ def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {"raw": "RAW_MARKER"},
         "metadata": {}, "output": None, "error": {"code": "timeout"}, "usage": None,
-        "metadata_size_bytes": 1, "metadata_sha256": "a" * 64, "latency_ms": 1.0,
+        "metadata_size_bytes": 2,
+        "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0,
         "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
         "run_events": [], "tool_calls": [], "redactions": [],
     }
@@ -1584,7 +1585,7 @@ def test_A18完整詳情逐欄bounded且內部儲存不可變():
         "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {}, "metadata": {},
-        "output": None, "error": None, "usage": None, "metadata_size_bytes": 0,
+        "output": None, "error": None, "usage": None, "metadata_size_bytes": None,
         "metadata_sha256": None, "latency_ms": None, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
@@ -1608,12 +1609,120 @@ def test_A18完整詳情逐欄bounded且內部儲存不可變():
         with pytest.raises(Exception):
             建立管理員呼叫完整詳情({**基本, "input": 過量})
 
+    for 安全整數 in (-(2**53) + 1, 2**53 - 1):
+        assert 建立管理員呼叫完整詳情(
+            {**基本, "input": {"number": 安全整數}}
+        ).建立JSON()["input"] == {"number": 安全整數}
+    for 不安全整數 in (-(2**53), 2**53):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, "input": {"number": 不安全整數}})
+
     詳情 = 建立管理員呼叫完整詳情(基本)
     with pytest.raises((AttributeError, TypeError)):
         詳情._內容 = b"mutated"
     object.__setattr__(詳情, "_內容", b"not-json")
     with pytest.raises(Exception):
         詳情.建立JSON()
+
+
+def test_A18完整詳情child與時間必須符合canonical_storage語意():
+    """Public detail不得接受canonical storage不可能產生的event/tool/time組合。"""
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {}, "metadata": None,
+        "output": None, "error": {"code": "timeout"}, "usage": None,
+        "metadata_size_bytes": None, "metadata_sha256": None, "latency_ms": None,
+        "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [], "redactions": [],
+    }
+    事件 = {
+        "id": "event-1", "sequence_number": 1, "event_type": "model",
+        "payload": {}, "created_at": 1.5,
+    }
+    成功工具 = {
+        "id": "tool-1", "run_event_id": "event-1", "sequence_number": 1,
+        "tool_name": "lookup", "arguments": {}, "outcome": "success", "result": {},
+        "error": None, "latency_ms": 1.0, "retry_of_tool_call_id": None, "created_at": 1.5,
+    }
+    assert 建立管理員呼叫完整詳情(
+        {**基本, "run_events": [事件], "tool_calls": [成功工具]}
+    ).建立JSON()["tool_calls"] == [成功工具]
+
+    for 破壞 in (
+        {"completed_at": 0.5},
+        {"run_events": [{**事件, "sequence_number": 0}]},
+        {"run_events": [{**事件, "payload": []}]},
+        {"tool_calls": [{**成功工具, "sequence_number": 0}]},
+        {"tool_calls": [{**成功工具, "arguments": []}]},
+        {"tool_calls": [{**成功工具, "outcome": "partial"}]},
+        {"tool_calls": [{**成功工具, "result": None}]},
+        {"tool_calls": [{**成功工具, "error": {}}]},
+        {"tool_calls": [{**成功工具, "outcome": "error", "result": {}, "error": {}}]},
+        {"tool_calls": [{**成功工具, "outcome": "error", "result": None, "error": None}]},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **破壞})
+
+
+def test_A18完整詳情metadata_size與hash必須綁定canonical_UTF8_bytes():
+    """Metadata metrics若存在，必須成對且精確對應writer使用的canonical UTF-8 bytes。"""
+    metadata = {"中文": [1, True], "a": "b"}
+    canonical = json.dumps(
+        metadata, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "succeeded", "input": {}, "metadata": metadata,
+        "output": {}, "error": None, "usage": None,
+        "metadata_size_bytes": len(canonical),
+        "metadata_sha256": hashlib.sha256(canonical).hexdigest(),
+        "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [], "redactions": [],
+    }
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["metadata"] == metadata
+    for 破壞 in (
+        {"metadata_size_bytes": len(canonical) + 1},
+        {"metadata_sha256": "a" * 64},
+        {"metadata_size_bytes": None},
+        {"metadata_sha256": None},
+        {"metadata": None},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **破壞})
+
+
+def test_A18完整詳情redaction_ledger與canonical_tombstone必須雙向精確綁定():
+    """每筆ledger只能對應一個exact tombstone，且payload不得有無ledger墓碑。"""
+    墓碑 = {"$tombstone": {"redaction_id": "red-1", "redacted_at": 3.0}}
+    遮蔽 = {
+        "id": "red-1", "target_type": "metadata", "target_row_id": "inv-1",
+        "json_path": "/private", "reason": "privacy", "is_tombstone": True,
+        "redacted_at": 3.0,
+    }
+    基本 = {
+        "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
+        "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
+        "message_id": None, "status": "failed", "input": {},
+        "metadata": {"private": 墓碑}, "output": None, "error": {"code": "timeout"},
+        "usage": None, "metadata_size_bytes": 99, "metadata_sha256": "a" * 64,
+        "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
+        "run_events": [], "tool_calls": [], "redactions": [遮蔽],
+    }
+    assert 建立管理員呼叫完整詳情(基本).建立JSON()["metadata"] == {"private": 墓碑}
+    for 破壞 in (
+        {"redactions": []},
+        {"metadata": {"private": None}},
+        {"metadata": {"private": {"$tombstone": {"redaction_id": "red-2", "redacted_at": 3.0}}}},
+        {"metadata": {"private": {"$tombstone": {"redaction_id": "red-1", "redacted_at": 4.0}}}},
+        {"metadata": {"other": 墓碑}},
+        {"metadata": {"private": {**墓碑, "extra": True}}},
+        {"redactions": [{**遮蔽, "target_row_id": "inv-other"}]},
+        {"redactions": [遮蔽, dict(遮蔽)]},
+    ):
+        with pytest.raises(Exception):
+            建立管理員呼叫完整詳情({**基本, **破壞})
 
 
 def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_path():
@@ -1623,7 +1732,7 @@ def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_p
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": 7, "metadata": {},
         "output": 3.14, "error": False, "usage": [1], "metadata_size_bytes": 2,
-        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == 7
@@ -1648,7 +1757,7 @@ def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": "合法 scalar raw", "metadata": {},
         "output": None, "error": None, "usage": None, "metadata_size_bytes": 2,
-        "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
+        "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
     event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
@@ -1681,7 +1790,8 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
         "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
-        "error": None, "usage": None, "metadata_size_bytes": 2, "metadata_sha256": "a" * 64,
+        "error": None, "usage": None, "metadata_size_bytes": 2,
+        "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "latency_ms": 1.0, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
         "run_events": [], "tool_calls": [], "redactions": [],
     }
@@ -1717,7 +1827,7 @@ def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
         "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
-        "error": None, "usage": None, "metadata_size_bytes": 0, "metadata_sha256": None,
+        "error": None, "usage": None, "metadata_size_bytes": None, "metadata_sha256": None,
         "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
         "run_events": [], "tool_calls": [], "redactions": [],
     }

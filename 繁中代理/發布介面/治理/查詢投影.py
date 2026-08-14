@@ -16,7 +16,7 @@ from ..協定 import AuditEventSink
 from ..領域模型 import AuditActorRef, AuditEvent, AuditMetadata, AuditResourceRef
 from ..領域模型 import InvocationRef, PublishedUsage
 from .稽核結構 import _LEDGER
-from .遮蔽 import _確認墓碑, _解析路徑, _驗證遮蔽schema
+from .遮蔽 import _解析路徑, _驗證遮蔽schema
 from .管理查詢契約 import (
     ADMIN_INVOCATION_AUDIT_ACTION,
     管理員呼叫列表項目,
@@ -33,6 +33,7 @@ from .管理查詢契約 import (
     擁有者安全詳情,
     建立管理員呼叫完整詳情,
     建立擁有者安全詳情,
+    _驗證完整詳情墓碑一致性,
 )
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -40,6 +41,7 @@ _固定錯誤 = "呼叫紀錄不可取得"
 _建立連線 = sqlite3.connect
 _最大JSON位元組 = 1_048_576
 _最大JSON節點 = 4096
+_最大JSON深度 = 128
 _最大子列 = 4096
 _欄位指紋 = {
     "published_endpoints": (
@@ -61,6 +63,10 @@ _欄位指紋 = {
         ("metadata_sha256", "TEXT", 0, None, 0), ("latency_ms", "REAL", 0, None, 0),
         ("pricing_version", "TEXT", 0, None, 0), ("created_at", "REAL", 1, None, 0),
         ("completed_at", "REAL", 0, None, 0),
+    ),
+    "endpoint_invocation_safe_errors": (
+        ("invocation_id", "TEXT", 0, None, 1),
+        ("error_code", "TEXT", 1, None, 0),
     ),
     "run_events": (
         ("id", "TEXT", 0, None, 1), ("invocation_id", "TEXT", 1, None, 0),
@@ -89,6 +95,9 @@ _外鍵指紋 = {
         (1, 1, "published_endpoint_versions", "endpoint_id", "endpoint_id", "NO ACTION", "NO ACTION", "NONE"),
         (2, 0, "published_endpoints", "endpoint_id", "id", "NO ACTION", "RESTRICT", "NONE"),
     ),
+    "endpoint_invocation_safe_errors": (
+        (0, 0, "endpoint_invocations", "invocation_id", "id", "NO ACTION", "CASCADE", "NONE"),
+    ),
     "run_events": (
         (0, 0, "endpoint_invocations", "invocation_id", "id", "NO ACTION", "RESTRICT", "NONE"),
     ),
@@ -114,6 +123,10 @@ _索引指紋 = {
         "idx_endpoint_invocations_endpoint_created": (0, "c", 0, ((1, "endpoint_id"), (17, "created_at"))),
         "sqlite_autoindex_endpoint_invocations_2": (1, "u", 0, ((4, "request_id"),)),
         "sqlite_autoindex_endpoint_invocations_1": (1, "pk", 0, ((0, "id"),)),
+    },
+    "endpoint_invocation_safe_errors": {
+        "idx_endpoint_invocation_safe_errors_code": (0, "c", 0, ((1, "error_code"), (0, "invocation_id"))),
+        "sqlite_autoindex_endpoint_invocation_safe_errors_1": (1, "pk", 0, ((0, "invocation_id"),)),
     },
     "run_events": {
         "idx_run_events_retention_invocation_id": (0, "c", 0, ((1, "invocation_id"), (0, "id"))),
@@ -170,7 +183,7 @@ class 管理員原始資料稽核閘門:
         /,
     ) -> 管理員呼叫完整詳情 | 管理員拒絕稽核收據:
         """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
-        失敗 = 稽核已提交 = 配對已判定 = 已授權 = 配對存在 = False
+        失敗 = 稽核已提交 = 配對已判定 = 原始讀取已開始 = 已授權 = 配對存在 = False
         結果類型 = None
         控制 = 結果 = 事件 = None
         接收器 = self._sink
@@ -209,6 +222,7 @@ class 管理員原始資料稽核閘門:
                 結果類型 = 管理員呼叫不存在錯誤
                 失敗 = True
             else:
+                原始讀取已開始 = True
                 結果 = 建立管理員呼叫完整詳情(
                     原始查詢(端點識別碼, 呼叫識別碼)
                 )
@@ -221,6 +235,8 @@ class 管理員原始資料稽核閘門:
                 結果類型 = 管理員呼叫查詢錯誤
             elif not 稽核已提交:
                 結果類型 = 管理員呼叫稽核錯誤
+            elif 原始讀取已開始:
+                結果類型 = 管理員呼叫查詢錯誤
             elif type(捕捉) in (管理員呼叫不存在錯誤, 管理員呼叫查詢錯誤):
                 結果類型 = type(捕捉)
             else:
@@ -229,7 +245,7 @@ class 管理員原始資料稽核閘門:
             失敗 = True
         self = 管理員授權 = 管理員識別碼 = 請求識別碼 = 稽核事件識別碼 = None
         發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = 配對查詢 = None  # type: ignore[assignment]
-        已授權 = 配對存在 = 稽核已提交 = 配對已判定 = False
+        已授權 = 配對存在 = 稽核已提交 = 配對已判定 = 原始讀取已開始 = False
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
@@ -489,12 +505,13 @@ class SQLite呼叫查詢投影:
             位置識別碼 = None if 安全位置 is None else 安全位置.呼叫識別碼
             游標 = 連線.execute(
                 "SELECT i.id,i.endpoint_id,i.endpoint_version_id,i.request_id,i.status,"
-                "json_extract(i.error_json,'$.code'),i.latency_ms,i.created_at,i.completed_at,"
+                "se.error_code,i.latency_ms,i.created_at,i.completed_at,"
                 "EXISTS(SELECT 1 FROM endpoint_redactions AS r WHERE r.invocation_id=i.id) "
-                "FROM endpoint_invocations AS i WHERE i.endpoint_id=? "
+                "FROM endpoint_invocations AS i LEFT JOIN endpoint_invocation_safe_errors AS se "
+                "ON se.invocation_id=i.id WHERE i.endpoint_id=? "
                 "AND (? IS NULL OR i.created_at>=?) AND (? IS NULL OR i.created_at<=?) "
                 "AND (? IS NULL OR i.status=?) "
-                "AND (? IS NULL OR json_extract(i.error_json,'$.code')=?) "
+                "AND (? IS NULL OR se.error_code=?) "
                 "AND (? IS NULL OR i.created_at<? OR (i.created_at=? AND i.id<?)) "
                 "ORDER BY i.created_at DESC,i.id DESC LIMIT ?",
                 (
@@ -692,7 +709,6 @@ def _讀取管理員原始資料(
                           "result": 工具JSON[1], "error": 工具JSON[2], "latency_ms": 項[5],
                           "retry_of_tool_call_id": 項[6], "created_at": 項[7]})
             游標.close()
-        _核對投影墓碑(遮蔽列, 輸入, 中繼資料, 輸出, 錯誤, 事件, 工具)
         結果 = {
             "invocation": InvocationRef(列[0], 列[4], 列[5]).to_json(),
             "endpoint_id": 列[1], "endpoint_version_id": 列[2], "credential_id": 列[3],
@@ -707,6 +723,7 @@ def _讀取管理員原始資料(
                 "is_tombstone": True, "redacted_at": 遮蔽[11],
             } for 遮蔽 in 遮蔽列],
         }
+        _驗證完整詳情墓碑一致性(結果)
         連線.commit()
         已開始 = False
     except _控制流程 as 捕捉控制:
@@ -787,14 +804,14 @@ def _預檢遮蔽中繼(
     選取, _, _ = _遮蔽中繼選取()
     游標 = 連線.execute(
         f"SELECT {選取} FROM endpoint_redactions r LEFT JOIN audit_events a "
-        "ON a.id=r.audit_event_id WHERE r.invocation_id=? ORDER BY r.rowid LIMIT 9",
-        (呼叫識別碼,),
+        "ON a.id=r.audit_event_id WHERE r.invocation_id=? ORDER BY r.rowid LIMIT ?",
+        (呼叫識別碼, _最大子列 + 1),
     )
     try:
         中繼列 = _讀取有限列(游標, 53)
     finally:
         游標.close()
-    if len(中繼列) > 8:
+    if len(中繼列) > _最大子列:
         raise ValueError
     結果 = []
     for 項 in 中繼列:
@@ -910,66 +927,6 @@ def _驗證遮蔽語意(
         raise ValueError
 
 
-def _核對投影墓碑(
-    遮蔽列: tuple[tuple[Any, ...], ...], 輸入: Any, 中繼: Any, 輸出: Any, 錯誤: Any,
-    事件: list[dict[str, Any]], 工具: list[dict[str, Any]],
-) -> None:
-    """逐列確認 payload 的 exact target/path 仍是 ledger 指定 canonical tombstone。"""
-    呼叫payload = {"invocation_input": 輸入, "metadata": 中繼, "output": 輸出, "error": 錯誤}
-    目標payload = [(類型, "", payload) for 類型, payload in 呼叫payload.items()]
-    目標payload.extend(("run_event", 項["id"], 項["payload"]) for 項 in 事件)
-    for 項 in 工具:
-        目標payload.extend((("tool_arguments", 項["id"], 項["arguments"]),
-                          ("tool_result", 項["id"], 項["result"]),
-                          ("tool_error", 項["id"], 項["error"])))
-    發現 = set()
-    for 類型, 列ID, payload in 目標payload:
-        _收集payload墓碑(payload, "", 類型, 列ID, 發現)
-    預期 = {(列[2], "" if 列[2] in 呼叫payload else 列[3], 列[4], 列[0], 列[11])
-          for 列 in 遮蔽列}
-    if 發現 != 預期:
-        raise ValueError
-    for 列 in 遮蔽列:
-        類型, 列ID, 路徑 = 列[2], 列[3], 列[4]
-        if 類型 in 呼叫payload:
-            payload = 呼叫payload[類型]
-        elif 類型 == "run_event":
-            匹配 = [項 for 項 in 事件 if 項["id"] == 列ID]
-            if len(匹配) != 1:
-                raise ValueError
-            payload = 匹配[0]["payload"]
-        else:
-            匹配 = [項 for 項 in 工具 if 項["id"] == 列ID]
-            if len(匹配) != 1:
-                raise ValueError
-            payload = 匹配[0][{"tool_arguments": "arguments", "tool_result": "result",
-                              "tool_error": "error"}[類型]]
-        _確認墓碑(payload, 路徑, 列[0], 列[11])
-
-
-def _收集payload墓碑(
-    值: Any, 路徑: str, 類型: str, 列ID: str, 結果: set[Any]
-) -> None:
-    """在既有 JSON 節點預算內收集 canonical tombstone，拒絕無 ledger 的墓碑。"""
-    if type(值) is dict and "$tombstone" in 值:
-        if set(值) != {"$tombstone"} or type(值["$tombstone"]) is not dict:
-            raise ValueError
-        墓碑 = 值["$tombstone"]
-        if (set(墓碑) != {"redaction_id", "redacted_at"}
-                or not _安全識別碼(墓碑.get("redaction_id"))
-                or not _安全時間(墓碑.get("redacted_at"))):
-            raise ValueError
-        結果.add((類型, 列ID, 路徑, 墓碑["redaction_id"], 墓碑["redacted_at"]))
-        return
-    if type(值) is dict:
-        for 鍵, 項 in 值.items():
-            片段 = 鍵.replace("~", "~0").replace("/", "~1")
-            _收集payload墓碑(項, 路徑 + "/" + 片段, 類型, 列ID, 結果)
-    elif type(值) is list:
-        for 索引, 項 in enumerate(值):
-            _收集payload墓碑(項, 路徑 + "/" + str(索引), 類型, 列ID, 結果)
-
-
 def _驗證路徑與結構(連線: sqlite3.Connection, 路徑: str) -> None:
     """在 read transaction 內重驗 inode、完整 遷移帳本 與投影資料表欄位。"""
     可見 = os.lstat(路徑)
@@ -1075,7 +1032,7 @@ def _累計原始JSON位元組(文字: str, 預算: list[int]) -> None:
 def _JSON樹為精確內建型別(值: Any, 深度: int, 預算: list[int]) -> bool:
     """遞迴拒絕超深、聚合過多或非 exact/finite built-in JSON 值。"""
     預算[1] += 1
-    if 預算[1] > _最大JSON節點 or 深度 > 16:
+    if 預算[1] > _最大JSON節點 or 深度 > _最大JSON深度:
         return False
     if 值 is None or type(值) in (bool, int):
         return True

@@ -19,6 +19,7 @@ import re
 import time
 from typing import cast
 
+from ..嚴格JSON import 建立正規JSON
 from .遮蔽 import 驗證遮蔽公開欄位
 
 
@@ -43,6 +44,7 @@ ADMIN_INVOCATION_ERROR_CONTRACT = {
     503: "呼叫紀錄暫時不可取得",
     500: "呼叫紀錄不可取得",
 }
+_最大安全JSON整數 = 2**53 - 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,32 +236,53 @@ def _驗證管理員完整詳情(值: object) -> None:
                 type(詳情["pricing_version"]) is not str or len(詳情["pricing_version"]) > 256))
             or not _是有限時間(詳情["created_at"])
             or not _是可空有限時間(詳情["completed_at"])
+            or (詳情["completed_at"] is not None
+                and cast(int | float, 詳情["completed_at"])
+                < cast(int | float, 詳情["created_at"]))
             or type(詳情["run_events"]) is not list or type(詳情["tool_calls"]) is not list
             or type(詳情["redactions"]) is not list
             or len(詳情["run_events"]) + len(詳情["tool_calls"]) + len(詳情["redactions"]) > 4096):
         raise ValueError
     for raw值 in (詳情["input"], 詳情["metadata"], 詳情["output"], 詳情["error"], 詳情["usage"]):
         _驗證raw無禁止secret(raw值)
+    事件識別碼: set[str] = set()
+    事件序號: set[int] = set()
     for 事件 in cast(list[object], 詳情["run_events"]):
         if (type(事件) is not dict or set(事件) != _事件欄位
                 or not _是識別碼(事件["id"])
-                or type(事件["sequence_number"]) is not int or 事件["sequence_number"] < 0
+                or 事件["id"] in 事件識別碼
+                or type(事件["sequence_number"]) is not int or 事件["sequence_number"] <= 0
+                or 事件["sequence_number"] in 事件序號
                 or type(事件["event_type"]) is not str or not 1 <= len(事件["event_type"]) <= 256
+                or type(事件["payload"]) is not dict
                 or not _是有限時間(事件["created_at"])):
             raise ValueError
+        事件識別碼.add(cast(str, 事件["id"]))
+        事件序號.add(cast(int, 事件["sequence_number"]))
         _驗證raw無禁止secret(事件["payload"])
+    工具識別碼: set[str] = set()
+    工具序號: set[int] = set()
     for 工具 in cast(list[object], 詳情["tool_calls"]):
         if (type(工具) is not dict or set(工具) != _工具欄位
                 or not _是識別碼(工具["id"])
-                or (工具["run_event_id"] is not None and not _是識別碼(工具["run_event_id"]))
-                or type(工具["sequence_number"]) is not int or 工具["sequence_number"] < 0
+                or 工具["id"] in 工具識別碼
+                or (工具["run_event_id"] is not None and 工具["run_event_id"] not in 事件識別碼)
+                or type(工具["sequence_number"]) is not int or 工具["sequence_number"] <= 0
+                or 工具["sequence_number"] in 工具序號
                 or type(工具["tool_name"]) is not str or not 1 <= len(工具["tool_name"]) <= 256
-                or type(工具["outcome"]) is not str or not 1 <= len(工具["outcome"]) <= 256
+                or type(工具["arguments"]) is not dict
+                or 工具["outcome"] not in ("success", "error")
+                or (工具["outcome"] == "success"
+                    and (工具["result"] is None or 工具["error"] is not None))
+                or (工具["outcome"] == "error"
+                    and (工具["result"] is not None or 工具["error"] is None))
                 or (工具["latency_ms"] is not None and not _是有限時間(工具["latency_ms"]))
                 or (工具["retry_of_tool_call_id"] is not None
-                    and not _是識別碼(工具["retry_of_tool_call_id"]))
+                    and 工具["retry_of_tool_call_id"] not in 工具識別碼)
                 or not _是有限時間(工具["created_at"])):
             raise ValueError
+        工具識別碼.add(cast(str, 工具["id"]))
+        工具序號.add(cast(int, 工具["sequence_number"]))
         for raw值 in (工具["arguments"], 工具["result"], 工具["error"]):
             _驗證raw無禁止secret(raw值)
     for 遮蔽 in cast(list[object], 詳情["redactions"]):
@@ -270,6 +293,107 @@ def _驗證管理員完整詳情(值: object) -> None:
                 or not _是有限時間(遮蔽["redacted_at"])):
             raise ValueError
         驗證遮蔽公開欄位(遮蔽["target_type"], 遮蔽["json_path"], 遮蔽["reason"])
+    _驗證完整詳情墓碑一致性(詳情)
+    _驗證metadata關聯(詳情)
+
+
+def _驗證metadata關聯(詳情: dict[str, object]) -> None:
+    """驗證可空metrics成對，存在時綁定writer canonical UTF-8 bytes。"""
+    中繼 = 詳情["metadata"]
+    大小 = 詳情["metadata_size_bytes"]
+    摘要 = 詳情["metadata_sha256"]
+    if (大小 is None) != (摘要 is None):
+        raise ValueError
+    if 大小 is None:
+        return
+    if type(中繼) is not dict:
+        raise ValueError
+    if any(
+        cast(dict[str, object], 遮蔽)["target_type"] == "metadata"
+        for 遮蔽 in cast(list[object], 詳情["redactions"])
+    ):
+        return
+    正規位元組 = 建立正規JSON(中繼).encode("utf-8")
+    if len(正規位元組) != 大小 or hashlib.sha256(正規位元組).hexdigest() != 摘要:
+        raise ValueError
+
+
+def _驗證完整詳情墓碑一致性(詳情: dict[str, object]) -> None:
+    """雙向核對所有canonical tombstone與sanitized redaction ledger。"""
+    呼叫 = cast(dict[str, object], 詳情["invocation"])
+    呼叫ID = cast(str, 呼叫["id"])
+    目標: dict[tuple[str, str], object] = {
+        ("invocation_input", 呼叫ID): 詳情["input"],
+        ("metadata", 呼叫ID): 詳情["metadata"],
+        ("output", 呼叫ID): 詳情["output"],
+        ("error", 呼叫ID): 詳情["error"],
+        ("__usage_forbidden__", 呼叫ID): 詳情["usage"],
+    }
+    for 事件 in cast(list[dict[str, object]], 詳情["run_events"]):
+        目標[("run_event", cast(str, 事件["id"]))] = 事件["payload"]
+    for 工具 in cast(list[dict[str, object]], 詳情["tool_calls"]):
+        列ID = cast(str, 工具["id"])
+        目標[("tool_arguments", 列ID)] = 工具["arguments"]
+        目標[("tool_result", 列ID)] = 工具["result"]
+        目標[("tool_error", 列ID)] = 工具["error"]
+
+    _驗證墓碑目標一致性(目標, cast(list[object], 詳情["redactions"]))
+
+
+def _驗證墓碑目標一致性(
+    目標: dict[tuple[str, str], object], 原遮蔽列: list[object], /
+) -> None:
+    """以唯一底層authority雙向核對payload targets與sanitized ledger。"""
+
+    預期: set[tuple[str, str, str, str, int | float]] = set()
+    for 原遮蔽 in 原遮蔽列:
+        遮蔽 = cast(dict[str, object], 原遮蔽)
+        鍵 = (cast(str, 遮蔽["target_type"]), cast(str, 遮蔽["target_row_id"]))
+        項 = (
+            鍵[0], 鍵[1], cast(str, 遮蔽["json_path"]), cast(str, 遮蔽["id"]),
+            cast(int | float, 遮蔽["redacted_at"]),
+        )
+        if 鍵 not in 目標 or 項 in 預期:
+            raise ValueError
+        預期.add(項)
+    if len(預期) != len(原遮蔽列):
+        raise ValueError
+
+    發現: set[tuple[str, str, str, str, int | float]] = set()
+    for (類型, 列ID), payload in 目標.items():
+        _收集完整詳情墓碑(payload, 類型, 列ID, 發現)
+    if 發現 != 預期:
+        raise ValueError
+
+
+def _收集完整詳情墓碑(
+    值: object, 類型: str, 列ID: str,
+    結果: set[tuple[str, str, str, str, int | float]],
+) -> None:
+    """Iterative收集exact tombstone及RFC 6901 path，拒絕相似但非canonical形狀。"""
+    待驗證: list[tuple[object, str]] = [(值, "")]
+    while 待驗證:
+        項, 路徑 = 待驗證.pop()
+        if type(項) is dict and "$tombstone" in 項:
+            墓碑外層 = cast(dict[str, object], 項)
+            墓碑 = 墓碑外層.get("$tombstone")
+            if (set(墓碑外層) != {"$tombstone"} or type(墓碑) is not dict
+                    or set(墓碑) != {"redaction_id", "redacted_at"}
+                    or not _是識別碼(墓碑.get("redaction_id"))
+                    or not _是有限時間(墓碑.get("redacted_at"))):
+                raise ValueError
+            結果.add((
+                類型, 列ID, 路徑, cast(str, 墓碑["redaction_id"]),
+                cast(int | float, 墓碑["redacted_at"]),
+            ))
+            continue
+        if type(項) is dict:
+            for 鍵, 子項 in cast(dict[str, object], 項).items():
+                片段 = 鍵.replace("~", "~0").replace("/", "~1")
+                待驗證.append((子項, 路徑 + "/" + 片段))
+        elif type(項) is list:
+            for 索引, 子項 in enumerate(cast(list[object], 項)):
+                待驗證.append((子項, 路徑 + "/" + str(索引)))
 
 
 def _驗證raw無禁止secret(值: object) -> None:
@@ -289,6 +413,10 @@ def _驗證raw無禁止secret(值: object) -> None:
                     or _憑證token形狀.search(文字) is not None
                     or _絕對檔案路徑格式.search(文字) is not None
                     or any(標記 in 正規文字 for 標記 in _禁止敏感值標記)):
+                raise ValueError
+            continue
+        if type(項) is int:
+            if not -_最大安全JSON整數 <= cast(int, 項) <= _最大安全JSON整數:
                 raise ValueError
             continue
         if type(項) is list:
@@ -328,7 +456,11 @@ def _編碼bounded_JSON(值: object) -> bytes:
         節點 += 1
         if 節點 > _最大詳情JSON節點 or 深度 > _最大詳情JSON深度:
             raise ValueError
-        if 項 is None or type(項) in (str, bool, int):
+        if 項 is None or type(項) in (str, bool):
+            continue
+        if type(項) is int:
+            if not -_最大安全JSON整數 <= cast(int, 項) <= _最大安全JSON整數:
+                raise ValueError
             continue
         if type(項) is float:
             if not math.isfinite(cast(float, 項)):

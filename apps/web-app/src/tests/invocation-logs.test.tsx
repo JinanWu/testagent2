@@ -16,6 +16,7 @@ import { ADMIN_LOGS_ROUTE, DEFAULT_APP_ROUTE } from '../app/routes'
 
 const RAW_OLD = 'RAW_MARKER_OLD'
 const RAW_NEW = 'RAW_MARKER_NEW'
+const VALID_CURSOR = `payload.${'a'.repeat(43)}`
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -59,7 +60,9 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
     message_id: null,
     status: 'failed',
     input: marker === null ? null : { prompt: marker },
-    metadata: {},
+    metadata: { secret: { $tombstone: {
+      redaction_id: `redaction-${invocationId}`, redacted_at: 9,
+    } } },
     output: marker === null ? null : { answer: marker },
     error: { code: 'timeout' },
     usage: null,
@@ -71,9 +74,9 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
     completed_at: 11,
     run_events: [{
       id: `event-${invocationId}`,
-      sequence_number: 0,
+      sequence_number: 1,
       event_type: 'completed',
-      payload: marker === null ? null : { state: marker },
+      payload: marker === null ? {} : { state: marker },
       created_at: 10.5,
     }],
     tool_calls: [],
@@ -133,11 +136,11 @@ describe('A18 Admin logs production decoder與API boundary', () => {
   })
 
   it('重建exact list/detail快照且不受caller後續突變', () => {
-    const rawList = listPage([listItem('invocation-1')], 'cursor.next')
+    const rawList = listPage([listItem('invocation-1')], VALID_CURSOR)
     const parsedList = parseInvocationList(rawList)
     rawList.items[0] = listItem('invocation-changed')
     expect(parsedList.items[0].invocationId).toBe('invocation-1')
-    expect(parsedList.nextCursor).toBe('cursor.next')
+    expect(parsedList.nextCursor).toBe(VALID_CURSOR)
 
     const rawDetail = detail('invocation-1', RAW_NEW)
     const parsedDetail = parseInvocationDetail(rawDetail)
@@ -160,6 +163,30 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     const parsed = parseInvocationDetail(body)
     expect(parsed.metadataSizeBytes).toBeNull()
     expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
+  })
+
+  it('在JSON.parse前拒絕超出safe integer的wire literal且不靜默改值', async () => {
+    const wire = JSON.stringify(detail('invocation-1')).replace(
+      '"metadata_size_bytes":2', '"metadata_size_bytes":9007199254740993',
+    )
+    fetchMock.mockResolvedValueOnce(new Response(wire, {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }))
+    await expect(getInvocationDetail('endpoint-1', 'invocation-1')).rejects.toBeInstanceOf(LogsError)
+  })
+
+  it('以Unicode code point驗證文字、接受空pricing_version並拒絕反向時間filter', async () => {
+    const emoji256 = '😀'.repeat(256)
+    expect(parseInvocationDetail({
+      ...detail('invocation-1'), pricing_version: '',
+      run_events: [{ ...detail('invocation-1').run_events[0], event_type: emoji256 }],
+    }).pricingVersion).toBe('')
+    expect(() => parseInvocationDetail({
+      ...detail('invocation-1'),
+      run_events: [{ ...detail('invocation-1').run_events[0], event_type: `${emoji256}😀` }],
+    })).toThrow(ApiFormatError)
+    await expect(listInvocations('endpoint-1', { fromAt: 20, toAt: 10 })).rejects.toBeInstanceOf(LogsError)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('拒絕canonical遮蔽契約外的path與reason', () => {
@@ -185,6 +212,47 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     }
   })
 
+  it('遞迴要求canonical tombstone與redactions雙向exact binding', () => {
+    const missingLedger = detail('invocation-1')
+    missingLedger.redactions = []
+    expect(() => parseInvocationDetail(missingLedger)).toThrow(ApiFormatError)
+
+    const missingTombstone = detail('invocation-1')
+    missingTombstone.metadata = { secret: null } as unknown as typeof missingTombstone.metadata
+    expect(() => parseInvocationDetail(missingTombstone)).toThrow(ApiFormatError)
+
+    for (const override of [
+      { id: 'redaction-other' }, { redacted_at: 10 }, { json_path: '/other' },
+    ]) {
+      const mismatch = detail('invocation-1')
+      mismatch.redactions[0] = { ...mismatch.redactions[0], ...override }
+      expect(() => parseInvocationDetail(mismatch)).toThrow(ApiFormatError)
+    }
+
+    const escaped = detail('invocation-1')
+    escaped.metadata = { 'a/b~c': escaped.metadata.secret } as unknown as typeof escaped.metadata
+    escaped.redactions[0] = { ...escaped.redactions[0], json_path: '/a~1b~0c' }
+    const inputRedaction = {
+      id: 'redaction-input', target_type: 'invocation_input', target_row_id: 'invocation-1',
+      json_path: '', reason: 'privacy', is_tombstone: true, redacted_at: 10,
+    }
+    escaped.input = {
+      $tombstone: { redaction_id: 'redaction-input', redacted_at: 10 },
+    } as unknown as typeof escaped.input
+    escaped.redactions.push(inputRedaction)
+    expect(parseInvocationDetail(escaped).redactions).toHaveLength(2)
+  })
+
+  it('拒絕storage不可能產生的child語意與raw unsafe integer', () => {
+    const base = detail('invocation-1')
+    const event = base.run_events[0]
+    for (const run_events of [
+      [{ ...event, sequence_number: 0 }],
+      [{ ...event, payload: [] }],
+      [{ ...event, payload: { number: 2**53 } }],
+    ]) expect(() => parseInvocationDetail({ ...base, run_events })).toThrow(ApiFormatError)
+  })
+
   it.each([
     { ...detail('invocation-1'), extra: true },
     { ...detail('invocation-1'), invocation: { ...detail('invocation-1').invocation, extra: true } },
@@ -199,12 +267,12 @@ describe('A18 Admin logs production decoder與API boundary', () => {
 
   it('只發exact same-origin credentialed list/detail GET', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse(listPage([listItem('invocation-1')], 'cursor.next')))
+      .mockResolvedValueOnce(jsonResponse(listPage([listItem('invocation-1')], VALID_CURSOR)))
       .mockResolvedValueOnce(jsonResponse(detail('invocation-1')))
 
     await expect(listInvocations('endpoint-1', {
       status: 'failed', errorCode: 'timeout', limit: 50,
-    })).resolves.toMatchObject({ nextCursor: 'cursor.next' })
+    })).resolves.toMatchObject({ nextCursor: VALID_CURSOR })
     await expect(getInvocationDetail('endpoint-1', 'invocation-1')).resolves.toMatchObject({
       invocation: { id: 'invocation-1' },
     })
@@ -311,7 +379,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
   it('Admin list/detail顯示遮蔽與tombstone且沒有禁止控制項', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(session('admin')))
-      .mockResolvedValueOnce(jsonResponse(listPage([listItem('invocation-1', true)])))
+      .mockResolvedValueOnce(jsonResponse(listPage([listItem('invocation-1', false)])))
       .mockResolvedValueOnce(jsonResponse(detail('invocation-1', null)))
     await act(async () => { renderer = create(<App />) })
     await flush()
@@ -325,10 +393,17 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(2,
       '/api/admin/endpoints/endpoint-1/invocations?from_at=1&to_at=2&limit=50',
       expect.objectContaining({ method: 'GET', credentials: 'include' }))
-    await act(async () => button(renderer!, 'invocation-1 — failed（已遮蔽）').props.onClick())
+    await act(async () => button(renderer!, 'invocation-1 — failed').props.onClick())
     const source = text(renderer!)
     expect(source).toContain('部分內容已依政策遮蔽')
-    expect(source).toContain('已刪除或無資料')
+    expect(source).toContain('已遮蔽')
+    expect(source).toContain('遮蔽紀錄')
+    expect(source).toContain('/secret')
+    expect(source).toContain('privacy')
+    expect(source).not.toContain('$tombstone')
+    expect(source).not.toContain('redaction_id')
+    expect(source).not.toContain('redacted_at')
+    expect(source).not.toContain('已刪除或無資料')
     expect(source).not.toMatch(/export|download|copy all|copy-all|share link|raw search|匯出|下載|複製全部|分享連結|全文搜尋/i)
   })
 

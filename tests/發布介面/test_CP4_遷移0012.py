@@ -23,7 +23,7 @@ def _建立資料庫(tmp_path):
     副作用：在暫存目錄建立資料庫檔案並寫入測試種子資料。
     """
     路徑 = tmp_path / "db.sqlite3"
-    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 14))
+    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 15))
     連線 = sqlite3.connect(路徑)
     連線.execute("PRAGMA foreign_keys=ON")
     連線.execute("INSERT INTO service_accounts VALUES('sa-1',1,NULL)")
@@ -48,7 +48,7 @@ def test_第十二版帳本指紋資料表限制與不可變性(tmp_path):
     副作用：建立暫存資料庫、寫入測試列並關閉連線。
     """
     連線 = _建立資料庫(tmp_path)
-    assert 遷移帳本[-2] == (12, "0012_建立技能套件收據.sql")
+    assert 遷移帳本[11] == (12, "0012_建立技能套件收據.sql")
     assert 計算資料庫結構指紋(連線) == 資料庫結構指紋
     驗證資料庫結構(連線)
     名稱 = {列[0] for 列 in 連線.execute("SELECT name FROM sqlite_master WHERE type='table'")}
