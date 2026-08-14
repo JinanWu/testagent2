@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import AfterValidator, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
+from pydantic import BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -43,12 +43,12 @@ _遮蔽原因Schema格式 = (
 )
 _遮蔽路徑回應 = Annotated[
     str,
-    AfterValidator(驗證遮蔽公開路徑),
+    BeforeValidator(驗證遮蔽公開路徑),
     WithJsonSchema({"type": "string", "maxLength": 4096, "pattern": _遮蔽路徑格式}),
 ]
 _遮蔽原因回應 = Annotated[
     str,
-    AfterValidator(驗證遮蔽公開原因),
+    BeforeValidator(驗證遮蔽公開原因),
     WithJsonSchema({"type": "string", "minLength": 1, "maxLength": 256,
                     "pattern": _遮蔽原因Schema格式}),
 ]
@@ -68,6 +68,13 @@ def _驗證遮蔽回應時間(值: float, /) -> float:
     return 值
 
 
+def _驗證遮蔽墓碑(值: object, /) -> bool:
+    """只接受literal boolean true，拒絕整數1等coercion形狀。"""
+    if type(值) is not bool or 值 is not True:
+        raise ValueError
+    return True
+
+
 _遮蔽識別碼回應 = Annotated[
     str, BeforeValidator(_驗證遮蔽回應識別碼),
     WithJsonSchema({"type": "string", "pattern": _識別碼格式, "maxLength": 128}),
@@ -75,6 +82,10 @@ _遮蔽識別碼回應 = Annotated[
 _遮蔽時間回應 = Annotated[
     float, BeforeValidator(_驗證遮蔽回應時間),
     WithJsonSchema({"type": "number", "minimum": 0}),
+]
+_遮蔽墓碑回應 = Annotated[
+    Literal[True], BeforeValidator(_驗證遮蔽墓碑),
+    WithJsonSchema({"type": "boolean", "const": True}),
 ]
 
 
@@ -162,7 +173,7 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "target_row_id": (_遮蔽識別碼回應, ...),
         "json_path": (_遮蔽路徑回應, ...),
         "reason": (_遮蔽原因回應, ...),
-        "is_tombstone": (Literal[True], ...), "redacted_at": (_遮蔽時間回應, ...),
+        "is_tombstone": (_遮蔽墓碑回應, ...), "redacted_at": (_遮蔽時間回應, ...),
     }.items()},
 )
 管理員呼叫詳情回應 = create_model(

@@ -233,6 +233,9 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
         {"id": "contains whitespace"},
         {"id": b"redaction-1"},
         {"target_row_id": "contains whitespace"},
+        {"json_path": b"/safe"},
+        {"reason": b"policy"},
+        {"is_tombstone": 1},
         {"redacted_at": -1.0},
         {"redacted_at": float("nan")},
         {"redacted_at": True},
@@ -261,6 +264,7 @@ def test_A18_detail真HTTP_response_model攔截domain故障注入的非法redact
 
 @pytest.mark.parametrize("覆寫", [
     {"id": b"redaction-1"}, {"redacted_at": True}, {"redacted_at": "9"},
+    {"json_path": b"/safe"}, {"reason": b"policy"}, {"is_tombstone": 1},
 ])
 def test_A18_detail真HTTP_response_model拒絕redaction_scalar_coercion(monkeypatch, 覆寫):
     詳情DTO = 管理員呼叫完整詳情(_詳情資料())
