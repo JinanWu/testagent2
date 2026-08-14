@@ -23,6 +23,15 @@ async function availablePort() {
   })
 }
 
+function isolatedPythonEnvironment(overrides = {}) {
+  const environment = { ...process.env, ...overrides }
+  for (const name of ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE']) {
+    delete environment[name]
+  }
+  environment.PYTHONNOUSERSITE = '1'
+  return environment
+}
+
 const python = process.env.A18_BROWSER_PYTHON
 if (!python || !python.startsWith('/')) {
   throw new Error('A18_BROWSER_PYTHON absolute path is required')
@@ -30,27 +39,25 @@ if (!python || !python.startsWith('/')) {
 await access(python, constants.X_OK)
 const preflight = spawnSync(python, ['-c', 'import fastapi, uvicorn, pydantic_core'], {
   encoding: 'utf8',
-  env: { ...process.env, PYTHONPATH: '', AIAGENT_MODEL_MODE: 'fake' },
+  env: isolatedPythonEnvironment({ AIAGENT_MODEL_MODE: 'fake' }),
 })
 if (preflight.status !== 0) {
   throw new Error('A18 browser Python dependency preflight failed')
 }
 
 const temporaryParent = await mkdtemp(join(tmpdir(), 'testagent2-a18-browser-'))
-const stateRoot = join(temporaryParent, 'state')
-const artifactRoot = join(temporaryParent, 'playwright-results')
-const distRoot = resolve('dist')
-const playwright = resolve('node_modules/.bin/playwright')
-const port = await availablePort()
-const browserPassword = randomBytes(32).toString('base64url')
 let status = 1
 try {
+  const stateRoot = join(temporaryParent, 'state')
+  const artifactRoot = join(temporaryParent, 'playwright-results')
+  const distRoot = resolve('dist')
+  const playwright = resolve('node_modules/.bin/playwright')
+  const port = await availablePort()
+  const browserPassword = randomBytes(32).toString('base64url')
   const result = spawnSync(playwright, ['test', '--config=playwright.config.ts'], {
     cwd: process.cwd(),
     stdio: 'inherit',
-    env: {
-      ...process.env,
-      PYTHONPATH: '',
+    env: isolatedPythonEnvironment({
       AIAGENT_MODEL_MODE: 'fake',
       A18_BROWSER_PYTHON: python,
       A18_BROWSER_ROOT: stateRoot,
@@ -59,7 +66,7 @@ try {
       A18_BROWSER_PORT: String(port),
       A18_BROWSER_PASSWORD: browserPassword,
       A18_BROWSER_BASE_URL: `http://127.0.0.1:${port}`,
-    },
+    }),
   })
   status = result.status ?? 1
 } finally {

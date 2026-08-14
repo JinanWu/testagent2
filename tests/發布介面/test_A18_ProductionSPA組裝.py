@@ -166,7 +166,8 @@ def test_backend與API_404永不被SPA_fallback吞掉(tmp_path: Path):
             assert 回應.headers["content-type"].startswith("application/json")
             assert "POST" in 回應.headers["allow"]
         for path in (
-            "/api/not-a-route", "/v1/not-a-route", "/assets/missing.js",
+            "/api/not-a-route", "/v1/not-a-route", "/assets", "/%61ssets",
+            "/assets/missing.js",
             "/assets/%2e%2e/index.html", "/api/%2e%2e/private", "/v1/%2e%2e/private",
         ):
             response = client.get(path)
@@ -176,6 +177,11 @@ def test_backend與API_404永不被SPA_fallback吞掉(tmp_path: Path):
         mutation = client.post("/admin/invocations")
         assert mutation.status_code == 404
         assert b"<div id=\"root\">" not in mutation.content
+        for path in ("/unknown", "/api/unknown", "/assets/missing.js"):
+            response = client.request("PROPFIND", path)
+            assert response.status_code == 404
+            assert response.headers["content-type"].startswith("application/json")
+            assert b"<div id=\"root\">" not in response.content
 
 
 def test_startup快照不可被後續磁碟變更且shutdown清除authority(tmp_path: Path):

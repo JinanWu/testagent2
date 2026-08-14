@@ -25,7 +25,11 @@ from .嚴格JSON import 解析嚴格JSON
 from .憑證.加密 import AESGCM憑證封套
 from .生產Web代理 import 生產Web代理建構器
 from .生產Published執行 import Published生產設定, 生產Controller建構器
-from .生產SPA import ProductionSPA設定, 建立ProductionSPA相依項
+from .生產SPA import (
+    ProductionSPA設定,
+    建立ProductionSPA相依項,
+    拒絕ProductionSPA未知方法Middleware,
+)
 from .生產技能工具 import 安裝生產技能工具
 from .生產組裝 import 建立生產應用程式, 建立生產相依項
 from .應用程式 import 建立網頁應用程式
@@ -113,7 +117,9 @@ def 建立CP4SPAASGI應用程式(
         (*Backend相依.路由器清單, *SPA相依.路由器清單),
         (*SPA相依.資源工廠清單, *Backend相依.資源工廠清單),
     )
-    return 建立網頁應用程式(完整相依, 設定.建立網頁安全設定())
+    應用程式 = 建立網頁應用程式(完整相依, 設定.建立網頁安全設定())
+    應用程式.add_middleware(拒絕ProductionSPA未知方法Middleware)
+    return 應用程式
 
 
 建立Canonical應用程式 = 建立CP4ASGI應用程式

@@ -120,6 +120,37 @@ class _SPA資源:
         狀態.清除(快照)
 
 
+class 拒絕ProductionSPA未知方法Middleware:
+    """在route-policy外的HTTP method進入router前固定回JSON 404。
+
+    描述：只建立reject-only method boundary，不提供SPA內容、不讀取request body。
+    參數：``app`` 是canonical ASGI應用程式。
+    返回值：ASGI呼叫無返回值；核准method轉交內層，其他method直接送出404。
+    """
+
+    def __init__(self, 應用) -> None:
+        """保存canonical ASGI應用。
+
+        描述：建立單一reject-only method boundary。
+        參數：``應用`` 是下一層canonical ASGI callable。
+        返回值：建構完成後不返回值。
+        """
+        self.應用 = 應用
+
+    async def __call__(self, 範圍, 接收, 傳送) -> None:
+        """拒絕route-policy外method或轉交下一層。
+
+        描述：只檢查HTTP method，不讀request body或提供SPA內容。
+        參數：``範圍``、``接收``、``傳送``是標準ASGI介面值。
+        返回值：完成固定404或內層ASGI呼叫後不返回值。
+        """
+        if 範圍.get("type") == "http" and 範圍.get("method") not in ProductionSPA路由方法:
+            回應 = JSONResponse(_固定不存在, status_code=404, headers=dict(_安全標頭))
+            await 回應(範圍, 接收, 傳送)
+            return
+        await self.應用(範圍, 接收, 傳送)
+
+
 def 建立ProductionSPA相依項(設定: ProductionSPA設定) -> 發布介面相依項:
     """建立一个root fallback router与一个startup snapshot resource factory。"""
     if type(設定) is not ProductionSPA設定:
@@ -141,7 +172,7 @@ def 建立ProductionSPA相依項(設定: ProductionSPA設定) -> 發布介面相
             )
         if 請求.method not in {"GET", "HEAD"}:
             return JSONResponse(_固定不存在, status_code=404, headers=dict(_安全標頭))
-        if 前端路徑.startswith("assets/"):
+        if 前端路徑 == "assets" or 前端路徑.startswith("assets/"):
             資源 = 快照.資源.get("/" + 前端路徑)
             if 資源 is None:
                 return JSONResponse(_固定不存在, status_code=404, headers=dict(_安全標頭))
@@ -270,4 +301,6 @@ def _讀取Backend部分匹配方法(請求: Request) -> tuple[str, ...]:
     return tuple(sorted(方法))
 
 
-__all__ = ("ProductionSPA設定", "建立ProductionSPA相依項")
+__all__ = (
+    "ProductionSPA設定", "建立ProductionSPA相依項", "拒絕ProductionSPA未知方法Middleware",
+)
