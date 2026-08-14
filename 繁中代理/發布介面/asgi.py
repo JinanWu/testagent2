@@ -117,9 +117,11 @@ def 建立CP4SPAASGI應用程式(
         (*Backend相依.路由器清單, *SPA相依.路由器清單),
         (*SPA相依.資源工廠清單, *Backend相依.資源工廠清單),
     )
-    應用程式 = 建立網頁應用程式(完整相依, 設定.建立網頁安全設定())
-    應用程式.add_middleware(拒絕ProductionSPA未知方法Middleware)
-    return 應用程式
+    return 建立網頁應用程式(
+        完整相依,
+        設定.建立網頁安全設定(),
+        內層Middleware類別=拒絕ProductionSPA未知方法Middleware,
+    )
 
 
 建立Canonical應用程式 = 建立CP4ASGI應用程式

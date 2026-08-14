@@ -545,6 +545,7 @@ def _驗證網頁安全composition(路由器清單, 設定) -> 網頁安全設�
 
 def _建立應用程式(
     相依項: 發布介面相依項, *, Web安全設定: 網頁安全設定 | None = None,
+    內層Middleware類別: type | None = None,
 ) -> FastAPI:
     """由 exact reconstructed composition 建立隔離 app 的共用實作。"""
     安全相依項 = _重建相依項(相依項)
@@ -619,6 +620,8 @@ def _建立應用程式(
     _重播路由描述(安全相依項.路由器清單, 路由描述, 預期操作描述)
     _驗證應用路由(應用程式, 預期操作描述, 取得健康狀態)
     驗證最終政策(應用程式.routes, 政策清單)
+    if 內層Middleware類別 is not None:
+        應用程式.add_middleware(內層Middleware類別)
     if 安全設定 is not None:
         應用程式.add_middleware(限制登入請求Middleware)
         套用網頁CORS(應用程式, 安全設定)
@@ -633,6 +636,9 @@ def 建立應用程式(相依項: 發布介面相依項) -> FastAPI:
 
 def 建立網頁應用程式(
     相依項: 發布介面相依項, Web安全設定: 網頁安全設定,
+    *, 內層Middleware類別: type | None = None,
 ) -> FastAPI:
-    """以 exact Web 安全設定整合 auth preflight、body bound 與 CORS。"""
-    return _建立應用程式(相依項, Web安全設定=Web安全設定)
+    """以exact Web安全設定整合auth preflight、body bound、內層boundary與CORS。"""
+    return _建立應用程式(
+        相依項, Web安全設定=Web安全設定, 內層Middleware類別=內層Middleware類別,
+    )

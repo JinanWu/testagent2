@@ -178,9 +178,12 @@ def test_backend與API_404永不被SPA_fallback吞掉(tmp_path: Path):
         assert mutation.status_code == 404
         assert b"<div id=\"root\">" not in mutation.content
         for path in ("/unknown", "/api/unknown", "/assets/missing.js"):
-            response = client.request("PROPFIND", path)
+            response = client.request(
+                "PROPFIND", path, headers={"Origin": "http://localhost:5173"},
+            )
             assert response.status_code == 404
             assert response.headers["content-type"].startswith("application/json")
+            assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
             assert b"<div id=\"root\">" not in response.content
 
 
