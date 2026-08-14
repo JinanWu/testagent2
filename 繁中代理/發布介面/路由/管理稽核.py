@@ -7,7 +7,7 @@ import re
 import secrets
 import time
 import inspect
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
@@ -27,6 +27,7 @@ from ..治理.管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫游標編解碼器,
     管理員呼叫稽核錯誤,
+    管理員拒絕稽核已提交,
 )
 from ..網頁工作階段 import 網頁使用者
 
@@ -110,9 +111,13 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
 管理員遮蔽回應 = create_model(
     "AdminRedaction", __config__=ConfigDict(extra="forbid"),
     **{名稱: 定義 for 名稱, 定義 in {
-        "id": (str, ...), "target_type": (str, ...), "target_row_id": (str, ...),
-        "json_path": (str, ...), "reason": (str, ...),
-        "is_tombstone": (bool, ...), "redacted_at": (float, ...),
+        "id": (str, ...),
+        "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
+                                "tool_arguments", "tool_result", "tool_error"], ...),
+        "target_row_id": (str, ...),
+        "json_path": (Annotated[str, Field(max_length=4096, pattern=r"^(?:$|/.*)$")], ...),
+        "reason": (Annotated[str, Field(min_length=1, max_length=256)], ...),
+        "is_tombstone": (Literal[True], ...), "redacted_at": (float, ...),
     }.items()},
 )
 管理員呼叫詳情回應 = create_model(
@@ -252,15 +257,15 @@ def 建立管理稽核路由器(
         if 安全使用者.角色 != "admin":
             拒絕狀態 = 500
             try:
-                await run_in_threadpool(
+                拒絕結果 = await run_in_threadpool(
                     詳情提供者.查詢管理員原始資料,
                     False, 安全使用者.識別碼, 安全請求識別碼, 安全事件識別碼, 安全發生時間,
                     端點識別碼, 呼叫識別碼,
                 )
+                if 拒絕結果 is 管理員拒絕稽核已提交:
+                    拒絕狀態 = 403
             except 管理員呼叫稽核錯誤:
                 拒絕狀態 = 503
-            except 管理員呼叫查詢錯誤:
-                拒絕狀態 = 403
             except _控制流程:
                 raise
             except BaseException:

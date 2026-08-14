@@ -19,6 +19,8 @@ import re
 import time
 from typing import cast
 
+from .遮蔽 import 驗證遮蔽公開欄位
+
 
 ADMIN_INVOCATION_LIST_PATH = "/api/admin/endpoints/{endpoint_id}/invocations"
 ADMIN_INVOCATION_METHOD = "GET"
@@ -41,6 +43,7 @@ ADMIN_INVOCATION_ERROR_CONTRACT = {
     503: "呼叫紀錄暫時不可取得",
     500: "呼叫紀錄不可取得",
 }
+管理員拒絕稽核已提交 = object()
 ADMIN_INVOCATION_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_id", "endpoint_version_id", "credential_id", "message_id",
     "status", "input", "metadata", "output", "error", "usage", "metadata_size_bytes",
@@ -70,10 +73,7 @@ _工具欄位 = frozenset({
 _遮蔽欄位 = frozenset({
     "id", "target_type", "target_row_id", "json_path", "reason", "is_tombstone", "redacted_at",
 })
-_遮蔽目標類型 = frozenset({
-    "invocation_input", "metadata", "output", "error", "run_event",
-    "tool_arguments", "tool_result", "tool_error",
-})
+
 _禁止敏感鍵 = frozenset({
     "authorization", "proxyauthorization", "cookie", "setcookie", "apikey",
     "credentialsecret", "credentialciphertext", "credentialhash", "masterkey",
@@ -221,13 +221,11 @@ def _驗證管理員完整詳情(值: object) -> None:
     for 遮蔽 in cast(list[object], 詳情["redactions"]):
         if (type(遮蔽) is not dict or set(遮蔽) != _遮蔽欄位
                 or not _是識別碼(遮蔽["id"])
-                or 遮蔽["target_type"] not in _遮蔽目標類型
                 or not _是識別碼(遮蔽["target_row_id"])
-                or type(遮蔽["json_path"]) is not str or len(遮蔽["json_path"]) > 4096
-                or type(遮蔽["reason"]) is not str or not 1 <= len(遮蔽["reason"]) <= 1000
                 or 遮蔽["is_tombstone"] is not True
                 or not _是有限時間(遮蔽["redacted_at"])):
             raise ValueError
+        驗證遮蔽公開欄位(遮蔽["target_type"], 遮蔽["json_path"], 遮蔽["reason"])
 
 
 def _驗證raw無禁止secret(值: object) -> None:

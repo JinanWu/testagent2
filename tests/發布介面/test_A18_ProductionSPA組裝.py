@@ -39,11 +39,24 @@ def test_A18_建立網頁應用程式只接受exact_ProductionSPA_boundary(monke
     class 任意Middleware:
         pass
 
+    class 敵對相等Metaclass(type):
+        def __eq__(cls, _其他):
+            return True
+
+    class 敵對相等Middleware(metaclass=敵對相等Metaclass):
+        pass
+
     相依 = 發布介面相依項((), ())
     安全設定 = 網頁安全設定(("https://web.example",))
     with pytest.raises(ValueError, match="^發布介面路由設定無效$"):
         應用程式模組.建立網頁應用程式(
             相依, 安全設定, 內層Middleware類別=任意Middleware,
+        )
+    assert 呼叫 == []
+
+    with pytest.raises(ValueError, match="^發布介面路由設定無效$"):
+        應用程式模組.建立網頁應用程式(
+            相依, 安全設定, 內層Middleware類別=敵對相等Middleware,
         )
     assert 呼叫 == []
 

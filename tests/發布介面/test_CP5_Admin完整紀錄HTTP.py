@@ -7,6 +7,7 @@ import time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫不存在錯誤,
@@ -16,6 +17,7 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫游標編解碼器,
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
+    管理員拒絕稽核已提交,
 )
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
 from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器
@@ -107,7 +109,7 @@ def _詳情資料():
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
         "run_events": [], "tool_calls": [], "redactions": [{
             "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
-            "json_path": "$.secret", "reason": "privacy",
+            "json_path": "/secret", "reason": "privacy",
             "is_tombstone": True, "redacted_at": 9.0,
         }],
     }
@@ -120,9 +122,9 @@ class _可控詳情:
     def 查詢管理員原始資料(self, *參數):
         self.呼叫.append(參數)
         if 參數[0] is False:
-            if isinstance(self.結果, 管理員呼叫稽核錯誤):
+            if isinstance(self.結果, BaseException):
                 raise self.結果
-            raise 管理員呼叫查詢錯誤("denied audit committed")
+            return 管理員拒絕稽核已提交
         if isinstance(self.結果, BaseException):
             raise self.結果
         return self.結果
@@ -165,6 +167,40 @@ def test_A18_detail_non_admin_denied_audit失敗時503():
     assert 回應.status_code == 503
     assert 回應.json() == {"detail": "呼叫紀錄暫時不可取得"}
     assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
+
+
+def test_A18_detail_non_admin拒絕provider自稱查詢錯誤為已提交audit():
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫查詢錯誤("denied audit committed"), "member")
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
+
+
+def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
+    for 覆寫 in (
+        {"json_path": "$.secret"},
+        {"json_path": "/" + "x" * 257},
+        {"reason": "x" * 257},
+        {"reason": "Bearer secret"},
+        {"is_tombstone": False},
+    ):
+        資料 = _詳情資料()
+        資料["redactions"][0] = {**資料["redactions"][0], **覆寫}
+        with pytest.raises(Exception):
+            管理員呼叫完整詳情(資料)
+
+    客戶端, _ = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
+    schemas = 客戶端.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["AdminRedaction"]["properties"]
+    assert set(schema["target_type"]["enum"]) == {
+        "invocation_input", "metadata", "output", "error", "run_event",
+        "tool_arguments", "tool_result", "tool_error",
+    }
+    assert schema["json_path"]["maxLength"] == 4096
+    assert schema["json_path"]["pattern"] == r"^(?:$|/.*)$"
+    assert schema["reason"]["maxLength"] == 256
+    assert schema["is_tombstone"]["const"] is True
 
 
 def test_A18_detail固定404_503_500且零內部訊息():

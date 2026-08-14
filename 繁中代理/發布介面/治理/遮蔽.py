@@ -213,12 +213,10 @@ def _驗證請求(*值: Any) -> None:
     if not all(type(項) is str for 項 in 文字):
         raise ValueError
     遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 類型, 列ID, 路徑, 原因 = 文字
-    if 類型 not in _目標 or not all(_安全識別碼(項) for 項 in
-                                    (遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 列ID)):
+    if not all(_安全識別碼(項) for 項 in
+               (遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 列ID)):
         raise ValueError
-    if len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
-        raise ValueError
-    _解析路徑(路徑)
+    驗證遮蔽公開欄位(類型, 路徑, 原因)
 
 
 def _安全識別碼(值: Any) -> bool:
@@ -238,6 +236,15 @@ def _解析路徑(路徑: str) -> tuple[str, ...]:
             raise ValueError
         結果.append(片段.replace("~1", "/").replace("~0", "~"))
     return tuple(結果)
+
+
+def 驗證遮蔽公開欄位(目標類型: object, JSON路徑: object, 原因: object, /) -> None:
+    """驗證可公開遮蔽紀錄沿用不可逆遮蔽的目標、RFC 6901路徑與安全原因界線。"""
+    if 目標類型 not in _目標 or type(JSON路徑) is not str or type(原因) is not str:
+        raise ValueError
+    if len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
+        raise ValueError
+    _解析路徑(JSON路徑)
 
 
 def _尋找JSON位置(payload: Any, 路徑: str) -> tuple[Any, Any]:
