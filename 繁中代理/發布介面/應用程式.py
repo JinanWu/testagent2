@@ -20,6 +20,11 @@ from fastapi.routing import APIRoute
 from .相依項 import 發布介面相依項, 發布介面資源
 from .路由政策 import _框架形狀, 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
 from .設定 import (
+    ProductionSPA根操作識別碼,
+    ProductionSPA根路由路徑,
+    ProductionSPA操作識別碼,
+    ProductionSPA路由方法,
+    ProductionSPA路由路徑,
     允許路由前綴,
     啟動錯誤訊息,
     發布介面標題,
@@ -269,7 +274,11 @@ def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
     for 路由器 in 路由器清單:
         前綴 = 路由器.prefix
         路由清單 = 路由器.routes
-        if type(前綴) is not str or 前綴 not in 允許路由前綴 or type(路由清單) is not list:
+        if (
+            type(前綴) is not str
+            or (前綴 != "" and 前綴 not in 允許路由前綴)
+            or type(路由清單) is not list
+        ):
             raise ValueError(路由設定錯誤訊息)
         路由總數 += len(路由清單)
         if 路由總數 > _最大路由數:
@@ -295,6 +304,16 @@ def _讀取路由描述(路由器清單: tuple[APIRouter, ...]):
             if type(路徑) is not str or (路徑 != 前綴 and not 路徑.startswith(前綴 + "/")):
                 raise ValueError(路由設定錯誤訊息)
             if type(方法集合) not in (set, frozenset) or not 方法集合 or len(方法集合) > len(_允許方法):
+                raise ValueError(路由設定錯誤訊息)
+            if 前綴 == "" and (
+                len(路由清單) != 2
+                or 方法集合 != ProductionSPA路由方法
+                or (路徑, 明確識別碼) not in {
+                    (ProductionSPA根路由路徑, ProductionSPA根操作識別碼),
+                    (ProductionSPA路由路徑, ProductionSPA操作識別碼),
+                }
+                or 路由.include_in_schema is not False
+            ):
                 raise ValueError(路由設定錯誤訊息)
             方法描述 = []
             for 方法 in 方法集合:

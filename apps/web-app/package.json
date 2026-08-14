@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "browser:typecheck": "tsc --noEmit -p tsconfig.browser.json",
+    "browser:smoke": "npm run build && npm run browser:typecheck && node browser/run-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -14,6 +16,8 @@
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@types/node": "22.20.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@types/react-test-renderer": "19.1.0",

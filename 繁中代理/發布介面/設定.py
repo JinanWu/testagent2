@@ -233,3 +233,13 @@ def 套用網頁CORS(應用程式: FastAPI, 設定: 網頁安全設定) -> None:
         expose_headers=[網頁CSRFHeader名稱],
         max_age=600,
     )
+
+
+ProductionSPA根路由路徑 = "/"
+ProductionSPA根操作識別碼 = "production_spa_root_read"
+ProductionSPA路由路徑 = "/{frontend_path:path}"
+ProductionSPA操作識別碼 = "production_spa_fallback_read"
+ProductionSPA路由方法 = frozenset({
+    "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH",
+})
+"""Root production SPA只允許兩個exact routes；非GET/HEAD由handler固定拒絕。"""

@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import asgi as root_asgi
+from production_spa_support import 建立ProductionDist
 
 
 _預期路由清單 = {
@@ -36,10 +37,12 @@ def _設定Canonical環境(tmp_path: Path, monkeypatch) -> None:
     """設定 root factory 唯一核准的 production environment。"""
     技能根 = tmp_path / "bundles"
     技能根.mkdir()
+    Dist根 = 建立ProductionDist(tmp_path)
     環境 = {
         "TESTAGENT2_DB_PATH": str(tmp_path / "web.sqlite3"),
         "TESTAGENT2_PUBLISHED_DB_PATH": str(tmp_path / "published.sqlite3"),
         "TESTAGENT2_PUBLISHED_BUNDLE_ROOT": str(技能根),
+        "TESTAGENT2_WEB_DIST_ROOT": str(Dist根),
         "TESTAGENT2_WEB_ORIGINS": '["https://client.example"]',
         "TESTAGENT2_MODEL_NAME": "gemini-2.5-flash-lite",
         "AIAGENT_GCP_PROJECT": "example-project",
