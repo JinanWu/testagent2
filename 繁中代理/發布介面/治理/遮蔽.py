@@ -26,7 +26,9 @@ _目標 = {
     "tool_result": ("endpoint_tool_calls", "result_json", True),
     "tool_error": ("endpoint_tool_calls", "error_json", True),
 }
-_秘密格式 = re.compile(r"(?i)(?:bearer|(?:sk|pk)[_-])|\b[0-9a-f]{64}\b")
+_秘密格式 = re.compile(
+    r"(?i)(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])"
+)
 _必要觸發器 = frozenset({
     "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
     "endpoint_redactions_no_update", "endpoint_redactions_no_delete",
@@ -240,11 +242,25 @@ def _解析路徑(路徑: str) -> tuple[str, ...]:
 
 def 驗證遮蔽公開欄位(目標類型: object, JSON路徑: object, 原因: object, /) -> None:
     """驗證可公開遮蔽紀錄沿用不可逆遮蔽的目標、RFC 6901路徑與安全原因界線。"""
-    if 目標類型 not in _目標 or type(JSON路徑) is not str or type(原因) is not str:
+    if 目標類型 not in _目標:
         raise ValueError
-    if len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
+    驗證遮蔽公開路徑(JSON路徑)
+    驗證遮蔽公開原因(原因)
+
+
+def 驗證遮蔽公開路徑(JSON路徑: object, /) -> str:
+    """驗證並返回canonical有界RFC 6901 JSON Pointer。"""
+    if type(JSON路徑) is not str:
         raise ValueError
     _解析路徑(JSON路徑)
+    return JSON路徑
+
+
+def 驗證遮蔽公開原因(原因: object, /) -> str:
+    """驗證並返回非空、有界且不含secret形狀的公開原因。"""
+    if type(原因) is not str or len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
+        raise ValueError
+    return 原因
 
 
 def _尋找JSON位置(payload: Any, 路徑: str) -> tuple[Any, Any]:

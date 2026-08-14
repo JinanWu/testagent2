@@ -168,10 +168,12 @@ describe('A18 Admin logs production decoder與API boundary', () => {
       { json_path: '/bad~2escape' },
       { json_path: '/x'.repeat(17) },
       { json_path: `/${'x'.repeat(257)}` },
+      { json_path: `/${'~0'.repeat(200)}` },
       { reason: ' '.repeat(3) },
       { reason: 'x'.repeat(257) },
       { reason: 'Bearer credential' },
       { reason: `hash ${'a'.repeat(64)}` },
+      { reason: `中${'a'.repeat(64)}` },
     ]
     for (const override of invalid) {
       const body = detail('invocation-1')

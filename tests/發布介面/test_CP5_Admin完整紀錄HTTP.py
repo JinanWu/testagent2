@@ -20,7 +20,7 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員拒絕稽核已提交,
 )
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
-from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器
+from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器, 管理員遮蔽回應
 from 繁中代理.發布介面.生產管理稽核 import 延遲管理稽核服務, 安裝管理稽核資源
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.設定 import 生產設定
@@ -181,8 +181,10 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
     for 覆寫 in (
         {"json_path": "$.secret"},
         {"json_path": "/" + "x" * 257},
+        {"json_path": "/" + "~0" * 200},
         {"reason": "x" * 257},
         {"reason": "Bearer secret"},
+        {"reason": "中" + "a" * 64},
         {"is_tombstone": False},
     ):
         資料 = _詳情資料()
@@ -198,7 +200,7 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
         "tool_arguments", "tool_result", "tool_error",
     }
     assert schema["json_path"]["maxLength"] == 4096
-    assert schema["json_path"]["pattern"] == r"^(?:$|(?:/(?:[^~/]|~[01]){0,256}){1,16})$"
+    assert schema["json_path"]["pattern"] == r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
     assert schema["reason"]["maxLength"] == 256
     assert "pattern" in schema["reason"]
     assert schema["is_tombstone"]["const"] is True
@@ -206,6 +208,14 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
     detail_ref = 客戶端.get("/openapi.json").json()["paths"][detail_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
     detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]["properties"]
     assert {項.get("type") for 項 in detail_schema["metadata_size_bytes"]["anyOf"]} == {"integer", "null"}
+    有效 = _詳情資料()["redactions"][0]
+    for 覆寫 in (
+        {"json_path": "/" + "~0" * 200},
+        {"reason": "Bearer secret"},
+        {"reason": "中" + "a" * 64},
+    ):
+        with pytest.raises(Exception):
+            管理員遮蔽回應(**{**有效, **覆寫})
 
 
 def test_A18_detail固定404_503_500且零內部訊息():

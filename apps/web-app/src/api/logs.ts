@@ -13,7 +13,7 @@ const REDACTION_TARGET = new Set([
   'invocation_input', 'metadata', 'output', 'error', 'run_event',
   'tool_arguments', 'tool_result', 'tool_error',
 ])
-const REDACTION_SECRET = /(?:bearer|(?:sk|pk)[_-])|\b[0-9a-f]{64}\b/i
+const REDACTION_SECRET = /(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])/i
 const MAX_DETAIL_BYTES = 1024 * 1024
 const MAX_DETAIL_NODES = 4096
 const MAX_DETAIL_DEPTH = 128

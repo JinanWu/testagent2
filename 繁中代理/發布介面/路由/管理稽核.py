@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import ConfigDict, Field, create_model
+from pydantic import AfterValidator, ConfigDict, Field, WithJsonSchema, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -30,14 +30,26 @@ from ..治理.管理查詢契約 import (
     管理員拒絕稽核已提交,
 )
 from ..網頁工作階段 import 網頁使用者
+from ..治理.遮蔽 import 驗證遮蔽公開原因, 驗證遮蔽公開路徑
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
-_遮蔽路徑格式 = r"^(?:$|(?:/(?:[^~/]|~[01]){0,256}){1,16})$"
+_遮蔽路徑格式 = r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
 _遮蔽原因Schema格式 = (
     r"^(?!\s*$)(?![\s\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr]|(?:[Ss][Kk]|[Pp][Kk])[_-]"
-    r"|\b[0-9A-Fa-f]{64}\b))[\s\S]{1,256}$"
+    r"|(?:^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}(?:$|[^0-9A-Fa-f])))[\s\S]{1,256}$"
 )
+_遮蔽路徑回應 = Annotated[
+    str,
+    AfterValidator(驗證遮蔽公開路徑),
+    WithJsonSchema({"type": "string", "maxLength": 4096, "pattern": _遮蔽路徑格式}),
+]
+_遮蔽原因回應 = Annotated[
+    str,
+    AfterValidator(驗證遮蔽公開原因),
+    WithJsonSchema({"type": "string", "minLength": 1, "maxLength": 256,
+                    "pattern": _遮蔽原因Schema格式}),
+]
 class 管理員安全列表提供者(Protocol):
     """安全metadata投影的最小介面。"""
 
@@ -120,10 +132,8 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
                                 "tool_arguments", "tool_result", "tool_error"], ...),
         "target_row_id": (str, ...),
-        "json_path": (Annotated[str, Field(max_length=4096, pattern=_遮蔽路徑格式)], ...),
-        "reason": (Annotated[str, Field(
-            min_length=1, max_length=256, json_schema_extra={"pattern": _遮蔽原因Schema格式},
-        )], ...),
+        "json_path": (_遮蔽路徑回應, ...),
+        "reason": (_遮蔽原因回應, ...),
         "is_tombstone": (Literal[True], ...), "redacted_at": (float, ...),
     }.items()},
 )
