@@ -165,6 +165,13 @@ def test_backend與API_404永不被SPA_fallback吞掉(tmp_path: Path):
             assert 回應.status_code == 405
             assert 回應.headers["content-type"].startswith("application/json")
             assert "POST" in 回應.headers["allow"]
+            未列舉方法回應 = client.request(
+                "PROPFIND", 已知錯誤方法, headers={"Origin": "http://localhost:5173"},
+            )
+            assert 未列舉方法回應.status_code == 405
+            assert 未列舉方法回應.headers["content-type"].startswith("application/json")
+            assert "POST" in 未列舉方法回應.headers["allow"]
+            assert 未列舉方法回應.headers["access-control-allow-origin"] == "http://localhost:5173"
         for path in (
             "/api/not-a-route", "/v1/not-a-route", "/assets", "/%61ssets",
             "/assets/missing.js",

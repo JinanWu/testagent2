@@ -14,7 +14,11 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Match
 
 from .相依項 import 發布介面相依項
-from .設定 import ProductionSPA路由方法
+from .設定 import (
+    ProductionSPA根操作識別碼,
+    ProductionSPA操作識別碼,
+    ProductionSPA路由方法,
+)
 
 
 _固定設定錯誤 = "Production SPA設定無效"
@@ -145,7 +149,14 @@ class 拒絕ProductionSPA未知方法Middleware:
         返回值：完成固定404或內層ASGI呼叫後不返回值。
         """
         if 範圍.get("type") == "http" and 範圍.get("method") not in ProductionSPA路由方法:
-            回應 = JSONResponse(_固定不存在, status_code=404, headers=dict(_安全標頭))
+            允許方法 = _讀取Backend部分匹配方法(範圍.get("app"), 範圍)
+            if 允許方法:
+                回應 = JSONResponse(
+                    _固定方法不允許, status_code=405,
+                    headers={**_安全標頭, "Allow": ", ".join(允許方法)},
+                )
+            else:
+                回應 = JSONResponse(_固定不存在, status_code=404, headers=dict(_安全標頭))
             await 回應(範圍, 接收, 傳送)
             return
         await self.應用(範圍, 接收, 傳送)
@@ -164,7 +175,7 @@ def 建立ProductionSPA相依項(設定: ProductionSPA設定) -> 發布介面相
         快照 = 狀態.讀取()
         if 快照 is None:
             return JSONResponse(_固定不可取得, status_code=503, headers=dict(_安全標頭))
-        允許方法 = _讀取Backend部分匹配方法(請求)
+        允許方法 = _讀取Backend部分匹配方法(請求.app, 請求.scope)
         if 允許方法:
             return JSONResponse(
                 _固定方法不允許, status_code=405,
@@ -288,11 +299,17 @@ def _讀取目錄身份(路徑: Path) -> tuple[int, int, int]:
     return 狀態.st_dev, 狀態.st_ino, 狀態.st_mtime_ns
 
 
-def _讀取Backend部分匹配方法(請求: Request) -> tuple[str, ...]:
-    """读取canonical inventory的partial method match；参数为Request，返回允许method tuple。"""
+def _讀取Backend部分匹配方法(應用, 範圍) -> tuple[str, ...]:
+    """讀取canonical backend inventory的partial match；返回允許method tuple。"""
     方法: set[str] = set()
-    for 路由 in 請求.app.router.routes:
-        比對, _子Scope = 路由.matches(請求.scope)
+    路由器 = getattr(應用, "router", None)
+    路由清單 = getattr(路由器, "routes", ())
+    for 路由 in 路由清單:
+        if getattr(路由, "operation_id", None) in {
+            ProductionSPA根操作識別碼, ProductionSPA操作識別碼,
+        }:
+            continue
+        比對, _子Scope = 路由.matches(範圍)
         if 比對 is Match.PARTIAL:
             路由方法 = getattr(路由, "methods", None)
             if type(路由方法) in (set, frozenset):
