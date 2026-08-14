@@ -42,7 +42,7 @@ function listItem(invocationId: string, hasRedaction = false) {
     latency_ms: 12.5,
     created_at: 10,
     completed_at: 11,
-    has_redaction: hasRedaction,
+    has_redactions: hasRedaction,
   }
 }
 
@@ -77,6 +77,15 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       created_at: 10.5,
     }],
     tool_calls: [],
+    redactions: [{
+      id: `redaction-${invocationId}`,
+      target_type: 'metadata',
+      target_row_id: invocationId,
+      json_path: '/secret',
+      reason: 'privacy',
+      is_tombstone: true,
+      redacted_at: 9,
+    }],
   }
 }
 
@@ -151,6 +160,29 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     const parsed = parseInvocationDetail(body)
     expect(parsed.metadataSizeBytes).toBeNull()
     expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
+  })
+
+  it('拒絕canonical遮蔽契約外的path與reason', () => {
+    const invalid = [
+      { json_path: '$.secret' },
+      { json_path: '/bad~2escape' },
+      { json_path: '/x'.repeat(17) },
+      { json_path: `/${'x'.repeat(257)}` },
+      { json_path: `/${'~0'.repeat(200)}` },
+      { reason: ' '.repeat(3) },
+      { reason: '\u001c\u001f' },
+      { reason: '\u0085' },
+      { reason: '\ufeff' },
+      { reason: 'x'.repeat(257) },
+      { reason: 'Bearer credential' },
+      { reason: `hash ${'a'.repeat(64)}` },
+      { reason: `中${'a'.repeat(64)}` },
+    ]
+    for (const override of invalid) {
+      const body = detail('invocation-1')
+      body.redactions[0] = { ...body.redactions[0], ...override }
+      expect(() => parseInvocationDetail(body)).toThrow()
+    }
   })
 
   it.each([

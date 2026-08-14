@@ -7,11 +7,11 @@ import re
 import secrets
 import time
 import inspect
-from typing import Annotated, Any, Protocol, cast
+from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import ConfigDict, Field, create_model
+from pydantic import BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -27,11 +27,68 @@ from ..治理.管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫游標編解碼器,
     管理員呼叫稽核錯誤,
+    管理員拒絕稽核收據權威,
 )
 from ..網頁工作階段 import 網頁使用者
+from ..治理.遮蔽 import 驗證遮蔽公開原因, 驗證遮蔽公開路徑
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_遮蔽路徑格式 = r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
+_遮蔽原因Schema格式 = (
+    r"^(?![\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a"
+    r"\u2028\u2029\u202f\u205f\u3000\ufeff]*$)"
+    r"(?![\s\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr]|(?:[Ss][Kk]|[Pp][Kk])[_-]"
+    r"|(?:^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}(?:$|[^0-9A-Fa-f])))[\s\S]{1,256}$"
+)
+_遮蔽路徑回應 = Annotated[
+    str,
+    BeforeValidator(驗證遮蔽公開路徑),
+    WithJsonSchema({"type": "string", "maxLength": 4096, "pattern": _遮蔽路徑格式}),
+]
+_遮蔽原因回應 = Annotated[
+    str,
+    BeforeValidator(驗證遮蔽公開原因),
+    WithJsonSchema({"type": "string", "minLength": 1, "maxLength": 256,
+                    "pattern": _遮蔽原因Schema格式}),
+]
+
+
+def _驗證遮蔽回應識別碼(值: str, /) -> str:
+    """驗證並返回與frontend一致的有界canonical識別碼。"""
+    if type(值) is not str or re.fullmatch(_識別碼格式, 值) is None:
+        raise ValueError
+    return 值
+
+
+def _驗證遮蔽回應時間(值: float, /) -> float:
+    """驗證並返回finite且非負的遮蔽時間。"""
+    if type(值) not in (int, float) or not math.isfinite(值) or 值 < 0:
+        raise ValueError
+    return 值
+
+
+def _驗證遮蔽墓碑(值: object, /) -> bool:
+    """只接受literal boolean true，拒絕整數1等coercion形狀。"""
+    if type(值) is not bool or 值 is not True:
+        raise ValueError
+    return True
+
+
+_遮蔽識別碼回應 = Annotated[
+    str, BeforeValidator(_驗證遮蔽回應識別碼),
+    WithJsonSchema({"type": "string", "pattern": _識別碼格式, "maxLength": 128}),
+]
+_遮蔽時間回應 = Annotated[
+    float, BeforeValidator(_驗證遮蔽回應時間),
+    WithJsonSchema({"type": "number", "minimum": 0}),
+]
+_遮蔽墓碑回應 = Annotated[
+    Literal[True], BeforeValidator(_驗證遮蔽墓碑),
+    WithJsonSchema({"type": "boolean", "const": True}),
+]
+
+
 class 管理員安全列表提供者(Protocol):
     """安全metadata投影的最小介面。"""
 
@@ -54,7 +111,7 @@ class 管理員已稽核詳情提供者(Protocol):
         "invocation_id": (str, ...), "endpoint_id": (str, ...), "endpoint_version_id": (str, ...),
         "request_id": (str, ...), "status": (str, ...), "error_code": (str | None, ...),
         "latency_ms": (float | None, ...), "created_at": (float, ...),
-        "completed_at": (float | None, ...), "has_redaction": (bool, ...),
+        "completed_at": (float | None, ...), "has_redactions": (bool, ...),
     }.items()},
 )
 管理員呼叫列表回應 = create_model(
@@ -74,22 +131,18 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
     """建立只允許exact message的inline OpenAPI response。"""
     return {"content": {"application/json": {"schema": {
         "type": "object", "additionalProperties": False, "required": ["detail"],
-        "properties": {"detail": {"type": "object", "additionalProperties": False,
-            "required": ["message"], "properties": {"message": {"type": "string", "enum": [訊息]}}}},
+        "properties": {"detail": {"type": "string", "enum": [訊息]}},
     }}}}
 
 
-未授權錯誤文件 = _代碼錯誤文件("unauthorized")
-認證不可用錯誤文件 = _代碼錯誤文件("auth_unavailable")
+未授權錯誤文件 = _訊息錯誤文件("需要登入")
+認證不可用錯誤文件 = _訊息錯誤文件("呼叫紀錄暫時不可取得")
 驗證錯誤文件 = _代碼錯誤文件("invalid_request")
 禁止錯誤文件 = _訊息錯誤文件("只有管理者可查看完整呼叫紀錄")
 不存在錯誤文件 = _訊息錯誤文件("找不到呼叫紀錄")
 查詢錯誤文件 = _訊息錯誤文件("呼叫紀錄不可取得")
 稽核錯誤文件 = _訊息錯誤文件("呼叫紀錄暫時不可取得")
-詳情不可用錯誤文件 = {"content": {"application/json": {"schema": {"oneOf": [
-    認證不可用錯誤文件["content"]["application/json"]["schema"],
-    稽核錯誤文件["content"]["application/json"]["schema"],
-]}}}}
+詳情不可用錯誤文件 = 稽核錯誤文件
 管理員呼叫識別回應 = create_model(
     "AdminInvocationIdentity", __config__=ConfigDict(extra="forbid"),
     識別碼=(str, Field(alias="id")), 請求識別碼=(str, Field(alias="request_id")),
@@ -111,6 +164,18 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
     重試來源識別碼=(str | None, Field(alias="retry_of_tool_call_id")),
     建立時間=(float, Field(alias="created_at")),
 )
+管理員遮蔽回應 = create_model(
+    "AdminRedaction", __config__=ConfigDict(extra="forbid"),
+    **{名稱: 定義 for 名稱, 定義 in {
+        "id": (_遮蔽識別碼回應, ...),
+        "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
+                                "tool_arguments", "tool_result", "tool_error"], ...),
+        "target_row_id": (_遮蔽識別碼回應, ...),
+        "json_path": (_遮蔽路徑回應, ...),
+        "reason": (_遮蔽原因回應, ...),
+        "is_tombstone": (_遮蔽墓碑回應, ...), "redacted_at": (_遮蔽時間回應, ...),
+    }.items()},
+)
 管理員呼叫詳情回應 = create_model(
     "AdminInvocationDetail", __config__=ConfigDict(extra="forbid"),
     **{名稱: 定義 for 名稱, 定義 in {
@@ -118,10 +183,11 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),
         "message_id": (str | None, ...), "status": (str, ...), "input": (Any, ...),
         "metadata": (dict[str, Any] | None, ...), "output": (Any, ...), "error": (Any, ...),
-        "usage": (Any, ...), "metadata_size_bytes": (int, ...), "metadata_sha256": (str | None, ...),
+        "usage": (Any, ...), "metadata_size_bytes": (int | None, ...), "metadata_sha256": (str | None, ...),
         "latency_ms": (float | None, ...), "pricing_version": (str | None, ...),
         "created_at": (float, ...), "completed_at": (float | None, ...),
         "run_events": (list[管理員執行事件回應], ...), "tool_calls": (list[管理員工具呼叫回應], ...),
+        "redactions": (list[管理員遮蔽回應], ...),
     }.items()},
 )
 
@@ -132,6 +198,7 @@ def 建立管理稽核路由器(
     游標編解碼器: 管理員呼叫游標編解碼器,
     目前工作階段相依,
     *,
+    拒絕收據權威: 管理員拒絕稽核收據權威 | None = None,
     時鐘=time.time,
     請求識別碼工廠=lambda: "request-" + secrets.token_hex(16),
     稽核事件識別碼工廠=lambda: "audit-" + secrets.token_hex(16),
@@ -146,7 +213,9 @@ def 建立管理稽核路由器(
     """
     if (not callable(目前工作階段相依) or not callable(時鐘)
             or not callable(請求識別碼工廠) or not callable(稽核事件識別碼工廠)
-            or type(游標編解碼器) is not 管理員呼叫游標編解碼器):
+            or type(游標編解碼器) is not 管理員呼叫游標編解碼器
+            or (拒絕收據權威 is not None
+                and type(拒絕收據權威) is not 管理員拒絕稽核收據權威)):
         raise ValueError("管理稽核路由設定無效") from None
     try:
         相依參數數 = len(inspect.signature(目前工作階段相依).parameters)
@@ -162,10 +231,10 @@ def 建立管理稽核路由器(
                 return 目前工作階段相依()
             return 目前工作階段相依(請求, 回應)
         except HTTPException as 錯誤:
-            if 錯誤.status_code == 401 and 錯誤.detail == {"code": "unauthorized"}:
-                raise HTTPException(status_code=401, detail={"code": "unauthorized"}) from None
-            if 錯誤.status_code == 503 and 錯誤.detail == {"code": "auth_unavailable"}:
-                raise HTTPException(status_code=503, detail={"code": "auth_unavailable"}) from None
+            if 錯誤.status_code == 401:
+                _拋出固定錯誤(401)
+            if 錯誤.status_code == 503:
+                _拋出固定錯誤(503)
             _拋出固定錯誤(500)
         except _控制流程:
             raise
@@ -219,13 +288,16 @@ def 建立管理稽核路由器(
         端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         呼叫識別碼: Annotated[str, Path(alias="invocation_id")],
         使用者: 網頁使用者 = Depends(取得安全工作階段),
-    ) -> JSONResponse:
+    ) -> Any:
         """只允許Admin，並把server-owned audit資料傳入A18-01 gate。"""
-        管理員識別碼 = _確認管理員(使用者)
+        安全使用者 = _確認工作階段使用者(使用者)
         _確認路徑識別碼(端點識別碼)
         _確認路徑識別碼(呼叫識別碼)
         if 請求.url.query:
             _拋出固定錯誤(422)
+        請求識別碼: object = None
+        事件識別碼: object = None
+        發生時間: object = None
         try:
             請求識別碼 = 請求識別碼工廠()
             事件識別碼 = 稽核事件識別碼工廠()
@@ -234,13 +306,43 @@ def 建立管理稽核路由器(
                 raise ValueError
             if type(發生時間) not in (int, float) or not math.isfinite(發生時間) or 發生時間 < 0:
                 raise ValueError
+        except _控制流程:
+            raise
+        except BaseException:
+            _拋出固定錯誤(500)
+        安全請求識別碼 = cast(str, 請求識別碼)
+        安全事件識別碼 = cast(str, 事件識別碼)
+        安全發生時間 = cast(int | float, 發生時間)
+        if 安全使用者.角色 != "admin":
+            拒絕狀態 = 500
+            try:
+                拒絕結果 = await run_in_threadpool(
+                    詳情提供者.查詢管理員原始資料,
+                    False, 安全使用者.識別碼, 安全請求識別碼, 安全事件識別碼, 安全發生時間,
+                    端點識別碼, 呼叫識別碼,
+                )
+                if (type(拒絕收據權威) is 管理員拒絕稽核收據權威
+                        and 拒絕收據權威.驗證(
+                            拒絕結果, 安全使用者.識別碼, 安全請求識別碼,
+                            安全事件識別碼, 安全發生時間, 端點識別碼, 呼叫識別碼,
+                        )):
+                    拒絕狀態 = 403
+            except 管理員呼叫稽核錯誤:
+                拒絕狀態 = 503
+            except _控制流程:
+                raise
+            except BaseException:
+                拒絕狀態 = 500
+            _拋出固定錯誤(拒絕狀態)
+        try:
             詳情 = await run_in_threadpool(
                 詳情提供者.查詢管理員原始資料,
-                True, 管理員識別碼, 請求識別碼, 事件識別碼, 發生時間, 端點識別碼, 呼叫識別碼,
+                True, 安全使用者.識別碼, 安全請求識別碼, 安全事件識別碼, 安全發生時間,
+                端點識別碼, 呼叫識別碼,
             )
             if type(詳情) is not 管理員呼叫完整詳情:
                 raise ValueError
-            return JSONResponse(詳情.建立JSON())
+            return 詳情.建立JSON()
         except _控制流程:
             raise
         except 管理員呼叫不存在錯誤:
@@ -255,7 +357,7 @@ def 建立管理稽核路由器(
     @路由器.get(列表路徑 + "/", include_in_schema=False)
     async def 拒絕列表尾斜線() -> None:
         """Exact path contract不允許框架以307正規化尾斜線。"""
-        raise HTTPException(status_code=404, detail={"message": ADMIN_INVOCATION_ERROR_CONTRACT[404]}) from None
+        raise HTTPException(status_code=404, detail=ADMIN_INVOCATION_ERROR_CONTRACT[404]) from None
 
     @路由器.get(詳情路徑 + "/", include_in_schema=False)
     async def 拒絕詳情尾斜線(
@@ -264,22 +366,31 @@ def 建立管理稽核路由器(
     ) -> None:
         """Exact detail path contract不允許框架以307正規化尾斜線。"""
         del 端點識別碼, 呼叫識別碼
-        raise HTTPException(status_code=404, detail={"message": ADMIN_INVOCATION_ERROR_CONTRACT[404]}) from None
+        raise HTTPException(status_code=404, detail=ADMIN_INVOCATION_ERROR_CONTRACT[404]) from None
 
     return 路由器
 
 
 def _確認管理員(使用者: object) -> str:
     """由canonical dependency回傳值重建exact Admin principal。"""
+    安全 = _確認工作階段使用者(使用者)
+    if 安全.角色 != "admin":
+        _拋出固定錯誤(403)
+    return 安全.識別碼
+
+
+def _確認工作階段使用者(使用者: object) -> 網頁使用者:
+    """只接受canonical dependency產生的exact、可重建authenticated principal。"""
     if type(使用者) is not 網頁使用者:
         _拋出固定錯誤(403)
+    安全 = None
     try:
         安全 = 網頁使用者(使用者.識別碼, 使用者.使用者名稱, 使用者.角色)
     except BaseException:
         _拋出固定錯誤(403)
-    if 安全.角色 != "admin":
+    if type(安全) is not 網頁使用者:
         _拋出固定錯誤(403)
-    return 安全.識別碼
+    return cast(網頁使用者, 安全)
 
 
 def _確認路徑識別碼(值: object) -> str:
@@ -320,12 +431,12 @@ def _序列化列表項目(項目) -> dict[str, object]:
         "endpoint_version_id": 項目.端點版本識別碼, "request_id": 項目.請求識別碼,
         "status": 項目.狀態, "error_code": 項目.錯誤碼, "latency_ms": 項目.延遲毫秒,
         "created_at": 項目.建立時間, "completed_at": 項目.完成時間,
-        "has_redaction": 項目.是否有遮蔽,
+        "has_redactions": 項目.是否有遮蔽,
     }
 
 
 def _拋出固定錯誤(狀態碼: int):
     """清除內部例外鏈並回傳固定public detail。"""
     訊息 = ADMIN_INVOCATION_ERROR_CONTRACT[狀態碼]
-    詳情內容 = {"code": "invalid_request"} if 狀態碼 == 422 else {"message": 訊息}
+    詳情內容: object = {"code": "invalid_request"} if 狀態碼 == 422 else 訊息
     raise HTTPException(status_code=狀態碼, detail=詳情內容) from None

@@ -16,7 +16,10 @@ import hmac
 import json
 import math
 import re
+import time
 from typing import cast
+
+from .遮蔽 import 驗證遮蔽公開欄位
 
 
 ADMIN_INVOCATION_LIST_PATH = "/api/admin/endpoints/{endpoint_id}/invocations"
@@ -40,11 +43,56 @@ ADMIN_INVOCATION_ERROR_CONTRACT = {
     503: "呼叫紀錄暫時不可取得",
     500: "呼叫紀錄不可取得",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class 管理員拒絕稽核收據:
+    """綁定單次denied audit欄位且由per-app authority驗證的opaque receipt。"""
+
+    載荷: bytes
+    簽章: bytes
+
+
+class 管理員拒絕稽核收據權威:
+    """以行程內HMAC key簽發並驗證不可由detail provider自行偽造的receipt。"""
+
+    __slots__ = ("_key",)
+
+    def __init__(self, 金鑰: bytes) -> None:
+        """複製至少32 bytes key；不執行I/O。"""
+        if type(金鑰) is not bytes or len(金鑰) < 32:
+            raise ValueError
+        self._key = bytes(金鑰)
+
+    @staticmethod
+    def _載荷(管理員識別碼, 請求識別碼, 稽核事件識別碼, 發生時間, 端點識別碼, 呼叫識別碼) -> bytes:
+        """建立exact、canonical、不可混淆的request-bound payload。"""
+        return json.dumps(
+            [管理員識別碼, 請求識別碼, 稽核事件識別碼, 發生時間, 端點識別碼, 呼叫識別碼],
+            ensure_ascii=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+
+    def 簽發(self, *欄位) -> 管理員拒絕稽核收據:
+        """僅供已成功提交audit的canonical gate簽發request-bound receipt。"""
+        載荷 = self._載荷(*欄位)
+        return 管理員拒絕稽核收據(載荷, hmac.digest(self._key, 載荷, "sha256"))
+
+    def 驗證(self, 收據: object, *欄位) -> bool:
+        """固定時間驗證exact receipt type、payload binding與HMAC。"""
+        try:
+            預期載荷 = self._載荷(*欄位)
+            return (
+                type(收據) is 管理員拒絕稽核收據
+                and 收據.載荷 == 預期載荷
+                and hmac.compare_digest(收據.簽章, hmac.digest(self._key, 預期載荷, "sha256"))
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
 ADMIN_INVOCATION_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_id", "endpoint_version_id", "credential_id", "message_id",
     "status", "input", "metadata", "output", "error", "usage", "metadata_size_bytes",
     "metadata_sha256", "latency_ms", "pricing_version", "created_at", "completed_at",
-    "run_events", "tool_calls",
+    "run_events", "tool_calls", "redactions",
 })
 OWNER_SAFE_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
@@ -66,6 +114,10 @@ _工具欄位 = frozenset({
     "id", "run_event_id", "sequence_number", "tool_name", "arguments", "outcome",
     "result", "error", "latency_ms", "retry_of_tool_call_id", "created_at",
 })
+_遮蔽欄位 = frozenset({
+    "id", "target_type", "target_row_id", "json_path", "reason", "is_tombstone", "redacted_at",
+})
+
 _禁止敏感鍵 = frozenset({
     "authorization", "proxyauthorization", "cookie", "setcookie", "apikey",
     "credentialsecret", "credentialciphertext", "credentialhash", "masterkey",
@@ -182,8 +234,9 @@ def _驗證管理員完整詳情(值: object) -> None:
                 type(詳情["pricing_version"]) is not str or len(詳情["pricing_version"]) > 256))
             or not _是有限時間(詳情["created_at"])
             or not _是可空有限時間(詳情["completed_at"])
-            or type(詳情["run_events"]) is not list or len(詳情["run_events"]) > 4096
-            or type(詳情["tool_calls"]) is not list or len(詳情["tool_calls"]) > 4096):
+            or type(詳情["run_events"]) is not list or type(詳情["tool_calls"]) is not list
+            or type(詳情["redactions"]) is not list
+            or len(詳情["run_events"]) + len(詳情["tool_calls"]) + len(詳情["redactions"]) > 4096):
         raise ValueError
     for raw值 in (詳情["input"], 詳情["metadata"], 詳情["output"], 詳情["error"], 詳情["usage"]):
         _驗證raw無禁止secret(raw值)
@@ -209,6 +262,14 @@ def _驗證管理員完整詳情(值: object) -> None:
             raise ValueError
         for raw值 in (工具["arguments"], 工具["result"], 工具["error"]):
             _驗證raw無禁止secret(raw值)
+    for 遮蔽 in cast(list[object], 詳情["redactions"]):
+        if (type(遮蔽) is not dict or set(遮蔽) != _遮蔽欄位
+                or not _是識別碼(遮蔽["id"])
+                or not _是識別碼(遮蔽["target_row_id"])
+                or 遮蔽["is_tombstone"] is not True
+                or not _是有限時間(遮蔽["redacted_at"])):
+            raise ValueError
+        驗證遮蔽公開欄位(遮蔽["target_type"], 遮蔽["json_path"], 遮蔽["reason"])
 
 
 def _驗證raw無禁止secret(值: object) -> None:
@@ -547,18 +608,20 @@ def _重建列表項目(項目: 管理員呼叫列表項目) -> 管理員呼叫�
 class 管理員呼叫游標編解碼器:
     """以HMAC綁定query scope與keyset position的opaque cursor。"""
 
-    __slots__ = ("_金鑰",)
+    __slots__ = ("_金鑰", "_時鐘")
 
-    def __init__(self, 簽章金鑰: bytes) -> None:
-        """複製至少32 bytes的exact HMAC key。"""
-        if type(簽章金鑰) is not bytes or len(簽章金鑰) < 32:
+    def __init__(self, 簽章金鑰: bytes, *, 時鐘=time.time) -> None:
+        """複製至少32 bytes的exact HMAC key並捕捉server clock authority。"""
+        if type(簽章金鑰) is not bytes or len(簽章金鑰) < 32 or not callable(時鐘):
             raise 管理員呼叫游標錯誤("管理員呼叫游標無效") from None
         self._金鑰 = bytes(簽章金鑰)
+        self._時鐘 = 時鐘
 
     def 編碼(self, 條件: 管理員呼叫查詢條件, 位置: 管理員呼叫游標位置) -> str:
         """建立canonical payload並附加HMAC-SHA256簽章。"""
         try:
-            payload = _建立游標payload(條件, 位置)
+            簽發時間 = _讀取游標時鐘(self._時鐘)
+            payload = _建立游標payload(條件, 位置, 簽發時間)
             內容 = _編碼canonical_JSON(payload)
             簽章 = hmac.new(self._金鑰, 內容, hashlib.sha256).digest()
             return _編碼base64url(內容) + "." + _編碼base64url(簽章)
@@ -584,11 +647,19 @@ class 管理員呼叫游標編解碼器:
             if not hmac.compare_digest(_編碼canonical_JSON(payload), 內容):
                 raise ValueError
             預期scope = _建立scope(條件)
-            if set(payload) != {"v", "scope", "position"} or payload["v"] != 1:
+            if set(payload) != {"v", "scope", "position", "iat", "exp"} or payload["v"] != 2:
                 raise ValueError
             if payload["scope"] != 預期scope or type(payload["position"]) is not list:
                 raise ValueError
             if len(payload["position"]) != 2:
+                raise ValueError
+            簽發時間, 到期時間 = payload["iat"], payload["exp"]
+            if (type(簽發時間) not in (int, float) or type(到期時間) not in (int, float)
+                    or not math.isfinite(簽發時間) or not math.isfinite(到期時間)
+                    or 簽發時間 < 0 or 到期時間 != 簽發時間 + 300):
+                raise ValueError
+            現在 = _讀取游標時鐘(self._時鐘)
+            if 簽發時間 > 現在 or 現在 >= 到期時間:
                 raise ValueError
             return 管理員呼叫游標位置(payload["position"][0], payload["position"][1])
         except _控制流程:
@@ -608,15 +679,24 @@ def _建立scope(條件: 管理員呼叫查詢條件) -> list[object]:
 
 
 def _建立游標payload(
-    條件: 管理員呼叫查詢條件, 位置: 管理員呼叫游標位置,
+    條件: 管理員呼叫查詢條件, 位置: 管理員呼叫游標位置, 簽發時間: float,
 ) -> dict[str, object]:
-    """建立versioned、query-bound canonical payload。"""
-    if type(位置) is not 管理員呼叫游標位置:
+    """建立versioned、query-bound且固定五分鐘TTL的canonical payload。"""
+    if type(位置) is not 管理員呼叫游標位置 or type(簽發時間) is not float:
         raise ValueError
     安全位置 = 管理員呼叫游標位置(*(object.__getattribute__(位置, 名稱)
                                     for 名稱 in 管理員呼叫游標位置.__slots__))
-    return {"v": 1, "scope": _建立scope(條件),
-            "position": [安全位置.建立時間, 安全位置.呼叫識別碼]}
+    return {"v": 2, "scope": _建立scope(條件),
+            "position": [安全位置.建立時間, 安全位置.呼叫識別碼],
+            "iat": 簽發時間, "exp": 簽發時間 + 300}
+
+
+def _讀取游標時鐘(時鐘) -> float:
+    """只接受server clock回傳的非負finite numeric timestamp。"""
+    現在 = 時鐘()
+    if type(現在) not in (int, float) or not math.isfinite(現在) or 現在 < 0:
+        raise ValueError
+    return float(現在)
 
 
 def _編碼canonical_JSON(值: object) -> bytes:

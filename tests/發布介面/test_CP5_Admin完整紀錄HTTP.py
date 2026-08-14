@@ -2,11 +2,13 @@
 
 from pathlib import Path
 import asyncio
+import json
 import threading
 import time
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫不存在錯誤,
@@ -16,9 +18,10 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫游標編解碼器,
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
+    管理員拒絕稽核收據權威,
 )
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
-from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器
+from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器, 管理員遮蔽回應
 from 繁中代理.發布介面.生產管理稽核 import 延遲管理稽核服務, 安裝管理稽核資源
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.設定 import 生產設定
@@ -62,7 +65,7 @@ def test_A18_admin_GET_list只回安全metadata且無raw欄位():
         "invocation_id": "inv-1", "endpoint_id": "ep-1", "endpoint_version_id": "ver-1",
         "request_id": "req-1", "status": "failed", "error_code": "timeout",
         "latency_ms": 12.0, "created_at": 10.0, "completed_at": 11.0,
-        "has_redaction": True,
+        "has_redactions": True,
     }], "next_cursor": None}
     assert 列表.次數 == 1
     assert not ({"input", "metadata", "output", "error", "usage"} & set(回應.text))
@@ -75,7 +78,7 @@ def test_A18_non_admin與client_claim在provider前固定403():
         headers={"X-Admin": "true", "X-User-Id": "admin-1", "Authorization": "Bearer fake"},
     )
     assert 回應.status_code == 403
-    assert 回應.json() == {"detail": {"message": "只有管理者可查看完整呼叫紀錄"}}
+    assert 回應.json() == {"detail": "只有管理者可查看完整呼叫紀錄"}
     assert 列表.次數 == 0
 
 
@@ -103,34 +106,44 @@ def _詳情資料():
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {"prompt": "safe"},
         "metadata": {}, "output": None, "error": None, "usage": None,
-        "metadata_size_bytes": 0, "metadata_sha256": None, "latency_ms": 1.0,
+        "metadata_size_bytes": None, "metadata_sha256": None, "latency_ms": 1.0,
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
-        "run_events": [], "tool_calls": [],
+        "run_events": [], "tool_calls": [], "redactions": [{
+            "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
+            "json_path": "/secret", "reason": "privacy",
+            "is_tombstone": True, "redacted_at": 9.0,
+        }],
     }
 
 
 class _可控詳情:
-    def __init__(self, 結果):
-        self.結果, self.呼叫 = 結果, []
+    def __init__(self, 結果, 收據權威):
+        self.結果, self.呼叫, self.收據權威 = 結果, [], 收據權威
 
     def 查詢管理員原始資料(self, *參數):
         self.呼叫.append(參數)
+        if 參數[0] is False:
+            if isinstance(self.結果, BaseException):
+                raise self.結果
+            return self.收據權威.簽發(*參數[1:])
         if isinstance(self.結果, BaseException):
             raise self.結果
         return self.結果
 
 
-def _詳情客戶端(結果, 角色="admin"):
-    詳情 = _可控詳情(結果)
+def _詳情客戶端(結果, 角色="admin", *, raise_server_exceptions=True):
+    收據權威 = 管理員拒絕稽核收據權威(b"r" * 32)
+    詳情 = _可控詳情(結果, 收據權威)
     def session():
         return 網頁使用者("admin-1", "alice", 角色)
     app = FastAPI()
     app.include_router(建立管理稽核路由器(
         _列表(), 詳情, 管理員呼叫游標編解碼器(b"k" * 32), session,
+        拒絕收據權威=收據權威,
         時鐘=lambda: 123.0, 請求識別碼工廠=lambda: "request-1",
         稽核事件識別碼工廠=lambda: "audit-1",
     ))
-    return TestClient(app), 詳情
+    return TestClient(app, raise_server_exceptions=raise_server_exceptions), 詳情
 
 
 def test_A18_Admin_detail傳server_owned_audit資料且只序列化typed_DTO():
@@ -140,13 +153,127 @@ def test_A18_Admin_detail傳server_owned_audit資料且只序列化typed_DTO():
     assert 詳情.呼叫 == [(True, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
 
 
-def test_A18_detail_non_admin與query在provider前拒絕():
+def test_A18_detail_non_admin先留下denied_audit再固定403且敵對query零audit():
     客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()), "member")
-    assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1").status_code == 403
-    assert 詳情.呼叫 == []
+    拒絕 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 拒絕.status_code == 403
+    assert 拒絕.json() == {"detail": "只有管理者可查看完整呼叫紀錄"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
     客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
     assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1?export=true").status_code == 422
     assert 詳情.呼叫 == []
+
+
+def test_A18_detail_non_admin_denied_audit失敗時503():
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫稽核錯誤("RAW"), "member")
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 503
+    assert 回應.json() == {"detail": "呼叫紀錄暫時不可取得"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
+
+
+def test_A18_detail_non_admin拒絕provider自稱查詢錯誤為已提交audit():
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫查詢錯誤("denied audit committed"), "member")
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
+
+
+def test_A18_detail_non_admin拒絕不同authority偽造receipt():
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()), "member")
+    詳情.收據權威 = 管理員拒絕稽核收據權威(b"x" * 32)
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+
+
+def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
+    for 覆寫 in (
+        {"json_path": "$.secret"},
+        {"json_path": "/" + "x" * 257},
+        {"json_path": "/" + "~0" * 200},
+        {"reason": "x" * 257},
+        {"reason": "\u001c\u001f"},
+        {"reason": "\u0085"},
+        {"reason": "\ufeff"},
+        {"reason": "Bearer secret"},
+        {"reason": "中" + "a" * 64},
+        {"is_tombstone": False},
+    ):
+        資料 = _詳情資料()
+        資料["redactions"][0] = {**資料["redactions"][0], **覆寫}
+        with pytest.raises(Exception):
+            管理員呼叫完整詳情(資料)
+
+    客戶端, _ = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
+    schemas = 客戶端.get("/openapi.json").json()["components"]["schemas"]
+    schema = schemas["AdminRedaction"]["properties"]
+    assert set(schema["target_type"]["enum"]) == {
+        "invocation_input", "metadata", "output", "error", "run_event",
+        "tool_arguments", "tool_result", "tool_error",
+    }
+    assert schema["json_path"]["maxLength"] == 4096
+    assert schema["json_path"]["pattern"] == r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
+    assert schema["reason"]["maxLength"] == 256
+    assert "pattern" in schema["reason"]
+    assert schema["is_tombstone"]["const"] is True
+    detail_path = "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}"
+    detail_ref = 客戶端.get("/openapi.json").json()["paths"][detail_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]["properties"]
+    assert {項.get("type") for 項 in detail_schema["metadata_size_bytes"]["anyOf"]} == {"integer", "null"}
+    有效 = _詳情資料()["redactions"][0]
+    for 覆寫 in (
+        {"json_path": "/" + "~0" * 200},
+        {"reason": "Bearer secret"},
+        {"reason": "中" + "a" * 64},
+        {"reason": "\u001c\u001f"},
+        {"reason": "\u0085"},
+        {"reason": "\ufeff"},
+        {"id": "contains whitespace"},
+        {"id": b"redaction-1"},
+        {"target_row_id": "contains whitespace"},
+        {"json_path": b"/safe"},
+        {"reason": b"policy"},
+        {"is_tombstone": 1},
+        {"redacted_at": -1.0},
+        {"redacted_at": float("nan")},
+        {"redacted_at": True},
+        {"redacted_at": "9"},
+    ):
+        with pytest.raises(Exception):
+            管理員遮蔽回應(**{**有效, **覆寫})
+
+
+def test_A18_detail真HTTP_response_model攔截domain故障注入的非法redaction(monkeypatch):
+    from 繁中代理.發布介面.治理 import 管理查詢契約 as 契約模組
+
+    詳情DTO = 管理員呼叫完整詳情(_詳情資料())
+    非法 = _詳情資料()
+    非法["redactions"][0]["reason"] = "\u0085"
+    object.__setattr__(
+        詳情DTO, "_內容",
+        json.dumps(非法, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode("ascii"),
+    )
+    monkeypatch.setattr(契約模組, "_驗證管理員完整詳情", lambda _值: None)
+    客戶端, _ = _詳情客戶端(詳情DTO, raise_server_exceptions=False)
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
+    assert "\u0085" not in 回應.text
+
+
+@pytest.mark.parametrize("覆寫", [
+    {"id": b"redaction-1"}, {"redacted_at": True}, {"redacted_at": "9"},
+    {"json_path": b"/safe"}, {"reason": b"policy"}, {"is_tombstone": 1},
+])
+def test_A18_detail真HTTP_response_model拒絕redaction_scalar_coercion(monkeypatch, 覆寫):
+    詳情DTO = 管理員呼叫完整詳情(_詳情資料())
+    非法 = _詳情資料()
+    非法["redactions"][0].update(覆寫)
+    monkeypatch.setattr(管理員呼叫完整詳情, "建立JSON", lambda _self: 非法)
+    客戶端, _ = _詳情客戶端(詳情DTO, raise_server_exceptions=False)
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
 
 
 def test_A18_detail固定404_503_500且零內部訊息():
@@ -158,7 +285,7 @@ def test_A18_detail固定404_503_500且零內部訊息():
     for 錯誤, 狀態, 訊息 in 案例:
         客戶端, _ = _詳情客戶端(錯誤)
         回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
-        assert 回應.status_code == 狀態 and 回應.json() == {"detail": {"message": 訊息}}
+        assert 回應.status_code == 狀態 and 回應.json() == {"detail": 訊息}
         assert "RAW" not in 回應.text
 
 
@@ -199,6 +326,9 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
             if 狀態 in 定義["get"]["responses"]:
                 schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]
                 assert "$ref" in schema or "oneOf" in schema or "properties" in schema
+        for 狀態 in ("401", "403", "500", "503"):
+            schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]
+            assert schema["properties"]["detail"]["type"] == "string"
     detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]
     for 欄位 in ("invocation", "run_events", "tool_calls"):
         assert "$ref" in str(detail_schema["properties"][欄位])
@@ -249,7 +379,7 @@ def test_A18_canonical_app建構零IO且OpenAPI掛載兩條Admin_GET(tmp_path, m
     assert admin.dependant.dependencies[0].call.__canonical_dependency__ is me.dependant.dependencies[0].call
     回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
     assert 回應.status_code == 401
-    assert 回應.json() == {"detail": {"code": "unauthorized"}}
+    assert 回應.json() == {"detail": "需要登入"}
 
 
 def test_A18_production_installer只使用Published路徑且失敗關閉主資源(tmp_path, monkeypatch):
@@ -261,7 +391,7 @@ def test_A18_production_installer只使用Published路徑且失敗關閉主資�
         async def 關閉(self): self.關閉次數 += 1
 
     class 服務:
-        def __init__(self, 收到路徑): 捕捉.append(收到路徑)
+        def __init__(self, 收到路徑, _收據權威): 捕捉.append(收到路徑)
         def 列出管理員安全呼叫(self, *參數): return 參數
         def 查詢管理員原始資料(self, *參數): return 參數
 
@@ -289,7 +419,7 @@ def test_A18_Admin_proxy清除失敗仍關閉主資源(tmp_path, monkeypatch):
         async def 關閉(self): self.關閉次數 += 1
 
     class 服務:
-        def __init__(self, _路徑): pass
+        def __init__(self, _路徑, _收據權威): pass
         def 列出管理員安全呼叫(self, *參數): return 參數
         def 查詢管理員原始資料(self, *參數): return 參數
 
@@ -324,7 +454,7 @@ def test_A18_hostile_dependency錯誤不可穿透raw_status或body():
     ))
     回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
     assert 回應.status_code == 500
-    assert 回應.json() == {"detail": {"message": "呼叫紀錄不可取得"}}
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
     assert "RAW_DEPENDENCY_SECRET" not in 回應.text
 
 
@@ -344,7 +474,8 @@ def test_A18_canonical_dependency錯誤不可夾帶敵對headers():
         ))
         回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
         assert 回應.status_code == 狀態
-        assert 回應.json() == {"detail": detail}
+        預期訊息 = "需要登入" if 狀態 == 401 else "呼叫紀錄暫時不可取得"
+        assert 回應.json() == {"detail": 預期訊息}
         assert "x-raw-stage" not in 回應.headers
         assert "x-error" not in 回應.headers
 
@@ -355,7 +486,7 @@ def test_A18_partial_install發布後拋錯必須撤銷authority(tmp_path, monke
         async def 關閉(self): self.關閉次數 += 1
 
     class 服務:
-        def __init__(self, _路徑): pass
+        def __init__(self, _路徑, _收據權威): pass
         def 列出管理員安全呼叫(self, *參數): return 參數
         def 查詢管理員原始資料(self, *參數): return 參數
 
@@ -433,7 +564,7 @@ def test_A18_provider建構失敗保留原錯且關閉主資源(tmp_path, monkey
         async def 關閉(self): self.關閉次數 += 1
 
     class 建構失敗:
-        def __init__(self, _路徑): raise ValueError("provider-construction")
+        def __init__(self, _路徑, _收據權威): raise ValueError("provider-construction")
 
     monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 建構失敗)
     主 = 主資源()
@@ -450,7 +581,7 @@ def test_A18_production_public_clear_silent_noop仍由module_revoke_fail_closed(
         def _執行關閉同步(self): self.原清理次數 += 1
 
     class 服務:
-        def __init__(self, _路徑): pass
+        def __init__(self, _路徑, _收據權威): pass
         def 列出管理員安全呼叫(self, *_參數): return "LIVE"
         def 查詢管理員原始資料(self, *_參數): return "LIVE"
 
@@ -474,7 +605,7 @@ def test_A18_startup普通錯誤不被cleanup普通錯誤覆蓋(tmp_path, monkey
         async def 關閉(self): raise ValueError("cleanup")
 
     class 建構失敗:
-        def __init__(self, _路徑): raise 啟動錯誤
+        def __init__(self, _路徑, _收據權威): raise 啟動錯誤
 
     monkeypatch.setattr("繁中代理.發布介面.生產管理稽核.管理稽核提供者", 建構失敗)
     try:
@@ -497,7 +628,7 @@ def test_A18_cleanup多個控制流程保留第一個identity且仍執行全部(
             raise 第三
 
     class 服務:
-        def __init__(self, _路徑): pass
+        def __init__(self, _路徑, _收據權威): pass
         def 列出管理員安全呼叫(self, *_參數): return "LIVE"
         def 查詢管理員原始資料(self, *_參數): return "LIVE"
 
@@ -534,7 +665,7 @@ def test_A18_startup_rollback多個控制流程保留第一個identity且仍執�
             raise 第二
 
     class 服務:
-        def __init__(self, _路徑): pass
+        def __init__(self, _路徑, _收據權威): pass
         def 列出管理員安全呼叫(self, *_參數): return "LIVE"
         def 查詢管理員原始資料(self, *_參數): return "LIVE"
 

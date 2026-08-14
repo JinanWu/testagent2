@@ -1483,7 +1483,7 @@ def test_A18管理員列表組合DTO重驗污染子項且repr零值():
 
 def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
     """Cursor不能跨endpoint/filter/window重放，也不能由client竄改position。"""
-    codec = 管理員呼叫游標編解碼器(b"k" * 32)
+    codec = 管理員呼叫游標編解碼器(b"k" * 32, 時鐘=lambda: 100.0)
     條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", "schema_invalid", 25)
     位置 = 管理員呼叫游標位置(10.0, "inv-1")
     cursor = codec.編碼(條件, 位置)
@@ -1505,19 +1505,49 @@ def test_A18游標簽章綁定endpoint_filters_limit_position且拒絕tamper():
         codec.解碼(cursor, 條件)
 
 
+def test_A18游標具有固定TTL且拒絕到期_future與舊v1重放():
+    金鑰 = b"k" * 32
+    現在 = [100.0]
+    codec = 管理員呼叫游標編解碼器(金鑰, 時鐘=lambda: 現在[0])
+    條件 = 管理員呼叫查詢條件("ep-1", None, None, None, None, 50)
+    位置 = 管理員呼叫游標位置(10.0, "inv-1")
+    cursor = codec.編碼(條件, 位置)
+
+    現在[0] = 399.999
+    assert codec.解碼(cursor, 條件) == 位置
+    現在[0] = 400.0
+    with pytest.raises(管理員呼叫游標錯誤):
+        codec.解碼(cursor, 條件)
+
+    編碼 = lambda 值: base64.urlsafe_b64encode(值).rstrip(b"=").decode("ascii")
+    for payload in (
+        {"v": 2, "scope": ["ep-1", None, None, None, None, 50],
+         "position": [10.0, "inv-1"], "iat": 401.0, "exp": 701.0},
+        {"v": 1, "scope": ["ep-1", None, None, None, None, 50],
+         "position": [10.0, "inv-1"]},
+    ):
+        內容 = json.dumps(payload, ensure_ascii=True, sort_keys=True,
+                        separators=(",", ":"), allow_nan=False).encode("ascii")
+        token = 編碼(內容) + "." + 編碼(hmac.new(金鑰, 內容, hashlib.sha256).digest())
+        with pytest.raises(管理員呼叫游標錯誤):
+            codec.解碼(token, 條件)
+
+
 def test_A18游標拒絕有效HMAC但JSON非canonical的token():
     """Signature只證明bytes真實；decode仍須拒絕空白／key順序等非canonical表示。"""
     金鑰 = b"k" * 32
-    codec = 管理員呼叫游標編解碼器(金鑰)
+    codec = 管理員呼叫游標編解碼器(金鑰, 時鐘=lambda: 100.0)
     條件 = 管理員呼叫查詢條件("ep-1", 1.0, 20.0, "failed", None, 25)
     編碼 = lambda 值: base64.urlsafe_b64encode(值).rstrip(b"=").decode("ascii")
     payload = {"position": [10.0, "inv-1"],
-               "scope": ["ep-1", 1.0, 20.0, "failed", None, 25], "v": 1}
+               "scope": ["ep-1", 1.0, 20.0, "failed", None, 25],
+               "iat": 100.0, "exp": 400.0, "v": 2}
     for 非canonical in (
         json.dumps(payload, ensure_ascii=True).encode("ascii"),
-        b'{"v":1,"scope":["ep-1",1.0,20.0,"failed",null,25],'
-        b'"position":[10.0,"inv-1"]}',
-        b'{"position":[10.0,"inv-1"],"scope":["ep-1",1e0,20.0,"failed",null,25],"v":1}',
+        b'{"v":2,"scope":["ep-1",1.0,20.0,"failed",null,25],'
+        b'"position":[10.0,"inv-1"],"iat":100.0,"exp":400.0}',
+        b'{"exp":400.0,"iat":100.0,"position":[10.0,"inv-1"],'
+        b'"scope":["ep-1",1e0,20.0,"failed",null,25],"v":2}',
     ):
         簽章 = hmac.new(金鑰, 非canonical, hashlib.sha256).digest()
         token = 編碼(非canonical) + "." + 編碼(簽章)
@@ -1534,7 +1564,7 @@ def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
         "metadata": {}, "output": None, "error": {"code": "timeout"}, "usage": None,
         "metadata_size_bytes": 1, "metadata_sha256": "a" * 64, "latency_ms": 1.0,
         "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [],
+        "run_events": [], "tool_calls": [], "redactions": [],
     }
     詳情 = 建立管理員呼叫完整詳情(原始)
     assert "RAW_MARKER" not in repr(詳情)
@@ -1556,7 +1586,7 @@ def test_A18完整詳情逐欄bounded且內部儲存不可變():
         "message_id": None, "status": "failed", "input": {}, "metadata": {},
         "output": None, "error": None, "usage": None, "metadata_size_bytes": 0,
         "metadata_sha256": None, "latency_ms": None, "pricing_version": None,
-        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
     for 破壞 in (
         {**基本, "invocation": "not-an-object"},
@@ -1594,7 +1624,7 @@ def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_p
         "message_id": None, "status": "failed", "input": 7, "metadata": {},
         "output": 3.14, "error": False, "usage": [1], "metadata_size_bytes": 2,
         "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
-        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == 7
     for 敏感 in (
@@ -1619,7 +1649,7 @@ def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
         "message_id": None, "status": "failed", "input": "合法 scalar raw", "metadata": {},
         "output": None, "error": None, "usage": None, "metadata_size_bytes": 2,
         "metadata_sha256": "a" * 64, "latency_ms": 1.0, "pricing_version": None,
-        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [],
+        "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
     }
     event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
              "payload": {}, "created_at": 1.0}
@@ -1653,7 +1683,7 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
         "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
         "error": None, "usage": None, "metadata_size_bytes": 2, "metadata_sha256": "a" * 64,
         "latency_ms": 1.0, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [],
+        "run_events": [], "tool_calls": [], "redactions": [],
     }
     event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
              "payload": {}, "created_at": 1.0}
@@ -1689,7 +1719,7 @@ def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
         "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
         "error": None, "usage": None, "metadata_size_bytes": 0, "metadata_sha256": None,
         "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [],
+        "run_events": [], "tool_calls": [], "redactions": [],
     }
     for key in (
         "pak_" + "A" * 43,

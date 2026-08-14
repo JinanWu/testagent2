@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -228,16 +229,11 @@ def 建立ProductionSPA相依項(設定: ProductionSPA設定) -> 發布介面相
 
 def _建立快照(dist根: Path) -> _SPA快照:
     """拒绝alias、损坏、超限与未hash资源，再复制为immutable bytes。"""
+    Dist描述器 = Assets描述器 = None
     try:
-        if dist根.is_symlink() or not dist根.is_dir():
-            raise ValueError
-        Dist身份 = _讀取目錄身份(dist根)
-        入口 = dist根 / "index.html"
-        assets根 = dist根 / "assets"
-        if 入口.is_symlink() or not 入口.is_file() or assets根.is_symlink() or not assets根.is_dir():
-            raise ValueError
-        Assets身份 = _讀取目錄身份(assets根)
-        HTML = _讀取檔案(入口, _最大HTML位元組)
+        Dist描述器, Dist身份 = _開啟目錄(dist根)
+        Assets描述器, Assets身份 = _開啟目錄("assets", 目錄描述器=Dist描述器)
+        HTML = _讀取檔案("index.html", _最大HTML位元組, 目錄描述器=Dist描述器)
         HTML文字 = HTML.decode("utf-8", errors="strict")
         if (
             '<div id="root"></div>' not in HTML文字
@@ -247,56 +243,100 @@ def _建立快照(dist根: Path) -> _SPA快照:
             raise ValueError
         資源字典: dict[str, _資源內容] = {}
         總位元組 = len(HTML)
-        with os.scandir(assets根) as 項目列:
+        with os.scandir(Assets描述器) as 項目列:
             for 項目 in 項目列:
                 if 項目.is_symlink() or not 項目.is_file(follow_symlinks=False):
                     raise ValueError
-                項目路徑 = Path(項目.path)
-                相對 = 項目路徑.relative_to(assets根)
-                if len(相對.parts) != 1 or _雜湊檔名.fullmatch(相對.name) is None:
+                名稱 = 項目.name
+                if type(名稱) is not str or "/" in 名稱 or _雜湊檔名.fullmatch(名稱) is None:
                     raise ValueError
-                內容 = _讀取檔案(項目路徑, _最大單檔位元組)
+                內容 = _讀取檔案(名稱, _最大單檔位元組, 目錄描述器=Assets描述器)
                 總位元組 += len(內容)
                 if len(資源字典) >= _最大檔案數 or 總位元組 > _最大總位元組:
                     raise ValueError
-                媒體類型 = _媒體類型.get(相對.suffix.lower())
+                媒體類型 = _媒體類型.get(Path(名稱).suffix.lower())
                 if type(媒體類型) is not str:
                     raise ValueError
-                資源字典["/assets/" + 相對.as_posix()] = _資源內容(內容, 媒體類型)
+                資源字典["/assets/" + 名稱] = _資源內容(內容, 媒體類型)
         參照 = tuple(_資源參照.findall(HTML文字))
         if not 參照 or not any(路徑.endswith((".js", ".mjs")) for 路徑 in 參照):
             raise ValueError
         if any(路徑 not in 資源字典 for 路徑 in 參照):
             raise ValueError
-        if _讀取目錄身份(assets根) != Assets身份 or _讀取目錄身份(dist根) != Dist身份:
+        if _描述器身份(Assets描述器) != Assets身份 or _描述器身份(Dist描述器) != Dist身份:
             raise ValueError
         return _SPA快照(HTML, MappingProxyType(dict(資源字典)))
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except BaseException:
         raise ValueError(_固定設定錯誤) from None
+    finally:
+        if Assets描述器 is not None:
+            os.close(Assets描述器)
+        if Dist描述器 is not None:
+            os.close(Dist描述器)
 
 
-def _讀取檔案(路徑: Path, 上限: int) -> bytes:
-    """以stat/read/stat固定单一regular file并拒绝增长、替换或超限。"""
-    前 = 路徑.stat(follow_symlinks=False)
-    if not 路徑.is_file() or not 0 < 前.st_size <= 上限:
+def _讀取檔案(名稱: str, 上限: int, *, 目錄描述器: int) -> bytes:
+    """以nofollow descriptor固定单一regular inode并拒绝增长、替换或超限。"""
+    描述器 = None
+    內容區塊: list[bytes] = []
+    try:
+        不跟隨旗標 = getattr(os, "O_NOFOLLOW", None)
+        if type(不跟隨旗標) is not int:
+            raise ValueError
+        開啟旗標 = os.O_RDONLY | 不跟隨旗標 | getattr(os, "O_CLOEXEC", 0)
+        描述器 = os.open(名稱, 開啟旗標, dir_fd=目錄描述器)
+        前 = os.fstat(描述器)
+        if not stat.S_ISREG(前.st_mode) or not 0 < 前.st_size <= 上限:
+            raise ValueError
+        剩餘 = 前.st_size
+        while 剩餘:
+            區塊 = os.read(描述器, min(65_536, 剩餘))
+            if not 區塊:
+                raise ValueError
+            內容區塊.append(區塊)
+            剩餘 -= len(區塊)
+        if os.read(描述器, 1):
+            raise ValueError
+        後 = os.fstat(描述器)
+        身份欄位 = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(前, 欄位) != getattr(後, 欄位) for 欄位 in 身份欄位):
+            raise ValueError
+        return b"".join(內容區塊)
+    except OSError:
+        raise ValueError from None
+    finally:
+        內容區塊.clear()
+        if 描述器 is not None:
+            os.close(描述器)
+
+
+def _開啟目錄(路徑: Path | str, *, 目錄描述器: int | None = None) -> tuple[int, tuple[int, ...]]:
+    """nofollow開啟並pin住目錄inode；可相對既有descriptor開啟child。"""
+    不跟隨旗標 = getattr(os, "O_NOFOLLOW", None)
+    目錄旗標 = getattr(os, "O_DIRECTORY", None)
+    if type(不跟隨旗標) is not int or type(目錄旗標) is not int:
         raise ValueError
-    內容 = 路徑.read_bytes()
-    後 = 路徑.stat(follow_symlinks=False)
-    if len(內容) != 前.st_size or (前.st_dev, 前.st_ino, 前.st_mtime_ns, 前.st_size) != (
-        後.st_dev, 後.st_ino, 後.st_mtime_ns, 後.st_size,
-    ):
-        raise ValueError
-    return 內容
+    描述器 = os.open(
+        os.fspath(路徑), os.O_RDONLY | 不跟隨旗標 | 目錄旗標 | getattr(os, "O_CLOEXEC", 0),
+        dir_fd=目錄描述器,
+    )
+    try:
+        return 描述器, _描述器身份(描述器)
+    except BaseException:
+        os.close(描述器)
+        raise
 
 
-def _讀取目錄身份(路徑: Path) -> tuple[int, int, int]:
-    """读取nofollow目录identity；参数是Path，返回dev/inode/mtime tuple，非法时丢ValueError。"""
-    狀態 = 路徑.stat(follow_symlinks=False)
-    if not 路徑.is_dir():
+def _描述器身份(描述器: int) -> tuple[int, ...]:
+    """讀取已pin descriptor的目錄identity與mutation metadata。"""
+    狀態 = os.fstat(描述器)
+    if not stat.S_ISDIR(狀態.st_mode):
         raise ValueError
-    return 狀態.st_dev, 狀態.st_ino, 狀態.st_mtime_ns
+    return (
+        狀態.st_dev, 狀態.st_ino, 狀態.st_mode, 狀態.st_mtime_ns, 狀態.st_ctime_ns,
+    )
 
 
 def _讀取Backend部分匹配方法(應用, 範圍) -> tuple[str, ...]:

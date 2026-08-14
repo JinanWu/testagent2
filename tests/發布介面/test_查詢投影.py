@@ -20,6 +20,7 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
     管理員呼叫完整詳情,
+    管理員拒絕稽核收據權威,
     擁有者安全詳情,
 )
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
@@ -595,6 +596,7 @@ def test_A18_pairing_preflight只查存在性且故障不寫audit不讀raw(呼�
 @pytest.mark.parametrize("授權", [False, 0, 1, "admin", None])
 def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資料庫, 授權):
     呼叫 = []
+    收據權威 = 管理員拒絕稽核收據權威(b"r" * 32)
 
     def detail(*_引數):
         呼叫.append(1)
@@ -602,14 +604,16 @@ def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資�
 
     閘門 = 管理員原始資料稽核閘門(
         SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+        收據權威,
     )
-    with pytest.raises(查詢投影錯誤) as 錯誤:
-        閘門.查詢管理員原始資料(
-            授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
-            100.0, "ep-1", "inv-1",
-        )
-    assert 錯誤.value.args == ("呼叫紀錄不可取得",)
-    assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
+    結果 = 閘門.查詢管理員原始資料(
+        授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+        100.0, "ep-1", "inv-1",
+    )
+    assert 收據權威.驗證(
+        結果, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+        100.0, "ep-1", "inv-1",
+    )
     assert 呼叫 == []
     with closing(sqlite3.connect(呼叫資料庫)) as 連線:
         assert 連線.execute("SELECT outcome FROM audit_events").fetchone() == ("denied",)
@@ -812,6 +816,11 @@ def test_A18管理員detail欄位allowlist與canonical墓碑不洩漏原文(呼�
     assert 結果["input"] == {
         "raw_input": {"$tombstone": {"redaction_id": "red-1", "redacted_at": 12.0}}
     }
+    assert 結果["redactions"] == [{
+        "id": "red-1", "target_type": "invocation_input", "target_row_id": "inv-1",
+        "json_path": "/raw_input", "reason": "privacy",
+        "is_tombstone": True, "redacted_at": 12.0,
+    }]
     for 禁止 in ("INPUT_SECRET", "original_sha256", "admin-1", "audit-red-1", "req-red-1"):
         assert 禁止 not in repr(結果)
 

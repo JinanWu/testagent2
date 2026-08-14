@@ -11,7 +11,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .治理.查詢投影 import SQLite呼叫查詢投影, 管理員原始資料稽核閘門
 from .治理.稽核 import SQLite稽核服務
-from .治理.管理查詢契約 import 管理員呼叫游標編解碼器
+from .治理.管理查詢契約 import 管理員呼叫游標編解碼器, 管理員拒絕稽核收據權威
 from .路由.管理稽核 import 建立管理稽核路由器
 
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -30,6 +30,7 @@ class 延遲管理稽核服務:
         self._停止中 = False
         self._排空服務 = None
         self._排空世代 = None
+        self._拒絕收據權威 = 管理員拒絕稽核收據權威(secrets.token_bytes(32))
 
     def 安裝(self, 服務) -> int:
         """安裝具list/detail exact methods的startup provider並回傳generation。"""
@@ -105,7 +106,7 @@ _可信清除管理稽核服務 = 延遲管理稽核服務.清除
 class 管理稽核提供者:
     """組合同一Published DB的safe list projection與audited detail gate。"""
 
-    def __init__(self, 資料庫路徑: Path) -> None:
+    def __init__(self, 資料庫路徑: Path, 收據權威: 管理員拒絕稽核收據權威 | None) -> None:
         """建立request-local SQLite adapters，不開啟持久連線。"""
         投影 = SQLite呼叫查詢投影(str(資料庫路徑))
 
@@ -120,6 +121,7 @@ class 管理稽核提供者:
         self._投影 = 投影
         self._閘門 = 管理員原始資料稽核閘門(
             SQLite稽核服務(str(資料庫路徑)), 讀取詳情, 配對存在,
+            收據權威,
         )
 
     def 列出管理員安全呼叫(self, 條件, 位置, /):
@@ -177,14 +179,18 @@ def 建立管理稽核權限():
 
 def 建立管理稽核路由(代理: 延遲管理稽核服務, 游標, 目前工作階段相依):
     """以canonical current-session dependency建立Admin router。"""
-    return 建立管理稽核路由器(代理, 代理, 游標, 目前工作階段相依)
+    return 建立管理稽核路由器(
+        代理, 代理, 游標, 目前工作階段相依,
+        拒絕收據權威=代理._拒絕收據權威,
+    )
 
 
 async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 資料庫路徑: Path):
     """在主Published resource成功後安裝Admin provider；失敗時關閉主資源。"""
     服務 = None
     try:
-        服務 = 管理稽核提供者(資料庫路徑)
+        收據權威 = getattr(代理, "_拒絕收據權威", None)
+        服務 = 管理稽核提供者(資料庫路徑, 收據權威)
         世代 = 代理.安裝(服務)
         原始同步清理 = getattr(主資源, "_執行關閉同步", None)
         if callable(原始同步清理):

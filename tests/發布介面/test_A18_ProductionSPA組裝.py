@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,8 @@ from 繁中代理.發布介面 import asgi as asgi模組
 from 繁中代理.發布介面.asgi import 建立CP4SPAASGI應用程式
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
 from 繁中代理.發布介面.生產SPA import ProductionSPA設定
-from 繁中代理.發布介面.設定 import 生產設定
+from 繁中代理.發布介面.相依項 import 發布介面相依項
+from 繁中代理.發布介面.設定 import 生產設定, 網頁安全設定
 
 
 _HTML = b'<!doctype html><html><body><div id="root"></div><script type="module" src="/assets/app-ABCDEFGH.js"></script><link rel="stylesheet" href="/assets/app-ABCDEFGH.css"></body></html>'
@@ -26,6 +28,43 @@ _安全標頭 = {
     "x-frame-options": "DENY",
     "permissions-policy": "camera=(), microphone=(), geolocation=()",
 }
+
+
+def test_A18_建立網頁應用程式只接受exact_ProductionSPA_boundary(monkeypatch):
+    from 繁中代理.發布介面 import 應用程式 as 應用程式模組
+    from 繁中代理.發布介面.生產SPA import 拒絕ProductionSPA未知方法Middleware
+
+    呼叫 = []
+    monkeypatch.setattr(應用程式模組, "_建立應用程式", lambda *參數, **關鍵字: 呼叫.append((參數, 關鍵字)))
+
+    class 任意Middleware:
+        pass
+
+    class 敵對相等Metaclass(type):
+        def __eq__(cls, _其他):
+            return True
+
+    class 敵對相等Middleware(metaclass=敵對相等Metaclass):
+        pass
+
+    相依 = 發布介面相依項((), ())
+    安全設定 = 網頁安全設定(("https://web.example",))
+    with pytest.raises(ValueError, match="^發布介面路由設定無效$"):
+        應用程式模組.建立網頁應用程式(
+            相依, 安全設定, 內層Middleware類別=任意Middleware,
+        )
+    assert 呼叫 == []
+
+    with pytest.raises(ValueError, match="^發布介面路由設定無效$"):
+        應用程式模組.建立網頁應用程式(
+            相依, 安全設定, 內層Middleware類別=敵對相等Middleware,
+        )
+    assert 呼叫 == []
+
+    應用程式模組.建立網頁應用程式(
+        相依, 安全設定, 內層Middleware類別=拒絕ProductionSPA未知方法Middleware,
+    )
+    assert 呼叫[0][1]["內層Middleware類別"] is 拒絕ProductionSPA未知方法Middleware
 
 
 def _建立dist(tmp_path: Path, *, index: bytes = _HTML) -> Path:
@@ -127,6 +166,43 @@ def test_損壞或alias_dist在startup固定fail_closed(tmp_path: Path, 破壞: 
     with pytest.raises(RuntimeError, match="^發布介面啟動失敗$"):
         with TestClient(app):
             pass
+
+
+def test_A18_snapshot讀檔拒絕等長symlink_TOCTOU形狀(tmp_path: Path):
+    from 繁中代理.發布介面.生產SPA import _讀取檔案
+
+    target = tmp_path / "outside-secret"
+    link = tmp_path / "app-ABCDEFGH.js"
+    link.symlink_to(target)
+    target.write_bytes(b"S" * link.lstat().st_size)
+
+    目錄描述器 = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError):
+            _讀取檔案(link.name, 1024, 目錄描述器=目錄描述器)
+    finally:
+        os.close(目錄描述器)
+
+
+def test_A18_snapshot以目錄descriptor抵抗parent_path_swap(tmp_path: Path):
+    from 繁中代理.發布介面.生產SPA import _讀取檔案
+
+    dist = tmp_path / "dist"
+    moved = tmp_path / "moved"
+    outside = tmp_path / "outside"
+    dist.mkdir()
+    outside.mkdir()
+    (dist / "app-ABCDEFGH.js").write_bytes(b"TRUSTED")
+    (outside / "app-ABCDEFGH.js").write_bytes(b"OUTSIDE")
+    目錄描述器 = os.open(dist, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        dist.rename(moved)
+        dist.symlink_to(outside, target_is_directory=True)
+        assert _讀取檔案(
+            "app-ABCDEFGH.js", 1024, 目錄描述器=目錄描述器,
+        ) == b"TRUSTED"
+    finally:
+        os.close(目錄描述器)
 
 
 def test_production_SPA同源服務deep_link_assets與安全cache_headers(tmp_path: Path):
