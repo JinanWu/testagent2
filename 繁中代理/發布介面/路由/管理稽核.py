@@ -22,6 +22,7 @@ from ..治理.管理查詢契約 import (
     ADMIN_INVOCATION_QUERY_KEYS,
     管理員呼叫不存在錯誤,
     管理員呼叫完整詳情,
+    管理員呼叫列表項目,
     管理員呼叫投影頁,
     管理員呼叫查詢條件,
     管理員呼叫查詢錯誤,
@@ -88,6 +89,13 @@ _遮蔽墓碑回應 = Annotated[
     Literal[True], BeforeValidator(_驗證遮蔽墓碑),
     WithJsonSchema({"type": "boolean", "const": True}),
 ]
+_列表識別碼回應 = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=_識別碼格式),
+]
+_列表錯誤碼回應 = Annotated[
+    str, Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]{0,127}$"),
+]
+_列表時間回應 = Annotated[float, Field(ge=0, allow_inf_nan=False)]
 
 
 class 管理員安全列表提供者(Protocol):
@@ -109,10 +117,12 @@ class 管理員已稽核詳情提供者(Protocol):
 管理員呼叫列表項目回應 = create_model(
     "AdminInvocationListItem", __config__=ConfigDict(extra="forbid", strict=True),
     **{名稱: 定義 for 名稱, 定義 in {
-        "invocation_id": (str, ...), "endpoint_id": (str, ...), "endpoint_version_id": (str, ...),
-        "request_id": (str, ...), "status": (str, ...), "error_code": (str | None, ...),
-        "latency_ms": (float | None, ...), "created_at": (float, ...),
-        "completed_at": (float | None, ...), "has_redactions": (bool, ...),
+        "invocation_id": (_列表識別碼回應, ...), "endpoint_id": (_列表識別碼回應, ...),
+        "endpoint_version_id": (_列表識別碼回應, ...), "request_id": (_列表識別碼回應, ...),
+        "status": (Literal["pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key"], ...),
+        "error_code": (_列表錯誤碼回應 | None, ...), "latency_ms": (_列表時間回應 | None, ...),
+        "created_at": (_列表時間回應, ...), "completed_at": (_列表時間回應 | None, ...),
+        "has_redactions": (bool, ...),
     }.items()},
 )
 管理員呼叫列表回應 = create_model(
@@ -278,7 +288,7 @@ def 建立管理稽核路由器(
             下一頁 = None if 頁.下一頁位置 is None else 游標編解碼器.編碼(條件, 頁.下一頁位置)
             return _釋放管理稽核回應(
                 管理員呼叫列表回應,
-                {"items": [_序列化列表項目(項目) for 項目 in 頁.項目], "next_cursor": 下一頁},
+                {"items": [_重建並序列化列表項目(項目) for 項目 in 頁.項目], "next_cursor": 下一頁},
             )
         except _控制流程:
             raise
@@ -449,6 +459,17 @@ def _序列化列表項目(項目) -> dict[str, object]:
         "created_at": 項目.建立時間, "completed_at": 項目.完成時間,
         "has_redactions": 項目.是否有遮蔽,
     }
+
+
+def _重建並序列化列表項目(項目: object) -> dict[str, object]:
+    """在HTTP final release seam逐欄重建domain DTO，拒絕post-construction poisoning。"""
+    if type(項目) is not 管理員呼叫列表項目:
+        raise ValueError
+    安全 = 管理員呼叫列表項目(
+        項目.呼叫識別碼, 項目.端點識別碼, 項目.端點版本識別碼, 項目.請求識別碼,
+        項目.狀態, 項目.錯誤碼, 項目.延遲毫秒, 項目.建立時間, 項目.完成時間, 項目.是否有遮蔽,
+    )
+    return _序列化列表項目(安全)
 
 
 def _釋放管理稽核回應(模型: type[BaseModel], 候選: object, /) -> dict[str, object]:

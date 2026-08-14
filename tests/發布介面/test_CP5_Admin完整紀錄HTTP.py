@@ -324,6 +324,34 @@ def test_A18_list_final_release拒絕serializer污染並固定JSON500(monkeypatc
     assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
 
 
+@pytest.mark.parametrize("欄位,污染", [
+    ("呼叫識別碼", "敵對識別碼"),
+    ("狀態", "HOSTILE_STATUS_MARKER"),
+    ("錯誤碼", "內部秘密"),
+    ("建立時間", 12.0),
+])
+def test_A18_list_final_release重新驗證page_owned_child同型別污染並固定JSON500(欄位, 污染):
+    class 污染列表(_列表):
+        def 列出管理員安全呼叫(self, 條件, 位置, /):
+            頁 = super().列出管理員安全呼叫(條件, 位置)
+            object.__setattr__(頁.項目[0], 欄位, 污染)
+            return 頁
+
+    列表 = 污染列表()
+    def session():
+        return 網頁使用者("user-1", "alice", "admin")
+    app = FastAPI()
+    app.include_router(建立管理稽核路由器(
+        列表, _詳情(), 管理員呼叫游標編解碼器(b"k" * 32), session,
+    ))
+    回應 = TestClient(app, raise_server_exceptions=False).get(
+        "/api/admin/endpoints/ep-1/invocations"
+    )
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+    assert str(污染) not in 回應.text
+
+
 def test_A18_detail_final_release拒絕scalar_coercion並固定JSON500(monkeypatch):
     詳情DTO = 管理員呼叫完整詳情(_詳情資料())
     非法 = _詳情資料()
@@ -383,6 +411,14 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
     schemas = 客戶端.get("/openapi.json").json()["components"]["schemas"]
     list_schema = schemas[list_ref.rsplit("/", 1)[1]]
     assert not ({"input", "metadata", "output", "error", "usage"} & set(str(list_schema).lower()))
+    list_item_ref = list_schema["properties"]["items"]["items"]["$ref"]
+    list_item = schemas[list_item_ref.rsplit("/", 1)[1]]["properties"]
+    assert list_item["invocation_id"]["pattern"] == r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    assert list_item["status"]["enum"] == [
+        "pending", "running", "succeeded", "failed", "rate_limited", "invalid_api_key",
+    ]
+    assert list_item["error_code"]["anyOf"][0]["pattern"] == r"^[a-z][a-z0-9_.-]{0,127}$"
+    assert list_item["created_at"]["minimum"] == 0.0
     for 定義 in admin.values():
         assert "503" in 定義["get"]["responses"]
         assert 定義["get"]["responses"]["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
