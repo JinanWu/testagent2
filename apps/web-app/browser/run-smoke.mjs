@@ -1,4 +1,4 @@
-import { access, mkdtemp, rm } from 'node:fs/promises'
+import { access, mkdtemp, realpath, rm } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createServer } from 'node:net'
 import { randomBytes } from 'node:crypto'
@@ -45,7 +45,8 @@ if (preflight.status !== 0) {
   throw new Error('A18 browser Python dependency preflight failed')
 }
 
-const temporaryParent = await mkdtemp(join(tmpdir(), 'testagent2-a18-browser-'))
+const temporaryParentAlias = await mkdtemp(join(tmpdir(), 'testagent2-a18-browser-'))
+const temporaryParent = await realpath(temporaryParentAlias)
 let status = 1
 try {
   const stateRoot = join(temporaryParent, 'state')
@@ -70,6 +71,6 @@ try {
   })
   status = result.status ?? 1
 } finally {
-  await rm(temporaryParent, { recursive: true, force: true })
+  await rm(temporaryParentAlias, { recursive: true, force: true })
 }
 process.exitCode = status

@@ -2,11 +2,12 @@ import {
   ApiFormatError,
   boundedString,
   exactObject,
+  parseSafeJson,
 } from './client'
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/
 const ERROR_CODE = /^[a-z][a-z0-9_.-]{0,127}$/
-const CURSOR = /^[A-Za-z0-9_.-]{1,4096}$/
+const CURSOR = /^[A-Za-z0-9_-]{1,2048}\.[A-Za-z0-9_-]{43}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const STATUS = new Set(['pending', 'running', 'succeeded', 'failed', 'rate_limited', 'invalid_api_key'])
 const REDACTION_TARGET = new Set([
@@ -158,6 +159,52 @@ function nullableIdentifier(value: unknown): value is string | null {
   return value === null || identifier(value)
 }
 
+function boundedCodePointString(value: unknown, maximum: number, allowEmpty = false): value is string {
+  return typeof value === 'string' && (allowEmpty || value.length > 0) &&
+    Array.from(value).length <= maximum
+}
+
+function jsonObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    exactObject(value, Object.keys(value)) !== null
+}
+
+function bindingKey(
+  targetType: string, targetRowId: string, jsonPath: string, redactionId: string, redactedAt: number,
+): string {
+  return JSON.stringify([targetType, targetRowId, jsonPath, redactionId, redactedAt])
+}
+
+function collectTombstones(
+  value: JsonValue, targetType: string, targetRowId: string, jsonPath: string, found: Set<string>,
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((child, index) => collectTombstones(
+      child, targetType, targetRowId, `${jsonPath}/${index}`, found,
+    ))
+    return
+  }
+  if (value === null || typeof value !== 'object') return
+  const object = exactObject(value, Object.keys(value))
+  if (object === null) throw new ApiFormatError()
+  if ('$tombstone' in object) {
+    const outer = exactObject(value, ['$tombstone'])
+    const tombstone = outer === null ? null : exactObject(outer.$tombstone, ['redaction_id', 'redacted_at'])
+    if (tombstone === null || !identifier(tombstone.redaction_id) ||
+        !finiteNonNegative(tombstone.redacted_at)) throw new ApiFormatError()
+    const key = bindingKey(
+      targetType, targetRowId, jsonPath, tombstone.redaction_id, tombstone.redacted_at,
+    )
+    if (found.has(key)) throw new ApiFormatError()
+    found.add(key)
+    return
+  }
+  for (const [key, child] of Object.entries(object)) {
+    const segment = key.replace(/~/g, '~0').replace(/\//g, '~1')
+    collectTombstones(child as JsonValue, targetType, targetRowId, `${jsonPath}/${segment}`, found)
+  }
+}
+
 function canonicalRedactionPath(value: unknown): value is string {
   if (typeof value !== 'string' || Array.from(value).length > 4096) return false
   if (value === '') return true
@@ -181,7 +228,8 @@ function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
     if (nodes > MAX_DETAIL_NODES || current.depth > MAX_DETAIL_DEPTH) throw new ApiFormatError()
     if (current.value === null || typeof current.value === 'boolean') continue
     if (typeof current.value === 'number') {
-      if (!Number.isFinite(current.value)) throw new ApiFormatError()
+      if (!Number.isFinite(current.value) ||
+          (Number.isInteger(current.value) && !Number.isSafeInteger(current.value))) throw new ApiFormatError()
       continue
     }
     if (typeof current.value === 'string') {
@@ -264,9 +312,10 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       !nullableIdentifier(detail.message_id) || typeof detail.status !== 'string' || !STATUS.has(detail.status) ||
       !(detail.metadata === null || (typeof detail.metadata === 'object' && detail.metadata !== null && !Array.isArray(detail.metadata))) ||
       !(detail.metadata_size_bytes === null ||
-        (Number.isInteger(detail.metadata_size_bytes) && finiteNonNegative(detail.metadata_size_bytes))) ||
+        (Number.isSafeInteger(detail.metadata_size_bytes) && finiteNonNegative(detail.metadata_size_bytes))) ||
       !(detail.metadata_sha256 === null || (typeof detail.metadata_sha256 === 'string' && SHA256.test(detail.metadata_sha256))) ||
-      !nullableFinite(detail.latency_ms) || !(detail.pricing_version === null || boundedString(detail.pricing_version, 256)) ||
+      !nullableFinite(detail.latency_ms) ||
+      !(detail.pricing_version === null || boundedCodePointString(detail.pricing_version, 256, true)) ||
       !finiteNonNegative(detail.created_at) || !nullableFinite(detail.completed_at) ||
       !Array.isArray(detail.run_events) || !Array.isArray(detail.tool_calls) ||
       !Array.isArray(detail.redactions) ||
@@ -277,25 +326,43 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
   const safe = cloneSafeJson(value, false) as Record<string, JsonValue>
   for (const raw of [safe.input, safe.metadata, safe.output, safe.error, safe.usage]) cloneSafeJson(raw)
   const safeInvocation = safe.invocation as Record<string, JsonValue>
+  const eventIds = new Set<string>()
+  const eventSequences = new Set<number>()
   const events = (safe.run_events as JsonValue[]).map((raw): InvocationRunEvent => {
     const event = exactObject(raw, ['id', 'sequence_number', 'event_type', 'payload', 'created_at'])
-    if (event === null || !identifier(event.id) || !Number.isInteger(event.sequence_number) ||
-        !finiteNonNegative(event.sequence_number) || !boundedString(event.event_type, 256) ||
-        !finiteNonNegative(event.created_at)) throw new ApiFormatError()
+    if (event === null || !identifier(event.id) || eventIds.has(event.id) ||
+        typeof event.sequence_number !== 'number' ||
+        !Number.isSafeInteger(event.sequence_number) || event.sequence_number <= 0 ||
+        eventSequences.has(event.sequence_number) || !boundedCodePointString(event.event_type, 256) ||
+        !jsonObject(event.payload) || !finiteNonNegative(event.created_at)) throw new ApiFormatError()
+    eventIds.add(event.id)
+    eventSequences.add(event.sequence_number)
     cloneSafeJson(event.payload)
     return { id: event.id, sequenceNumber: event.sequence_number, eventType: event.event_type,
       payload: event.payload as JsonValue, createdAt: event.created_at }
   })
+  const toolIds = new Set<string>()
+  const toolSequences = new Set<number>()
   const tools = (safe.tool_calls as JsonValue[]).map((raw): InvocationToolCall => {
     const tool = exactObject(raw, [
       'id', 'run_event_id', 'sequence_number', 'tool_name', 'arguments', 'outcome', 'result', 'error',
       'latency_ms', 'retry_of_tool_call_id', 'created_at',
     ])
-    if (tool === null || !identifier(tool.id) || !nullableIdentifier(tool.run_event_id) ||
-        !Number.isInteger(tool.sequence_number) || !finiteNonNegative(tool.sequence_number) ||
-        !boundedString(tool.tool_name, 256) || !boundedString(tool.outcome, 256) ||
+    if (tool === null || !identifier(tool.id) || toolIds.has(tool.id) ||
+        !nullableIdentifier(tool.run_event_id) ||
+        (tool.run_event_id !== null && !eventIds.has(tool.run_event_id)) ||
+        typeof tool.sequence_number !== 'number' ||
+        !Number.isSafeInteger(tool.sequence_number) || tool.sequence_number <= 0 ||
+        toolSequences.has(tool.sequence_number) ||
+        !boundedCodePointString(tool.tool_name, 256) || !boundedCodePointString(tool.outcome, 256) ||
+        !jsonObject(tool.arguments) || !['success', 'error'].includes(tool.outcome) ||
+        (tool.outcome === 'success' && (tool.result === null || tool.error !== null)) ||
+        (tool.outcome === 'error' && (tool.result !== null || tool.error === null)) ||
         !nullableFinite(tool.latency_ms) || !nullableIdentifier(tool.retry_of_tool_call_id) ||
+        (tool.retry_of_tool_call_id !== null && !toolIds.has(tool.retry_of_tool_call_id)) ||
         !finiteNonNegative(tool.created_at)) throw new ApiFormatError()
+    toolIds.add(tool.id)
+    toolSequences.add(tool.sequence_number)
     for (const raw of [tool.arguments, tool.result, tool.error]) cloneSafeJson(raw)
     return {
       id: tool.id, runEventId: tool.run_event_id, sequenceNumber: tool.sequence_number,
@@ -304,21 +371,47 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       retryOfToolCallId: tool.retry_of_tool_call_id, createdAt: tool.created_at,
     }
   })
+  const redactionIds = new Set<string>()
   const redactions = (safe.redactions as JsonValue[]).map((raw): InvocationRedaction => {
     const redaction = exactObject(raw, [
       'id', 'target_type', 'target_row_id', 'json_path', 'reason', 'is_tombstone', 'redacted_at',
     ])
-    if (redaction === null || !identifier(redaction.id) ||
+    if (redaction === null || !identifier(redaction.id) || redactionIds.has(redaction.id) ||
         typeof redaction.target_type !== 'string' || !REDACTION_TARGET.has(redaction.target_type) ||
         !identifier(redaction.target_row_id) || !canonicalRedactionPath(redaction.json_path) ||
         !canonicalRedactionReason(redaction.reason) ||
         redaction.is_tombstone !== true || !finiteNonNegative(redaction.redacted_at)) throw new ApiFormatError()
+    redactionIds.add(redaction.id)
     return {
       id: redaction.id, targetType: redaction.target_type, targetRowId: redaction.target_row_id,
       jsonPath: redaction.json_path, reason: redaction.reason,
       isTombstone: true, redactedAt: redaction.redacted_at,
     }
   })
+  const found = new Set<string>()
+  const invocationId = safeInvocation.id as string
+  collectTombstones(safe.input, 'invocation_input', invocationId, '', found)
+  collectTombstones(safe.metadata, 'metadata', invocationId, '', found)
+  collectTombstones(safe.output, 'output', invocationId, '', found)
+  collectTombstones(safe.error, 'error', invocationId, '', found)
+  collectTombstones(safe.usage, '__usage_forbidden__', invocationId, '', found)
+  for (const event of events) collectTombstones(event.payload, 'run_event', event.id, '', found)
+  for (const tool of tools) {
+    collectTombstones(tool.arguments, 'tool_arguments', tool.id, '', found)
+    collectTombstones(tool.result, 'tool_result', tool.id, '', found)
+    collectTombstones(tool.error, 'tool_error', tool.id, '', found)
+  }
+  const expected = new Set<string>()
+  for (const redaction of redactions) {
+    const key = bindingKey(
+      redaction.targetType, redaction.targetRowId, redaction.jsonPath, redaction.id, redaction.redactedAt,
+    )
+    if (expected.has(key)) throw new ApiFormatError()
+    expected.add(key)
+  }
+  if (found.size !== expected.size || [...found].some((key) => !expected.has(key))) {
+    throw new ApiFormatError()
+  }
   return {
     invocation: { id: safeInvocation.id as string, requestId: safeInvocation.request_id as string,
       sessionId: safeInvocation.session_id as string | null },
@@ -350,6 +443,9 @@ function encodedId(value: string): string {
 }
 
 function listRoute(endpointId: string, filters: InvocationListFilters): string {
+  if (filters.fromAt !== undefined && filters.toAt !== undefined && filters.fromAt > filters.toAt) {
+    throw new ApiFormatError()
+  }
   const params = new URLSearchParams()
   if (filters.fromAt !== undefined) {
     if (!finiteNonNegative(filters.fromAt)) throw new ApiFormatError()
@@ -368,7 +464,7 @@ function listRoute(endpointId: string, filters: InvocationListFilters): string {
     params.set('error_code', filters.errorCode)
   }
   if (filters.limit !== undefined) {
-    if (!Number.isInteger(filters.limit) || filters.limit < 1 || filters.limit > 100) throw new ApiFormatError()
+    if (!Number.isSafeInteger(filters.limit) || filters.limit < 1 || filters.limit > 100) throw new ApiFormatError()
     params.set('limit', String(filters.limit))
   }
   if (filters.cursor !== undefined) {
@@ -418,7 +514,7 @@ async function readBoundedJson(response: Response, limit: number, signal?: Abort
     }
     if (count === 0) throw new ApiFormatError()
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, count))
-    return JSON.parse(text) as unknown
+    return parseSafeJson(text)
   } catch (error) {
     await cancel()
     if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw abortError()

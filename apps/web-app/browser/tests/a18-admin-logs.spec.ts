@@ -17,6 +17,7 @@ const RAW_MARKERS = [
   'BROWSER_RAW_INPUT_MARKER',
   'BROWSER_RAW_METADATA_MARKER',
   'BROWSER_RAW_OUTPUT_MARKER',
+  'BROWSER_RAW_EVENT_MARKER',
 ]
 
 async function login(page: Page, username: string) {
@@ -111,6 +112,18 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
   await invocation.click()
   await expect(page.getByRole('heading', { name: '呼叫詳情' })).toBeVisible()
   await expect(page.getByText(RAW_MARKERS[0])).toBeVisible()
+  await expect(page.getByText(RAW_MARKERS[2])).toBeVisible()
+  await expect(page.getByLabel('Metadata')).toContainText('已遮蔽')
+  await expect(page.getByLabel('執行事件')).toContainText('已遮蔽')
+  await expect(page.getByRole('heading', { name: '遮蔽紀錄' })).toBeVisible()
+  await expect(page.getByLabel('遮蔽紀錄')).toContainText('/trace')
+  await expect(page.getByLabel('遮蔽紀錄')).toContainText('/state')
+  const detailText = await page.locator('body').innerText()
+  expect(detailText).not.toContain(RAW_MARKERS[1])
+  expect(detailText).not.toContain(RAW_MARKERS[3])
+  expect(detailText).not.toContain('$tombstone')
+  expect(detailText).not.toContain('redaction_id')
+  expect(detailText).not.toContain('redacted_at')
   expect(committedDetailAuditCount()).toBe(1)
   expect(adminRequests).toEqual([
     `GET /api/admin/endpoints/${ENDPOINT_ID}/invocations`,

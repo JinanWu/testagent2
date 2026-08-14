@@ -102,7 +102,10 @@ def _種入呼叫(環境: _Canonical環境) -> None:
                 (呼叫, 端點, 版本, None, f"request-a18-{後綴}", f"session-a18-{後綴}",
                  f"message-a18-{後綴}", "succeeded", json.dumps({"prompt": f"input-{後綴}"}),
                  json.dumps({"trace": f"metadata-{後綴}"}), json.dumps({"answer": f"output-{後綴}"}),
-                 None, json.dumps({"total_tokens": 2}), 30, "a" * 64, 2.0, "pricing-v1", 10.0, 12.0),
+                 None, json.dumps({"total_tokens": 2}), 22, {
+                     "a": "2bdccfc57f310655fe9362c61ff6d6cc3b28b9279be1b1abd025a81d8557fe7e",
+                     "b": "d11680c21b3289363f0ed9050ad6bd7bdf821bc46bc63240ef46a83d141a96ee",
+                 }[後綴], 2.0, "pricing-v1", 10.0, 12.0),
             )
         連線.execute("UPDATE endpoint_invocations SET input_json=? WHERE id=?",
                      (json.dumps({"prompt": _主列標記}), _呼叫甲))

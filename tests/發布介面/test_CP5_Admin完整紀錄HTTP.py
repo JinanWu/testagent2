@@ -84,8 +84,17 @@ def test_A18_non_admin與client_claim在provider前固定403():
 
 def test_A18_Admin_routes只接受GET且尾斜線不redirect():
     客戶端, _ = _客戶端("admin")
-    assert 客戶端.post("/api/admin/endpoints/ep-1/invocations").status_code == 405
-    assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/", follow_redirects=False).status_code != 307
+    for 路徑 in (
+        "/api/admin/endpoints/ep-1/invocations",
+        "/api/admin/endpoints/ep-1/invocations/inv-1",
+    ):
+        不允許 = 客戶端.post(路徑)
+        assert 不允許.status_code == 405
+        assert 不允許.json() == {"detail": "Method Not Allowed"}
+        assert 不允許.headers["allow"] == "GET"
+        尾斜線 = 客戶端.get(路徑 + "/", follow_redirects=False)
+        assert 尾斜線.status_code == 404
+        assert 尾斜線.json() == {"detail": "找不到呼叫紀錄"}
 
 
 def test_A18_malformed_path固定422且不回顯敵對輸入():
@@ -96,7 +105,8 @@ def test_A18_malformed_path固定422且不回顯敵對輸入():
         客戶端, _ = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
         回應 = 客戶端.get(路徑)
         assert 回應.status_code == 422
-        assert 回應.json() == {"detail": {"code": "invalid_request"}}
+        assert type(回應.json().get("detail")) is list
+        assert 回應.json()["detail"][0]["loc"][0] in ("path", "query", "request")
         assert "RAW_MARKER" not in 回應.text
 
 
@@ -105,7 +115,9 @@ def _詳情資料():
         "invocation": {"id": "inv-1", "request_id": "req-1", "session_id": None},
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {"prompt": "safe"},
-        "metadata": {}, "output": None, "error": None, "usage": None,
+        "metadata": {"secret": {"$tombstone": {
+            "redaction_id": "redaction-1", "redacted_at": 9.0,
+        }}}, "output": None, "error": None, "usage": None,
         "metadata_size_bytes": None, "metadata_sha256": None, "latency_ms": 1.0,
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
         "run_events": [], "tool_calls": [], "redactions": [{
@@ -162,6 +174,24 @@ def test_A18_detail_non_admin先留下denied_audit再固定403且敵對query零a
     客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
     assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1?export=true").status_code == 422
     assert 詳情.呼叫 == []
+
+
+@pytest.mark.parametrize(("路徑", "稽核端點", "稽核呼叫"), [
+    ("/api/admin/endpoints/%24RAW_MARKER/invocations/inv-1", "invalid-endpoint", "inv-1"),
+    ("/api/admin/endpoints/ep-1/invocations/%24RAW_MARKER", "ep-1", "invalid-invocation"),
+    ("/api/admin/endpoints/ep-1/invocations/inv-1?export=true", "ep-1", "inv-1"),
+])
+def test_A18_detail_non_admin在request_validation前denied_audit且非法值不入audit(
+    路徑, 稽核端點, 稽核呼叫,
+):
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()), "member")
+    回應 = 客戶端.get(路徑)
+    assert 回應.status_code == 403
+    assert 回應.json() == {"detail": "只有管理者可查看完整呼叫紀錄"}
+    assert 詳情.呼叫 == [(
+        False, "admin-1", "request-1", "audit-1", 123.0, 稽核端點, 稽核呼叫,
+    )]
+    assert "RAW_MARKER" not in repr(詳情.呼叫)
 
 
 def test_A18_detail_non_admin_denied_audit失敗時503():
@@ -276,6 +306,35 @@ def test_A18_detail真HTTP_response_model拒絕redaction_scalar_coercion(monkeyp
     assert 回應.status_code == 500
 
 
+def test_A18_list_final_release拒絕serializer污染並固定JSON500(monkeypatch):
+    from 繁中代理.發布介面.路由 import 管理稽核 as 路由模組
+
+    monkeypatch.setattr(
+        路由模組, "_序列化列表項目",
+        lambda _項目: {
+            "invocation_id": 7, "endpoint_id": "ep-1", "endpoint_version_id": "ver-1",
+            "request_id": "req-1", "status": "failed", "error_code": None,
+            "latency_ms": None, "created_at": 1.0, "completed_at": 2.0,
+            "has_redactions": False,
+        },
+    )
+    客戶端, _ = _客戶端("admin")
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+
+
+def test_A18_detail_final_release拒絕scalar_coercion並固定JSON500(monkeypatch):
+    詳情DTO = 管理員呼叫完整詳情(_詳情資料())
+    非法 = _詳情資料()
+    非法["metadata_size_bytes"] = "7"
+    monkeypatch.setattr(管理員呼叫完整詳情, "建立JSON", lambda _self: 非法)
+    客戶端, _ = _詳情客戶端(詳情DTO, raise_server_exceptions=False)
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
+
+
 def test_A18_detail固定404_503_500且零內部訊息():
     案例 = (
         (管理員呼叫不存在錯誤("RAW"), 404, "找不到呼叫紀錄"),
@@ -305,6 +364,10 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
         "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}",
     }
     assert all(set(定義) == {"get"} for 定義 in admin.values())
+    for 定義 in admin.values():
+        assert {"404", "405"} <= set(定義["get"]["responses"])
+        方法錯誤 = 定義["get"]["responses"]["405"]["content"]["application/json"]["schema"]
+        assert 方法錯誤["properties"]["detail"]["enum"] == ["Method Not Allowed"]
     ids = [定義["get"]["operationId"] for 定義 in admin.values()]
     assert len(ids) == len(set(ids)) == 2
     list_parameters = admin["/api/admin/endpoints/{endpoint_id}/invocations"]["get"]["parameters"]
@@ -322,6 +385,9 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
     assert not ({"input", "metadata", "output", "error", "usage"} & set(str(list_schema).lower()))
     for 定義 in admin.values():
         assert "503" in 定義["get"]["responses"]
+        assert 定義["get"]["responses"]["422"]["content"]["application/json"]["schema"]["$ref"].endswith(
+            "/HTTPValidationError"
+        )
         for 狀態 in ("401", "403", "422", "500", "503"):
             if 狀態 in 定義["get"]["responses"]:
                 schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]

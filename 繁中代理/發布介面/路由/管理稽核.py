@@ -10,8 +10,8 @@ import inspect
 from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
-from fastapi.responses import JSONResponse
-from pydantic import BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
+from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -28,6 +28,7 @@ from ..治理.管理查詢契約 import (
     管理員呼叫游標編解碼器,
     管理員呼叫稽核錯誤,
     管理員拒絕稽核收據權威,
+    建立管理員呼叫完整詳情,
 )
 from ..網頁工作階段 import 網頁使用者
 from ..治理.遮蔽 import 驗證遮蔽公開原因, 驗證遮蔽公開路徑
@@ -106,7 +107,7 @@ class 管理員已稽核詳情提供者(Protocol):
 
 
 管理員呼叫列表項目回應 = create_model(
-    "AdminInvocationListItem", __config__=ConfigDict(extra="forbid"),
+    "AdminInvocationListItem", __config__=ConfigDict(extra="forbid", strict=True),
     **{名稱: 定義 for 名稱, 定義 in {
         "invocation_id": (str, ...), "endpoint_id": (str, ...), "endpoint_version_id": (str, ...),
         "request_id": (str, ...), "status": (str, ...), "error_code": (str | None, ...),
@@ -115,8 +116,9 @@ class 管理員已稽核詳情提供者(Protocol):
     }.items()},
 )
 管理員呼叫列表回應 = create_model(
-    "AdminInvocationList", __config__=ConfigDict(extra="forbid"),
-    **{"items": (list[管理員呼叫列表項目回應], ...), "next_cursor": (str | None, ...)},
+    "AdminInvocationList", __config__=ConfigDict(extra="forbid", strict=True),
+    **{"items": (list[管理員呼叫列表項目回應], Field(max_length=100)),
+       "next_cursor": (str | None, ...)},
 )
 def _代碼錯誤文件(代碼: str) -> dict[str, object]:
     """建立只允許exact code的inline OpenAPI response。"""
@@ -140,22 +142,23 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
 驗證錯誤文件 = _代碼錯誤文件("invalid_request")
 禁止錯誤文件 = _訊息錯誤文件("只有管理者可查看完整呼叫紀錄")
 不存在錯誤文件 = _訊息錯誤文件("找不到呼叫紀錄")
+方法不允許錯誤文件 = _訊息錯誤文件("Method Not Allowed")
 查詢錯誤文件 = _訊息錯誤文件("呼叫紀錄不可取得")
 稽核錯誤文件 = _訊息錯誤文件("呼叫紀錄暫時不可取得")
 詳情不可用錯誤文件 = 稽核錯誤文件
 管理員呼叫識別回應 = create_model(
-    "AdminInvocationIdentity", __config__=ConfigDict(extra="forbid"),
+    "AdminInvocationIdentity", __config__=ConfigDict(extra="forbid", strict=True),
     識別碼=(str, Field(alias="id")), 請求識別碼=(str, Field(alias="request_id")),
     工作階段識別碼=(str | None, Field(alias="session_id")),
 )
 管理員執行事件回應 = create_model(
-    "AdminRunEvent", __config__=ConfigDict(extra="forbid"),
+    "AdminRunEvent", __config__=ConfigDict(extra="forbid", strict=True),
     識別碼=(str, Field(alias="id")), 序號=(int, Field(alias="sequence_number")),
     事件類型=(str, Field(alias="event_type")), 內容=(Any, Field(alias="payload")),
     建立時間=(float, Field(alias="created_at")),
 )
 管理員工具呼叫回應 = create_model(
-    "AdminToolCall", __config__=ConfigDict(extra="forbid"),
+    "AdminToolCall", __config__=ConfigDict(extra="forbid", strict=True),
     識別碼=(str, Field(alias="id")), 執行事件識別碼=(str | None, Field(alias="run_event_id")),
     序號=(int, Field(alias="sequence_number")), 工具名稱=(str, Field(alias="tool_name")),
     參數=(Any, Field(alias="arguments")), 結果狀態=(str, Field(alias="outcome")),
@@ -165,7 +168,7 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
     建立時間=(float, Field(alias="created_at")),
 )
 管理員遮蔽回應 = create_model(
-    "AdminRedaction", __config__=ConfigDict(extra="forbid"),
+    "AdminRedaction", __config__=ConfigDict(extra="forbid", strict=True),
     **{名稱: 定義 for 名稱, 定義 in {
         "id": (_遮蔽識別碼回應, ...),
         "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
@@ -177,7 +180,7 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
     }.items()},
 )
 管理員呼叫詳情回應 = create_model(
-    "AdminInvocationDetail", __config__=ConfigDict(extra="forbid"),
+    "AdminInvocationDetail", __config__=ConfigDict(extra="forbid", strict=True),
     **{名稱: 定義 for 名稱, 定義 in {
         "invocation": (管理員呼叫識別回應, ...), "endpoint_id": (str, ...),
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),
@@ -248,7 +251,8 @@ def 建立管理稽核路由器(
 
     @路由器.get(
         列表路徑, operation_id="admin_list_endpoint_invocations", response_model=管理員呼叫列表回應,
-        responses={401: 未授權錯誤文件, 403: 禁止錯誤文件, 422: 驗證錯誤文件,
+        responses={401: 未授權錯誤文件, 403: 禁止錯誤文件, 404: 不存在錯誤文件,
+                   405: 方法不允許錯誤文件,
                    500: 查詢錯誤文件, 503: 認證不可用錯誤文件},
     )
     async def 列出管理員呼叫(
@@ -261,7 +265,7 @@ def 建立管理稽核路由器(
         錯誤碼文件: Annotated[str | None, Query(alias="error_code")] = None,
         數量文件: Annotated[str | None, Query(alias="limit", json_schema_extra={"type": "integer", "minimum": 1, "maximum": 100, "default": 50})] = None,
         游標文件: Annotated[str | None, Query(alias="cursor")] = None,
-    ) -> JSONResponse:
+    ) -> dict[str, object]:
         """驗證Admin與strict query後只讀安全metadata投影。"""
         del 起始文件, 結束文件, 狀態文件, 錯誤碼文件, 數量文件, 游標文件
         _確認管理員(使用者)
@@ -272,7 +276,10 @@ def 建立管理稽核路由器(
             if type(頁) is not 管理員呼叫投影頁:
                 raise ValueError
             下一頁 = None if 頁.下一頁位置 is None else 游標編解碼器.編碼(條件, 頁.下一頁位置)
-            return JSONResponse({"items": [_序列化列表項目(項目) for 項目 in 頁.項目], "next_cursor": 下一頁})
+            return _釋放管理稽核回應(
+                管理員呼叫列表回應,
+                {"items": [_序列化列表項目(項目) for 項目 in 頁.項目], "next_cursor": 下一頁},
+            )
         except _控制流程:
             raise
         except BaseException:
@@ -281,7 +288,8 @@ def 建立管理稽核路由器(
     @路由器.get(
         詳情路徑, operation_id="admin_get_endpoint_invocation", response_model=管理員呼叫詳情回應,
         responses={401: 未授權錯誤文件, 403: 禁止錯誤文件, 404: 不存在錯誤文件,
-                   422: 驗證錯誤文件, 500: 查詢錯誤文件, 503: 詳情不可用錯誤文件},
+                   405: 方法不允許錯誤文件,
+                   500: 查詢錯誤文件, 503: 詳情不可用錯誤文件},
     )
     async def 取得管理員呼叫詳情(
         請求: Request,
@@ -291,10 +299,8 @@ def 建立管理稽核路由器(
     ) -> Any:
         """只允許Admin，並把server-owned audit資料傳入A18-01 gate。"""
         安全使用者 = _確認工作階段使用者(使用者)
-        _確認路徑識別碼(端點識別碼)
-        _確認路徑識別碼(呼叫識別碼)
-        if 請求.url.query:
-            _拋出固定錯誤(422)
+        稽核端點識別碼 = 端點識別碼 if _是路徑識別碼(端點識別碼) else "invalid-endpoint"
+        稽核呼叫識別碼 = 呼叫識別碼 if _是路徑識別碼(呼叫識別碼) else "invalid-invocation"
         請求識別碼: object = None
         事件識別碼: object = None
         發生時間: object = None
@@ -319,12 +325,12 @@ def 建立管理稽核路由器(
                 拒絕結果 = await run_in_threadpool(
                     詳情提供者.查詢管理員原始資料,
                     False, 安全使用者.識別碼, 安全請求識別碼, 安全事件識別碼, 安全發生時間,
-                    端點識別碼, 呼叫識別碼,
+                    稽核端點識別碼, 稽核呼叫識別碼,
                 )
                 if (type(拒絕收據權威) is 管理員拒絕稽核收據權威
                         and 拒絕收據權威.驗證(
                             拒絕結果, 安全使用者.識別碼, 安全請求識別碼,
-                            安全事件識別碼, 安全發生時間, 端點識別碼, 呼叫識別碼,
+                            安全事件識別碼, 安全發生時間, 稽核端點識別碼, 稽核呼叫識別碼,
                         )):
                     拒絕狀態 = 403
             except 管理員呼叫稽核錯誤:
@@ -334,6 +340,10 @@ def 建立管理稽核路由器(
             except BaseException:
                 拒絕狀態 = 500
             _拋出固定錯誤(拒絕狀態)
+        _確認路徑識別碼(端點識別碼)
+        _確認路徑識別碼(呼叫識別碼)
+        if 請求.url.query:
+            _拋出固定錯誤(422)
         try:
             詳情 = await run_in_threadpool(
                 詳情提供者.查詢管理員原始資料,
@@ -342,7 +352,8 @@ def 建立管理稽核路由器(
             )
             if type(詳情) is not 管理員呼叫完整詳情:
                 raise ValueError
-            return 詳情.建立JSON()
+            重建詳情 = 建立管理員呼叫完整詳情(詳情.建立JSON())
+            return _釋放管理稽核回應(管理員呼叫詳情回應, 重建詳情.建立JSON())
         except _控制流程:
             raise
         except 管理員呼叫不存在錯誤:
@@ -395,9 +406,14 @@ def _確認工作階段使用者(使用者: object) -> 網頁使用者:
 
 def _確認路徑識別碼(值: object) -> str:
     """Route-owned exact validator；固定422且不回顯拒絕值。"""
-    if type(值) is not str or re.fullmatch(_識別碼格式, 值) is None:
+    if not _是路徑識別碼(值):
         _拋出固定錯誤(422)
     return cast(str, 值)
+
+
+def _是路徑識別碼(值: object) -> bool:
+    """判斷值是否可安全進入audit/provider參數。"""
+    return type(值) is str and re.fullmatch(_識別碼格式, 值) is not None
 
 
 def _解析列表查詢(請求: Request, 端點識別碼: str, 編解碼器: 管理員呼叫游標編解碼器):
@@ -435,8 +451,24 @@ def _序列化列表項目(項目) -> dict[str, object]:
     }
 
 
+def _釋放管理稽核回應(模型: type[BaseModel], 候選: object, /) -> dict[str, object]:
+    """以strict model重建全新公開tree；普通錯誤由route統一映射固定500。"""
+    if not isinstance(模型, type) or not issubclass(模型, BaseModel):
+        raise ValueError
+    已驗證 = 模型.model_validate(候選, strict=True)
+    結果 = 已驗證.model_dump(mode="json", by_alias=True)
+    if type(結果) is not dict:
+        raise ValueError
+    return cast(dict[str, object], 結果)
+
+
 def _拋出固定錯誤(狀態碼: int):
     """清除內部例外鏈並回傳固定public detail。"""
+    if 狀態碼 == 422:
+        raise RequestValidationError([{
+            "type": "value_error", "loc": ("request",),
+            "msg": "Value error, invalid request", "input": None,
+            "ctx": {"error": "invalid request"},
+        }]) from None
     訊息 = ADMIN_INVOCATION_ERROR_CONTRACT[狀態碼]
-    詳情內容: object = {"code": "invalid_request"} if 狀態碼 == 422 else 訊息
-    raise HTTPException(status_code=狀態碼, detail=詳情內容) from None
+    raise HTTPException(status_code=狀態碼, detail=訊息) from None

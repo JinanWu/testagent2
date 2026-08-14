@@ -19,6 +19,7 @@ from 繁中代理.發布介面.生產Published執行 import Published生產設�
 from 繁中代理.發布介面.生產SPA import ProductionSPA設定
 from 繁中代理.發布介面.設定 import 生產設定
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
+from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
 
 
 _管理員帳號 = "browser-admin"
@@ -88,6 +89,23 @@ def _建立Published資料(根: Path) -> None:
              json.dumps({"answer": "BROWSER_RAW_OUTPUT_MARKER"}), None,
              json.dumps({"total_tokens": 2}), 30, "a" * 64, 2.0, "pricing-v1", 10.0, 12.0),
         )
+        連線.execute(
+            "INSERT INTO run_events(id,invocation_id,sequence_number,event_type,payload_json,created_at) "
+            "VALUES(?,?,?,?,?,?)",
+            ("event-browser-a18", _呼叫識別碼, 1, "model.completed",
+             json.dumps({"state": "BROWSER_RAW_EVENT_MARKER"}), 11.0),
+        )
+    遮蔽服務 = SQLite不可逆遮蔽服務(str(路徑))
+    遮蔽服務.遮蔽(
+        True, "redaction-browser-metadata", "audit-browser-redact-metadata",
+        _管理員帳號, "request-browser-redact-metadata", _呼叫識別碼,
+        "metadata", _呼叫識別碼, "/trace", "privacy", 13.0,
+    )
+    遮蔽服務.遮蔽(
+        True, "redaction-browser-event", "audit-browser-redact-event",
+        _管理員帳號, "request-browser-redact-event", _呼叫識別碼,
+        "run_event", "event-browser-a18", "/state", "privacy", 14.0,
+    )
 
 
 def _建立應用程式(根: Path, Dist根: Path):
