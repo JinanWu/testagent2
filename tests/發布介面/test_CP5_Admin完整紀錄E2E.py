@@ -150,7 +150,7 @@ def test_A18_canonical_Admin真實登入_list_detail且稽核已提交(tmp_path)
         assert 列表.json()["items"] == [{
             "invocation_id": _呼叫甲, "endpoint_id": _端點甲, "endpoint_version_id": _版本甲,
             "request_id": "request-a18-a", "status": "succeeded", "error_code": None,
-            "latency_ms": 2.0, "created_at": 10.0, "completed_at": 12.0, "has_redaction": False,
+            "latency_ms": 2.0, "created_at": 10.0, "completed_at": 12.0, "has_redactions": False,
         }]
         assert not any(標記 in 列表.text for 標記 in _所有標記)
         詳情 = 客戶端.get(_詳情路徑())
@@ -164,7 +164,7 @@ def test_A18_canonical_Admin真實登入_list_detail且稽核已提交(tmp_path)
 
 
 def test_A18_Owner_API_key_未登入與偽造header皆零raw且anti_enumeration一致(tmp_path):
-    """真非Admin authorities在provider前拒絕；存在錯配與missing使用同一404。"""
+    """未登入零audit；真非Admin先提交denied audit且零raw；錯配與missing同一404。"""
     環境 = _建立canonical環境(tmp_path)
     with TestClient(環境.建立應用(), raise_server_exceptions=False) as 客戶端:
         _種入呼叫(環境)
@@ -188,7 +188,11 @@ def test_A18_Owner_API_key_未登入與偽造header皆零raw且anti_enumeration�
             assert 拒絕.status_code == 403
             assert not any(標記 in 拒絕.text for 標記 in _所有標記)
             客戶端.cookies.clear()
-        assert _detail稽核(環境.資料庫路徑) == []
+        assert [(列[1], 列[2], 列[4], 列[5], 列[6], 列[7])
+                for 列 in _detail稽核(環境.資料庫路徑)] == [
+            ("audit.detail.view", "denied", 環境.擁有者甲識別碼, None, None, "{}"),
+            ("audit.detail.view", "denied", 環境.擁有者乙識別碼, None, None, "{}"),
+        ]
         _登入管理員(客戶端)
         missing = 客戶端.get(_詳情路徑(呼叫="missing-a18"))
         wrong = 客戶端.get(_詳情路徑(呼叫=_呼叫乙))
@@ -197,6 +201,8 @@ def test_A18_Owner_API_key_未登入與偽造header皆零raw且anti_enumeration�
         assert not any(標記 in missing.text + wrong.text for 標記 in _所有標記)
     稽核 = _detail稽核(環境.資料庫路徑)
     assert [(列[1], 列[2], 列[4], 列[5], 列[6], 列[7]) for 列 in 稽核] == [
+        ("audit.detail.view", "denied", 環境.擁有者甲識別碼, None, None, "{}"),
+        ("audit.detail.view", "denied", 環境.擁有者乙識別碼, None, None, "{}"),
         ("audit.detail.view", "success", 環境.管理員識別碼, None, None, "{}"),
         ("audit.detail.view", "success", 環境.管理員識別碼, None, None, "{}"),
     ]
@@ -219,12 +225,17 @@ def test_A18_正式遮蔽後主列事件工具只回墓碑且稽核零原文(tmp
             )
         _登入管理員(客戶端)
         列表 = 客戶端.get(f"/api/admin/endpoints/{_端點甲}/invocations")
-        assert 列表.status_code == 200 and 列表.json()["items"][0]["has_redaction"] is True
+        assert 列表.status_code == 200 and 列表.json()["items"][0]["has_redactions"] is True
         詳情 = 客戶端.get(_詳情路徑())
         assert 詳情.status_code == 200
         assert "$tombstone" in 詳情.json()["input"]
         assert "$tombstone" in 詳情.json()["run_events"][0]["payload"]
         assert "$tombstone" in 詳情.json()["tool_calls"][0]["arguments"]
+        assert len(詳情.json()["redactions"]) == 3
+        assert all(set(項) == {
+            "id", "target_type", "target_row_id", "json_path", "reason",
+            "is_tombstone", "redacted_at",
+        } for 項 in 詳情.json()["redactions"])
         assert not any(標記 in 詳情.text for 標記 in _所有標記)
     with sqlite3.connect(環境.資料庫路徑) as 連線:
         安全持久資料 = repr(連線.execute(
@@ -270,7 +281,7 @@ def test_A18_corruption與oversize經canonical_HTTP固定500且無partial_raw(tm
         _登入管理員(客戶端)
         回應 = 客戶端.get(_詳情路徑())
         assert 回應.status_code == 500
-        assert 回應.json() == {"detail": {"message": "呼叫紀錄不可取得"}}
+        assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
         assert not any(標記 in 回應.text for 標記 in _所有標記)
 
 

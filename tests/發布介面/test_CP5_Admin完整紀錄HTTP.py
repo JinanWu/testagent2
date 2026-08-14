@@ -62,7 +62,7 @@ def test_A18_admin_GET_list只回安全metadata且無raw欄位():
         "invocation_id": "inv-1", "endpoint_id": "ep-1", "endpoint_version_id": "ver-1",
         "request_id": "req-1", "status": "failed", "error_code": "timeout",
         "latency_ms": 12.0, "created_at": 10.0, "completed_at": 11.0,
-        "has_redaction": True,
+        "has_redactions": True,
     }], "next_cursor": None}
     assert 列表.次數 == 1
     assert not ({"input", "metadata", "output", "error", "usage"} & set(回應.text))
@@ -75,7 +75,7 @@ def test_A18_non_admin與client_claim在provider前固定403():
         headers={"X-Admin": "true", "X-User-Id": "admin-1", "Authorization": "Bearer fake"},
     )
     assert 回應.status_code == 403
-    assert 回應.json() == {"detail": {"message": "只有管理者可查看完整呼叫紀錄"}}
+    assert 回應.json() == {"detail": "只有管理者可查看完整呼叫紀錄"}
     assert 列表.次數 == 0
 
 
@@ -105,7 +105,11 @@ def _詳情資料():
         "metadata": {}, "output": None, "error": None, "usage": None,
         "metadata_size_bytes": 0, "metadata_sha256": None, "latency_ms": 1.0,
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
-        "run_events": [], "tool_calls": [],
+        "run_events": [], "tool_calls": [], "redactions": [{
+            "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
+            "json_path": "$.secret", "reason": "privacy",
+            "is_tombstone": True, "redacted_at": 9.0,
+        }],
     }
 
 
@@ -115,6 +119,10 @@ class _可控詳情:
 
     def 查詢管理員原始資料(self, *參數):
         self.呼叫.append(參數)
+        if 參數[0] is False:
+            if isinstance(self.結果, 管理員呼叫稽核錯誤):
+                raise self.結果
+            raise 管理員呼叫查詢錯誤("denied audit committed")
         if isinstance(self.結果, BaseException):
             raise self.結果
         return self.結果
@@ -140,13 +148,23 @@ def test_A18_Admin_detail傳server_owned_audit資料且只序列化typed_DTO():
     assert 詳情.呼叫 == [(True, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
 
 
-def test_A18_detail_non_admin與query在provider前拒絕():
+def test_A18_detail_non_admin先留下denied_audit再固定403且敵對query零audit():
     客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()), "member")
-    assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1").status_code == 403
-    assert 詳情.呼叫 == []
+    拒絕 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 拒絕.status_code == 403
+    assert 拒絕.json() == {"detail": "只有管理者可查看完整呼叫紀錄"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
     客戶端, 詳情 = _詳情客戶端(管理員呼叫完整詳情(_詳情資料()))
     assert 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1?export=true").status_code == 422
     assert 詳情.呼叫 == []
+
+
+def test_A18_detail_non_admin_denied_audit失敗時503():
+    客戶端, 詳情 = _詳情客戶端(管理員呼叫稽核錯誤("RAW"), "member")
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 503
+    assert 回應.json() == {"detail": "呼叫紀錄暫時不可取得"}
+    assert 詳情.呼叫 == [(False, "admin-1", "request-1", "audit-1", 123.0, "ep-1", "inv-1")]
 
 
 def test_A18_detail固定404_503_500且零內部訊息():
@@ -158,7 +176,7 @@ def test_A18_detail固定404_503_500且零內部訊息():
     for 錯誤, 狀態, 訊息 in 案例:
         客戶端, _ = _詳情客戶端(錯誤)
         回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
-        assert 回應.status_code == 狀態 and 回應.json() == {"detail": {"message": 訊息}}
+        assert 回應.status_code == 狀態 and 回應.json() == {"detail": 訊息}
         assert "RAW" not in 回應.text
 
 
@@ -199,6 +217,9 @@ def test_A18_live_OpenAPI只有兩條Admin_logs_paths且operation_id唯一():
             if 狀態 in 定義["get"]["responses"]:
                 schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]
                 assert "$ref" in schema or "oneOf" in schema or "properties" in schema
+        for 狀態 in ("401", "403", "500", "503"):
+            schema = 定義["get"]["responses"][狀態]["content"]["application/json"]["schema"]
+            assert schema["properties"]["detail"]["type"] == "string"
     detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]
     for 欄位 in ("invocation", "run_events", "tool_calls"):
         assert "$ref" in str(detail_schema["properties"][欄位])
@@ -249,7 +270,7 @@ def test_A18_canonical_app建構零IO且OpenAPI掛載兩條Admin_GET(tmp_path, m
     assert admin.dependant.dependencies[0].call.__canonical_dependency__ is me.dependant.dependencies[0].call
     回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
     assert 回應.status_code == 401
-    assert 回應.json() == {"detail": {"code": "unauthorized"}}
+    assert 回應.json() == {"detail": "需要登入"}
 
 
 def test_A18_production_installer只使用Published路徑且失敗關閉主資源(tmp_path, monkeypatch):
@@ -324,7 +345,7 @@ def test_A18_hostile_dependency錯誤不可穿透raw_status或body():
     ))
     回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
     assert 回應.status_code == 500
-    assert 回應.json() == {"detail": {"message": "呼叫紀錄不可取得"}}
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
     assert "RAW_DEPENDENCY_SECRET" not in 回應.text
 
 
@@ -344,7 +365,8 @@ def test_A18_canonical_dependency錯誤不可夾帶敵對headers():
         ))
         回應 = TestClient(app).get("/api/admin/endpoints/ep-1/invocations")
         assert 回應.status_code == 狀態
-        assert 回應.json() == {"detail": detail}
+        預期訊息 = "需要登入" if 狀態 == 401 else "呼叫紀錄暫時不可取得"
+        assert 回應.json() == {"detail": 預期訊息}
         assert "x-raw-stage" not in 回應.headers
         assert "x-error" not in 回應.headers
 

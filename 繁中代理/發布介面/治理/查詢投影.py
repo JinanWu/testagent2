@@ -635,6 +635,9 @@ def _讀取管理員原始資料(
         遮蔽列 = _讀取驗證遮蔽列(
             連線, 呼叫識別碼, 端點識別碼, 遮蔽中繼
         )
+        子列數 += len(遮蔽列)
+        if 子列數 > _最大子列:
+            raise ValueError
         游標 = 連線.execute(
             "SELECT input_json,metadata_json,output_json,error_json,usage_json "
             "FROM endpoint_invocations WHERE endpoint_id=? AND id=?",
@@ -685,6 +688,11 @@ def _讀取管理員原始資料(
             "metadata_size_bytes": 列[8], "metadata_sha256": 列[9],
             "latency_ms": 列[10], "pricing_version": 列[11], "created_at": 列[12],
             "completed_at": 列[13], "run_events": 事件, "tool_calls": 工具,
+            "redactions": [{
+                "id": 遮蔽[0], "target_type": 遮蔽[2], "target_row_id": 遮蔽[3],
+                "json_path": 遮蔽[4], "reason": 遮蔽[6],
+                "is_tombstone": True, "redacted_at": 遮蔽[11],
+            } for 遮蔽 in 遮蔽列],
         }
         連線.commit()
         已開始 = False

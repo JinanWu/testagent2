@@ -17,6 +17,7 @@ from typing import Any, NoReturn
 from fastapi import APIRouter, FastAPI, routing as FastAPI路由
 from fastapi.routing import APIRoute
 
+from .生產SPA import 拒絕ProductionSPA未知方法Middleware
 from .相依項 import 發布介面相依項, 發布介面資源
 from .路由政策 import _框架形狀, 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
 from .設定 import (
@@ -548,6 +549,8 @@ def _建立應用程式(
     內層Middleware類別: type | None = None,
 ) -> FastAPI:
     """由 exact reconstructed composition 建立隔離 app 的共用實作。"""
+    if 內層Middleware類別 not in (None, 拒絕ProductionSPA未知方法Middleware):
+        raise ValueError(路由設定錯誤訊息) from None
     安全相依項 = _重建相依項(相依項)
     路由描述, 預期操作描述 = _讀取路由描述(安全相依項.路由器清單)
     安全設定 = _驗證網頁安全composition(安全相依項.路由器清單, Web安全設定)
@@ -639,6 +642,8 @@ def 建立網頁應用程式(
     *, 內層Middleware類別: type | None = None,
 ) -> FastAPI:
     """以exact Web安全設定整合auth preflight、body bound、內層boundary與CORS。"""
+    if 內層Middleware類別 not in (None, 拒絕ProductionSPA未知方法Middleware):
+        raise ValueError(路由設定錯誤訊息) from None
     return _建立應用程式(
         相依項, Web安全設定=Web安全設定, 內層Middleware類別=內層Middleware類別,
     )

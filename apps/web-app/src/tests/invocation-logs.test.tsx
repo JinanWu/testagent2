@@ -42,7 +42,7 @@ function listItem(invocationId: string, hasRedaction = false) {
     latency_ms: 12.5,
     created_at: 10,
     completed_at: 11,
-    has_redaction: hasRedaction,
+    has_redactions: hasRedaction,
   }
 }
 
@@ -77,6 +77,15 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       created_at: 10.5,
     }],
     tool_calls: [],
+    redactions: [{
+      id: `redaction-${invocationId}`,
+      target_type: 'metadata',
+      target_row_id: invocationId,
+      json_path: '$.secret',
+      reason: 'privacy',
+      is_tombstone: true,
+      redacted_at: 9,
+    }],
   }
 }
 

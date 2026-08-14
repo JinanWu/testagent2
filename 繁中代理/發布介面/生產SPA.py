@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -278,23 +279,44 @@ def _建立快照(dist根: Path) -> _SPA快照:
 
 
 def _讀取檔案(路徑: Path, 上限: int) -> bytes:
-    """以stat/read/stat固定单一regular file并拒绝增长、替换或超限。"""
-    前 = 路徑.stat(follow_symlinks=False)
-    if not 路徑.is_file() or not 0 < 前.st_size <= 上限:
-        raise ValueError
-    內容 = 路徑.read_bytes()
-    後 = 路徑.stat(follow_symlinks=False)
-    if len(內容) != 前.st_size or (前.st_dev, 前.st_ino, 前.st_mtime_ns, 前.st_size) != (
-        後.st_dev, 後.st_ino, 後.st_mtime_ns, 後.st_size,
-    ):
-        raise ValueError
-    return 內容
+    """以nofollow descriptor固定单一regular inode并拒绝增长、替换或超限。"""
+    描述器 = None
+    內容區塊: list[bytes] = []
+    try:
+        不跟隨旗標 = getattr(os, "O_NOFOLLOW", None)
+        if type(不跟隨旗標) is not int:
+            raise ValueError
+        開啟旗標 = os.O_RDONLY | 不跟隨旗標 | getattr(os, "O_CLOEXEC", 0)
+        描述器 = os.open(os.fspath(路徑), 開啟旗標)
+        前 = os.fstat(描述器)
+        if not stat.S_ISREG(前.st_mode) or not 0 < 前.st_size <= 上限:
+            raise ValueError
+        剩餘 = 前.st_size
+        while 剩餘:
+            區塊 = os.read(描述器, min(65_536, 剩餘))
+            if not 區塊:
+                raise ValueError
+            內容區塊.append(區塊)
+            剩餘 -= len(區塊)
+        if os.read(描述器, 1):
+            raise ValueError
+        後 = os.fstat(描述器)
+        身份欄位 = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(前, 欄位) != getattr(後, 欄位) for 欄位 in 身份欄位):
+            raise ValueError
+        return b"".join(內容區塊)
+    except OSError:
+        raise ValueError from None
+    finally:
+        內容區塊.clear()
+        if 描述器 is not None:
+            os.close(描述器)
 
 
 def _讀取目錄身份(路徑: Path) -> tuple[int, int, int]:
     """读取nofollow目录identity；参数是Path，返回dev/inode/mtime tuple，非法时丢ValueError。"""
     狀態 = 路徑.stat(follow_symlinks=False)
-    if not 路徑.is_dir():
+    if not stat.S_ISDIR(狀態.st_mode):
         raise ValueError
     return 狀態.st_dev, 狀態.st_ino, 狀態.st_mtime_ns
 

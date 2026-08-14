@@ -9,6 +9,10 @@ const ERROR_CODE = /^[a-z][a-z0-9_.-]{0,127}$/
 const CURSOR = /^[A-Za-z0-9_.-]{1,4096}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const STATUS = new Set(['pending', 'running', 'succeeded', 'failed', 'rate_limited', 'invalid_api_key'])
+const REDACTION_TARGET = new Set([
+  'invocation_input', 'metadata', 'output', 'error', 'run_event',
+  'tool_arguments', 'tool_result', 'tool_error',
+])
 const MAX_DETAIL_BYTES = 1024 * 1024
 const MAX_DETAIL_NODES = 4096
 const MAX_DETAIL_DEPTH = 128
@@ -81,6 +85,16 @@ export interface InvocationToolCall {
   createdAt: number
 }
 
+export interface InvocationRedaction {
+  id: string
+  targetType: string
+  targetRowId: string
+  jsonPath: string
+  reason: string
+  isTombstone: true
+  redactedAt: number
+}
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 export interface AdminInvocationDetail {
@@ -103,6 +117,7 @@ export interface AdminInvocationDetail {
   completedAt: number | null
   runEvents: InvocationRunEvent[]
   toolCalls: InvocationToolCall[]
+  redactions: InvocationRedaction[]
 }
 
 export interface InvocationListFilters {
@@ -194,7 +209,7 @@ export function parseInvocationList(value: unknown): InvocationListPage {
   const items = page.items.map((raw): InvocationListItem => {
     const item = exactObject(raw, [
       'invocation_id', 'endpoint_id', 'endpoint_version_id', 'request_id', 'status', 'error_code',
-      'latency_ms', 'created_at', 'completed_at', 'has_redaction',
+      'latency_ms', 'created_at', 'completed_at', 'has_redactions',
     ])
     if (item === null || !identifier(item.invocation_id) || !identifier(item.endpoint_id) ||
         !identifier(item.endpoint_version_id) || !identifier(item.request_id) ||
@@ -203,7 +218,7 @@ export function parseInvocationList(value: unknown): InvocationListPage {
         !nullableFinite(item.latency_ms) || !finiteNonNegative(item.created_at) ||
         !nullableFinite(item.completed_at) ||
         (item.completed_at !== null && item.completed_at < item.created_at) ||
-        typeof item.has_redaction !== 'boolean') throw new ApiFormatError()
+        typeof item.has_redactions !== 'boolean') throw new ApiFormatError()
     return {
       invocationId: item.invocation_id,
       endpointId: item.endpoint_id,
@@ -214,7 +229,7 @@ export function parseInvocationList(value: unknown): InvocationListPage {
       latencyMs: item.latency_ms,
       createdAt: item.created_at,
       completedAt: item.completed_at,
-      hasRedaction: item.has_redaction,
+      hasRedaction: item.has_redactions,
     }
   })
   return { items, nextCursor: page.next_cursor }
@@ -224,7 +239,7 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
   const detail = exactObject(value, [
     'invocation', 'endpoint_id', 'endpoint_version_id', 'credential_id', 'message_id', 'status',
     'input', 'metadata', 'output', 'error', 'usage', 'metadata_size_bytes', 'metadata_sha256',
-    'latency_ms', 'pricing_version', 'created_at', 'completed_at', 'run_events', 'tool_calls',
+    'latency_ms', 'pricing_version', 'created_at', 'completed_at', 'run_events', 'tool_calls', 'redactions',
   ])
   const invocation = detail === null ? null : exactObject(detail.invocation, ['id', 'request_id', 'session_id'])
   if (detail === null || invocation === null || !identifier(invocation.id) || !identifier(invocation.request_id) ||
@@ -237,8 +252,11 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       !(detail.metadata_sha256 === null || (typeof detail.metadata_sha256 === 'string' && SHA256.test(detail.metadata_sha256))) ||
       !nullableFinite(detail.latency_ms) || !(detail.pricing_version === null || boundedString(detail.pricing_version, 256)) ||
       !finiteNonNegative(detail.created_at) || !nullableFinite(detail.completed_at) ||
-      !Array.isArray(detail.run_events) || detail.run_events.length > MAX_CHILD_ROWS ||
-      !Array.isArray(detail.tool_calls) || detail.tool_calls.length > MAX_CHILD_ROWS) throw new ApiFormatError()
+      !Array.isArray(detail.run_events) || !Array.isArray(detail.tool_calls) ||
+      !Array.isArray(detail.redactions) ||
+      detail.run_events.length + detail.tool_calls.length + detail.redactions.length > MAX_CHILD_ROWS) {
+    throw new ApiFormatError()
+  }
 
   const safe = cloneSafeJson(value, false) as Record<string, JsonValue>
   for (const raw of [safe.input, safe.metadata, safe.output, safe.error, safe.usage]) cloneSafeJson(raw)
@@ -270,6 +288,21 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       retryOfToolCallId: tool.retry_of_tool_call_id, createdAt: tool.created_at,
     }
   })
+  const redactions = (safe.redactions as JsonValue[]).map((raw): InvocationRedaction => {
+    const redaction = exactObject(raw, [
+      'id', 'target_type', 'target_row_id', 'json_path', 'reason', 'is_tombstone', 'redacted_at',
+    ])
+    if (redaction === null || !identifier(redaction.id) ||
+        typeof redaction.target_type !== 'string' || !REDACTION_TARGET.has(redaction.target_type) ||
+        !identifier(redaction.target_row_id) || !boundedString(redaction.json_path, 4096) ||
+        !boundedString(redaction.reason, 1000) ||
+        redaction.is_tombstone !== true || !finiteNonNegative(redaction.redacted_at)) throw new ApiFormatError()
+    return {
+      id: redaction.id, targetType: redaction.target_type, targetRowId: redaction.target_row_id,
+      jsonPath: redaction.json_path, reason: redaction.reason,
+      isTombstone: true, redactedAt: redaction.redacted_at,
+    }
+  })
   return {
     invocation: { id: safeInvocation.id as string, requestId: safeInvocation.request_id as string,
       sessionId: safeInvocation.session_id as string | null },
@@ -291,6 +324,7 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
     completedAt: safe.completed_at as number | null,
     runEvents: events,
     toolCalls: tools,
+    redactions,
   }
 }
 

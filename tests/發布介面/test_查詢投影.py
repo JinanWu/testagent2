@@ -812,6 +812,11 @@ def test_A18管理員detail欄位allowlist與canonical墓碑不洩漏原文(呼�
     assert 結果["input"] == {
         "raw_input": {"$tombstone": {"redaction_id": "red-1", "redacted_at": 12.0}}
     }
+    assert 結果["redactions"] == [{
+        "id": "red-1", "target_type": "invocation_input", "target_row_id": "inv-1",
+        "json_path": "/raw_input", "reason": "privacy",
+        "is_tombstone": True, "redacted_at": 12.0,
+    }]
     for 禁止 in ("INPUT_SECRET", "original_sha256", "admin-1", "audit-red-1", "req-red-1"):
         assert 禁止 not in repr(結果)
 
