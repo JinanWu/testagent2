@@ -33,6 +33,11 @@ from ..網頁工作階段 import 網頁使用者
 
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+_遮蔽路徑格式 = r"^(?:$|(?:/(?:[^~/]|~[01]){0,256}){1,16})$"
+_遮蔽原因Schema格式 = (
+    r"^(?!\s*$)(?![\s\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr]|(?:[Ss][Kk]|[Pp][Kk])[_-]"
+    r"|\b[0-9A-Fa-f]{64}\b))[\s\S]{1,256}$"
+)
 class 管理員安全列表提供者(Protocol):
     """安全metadata投影的最小介面。"""
 
@@ -115,8 +120,10 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
                                 "tool_arguments", "tool_result", "tool_error"], ...),
         "target_row_id": (str, ...),
-        "json_path": (Annotated[str, Field(max_length=4096, pattern=r"^(?:$|/.*)$")], ...),
-        "reason": (Annotated[str, Field(min_length=1, max_length=256)], ...),
+        "json_path": (Annotated[str, Field(max_length=4096, pattern=_遮蔽路徑格式)], ...),
+        "reason": (Annotated[str, Field(
+            min_length=1, max_length=256, json_schema_extra={"pattern": _遮蔽原因Schema格式},
+        )], ...),
         "is_tombstone": (Literal[True], ...), "redacted_at": (float, ...),
     }.items()},
 )
@@ -127,7 +134,7 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),
         "message_id": (str | None, ...), "status": (str, ...), "input": (Any, ...),
         "metadata": (dict[str, Any] | None, ...), "output": (Any, ...), "error": (Any, ...),
-        "usage": (Any, ...), "metadata_size_bytes": (int, ...), "metadata_sha256": (str | None, ...),
+        "usage": (Any, ...), "metadata_size_bytes": (int | None, ...), "metadata_sha256": (str | None, ...),
         "latency_ms": (float | None, ...), "pricing_version": (str | None, ...),
         "created_at": (float, ...), "completed_at": (float | None, ...),
         "run_events": (list[管理員執行事件回應], ...), "tool_calls": (list[管理員工具呼叫回應], ...),

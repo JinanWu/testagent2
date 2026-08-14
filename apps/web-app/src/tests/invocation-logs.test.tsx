@@ -81,7 +81,7 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       id: `redaction-${invocationId}`,
       target_type: 'metadata',
       target_row_id: invocationId,
-      json_path: '$.secret',
+      json_path: '/secret',
       reason: 'privacy',
       is_tombstone: true,
       redacted_at: 9,
@@ -160,6 +160,24 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     const parsed = parseInvocationDetail(body)
     expect(parsed.metadataSizeBytes).toBeNull()
     expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
+  })
+
+  it('拒絕canonical遮蔽契約外的path與reason', () => {
+    const invalid = [
+      { json_path: '$.secret' },
+      { json_path: '/bad~2escape' },
+      { json_path: '/x'.repeat(17) },
+      { json_path: `/${'x'.repeat(257)}` },
+      { reason: ' '.repeat(3) },
+      { reason: 'x'.repeat(257) },
+      { reason: 'Bearer credential' },
+      { reason: `hash ${'a'.repeat(64)}` },
+    ]
+    for (const override of invalid) {
+      const body = detail('invocation-1')
+      body.redactions[0] = { ...body.redactions[0], ...override }
+      expect(() => parseInvocationDetail(body)).toThrow()
+    }
   })
 
   it.each([

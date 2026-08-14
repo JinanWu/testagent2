@@ -105,7 +105,7 @@ def _詳情資料():
         "endpoint_id": "ep-1", "endpoint_version_id": "ver-1", "credential_id": None,
         "message_id": None, "status": "failed", "input": {"prompt": "safe"},
         "metadata": {}, "output": None, "error": None, "usage": None,
-        "metadata_size_bytes": 0, "metadata_sha256": None, "latency_ms": 1.0,
+        "metadata_size_bytes": None, "metadata_sha256": None, "latency_ms": 1.0,
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
         "run_events": [], "tool_calls": [], "redactions": [{
             "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
@@ -198,9 +198,14 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
         "tool_arguments", "tool_result", "tool_error",
     }
     assert schema["json_path"]["maxLength"] == 4096
-    assert schema["json_path"]["pattern"] == r"^(?:$|/.*)$"
+    assert schema["json_path"]["pattern"] == r"^(?:$|(?:/(?:[^~/]|~[01]){0,256}){1,16})$"
     assert schema["reason"]["maxLength"] == 256
+    assert "pattern" in schema["reason"]
     assert schema["is_tombstone"]["const"] is True
+    detail_path = "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}"
+    detail_ref = 客戶端.get("/openapi.json").json()["paths"][detail_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    detail_schema = schemas[detail_ref.rsplit("/", 1)[1]]["properties"]
+    assert {項.get("type") for 項 in detail_schema["metadata_size_bytes"]["anyOf"]} == {"integer", "null"}
 
 
 def test_A18_detail固定404_503_500且零內部訊息():

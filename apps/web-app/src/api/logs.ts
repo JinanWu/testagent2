@@ -13,6 +13,7 @@ const REDACTION_TARGET = new Set([
   'invocation_input', 'metadata', 'output', 'error', 'run_event',
   'tool_arguments', 'tool_result', 'tool_error',
 ])
+const REDACTION_SECRET = /(?:bearer|(?:sk|pk)[_-])|\b[0-9a-f]{64}\b/i
 const MAX_DETAIL_BYTES = 1024 * 1024
 const MAX_DETAIL_NODES = 4096
 const MAX_DETAIL_DEPTH = 128
@@ -156,6 +157,20 @@ function nullableIdentifier(value: unknown): value is string | null {
   return value === null || identifier(value)
 }
 
+function canonicalRedactionPath(value: unknown): value is string {
+  if (typeof value !== 'string' || Array.from(value).length > 4096) return false
+  if (value === '') return true
+  if (!value.startsWith('/')) return false
+  const segments = value.slice(1).split('/')
+  return segments.length <= 16 && segments.every((segment) =>
+    Array.from(segment).length <= 256 && !/~(?![01])/.test(segment))
+}
+
+function canonicalRedactionReason(value: unknown): value is string {
+  return typeof value === 'string' && Array.from(value).length <= 256 &&
+    value.trim().length > 0 && !REDACTION_SECRET.test(value)
+}
+
 function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
   const work: Array<{ value: unknown; depth: number }> = [{ value, depth: 1 }]
   let nodes = 0
@@ -294,8 +309,8 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
     ])
     if (redaction === null || !identifier(redaction.id) ||
         typeof redaction.target_type !== 'string' || !REDACTION_TARGET.has(redaction.target_type) ||
-        !identifier(redaction.target_row_id) || !boundedString(redaction.json_path, 4096) ||
-        !boundedString(redaction.reason, 1000) ||
+        !identifier(redaction.target_row_id) || !canonicalRedactionPath(redaction.json_path) ||
+        !canonicalRedactionReason(redaction.reason) ||
         redaction.is_tombstone !== true || !finiteNonNegative(redaction.redacted_at)) throw new ApiFormatError()
     return {
       id: redaction.id, targetType: redaction.target_type, targetRowId: redaction.target_row_id,
