@@ -11,11 +11,12 @@ from typing import Any, Callable
 
 from .查詢投影 import (
     _控制流程, _安全可空字串, _安全時間, _安全文字, _安全識別碼,
-    _扣除JSON長度, _核對投影墓碑, _清理控制鏈, _清理資源操作, _解析可空JSON,
+    _扣除JSON長度, _清理控制鏈, _清理資源操作, _解析可空JSON,
     _讀取有限列, _讀取驗證遮蔽列, _重拋控制, _開啟唯讀快照, _預檢遮蔽中繼,
     _驗證路徑與結構,
 )
 from .遮蔽 import _驗證遮蔽schema
+from .管理查詢契約 import _驗證墓碑目標一致性
 from .觀測契約 import (
     診斷查詢成功, 診斷查詢結果, 診斷用量, 診斷項目, 診斷頁,
     端點不可見結果,
@@ -227,7 +228,23 @@ def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
                    "result": _解析可空JSON(工具項[16], 預算, False),
                    "error": _解析可空JSON(工具項[17], 預算, False)})
     遮蔽列 = _讀取驗證遮蔽列(連線, 列[0], 端點, 遮蔽中繼)
-    _核對投影墓碑(遮蔽列, 輸入, 中繼, 輸出, 錯誤, 事件, 工具)
+    目標 = {
+        ("invocation_input", 列[0]): 輸入,
+        ("metadata", 列[0]): 中繼,
+        ("output", 列[0]): 輸出,
+        ("error", 列[0]): 錯誤,
+        ("__usage_forbidden__", 列[0]): 用量,
+    }
+    for 事件項 in 事件:
+        目標[("run_event", 事件項["id"])] = 事件項["payload"]
+    for 工具項 in 工具:
+        目標[("tool_arguments", 工具項["id"])] = 工具項["arguments"]
+        目標[("tool_result", 工具項["id"])] = 工具項["result"]
+        目標[("tool_error", 工具項["id"])] = 工具項["error"]
+    _驗證墓碑目標一致性(目標, [{
+        "id": 遮蔽項[0], "target_type": 遮蔽項[2], "target_row_id": 遮蔽項[3],
+        "json_path": 遮蔽項[4], "redacted_at": 遮蔽項[11],
+    } for 遮蔽項 in 遮蔽列])
     已遮蔽錯誤 = any(項[2] == "error" for 項 in 遮蔽列)
     if 錯誤 is not None and type(錯誤) is not dict: raise ValueError
     if 用量 is not None:

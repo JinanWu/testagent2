@@ -1,17 +1,33 @@
 """GOV G02 擁有者安全與管理員原始呼叫投影測試。"""
 
+import inspect
+import json
 import sqlite3
 from contextlib import closing
+import threading
 import traceback
 
 import pytest
 
+from 繁中代理.發布介面.治理 import 查詢投影
 from 繁中代理.發布介面.治理.查詢投影 import (
     管理員原始資料稽核閘門,
     查詢投影錯誤,
     SQLite呼叫查詢投影,
 )
+from 繁中代理.發布介面.治理.管理查詢契約 import (
+    管理員呼叫查詢條件,
+    管理員呼叫游標位置,
+    管理員呼叫不存在錯誤,
+    管理員呼叫查詢錯誤,
+    管理員呼叫稽核錯誤,
+    管理員呼叫完整詳情,
+    管理員拒絕稽核收據權威,
+    擁有者安全詳情,
+)
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
+from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
+from 繁中代理.發布介面.治理.管理查詢契約 import ADMIN_INVOCATION_DETAIL_FIELDS
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 
@@ -37,8 +53,9 @@ def 呼叫資料庫(tmp_path):
                 "failed", '{"raw_input":"INPUT_SECRET"}',
                 '{"raw_metadata":"METADATA_SECRET"}', '{"raw_output":"OUTPUT_SECRET"}',
                 '{"code":"schema_invalid","schema_path":"$.answer","internal":"ERROR_SECRET"}',
-                '{"total_tokens":17,"provider_detail":"USAGE_SECRET"}', 99,
-                "a" * 64, 12.5, "price-v1", 10, 11,
+                '{"total_tokens":17,"provider_detail":"USAGE_SECRET"}', 34,
+                "c3c6a95219d507de262346f270c6c1c1b7fa808b39d2e10b89f27222bc3abe4e",
+                12.5, "price-v1", 10, 11,
             ),
         )
         連線.execute(
@@ -113,24 +130,62 @@ def test_管理員原始投影保留權威payload且transport_neutral(呼叫資�
     assert 結果["tool_calls"][0]["result"] == {"secret": "RESULT_SECRET"}
     assert not ({"http_status", "headers", "body"} & 結果.keys())
 
-@pytest.mark.parametrize(
-    ("authorized", "endpoint_id", "invocation_id"),
-    [
-        (False, "ep-1", "inv-1"),
-        (1, "ep-1", "inv-1"),
-        ("admin", "ep-1", "inv-1"),
-        (True, "ep-other", "inv-1"),
-        (True, "ep-1", "inv-missing"),
-    ],
-)
-def test_非精確管理員授權與缺少或錯誤範圍統一失敗關閉(
-    呼叫資料庫, authorized, endpoint_id, invocation_id
-):
-    with pytest.raises(查詢投影錯誤) as error:
-        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
-            authorized, endpoint_id, invocation_id
+
+def test_A18管理員原始投影與DTO共用JSON深度128權威(呼叫資料庫):
+    """Storage projection不得用隱藏depth 16拒絕domain允許的合法歷史payload。"""
+    深值: object = "leaf"
+    for 索引 in range(17):
+        深值 = {f"level_{索引}": 深值}
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute(
+            "UPDATE endpoint_invocations SET input_json=? WHERE id='inv-1'",
+            (json.dumps(深值, ensure_ascii=False, separators=(",", ":")),),
         )
-    assert error.value.args == ("呼叫紀錄不可取得",)
+    結果 = SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+        True, "ep-1", "inv-1"
+    )
+    assert 結果["input"] == 深值
+
+
+def test_A18管理員與Owner使用不同typed_DTO且無role_switch(呼叫資料庫):
+    """A18 adapter只能依角色呼叫不同method，不得用role flag切換同一schema。"""
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    Owner結果 = 服務.查詢擁有者安全詳情("owner-1", "ep-1", "inv-1")
+    Admin結果 = 服務.查詢管理員完整詳情(True, "ep-1", "inv-1")
+    assert type(Owner結果) is 擁有者安全詳情
+    assert type(Admin結果) is 管理員呼叫完整詳情
+    assert type(Owner結果) is not type(Admin結果)
+    assert set(Owner結果.建立JSON()) == {
+        "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
+        "latency_ms", "usage", "tool_names",
+    }
+    assert Admin結果.建立JSON()["input"] == {"raw_input": "INPUT_SECRET"}
+    for 標記 in ("INPUT_SECRET", "ERROR_SECRET", "ARG_SECRET", "RESULT_SECRET"):
+        assert 標記 not in repr(Owner結果) and 標記 not in repr(Admin結果)
+        assert 標記 not in repr(Owner結果.建立JSON())
+    assert "role" not in inspect.signature(服務.查詢擁有者安全詳情).parameters
+    assert "role" not in inspect.signature(服務.查詢管理員完整詳情).parameters
+
+@pytest.mark.parametrize("authorized", [False, 1, "admin"])
+def test_非精確管理員授權固定為查詢錯誤(呼叫資料庫, authorized):
+    with pytest.raises(管理員呼叫查詢錯誤):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+            authorized, "ep-1", "inv-1"
+        )
+
+
+@pytest.mark.parametrize(
+    ("endpoint_id", "invocation_id"),
+    [("ep-other", "inv-1"), ("ep-1", "inv-missing")],
+)
+def test_管理員missing與wrong_pairing同一不存在錯誤(
+    呼叫資料庫, endpoint_id, invocation_id
+):
+    with pytest.raises(管理員呼叫不存在錯誤) as error:
+        SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員原始資料(
+            True, endpoint_id, invocation_id
+        )
+    assert error.value.args == ("找不到呼叫紀錄",)
     assert error.value.__cause__ is error.value.__context__ is None
 
 
@@ -445,13 +500,14 @@ def test_管理員原始資料先提交安全稽核才呼叫detail且不保存ra
         )
 
     閘門 = 管理員原始資料稽核閘門(
-        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0), detail
+        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0), detail,
+        lambda _端點, _呼叫: True,
     )
     結果 = 閘門.查詢管理員原始資料(
         True, "admin-1", "req-admin-1", "evt-admin-1", 100.0, "ep-1", "inv-1"
     )
 
-    assert 結果["input"] == {"raw_input": "INPUT_SECRET"}
+    assert 結果.建立JSON()["input"] == {"raw_input": "INPUT_SECRET"}
     assert 順序 == [(
         "evt-admin-1", "audit.detail.view", "success", "user", "admin-1", "req-admin-1",
         "ep-1", "inv-1", "{}",
@@ -463,22 +519,138 @@ def test_管理員原始資料先提交安全稽核才呼叫detail且不保存ra
         assert 標記 not in repr(閘門)
 
 
+def test_A18_audit後raw_callback不得以公開not_found_class偽裝pairing_404(呼叫資料庫):
+    """404只能由pairing authority產生；audit後raw failure固定歸類query 500。"""
+    def 偽裝不存在(_端點識別碼, _呼叫識別碼):
+        raise 管理員呼叫不存在錯誤("RAW_STAGE_SECRET")
+
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0),
+        偽裝不存在,
+        lambda _端點, _呼叫: True,
+    )
+    with pytest.raises(管理員呼叫查詢錯誤) as 錯誤:
+        閘門.查詢管理員原始資料(
+            True, "admin-1", "req-stage-1", "evt-stage-1", 100.0, "ep-1", "inv-1"
+        )
+    assert type(錯誤.value) is 管理員呼叫查詢錯誤
+    assert "RAW_STAGE_SECRET" not in repr(錯誤.value)
+
+
+def test_A18_missing_pairing仍提交nullable_FK稽核後固定404且detail零呼叫(呼叫資料庫):
+    """不存在的requested IDs不得因audit FK失敗變成503，也不得先讀raw。"""
+    呼叫 = []
+
+    def pairing_exists(端點識別碼, 呼叫識別碼):
+        return SQLite呼叫查詢投影(str(呼叫資料庫)).管理員呼叫配對存在(
+            端點識別碼, 呼叫識別碼
+        )
+
+    def detail(*引數):
+        呼叫.append(引數)
+        pytest.fail("missing pairing不得讀取raw detail")
+
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, pairing_exists,
+    )
+    with pytest.raises(管理員呼叫不存在錯誤) as 捕捉:
+        閘門.查詢管理員原始資料(
+            True, "admin-1", "req-missing", "evt-missing", 100.0,
+            "ep-1", "inv-missing",
+        )
+    assert 捕捉.value.args == ("找不到呼叫紀錄",)
+    assert 呼叫 == []
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        assert 連線.execute(
+            "SELECT event_id,action,outcome,actor_id,resource_type,resource_id,"
+            "request_id,endpoint_id,invocation_id,metadata_json FROM audit_events"
+        ).fetchone() == (
+            "evt-missing", "audit.detail.view", "success", "admin-1",
+            "endpoint.invocation", "inv-missing", "req-missing", None, None, "{}",
+        )
+
+
+def test_A18_pairing_preflight只查存在性且故障不寫audit不讀raw(呼叫資料庫, monkeypatch):
+    """Preflight必須零raw；非bool／一般故障固定query error並停在audit前。"""
+    投影 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    assert 投影.管理員呼叫配對存在("ep-1", "inv-1") is True
+    assert 投影.管理員呼叫配對存在("ep-1", "inv-missing") is False
+
+    for 結果 in (None, 1, "true", RuntimeError("PAIRING_PRIVATE")):
+        稽核呼叫 = []
+        detail呼叫 = []
+
+        class Sink:
+            def append_audit_event(self, event):
+                稽核呼叫.append(event)
+
+        def pairing(*_引數):
+            if isinstance(結果, BaseException):
+                raise 結果
+            return 結果
+
+        def detail(*引數):
+            detail呼叫.append(引數)
+
+        with pytest.raises(管理員呼叫查詢錯誤) as 捕捉:
+            管理員原始資料稽核閘門(Sink(), detail, pairing).查詢管理員原始資料(
+                True, "admin-1", "req-pair", "evt-pair", 100.0, "ep-1", "inv-1",
+            )
+        assert 捕捉.value.args == ("呼叫紀錄不可取得",)
+        assert "PAIRING_PRIVATE" not in repr(捕捉.value)
+        assert 稽核呼叫 == [] and detail呼叫 == []
+
+    class 連線代理:
+        def __init__(self, 連線):
+            self._連線 = 連線
+            self.語句 = []
+
+        def execute(self, SQL, *參數):
+            self.語句.append(SQL)
+            return self._連線.execute(SQL, *參數)
+
+        def __getattr__(self, 名稱):
+            return getattr(self._連線, 名稱)
+
+    代理列 = []
+    原連線 = sqlite3.connect
+
+    def 建立代理(*引數, **關鍵字):
+        代理 = 連線代理(原連線(*引數, **關鍵字))
+        代理列.append(代理)
+        return 代理
+
+    monkeypatch.setattr(查詢投影, "_建立連線", 建立代理)
+    assert SQLite呼叫查詢投影(str(呼叫資料庫)).管理員呼叫配對存在("ep-1", "inv-1")
+    配對SQL = [
+        語句 for 語句 in 代理列[-1].語句
+        if 語句.startswith("SELECT") and "endpoint_invocations" in 語句
+    ]
+    assert 配對SQL == ["SELECT 1 FROM endpoint_invocations WHERE endpoint_id=? AND id=? LIMIT 2"]
+    assert not any(欄位 in 配對SQL[0] for 欄位 in ("input_json", "metadata_json", "output_json", "error_json"))
+
+
 @pytest.mark.parametrize("授權", [False, 0, 1, "admin", None])
 def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資料庫, 授權):
     呼叫 = []
+    收據權威 = 管理員拒絕稽核收據權威(b"r" * 32)
 
     def detail(*_引數):
         呼叫.append(1)
         return {"raw": "不得取得"}
 
-    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
-    with pytest.raises(查詢投影錯誤) as 錯誤:
-        閘門.查詢管理員原始資料(
-            授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
-            100.0, "ep-1", "inv-1",
-        )
-    assert 錯誤.value.args == ("呼叫紀錄不可取得",)
-    assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+        收據權威,
+    )
+    結果 = 閘門.查詢管理員原始資料(
+        授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+        100.0, "ep-1", "inv-1",
+    )
+    assert 收據權威.驗證(
+        結果, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+        100.0, "ep-1", "inv-1",
+    )
     assert 呼叫 == []
     with closing(sqlite3.connect(呼叫資料庫)) as 連線:
         assert 連線.execute("SELECT outcome FROM audit_events").fetchone() == ("denied",)
@@ -505,13 +677,70 @@ def test_稽核失敗或偽造收據都fail_closed且detail零呼叫(呼叫資�
         呼叫.append(1)
         return {"raw": "RAW_PRIVATE"}
 
-    閘門 = 管理員原始資料稽核閘門(Sink(), detail)
-    with pytest.raises(查詢投影錯誤) as 錯誤:
+    閘門 = 管理員原始資料稽核閘門(Sink(), detail, lambda _端點, _呼叫: True)
+    with pytest.raises(管理員呼叫稽核錯誤) as 錯誤:
         閘門.查詢管理員原始資料(
             True, "admin-1", "req-fail", "evt-fail", 100.0, "ep-1", "inv-1"
         )
     assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
     assert 呼叫 == []
+
+
+def test_A18稽核stage禁止偽裝404且已提交後provider不存在歸類query_error(呼叫資料庫):
+    """Outcome分類由可信stage決定，不信任hostile sink自行選擇例外型別。"""
+    class 偽裝不存在Sink:
+        def append_audit_event(self, _event):
+            raise 管理員呼叫不存在錯誤("HOSTILE_404")
+
+    def 不應呼叫(*_引數):
+        pytest.fail("audit未提交不得進detail")
+
+    with pytest.raises(管理員呼叫稽核錯誤) as 稽核錯誤:
+        管理員原始資料稽核閘門(
+            偽裝不存在Sink(), 不應呼叫, lambda _端點, _呼叫: True,
+        ).查詢管理員原始資料(
+            True, "admin-1", "req-hostile", "evt-hostile", 100.0, "ep-1", "inv-1"
+        )
+    assert "HOSTILE_404" not in repr(稽核錯誤.value)
+
+    class 已提交Sink:
+        def append_audit_event(self, event):
+            from 繁中代理.發布介面 import AuditAppendReceipt
+            return AuditAppendReceipt(event.event_id, True, 1)
+
+    def 真detail(_端點, _呼叫):
+        raise 管理員呼叫不存在錯誤("PROVIDER_PRIVATE")
+
+    with pytest.raises(管理員呼叫查詢錯誤) as 查詢錯誤:
+        管理員原始資料稽核閘門(
+            已提交Sink(), 真detail, lambda _端點, _呼叫: True,
+        ).查詢管理員原始資料(
+            True, "admin-1", "req-missing", "evt-missing", 100.0, "ep-1", "inv-missing"
+        )
+    assert 查詢錯誤.value.args == ("呼叫紀錄不可取得",)
+    assert "PROVIDER_PRIVATE" not in repr(查詢錯誤.value)
+
+
+def test_A18稽核閘門在committed後仍重建typed_detail並拒絕callback_raw繞過():
+    """Audit成功不是raw dict直通權限；callback結果仍須typed/bounded/secret gate。"""
+    class 已提交Sink:
+        def append_audit_event(self, event):
+            from 繁中代理.發布介面 import AuditAppendReceipt
+            return AuditAppendReceipt(event.event_id, True, 1)
+
+    for raw in (
+        {"metadata": "wrong-type", "input": {"Authorization": "SECRET"}},
+        {"input": {"Authorization": "SECRET"}},
+    ):
+        def detail(*_引數, _raw=raw):
+            return _raw
+
+        with pytest.raises(管理員呼叫查詢錯誤):
+            管理員原始資料稽核閘門(
+                已提交Sink(), detail, lambda _端點, _呼叫: True,
+            ).查詢管理員原始資料(
+                True, "admin-1", "req-1", "audit-1", 1.0, "ep-1", "inv-1",
+            )
 
 
 def test_detail只接受exact_function而不觸發敵對callable():
@@ -524,7 +753,7 @@ def test_detail只接受exact_function而不觸發敵對callable():
 
     detail = 敵對Callable()
     with pytest.raises(查詢投影錯誤):
-        管理員原始資料稽核閘門(object(), detail)
+        管理員原始資料稽核閘門(object(), detail, lambda _端點, _呼叫: True)
     assert detail.呼叫次數 == 0
 
 
@@ -537,7 +766,9 @@ def test_detail自訂base固定失敗而KISG保留identity且清空閘門locals(
     def detail(*_引數):
         raise 狀態[0]
 
-    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+    )
     with pytest.raises(查詢投影錯誤) as 固定:
         閘門.查詢管理員原始資料(
             True, "admin-1", "req-custom", "evt-custom", 100.0, "ep-1", "inv-1"
@@ -553,3 +784,196 @@ def test_detail自訂base固定失敗而KISG保留identity且清空閘門locals(
             )
         assert 捕捉.value is 控制
         _assert投影框架無標記(捕捉.value, "RAW_PRIVATE")
+
+
+def test_A18管理員安全列表依endpoint_filter與keyset排序且零raw(呼叫資料庫):
+    """Safe list只回metadata，固定created_at/id倒序且position不重複。"""
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        for 識別碼, 請求, 狀態, 錯誤, 建立 in (
+            ("inv-2", "req-2", "succeeded", None, 20.0),
+            ("inv-3", "req-3", "failed", '{"code":"timeout","internal":"LIST_SECRET"}', 20.0),
+        ):
+            連線.execute(
+                "INSERT INTO endpoint_invocations("
+                "id,endpoint_id,endpoint_version_id,request_id,status,input_json,error_json,"
+                "latency_ms,created_at,completed_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (識別碼, "ep-1", "ver-1", 請求, 狀態,
+                 '{"raw":"LIST_INPUT_SECRET"}', 錯誤, 2.0, 建立, 建立 + 1),
+            )
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    條件 = 管理員呼叫查詢條件("ep-1", 0.0, 30.0, None, None, 2)
+
+    第一頁 = 服務.列出管理員安全呼叫(條件, None)
+    assert [項目.呼叫識別碼 for 項目 in 第一頁.項目] == ["inv-3", "inv-2"]
+    assert 第一頁.下一頁位置 == 管理員呼叫游標位置(20.0, "inv-2")
+    assert all(項目.端點識別碼 == "ep-1" for 項目 in 第一頁.項目)
+    assert 第一頁.項目[0].錯誤碼 == "timeout"
+    assert "LIST_SECRET" not in repr(第一頁)
+    assert "LIST_INPUT_SECRET" not in repr(第一頁)
+
+    第二頁 = 服務.列出管理員安全呼叫(條件, 第一頁.下一頁位置)
+    assert [項目.呼叫識別碼 for 項目 in 第二頁.項目] == ["inv-1"]
+    assert 第二頁.下一頁位置 is None
+    失敗 = 服務.列出管理員安全呼叫(
+        管理員呼叫查詢條件("ep-1", None, None, "failed", "timeout", 10), None,
+    )
+    assert [項目.呼叫識別碼 for 項目 in 失敗.項目] == ["inv-3"]
+
+
+def test_A18管理員安全列表只讀獨立錯誤碼權威且禁止讀raw_error_json(呼叫資料庫, monkeypatch):
+    """Safe list的輸出與filter都不得在request-time讀取raw error payload。"""
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        欄位 = tuple(列[1] for 列 in 連線.execute("PRAGMA table_info(endpoint_invocation_safe_errors)"))
+        assert 欄位 == ("invocation_id", "error_code")
+        assert 連線.execute(
+            "SELECT error_code FROM endpoint_invocation_safe_errors WHERE invocation_id='inv-1'"
+        ).fetchone() == ("schema_invalid",)
+
+    原開啟 = 查詢投影._開啟唯讀快照
+
+    def 禁止讀raw錯誤(路徑):
+        連線 = 原開啟(路徑)
+
+        def 授權(動作, 資料表, 欄位, _資料庫, _來源):
+            if (
+                動作 == sqlite3.SQLITE_READ
+                and 資料表 == "endpoint_invocations"
+                and 欄位 == "error_json"
+            ):
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+
+        連線.set_authorizer(授權)
+        return 連線
+
+    monkeypatch.setattr(查詢投影, "_開啟唯讀快照", 禁止讀raw錯誤)
+    結果 = SQLite呼叫查詢投影(str(呼叫資料庫)).列出管理員安全呼叫(
+        管理員呼叫查詢條件("ep-1", None, None, "failed", "schema_invalid", 10), None,
+    )
+    assert [項目.呼叫識別碼 for 項目 in 結果.項目] == ["inv-1"]
+    assert 結果.項目[0].錯誤碼 == "schema_invalid"
+
+
+def test_A18管理員安全列表錯誤scope與projection原始碼均失敗關閉(呼叫資料庫):
+    """Provider只接受exact contract DTO，且owned SQL禁止SELECT星號。"""
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    for 條件, 位置 in (
+        (object(), None),
+        (管理員呼叫查詢條件("ep-1", None, None, None, None, 20), object()),
+    ):
+        with pytest.raises(查詢投影錯誤) as 錯誤:
+            服務.列出管理員安全呼叫(條件, 位置)
+        assert 錯誤.value.args == ("呼叫紀錄不可取得",)
+        assert 錯誤.value.__cause__ is 錯誤.value.__context__ is None
+    from 繁中代理.發布介面.治理 import 查詢投影
+    assert "SELECT *" not in inspect.getsource(查詢投影).upper()
+
+
+def test_A18管理員detail欄位allowlist與canonical墓碑不洩漏原文(呼叫資料庫):
+    """#20 DTO未凍結；detail只凍結payload內canonical tombstone。"""
+    SQLite不可逆遮蔽服務(str(呼叫資料庫)).遮蔽(
+        True, "red-1", "audit-red-1", "admin-1", "req-red-1", "inv-1",
+        "invocation_input", "inv-1", "/raw_input", "privacy", 12.0,
+    )
+    服務 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    列表 = 服務.列出管理員安全呼叫(
+        管理員呼叫查詢條件("ep-1", None, None, None, None, 20), None,
+    )
+    assert len(列表.項目) == 1 and 列表.項目[0].是否有遮蔽 is True
+    結果 = 服務.查詢管理員原始資料(
+        True, "ep-1", "inv-1"
+    )
+    assert set(結果) == ADMIN_INVOCATION_DETAIL_FIELDS
+    assert 結果["input"] == {
+        "raw_input": {"$tombstone": {"redaction_id": "red-1", "redacted_at": 12.0}}
+    }
+    assert 結果["redactions"] == [{
+        "id": "red-1", "target_type": "invocation_input", "target_row_id": "inv-1",
+        "json_path": "/raw_input", "reason": "privacy",
+        "is_tombstone": True, "redacted_at": 12.0,
+    }]
+    for 禁止 in ("INPUT_SECRET", "original_sha256", "admin-1", "audit-red-1", "req-red-1"):
+        assert 禁止 not in repr(結果)
+
+
+def test_A18管理員detail允許九筆redaction並受共同4096子列上限治理(呼叫資料庫):
+    """不得用未公開LIMIT 9把第九筆合法ledger誤判為corruption。"""
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.executemany(
+            "INSERT INTO run_events VALUES(?,?,?,?,?,?)",
+            [
+                (f"run-red-{索引}", "inv-1", 索引 + 2, "model.output",
+                 json.dumps({"field": f"safe_{索引}"}, separators=(",", ":")), 12.0 + 索引)
+                for 索引 in range(9)
+            ],
+        )
+    服務 = SQLite不可逆遮蔽服務(str(呼叫資料庫))
+    for 索引 in range(9):
+        服務.遮蔽(
+            True, f"red-{索引}", f"audit-red-{索引}", "admin-1", f"req-red-{索引}",
+            "inv-1", "run_event", f"run-red-{索引}", "/field", "privacy", 12.0 + 索引,
+        )
+    結果 = SQLite呼叫查詢投影(str(呼叫資料庫)).查詢管理員完整詳情(
+        True, "ep-1", "inv-1"
+    ).建立JSON()
+    assert type(結果["redactions"]) is list and len(結果["redactions"]) == 9
+    assert type(結果["run_events"]) is list
+    遮蔽事件 = [事件 for 事件 in 結果["run_events"] if 事件["id"].startswith("run-red-")]
+    assert len(遮蔽事件) == 9
+    assert all("$tombstone" in 事件["payload"]["field"] for 事件 in 遮蔽事件)
+
+
+def test_A18安全列表在遮蔽schema漂移時不信任has_redactions(呼叫資料庫):
+    """List的redaction indicator與raw detail共用完整治理schema gate。"""
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線, 連線:
+        連線.execute("DROP TRIGGER endpoint_redactions_no_update")
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(呼叫資料庫)).列出管理員安全呼叫(
+            管理員呼叫查詢條件("ep-1", None, None, None, None, 20), None,
+        )
+
+
+def test_A18_WAL遮蔽競態的preflight_payload_children與ledger保持單一快照(
+    呼叫資料庫, monkeypatch,
+):
+    """Reader只可見完整舊版或完整新版，不得混搭ledger與payload。"""
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        assert 連線.execute("PRAGMA journal_mode=WAL").fetchone() == ("wal",)
+    已進入 = threading.Event()
+    允許繼續 = threading.Event()
+    原預檢 = 查詢投影._預檢遮蔽中繼
+
+    def 阻塞預檢(*參數):
+        已進入.set()
+        if not 允許繼續.wait(3):
+            raise AssertionError("snapshot gate timeout")
+        return 原預檢(*參數)
+
+    monkeypatch.setattr(查詢投影, "_預檢遮蔽中繼", 阻塞預檢)
+    結果: list[dict[str, object]] = []
+    錯誤: list[BaseException] = []
+
+    def 讀取舊快照():
+        try:
+            結果.append(查詢投影._讀取管理員原始資料(str(呼叫資料庫), "ep-1", "inv-1"))
+        except BaseException as 例外:
+            錯誤.append(例外)
+
+    執行緒 = threading.Thread(target=讀取舊快照)
+    執行緒.start()
+    assert 已進入.wait(3)
+    SQLite不可逆遮蔽服務(str(呼叫資料庫)).遮蔽(
+        True, "red-race", "audit-red-race", "admin-1", "req-red-race", "inv-1",
+        "invocation_input", "inv-1", "/raw_input", "privacy", 12.0,
+    )
+    允許繼續.set()
+    執行緒.join(3)
+    assert not 執行緒.is_alive() and 錯誤 == []
+    assert 結果[0]["input"] == {"raw_input": "INPUT_SECRET"}
+    assert 結果[0]["redactions"] == []
+
+    新快照 = 查詢投影._讀取管理員原始資料(str(呼叫資料庫), "ep-1", "inv-1")
+    assert 新快照["input"] == {
+        "raw_input": {"$tombstone": {"redaction_id": "red-race", "redacted_at": 12.0}}
+    }
+    assert [項["id"] for 項 in 新快照["redactions"]] == ["red-race"]

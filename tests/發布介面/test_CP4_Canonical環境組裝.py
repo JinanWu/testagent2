@@ -86,6 +86,7 @@ def test_construction零IO且root_app已包含stable_route(tmp_path: Path, monke
     環境 = _環境(tmp_path)
     Web設定, Published設定 = asgi模組.解析Canonical環境設定(環境)
     app = asgi模組.建立Canonical應用程式(Web設定, Published設定)
+    環境["TESTAGENT2_WEB_DIST_ROOT"] = str(tmp_path / "dist")
     monkeypatch.setattr(asgi模組.os, "environ", 環境)
     root_app = root_asgi.建立應用程式()
     assert not Path(環境["TESTAGENT2_DB_PATH"]).exists()

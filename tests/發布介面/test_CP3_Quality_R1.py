@@ -21,6 +21,7 @@ from 繁中代理.發布介面.生產Web代理 import (
     生產Web代理資源,
 )
 from 繁中代理.發布介面.設定 import 生產設定
+from production_spa_support import 建立ProductionDist
 
 
 class _連線:
@@ -48,6 +49,7 @@ def test_root_asgi真正fresh_process_import與factory皆不建DB(tmp_path):
     web_db = tmp_path / "web.sqlite3"
     published_db = tmp_path / "published.sqlite3"
     bundle_root = tmp_path / "bundles"
+    dist_root = 建立ProductionDist(tmp_path)
     code = """
 from pathlib import Path
 import asgi
@@ -69,6 +71,7 @@ print('FRESH_ROOT_FACTORY_OK')
         "TESTAGENT2_DB_PATH": str(web_db),
         "TESTAGENT2_PUBLISHED_DB_PATH": str(published_db),
         "TESTAGENT2_PUBLISHED_BUNDLE_ROOT": str(bundle_root),
+        "TESTAGENT2_WEB_DIST_ROOT": str(dist_root),
         "TESTAGENT2_WEB_ORIGINS": '["http://localhost:5173"]',
         "TESTAGENT2_MODEL_NAME": "gemini-test",
         "TESTAGENT2_COOKIE_SECURE": "false",
@@ -85,6 +88,7 @@ print('FRESH_ROOT_FACTORY_OK')
     )
     assert (result.returncode, result.stdout.strip(), result.stderr) == (0, "FRESH_ROOT_FACTORY_OK", "")
     assert all(not path.exists() for path in (web_db, published_db, bundle_root))
+    assert dist_root.is_dir()
 
 
 def test_async_startup慢同步工廠不阻塞同一event_loop(tmp_path, monkeypatch):

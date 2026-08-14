@@ -26,7 +26,14 @@ _目標 = {
     "tool_result": ("endpoint_tool_calls", "result_json", True),
     "tool_error": ("endpoint_tool_calls", "error_json", True),
 }
-_秘密格式 = re.compile(r"(?i)(?:bearer|(?:sk|pk)[_-])|\b[0-9a-f]{64}\b")
+_秘密格式 = re.compile(
+    r"(?i)(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])"
+)
+_公開空白字元 = (
+    "\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020\u0085\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f"
+    "\u205f\u3000\ufeff"
+)
 _必要觸發器 = frozenset({
     "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
     "endpoint_redactions_no_update", "endpoint_redactions_no_delete",
@@ -213,12 +220,10 @@ def _驗證請求(*值: Any) -> None:
     if not all(type(項) is str for 項 in 文字):
         raise ValueError
     遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 類型, 列ID, 路徑, 原因 = 文字
-    if 類型 not in _目標 or not all(_安全識別碼(項) for 項 in
-                                    (遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 列ID)):
+    if not all(_安全識別碼(項) for 項 in
+               (遮蔽ID, 事件ID, 操作者, 請求ID, 呼叫ID, 列ID)):
         raise ValueError
-    if len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
-        raise ValueError
-    _解析路徑(路徑)
+    驗證遮蔽公開欄位(類型, 路徑, 原因)
 
 
 def _安全識別碼(值: Any) -> bool:
@@ -238,6 +243,30 @@ def _解析路徑(路徑: str) -> tuple[str, ...]:
             raise ValueError
         結果.append(片段.replace("~1", "/").replace("~0", "~"))
     return tuple(結果)
+
+
+def 驗證遮蔽公開欄位(目標類型: object, JSON路徑: object, 原因: object, /) -> None:
+    """驗證可公開遮蔽紀錄沿用不可逆遮蔽的目標、RFC 6901路徑與安全原因界線。"""
+    if 目標類型 not in _目標:
+        raise ValueError
+    驗證遮蔽公開路徑(JSON路徑)
+    驗證遮蔽公開原因(原因)
+
+
+def 驗證遮蔽公開路徑(JSON路徑: object, /) -> str:
+    """驗證並返回canonical有界RFC 6901 JSON Pointer。"""
+    if type(JSON路徑) is not str:
+        raise ValueError
+    _解析路徑(JSON路徑)
+    return JSON路徑
+
+
+def 驗證遮蔽公開原因(原因: object, /) -> str:
+    """驗證並返回非空、有界且不含secret形狀的公開原因。"""
+    if (type(原因) is not str or len(原因) > 256
+            or not 原因.strip(_公開空白字元) or _秘密格式.search(原因)):
+        raise ValueError
+    return 原因
 
 
 def _尋找JSON位置(payload: Any, 路徑: str) -> tuple[Any, Any]:

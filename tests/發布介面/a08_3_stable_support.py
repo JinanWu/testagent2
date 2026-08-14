@@ -15,6 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from a08_3_formal_publish import 建立正式v1, 正式切換v2
+from production_spa_support import 建立ProductionDist
 from 繁中代理.模型供應商 import GeminiADC供應商
 from 繁中代理.發布介面.資料庫結構契約 import 驗證資料庫結構
 from 繁中代理.發布介面.執行期.呼叫橋接 import 發布執行嘗試橋接
@@ -56,13 +57,14 @@ class 可觀測Gemini:
                            "stop", {"total_tokens": 1}, [])
 
 
-def _設定環境(monkeypatch, web: Path, db: Path, bundles: Path) -> None:
+def _設定環境(monkeypatch, web: Path, db: Path, bundles: Path, Dist根: Path) -> None:
     for name in tuple(os.environ):
         if name.startswith(("TESTAGENT2_", "AIAGENT_")):
             monkeypatch.delenv(name, raising=False)
     values = {
         "TESTAGENT2_DB_PATH": str(web), "TESTAGENT2_PUBLISHED_DB_PATH": str(db),
         "TESTAGENT2_PUBLISHED_BUNDLE_ROOT": str(bundles),
+        "TESTAGENT2_WEB_DIST_ROOT": str(Dist根),
         "TESTAGENT2_WEB_ORIGINS": '["https://client.example"]',
         "TESTAGENT2_MODEL_NAME": "gemini-root", "AIAGENT_GCP_PROJECT": "test-project",
         "AIAGENT_GCP_LOCATION": "global",
@@ -80,7 +82,8 @@ def live(tmp_path: Path, monkeypatch):
     web, db, bundles, skills = (tmp_path / "web.sqlite3", tmp_path / "published.sqlite3",
                                  tmp_path / "bundles", tmp_path / "skills")
     identity = 建立正式v1(web=web, db=db, bundles=bundles, skill_root=skills)
-    _設定環境(monkeypatch, web, db, bundles)
+    Dist根 = 建立ProductionDist(tmp_path)
+    _設定環境(monkeypatch, web, db, bundles, Dist根)
     model = 可觀測Gemini()
     monkeypatch.setattr(GeminiADC供應商, "產生發布回應", lambda self, **kw: model.產生(**kw))
     traces: list[list[tuple]] = []

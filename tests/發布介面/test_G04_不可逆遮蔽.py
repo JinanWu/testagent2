@@ -233,7 +233,9 @@ def test_恢復exact觸發器後raw已還原仍使投影與稽核閘門固定失
         結果 = 投影.查詢管理員原始資料(True, endpoint_id, invocation_id)
         callback輸出.append(結果)
         return 結果
-    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(資料庫)), detail)
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(資料庫)), detail, lambda _端點, _呼叫: True,
+    )
     with pytest.raises(查詢投影錯誤):
         閘門.查詢管理員原始資料(True, "admin", "request-view", "audit-view", 200,
                            "ep", "inv")

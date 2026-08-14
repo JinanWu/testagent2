@@ -369,7 +369,7 @@ def test_late_KISG時raw_payload亦自建立項目traceback清除(monkeypatch, �
     control = KeyboardInterrupt("CONTROL_LATE")
     def 失敗(*_args):
         raise control
-    monkeypatch.setattr(觀測診斷, "_核對投影墓碑", 失敗)
+    monkeypatch.setattr(觀測診斷, "_驗證墓碑目標一致性", 失敗)
     with pytest.raises(KeyboardInterrupt) as 捕捉:
         _列出(_服務(診斷資料庫), limit=1)
     assert 捕捉.value is control

@@ -41,6 +41,8 @@ htmlcov/
 
 # Node / Vite
 node_modules/
+apps/web-app/test-results/
+apps/web-app/playwright-report/
 *.tsbuildinfo
 
 # Repository-local agent artifacts
