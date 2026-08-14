@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -175,8 +176,33 @@ def test_A18_snapshot讀檔拒絕等長symlink_TOCTOU形狀(tmp_path: Path):
     link.symlink_to(target)
     target.write_bytes(b"S" * link.lstat().st_size)
 
-    with pytest.raises(ValueError):
-        _讀取檔案(link, 1024)
+    目錄描述器 = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        with pytest.raises(ValueError):
+            _讀取檔案(link.name, 1024, 目錄描述器=目錄描述器)
+    finally:
+        os.close(目錄描述器)
+
+
+def test_A18_snapshot以目錄descriptor抵抗parent_path_swap(tmp_path: Path):
+    from 繁中代理.發布介面.生產SPA import _讀取檔案
+
+    dist = tmp_path / "dist"
+    moved = tmp_path / "moved"
+    outside = tmp_path / "outside"
+    dist.mkdir()
+    outside.mkdir()
+    (dist / "app-ABCDEFGH.js").write_bytes(b"TRUSTED")
+    (outside / "app-ABCDEFGH.js").write_bytes(b"OUTSIDE")
+    目錄描述器 = os.open(dist, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        dist.rename(moved)
+        dist.symlink_to(outside, target_is_directory=True)
+        assert _讀取檔案(
+            "app-ABCDEFGH.js", 1024, 目錄描述器=目錄描述器,
+        ) == b"TRUSTED"
+    finally:
+        os.close(目錄描述器)
 
 
 def test_production_SPA同源服務deep_link_assets與安全cache_headers(tmp_path: Path):

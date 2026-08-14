@@ -27,7 +27,7 @@ from ..治理.管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫游標編解碼器,
     管理員呼叫稽核錯誤,
-    管理員拒絕稽核已提交,
+    管理員拒絕稽核收據權威,
 )
 from ..網頁工作階段 import 網頁使用者
 from ..治理.遮蔽 import 驗證遮蔽公開原因, 驗證遮蔽公開路徑
@@ -36,7 +36,9 @@ _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _識別碼格式 = r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
 _遮蔽路徑格式 = r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
 _遮蔽原因Schema格式 = (
-    r"^(?!\s*$)(?![\s\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr]|(?:[Ss][Kk]|[Pp][Kk])[_-]"
+    r"^(?![\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a"
+    r"\u2028\u2029\u202f\u205f\u3000\ufeff]*$)"
+    r"(?![\s\S]*(?:[Bb][Ee][Aa][Rr][Ee][Rr]|(?:[Ss][Kk]|[Pp][Kk])[_-]"
     r"|(?:^|[^0-9A-Fa-f])[0-9A-Fa-f]{64}(?:$|[^0-9A-Fa-f])))[\s\S]{1,256}$"
 )
 _遮蔽路徑回應 = Annotated[
@@ -50,6 +52,32 @@ _遮蔽原因回應 = Annotated[
     WithJsonSchema({"type": "string", "minLength": 1, "maxLength": 256,
                     "pattern": _遮蔽原因Schema格式}),
 ]
+
+
+def _驗證遮蔽回應識別碼(值: str, /) -> str:
+    """驗證並返回與frontend一致的有界canonical識別碼。"""
+    if type(值) is not str or re.fullmatch(_識別碼格式, 值) is None:
+        raise ValueError
+    return 值
+
+
+def _驗證遮蔽回應時間(值: float, /) -> float:
+    """驗證並返回finite且非負的遮蔽時間。"""
+    if type(值) not in (int, float) or not math.isfinite(值) or 值 < 0:
+        raise ValueError
+    return 值
+
+
+_遮蔽識別碼回應 = Annotated[
+    str, AfterValidator(_驗證遮蔽回應識別碼),
+    WithJsonSchema({"type": "string", "pattern": _識別碼格式, "maxLength": 128}),
+]
+_遮蔽時間回應 = Annotated[
+    float, AfterValidator(_驗證遮蔽回應時間),
+    WithJsonSchema({"type": "number", "minimum": 0}),
+]
+
+
 class 管理員安全列表提供者(Protocol):
     """安全metadata投影的最小介面。"""
 
@@ -128,13 +156,13 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
 管理員遮蔽回應 = create_model(
     "AdminRedaction", __config__=ConfigDict(extra="forbid"),
     **{名稱: 定義 for 名稱, 定義 in {
-        "id": (str, ...),
+        "id": (_遮蔽識別碼回應, ...),
         "target_type": (Literal["invocation_input", "metadata", "output", "error", "run_event",
                                 "tool_arguments", "tool_result", "tool_error"], ...),
-        "target_row_id": (str, ...),
+        "target_row_id": (_遮蔽識別碼回應, ...),
         "json_path": (_遮蔽路徑回應, ...),
         "reason": (_遮蔽原因回應, ...),
-        "is_tombstone": (Literal[True], ...), "redacted_at": (float, ...),
+        "is_tombstone": (Literal[True], ...), "redacted_at": (_遮蔽時間回應, ...),
     }.items()},
 )
 管理員呼叫詳情回應 = create_model(
@@ -159,6 +187,7 @@ def 建立管理稽核路由器(
     游標編解碼器: 管理員呼叫游標編解碼器,
     目前工作階段相依,
     *,
+    拒絕收據權威: 管理員拒絕稽核收據權威 | None = None,
     時鐘=time.time,
     請求識別碼工廠=lambda: "request-" + secrets.token_hex(16),
     稽核事件識別碼工廠=lambda: "audit-" + secrets.token_hex(16),
@@ -173,7 +202,9 @@ def 建立管理稽核路由器(
     """
     if (not callable(目前工作階段相依) or not callable(時鐘)
             or not callable(請求識別碼工廠) or not callable(稽核事件識別碼工廠)
-            or type(游標編解碼器) is not 管理員呼叫游標編解碼器):
+            or type(游標編解碼器) is not 管理員呼叫游標編解碼器
+            or (拒絕收據權威 is not None
+                and type(拒絕收據權威) is not 管理員拒絕稽核收據權威)):
         raise ValueError("管理稽核路由設定無效") from None
     try:
         相依參數數 = len(inspect.signature(目前工作階段相依).parameters)
@@ -246,7 +277,7 @@ def 建立管理稽核路由器(
         端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         呼叫識別碼: Annotated[str, Path(alias="invocation_id")],
         使用者: 網頁使用者 = Depends(取得安全工作階段),
-    ) -> JSONResponse:
+    ) -> Any:
         """只允許Admin，並把server-owned audit資料傳入A18-01 gate。"""
         安全使用者 = _確認工作階段使用者(使用者)
         _確認路徑識別碼(端點識別碼)
@@ -279,7 +310,11 @@ def 建立管理稽核路由器(
                     False, 安全使用者.識別碼, 安全請求識別碼, 安全事件識別碼, 安全發生時間,
                     端點識別碼, 呼叫識別碼,
                 )
-                if 拒絕結果 is 管理員拒絕稽核已提交:
+                if (type(拒絕收據權威) is 管理員拒絕稽核收據權威
+                        and 拒絕收據權威.驗證(
+                            拒絕結果, 安全使用者.識別碼, 安全請求識別碼,
+                            安全事件識別碼, 安全發生時間, 端點識別碼, 呼叫識別碼,
+                        )):
                     拒絕狀態 = 403
             except 管理員呼叫稽核錯誤:
                 拒絕狀態 = 503
@@ -296,7 +331,7 @@ def 建立管理稽核路由器(
             )
             if type(詳情) is not 管理員呼叫完整詳情:
                 raise ValueError
-            return JSONResponse(詳情.建立JSON())
+            return 詳情.建立JSON()
         except _控制流程:
             raise
         except 管理員呼叫不存在錯誤:

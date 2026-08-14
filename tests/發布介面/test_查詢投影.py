@@ -20,7 +20,7 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
     管理員呼叫完整詳情,
-    管理員拒絕稽核已提交,
+    管理員拒絕稽核收據權威,
     擁有者安全詳情,
 )
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
@@ -596,6 +596,7 @@ def test_A18_pairing_preflight只查存在性且故障不寫audit不讀raw(呼�
 @pytest.mark.parametrize("授權", [False, 0, 1, "admin", None])
 def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資料庫, 授權):
     呼叫 = []
+    收據權威 = 管理員拒絕稽核收據權威(b"r" * 32)
 
     def detail(*_引數):
         呼叫.append(1)
@@ -603,12 +604,16 @@ def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資�
 
     閘門 = 管理員原始資料稽核閘門(
         SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+        收據權威,
     )
     結果 = 閘門.查詢管理員原始資料(
         授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
         100.0, "ep-1", "inv-1",
     )
-    assert 結果 is 管理員拒絕稽核已提交
+    assert 收據權威.驗證(
+        結果, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
+        100.0, "ep-1", "inv-1",
+    )
     assert 呼叫 == []
     with closing(sqlite3.connect(呼叫資料庫)) as 連線:
         assert 連線.execute("SELECT outcome FROM audit_events").fetchone() == ("denied",)

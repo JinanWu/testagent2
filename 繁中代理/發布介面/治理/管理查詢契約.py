@@ -43,7 +43,51 @@ ADMIN_INVOCATION_ERROR_CONTRACT = {
     503: "呼叫紀錄暫時不可取得",
     500: "呼叫紀錄不可取得",
 }
-管理員拒絕稽核已提交 = object()
+
+
+@dataclass(frozen=True, slots=True)
+class 管理員拒絕稽核收據:
+    """綁定單次denied audit欄位且由per-app authority驗證的opaque receipt。"""
+
+    載荷: bytes
+    簽章: bytes
+
+
+class 管理員拒絕稽核收據權威:
+    """以行程內HMAC key簽發並驗證不可由detail provider自行偽造的receipt。"""
+
+    __slots__ = ("_key",)
+
+    def __init__(self, 金鑰: bytes) -> None:
+        """複製至少32 bytes key；不執行I/O。"""
+        if type(金鑰) is not bytes or len(金鑰) < 32:
+            raise ValueError
+        self._key = bytes(金鑰)
+
+    @staticmethod
+    def _載荷(管理員識別碼, 請求識別碼, 稽核事件識別碼, 發生時間, 端點識別碼, 呼叫識別碼) -> bytes:
+        """建立exact、canonical、不可混淆的request-bound payload。"""
+        return json.dumps(
+            [管理員識別碼, 請求識別碼, 稽核事件識別碼, 發生時間, 端點識別碼, 呼叫識別碼],
+            ensure_ascii=True, separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+
+    def 簽發(self, *欄位) -> 管理員拒絕稽核收據:
+        """僅供已成功提交audit的canonical gate簽發request-bound receipt。"""
+        載荷 = self._載荷(*欄位)
+        return 管理員拒絕稽核收據(載荷, hmac.digest(self._key, 載荷, "sha256"))
+
+    def 驗證(self, 收據: object, *欄位) -> bool:
+        """固定時間驗證exact receipt type、payload binding與HMAC。"""
+        try:
+            預期載荷 = self._載荷(*欄位)
+            return (
+                type(收據) is 管理員拒絕稽核收據
+                and 收據.載荷 == 預期載荷
+                and hmac.compare_digest(收據.簽章, hmac.digest(self._key, 預期載荷, "sha256"))
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
 ADMIN_INVOCATION_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_id", "endpoint_version_id", "credential_id", "message_id",
     "status", "input", "metadata", "output", "error", "usage", "metadata_size_bytes",

@@ -14,6 +14,7 @@ const REDACTION_TARGET = new Set([
   'tool_arguments', 'tool_result', 'tool_error',
 ])
 const REDACTION_SECRET = /(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])/i
+const REDACTION_BLANK = /^[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$/u
 const MAX_DETAIL_BYTES = 1024 * 1024
 const MAX_DETAIL_NODES = 4096
 const MAX_DETAIL_DEPTH = 128
@@ -168,7 +169,7 @@ function canonicalRedactionPath(value: unknown): value is string {
 
 function canonicalRedactionReason(value: unknown): value is string {
   return typeof value === 'string' && Array.from(value).length <= 256 &&
-    value.trim().length > 0 && !REDACTION_SECRET.test(value)
+    !REDACTION_BLANK.test(value) && !REDACTION_SECRET.test(value)
 }
 
 function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {

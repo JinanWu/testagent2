@@ -26,7 +26,8 @@ from .管理查詢契約 import (
     管理員呼叫不存在錯誤,
     管理員呼叫查詢錯誤,
     管理員呼叫稽核錯誤,
-    管理員拒絕稽核已提交,
+    管理員拒絕稽核收據,
+    管理員拒絕稽核收據權威,
     查詢投影錯誤,
     管理員呼叫完整詳情,
     擁有者安全詳情,
@@ -133,24 +134,29 @@ _索引指紋 = {
 class 管理員原始資料稽核閘門:
     """在任何管理員 raw detail callback 前持久提交 canonical 安全稽核。"""
 
-    __slots__ = ("_sink", "_detail", "_pairing_exists")
+    __slots__ = ("_sink", "_detail", "_pairing_exists", "_receipt_authority")
 
     def __init__(
         self,
         稽核接收器: AuditEventSink,
         原始資料detail: FunctionType | BuiltinFunctionType,
         配對存在: FunctionType | BuiltinFunctionType,
+        收據權威: 管理員拒絕稽核收據權威 | None = None,
     ) -> None:
         """注入audit sink、raw detail與不讀raw的endpoint/invocation配對判定。"""
+        if 收據權威 is None:
+            收據權威 = 管理員拒絕稽核收據權威(os.urandom(32))
         if (
             type(原始資料detail) not in (FunctionType, BuiltinFunctionType)
             or type(配對存在) not in (FunctionType, BuiltinFunctionType)
+            or type(收據權威) is not 管理員拒絕稽核收據權威
         ):
             稽核接收器 = 原始資料detail = 配對存在 = None  # type: ignore[assignment]
             raise 查詢投影錯誤(_固定錯誤) from None
         self._sink = 稽核接收器
         self._detail = 原始資料detail
         self._pairing_exists = 配對存在
+        self._receipt_authority = 收據權威
 
     def 查詢管理員原始資料(
         self,
@@ -162,7 +168,7 @@ class 管理員原始資料稽核閘門:
         端點識別碼: str,
         呼叫識別碼: str,
         /,
-    ) -> 管理員呼叫完整詳情 | object:
+    ) -> 管理員呼叫完整詳情 | 管理員拒絕稽核收據:
         """先稽核 success/denied 嘗試；僅 exact True 且 receipt 已提交才取 raw。"""
         失敗 = 稽核已提交 = 配對已判定 = 已授權 = 配對存在 = False
         結果類型 = None
@@ -170,6 +176,7 @@ class 管理員原始資料稽核閘門:
         接收器 = self._sink
         原始查詢 = self._detail
         配對查詢 = self._pairing_exists
+        收據權威 = self._receipt_authority
         try:
             已授權 = type(管理員授權) is bool and 管理員授權 is True
             配對存在 = False
@@ -194,7 +201,10 @@ class 管理員原始資料稽核閘門:
             稽核已提交 = True
             事件 = 接收器 = None
             if not 已授權:
-                結果 = 管理員拒絕稽核已提交
+                結果 = 收據權威.簽發(
+                    管理員識別碼, 請求識別碼, 稽核事件識別碼, 發生時間,
+                    端點識別碼, 呼叫識別碼,
+                )
             elif not 配對存在:
                 結果類型 = 管理員呼叫不存在錯誤
                 失敗 = True
@@ -218,14 +228,14 @@ class 管理員原始資料稽核閘門:
             捕捉 = None
             失敗 = True
         self = 管理員授權 = 管理員識別碼 = 請求識別碼 = 稽核事件識別碼 = None
-        發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = 配對查詢 = None
+        發生時間 = 端點識別碼 = 呼叫識別碼 = 事件 = 接收器 = 原始查詢 = 配對查詢 = None  # type: ignore[assignment]
         已授權 = 配對存在 = 稽核已提交 = 配對已判定 = False
         if 控制 is not None:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
-        if 結果 is 管理員拒絕稽核已提交:
-            return 管理員拒絕稽核已提交
+        if type(結果) is 管理員拒絕稽核收據:
+            return 結果
         if 失敗 or type(結果) is not 管理員呼叫完整詳情:
             結果 = None
             if 結果類型 is 管理員呼叫稽核錯誤:

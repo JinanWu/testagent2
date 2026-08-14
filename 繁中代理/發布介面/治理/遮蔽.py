@@ -29,6 +29,11 @@ _目標 = {
 _秘密格式 = re.compile(
     r"(?i)(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])"
 )
+_公開空白字元 = (
+    "\u0009\u000a\u000b\u000c\u000d\u001c\u001d\u001e\u001f\u0020\u0085\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f"
+    "\u205f\u3000\ufeff"
+)
 _必要觸發器 = frozenset({
     "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
     "endpoint_redactions_no_update", "endpoint_redactions_no_delete",
@@ -258,7 +263,8 @@ def 驗證遮蔽公開路徑(JSON路徑: object, /) -> str:
 
 def 驗證遮蔽公開原因(原因: object, /) -> str:
     """驗證並返回非空、有界且不含secret形狀的公開原因。"""
-    if type(原因) is not str or len(原因) > 256 or not 原因.strip() or _秘密格式.search(原因):
+    if (type(原因) is not str or len(原因) > 256
+            or not 原因.strip(_公開空白字元) or _秘密格式.search(原因)):
         raise ValueError
     return 原因
 
