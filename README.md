@@ -145,14 +145,26 @@ env -u PYTHONPATH -u VIRTUAL_ENV -u PYTHONHOME PYTHONNOUSERSITE=1 \
 
 ## Stable Invoke操作入口
 
-Canonical root factory固定為：
+Canonical root factory會直接托管`apps/web-app`的production-built SPA。先建立可重現的frontend artifact，再提供absolute dist authority：
+
+```bash
+cd apps/web-app
+npm ci
+npm run build
+cd ../..
+export TESTAGENT2_WEB_DIST_ROOT="$(pwd)/apps/web-app/dist"
+```
+
+正式啟動固定為：
 
 ```bash
 env -u PYTHONPATH -u VIRTUAL_ENV -u PYTHONHOME PYTHONNOUSERSITE=1 \
   .venv/bin/python -m uvicorn asgi:建立應用程式 --factory --host 127.0.0.1 --port 8000
 ```
 
-啟動前必須提供七個必要non-secret設定：三個互不別名的絕對path authority `TESTAGENT2_DB_PATH`、`TESTAGENT2_PUBLISHED_DB_PATH`、`TESTAGENT2_PUBLISHED_BUNDLE_ROOT`，以及`TESTAGENT2_WEB_ORIGINS`、`TESTAGENT2_MODEL_NAME`、`AIAGENT_GCP_PROJECT`、`AIAGENT_GCP_LOCATION`。另須由部署secret authority注入兩個credential keyring設定：`TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION`是無前導零的正整數；`TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON`是strict JSON object，其key為正整數版本字串、value為解碼後exact 32 bytes的canonical無padding Base64URL AES-256 key，且active版本必須存在於keyring。Canonical parser固定正式provider為`gemini-adc`；不得使用`TESTAGENT2_WEB_DB_PATH`或`TESTAGENT2_BUNDLE_ROOT`別名。Secret不得保存於repository、文件範例、log或shell歷史紀錄；測試只使用fixture內的非正式固定材料。
+啟動前必須提供八個必要non-secret設定：四個絕對path authority `TESTAGENT2_DB_PATH`、`TESTAGENT2_PUBLISHED_DB_PATH`、`TESTAGENT2_PUBLISHED_BUNDLE_ROOT`、`TESTAGENT2_WEB_DIST_ROOT`，以及`TESTAGENT2_WEB_ORIGINS`、`TESTAGENT2_MODEL_NAME`、`AIAGENT_GCP_PROJECT`、`AIAGENT_GCP_LOCATION`。前三個持久路徑不得互為別名；dist root必須是一般目錄且不得為symlink。另須由部署secret authority注入兩個credential keyring設定：`TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION`是無前導零的正整數；`TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON`是strict JSON object，其key為正整數版本字串、value為解碼後exact 32 bytes的canonical無paddingBase64URL AES-256 key，且active版本必須存在於keyring。Canonical parser固定正式provider為`gemini-adc`；不得使用`TESTAGENT2_WEB_DB_PATH`或`TESTAGENT2_BUNDLE_ROOT`別名。Secret不得保存於repository、文件範例、log或shell歷史紀錄；測試只使用fixture內的非正式固定材料。
+
+Dist在lifespan startup读取为有界immutable snapshot；缺少`index.html`、引用不存在、出现dev `/src/`入口、symlink、未hash资源或总量超限都会在提供request前固定失败关闭。`index.html`与SPA deep link使用`Cache-Control: no-store`，hashed assets使用一年`immutable`cache；未知`/api/*`、`/v1/*`与`/assets/*`仍保持JSON 404，不会被SPA fallback转换为HTML 200。
 
 啟動後依序檢查`GET /healthz`、`GET /openapi.json`及`POST /v1/endpoints/{slug}/invoke`。本機無需手工建立發布資料或保存測試金鑰；下列正式acceptance fixture會透過publisher建立臨時v1/v2資料，完成真TCP、OpenAPI、active-lease drain、不同PID restart與stable URL v2 smoke：
 
@@ -161,5 +173,16 @@ env -u PYTHONPATH -u VIRTUAL_ENV -u PYTHONHOME PYTHONNOUSERSITE=1 \
   .venv/bin/python -m pytest -q \
   'tests/發布介面/test_CP4_StableInvoke驗收.py::test_restart_keeps_stable_url_and_current_v2_openapi'
 ```
+
+Production browser authority固定為Playwright `1.62.1`與其匹配Chromium。必须显式提供可执行的absolute项目Python，runner不会fallback到ambient/system Python；命令会重新build、启动同源canonical ASGI、使用真Web/Published SQLite完成Admin login→list→detail→route/logout cleanup，并在结束后删除server与临时资料：
+
+```bash
+cd apps/web-app
+npm ci
+npx playwright install chromium
+A18_BROWSER_PYTHON="$(cd ../.. && pwd)/.venv/bin/python" npm run browser:smoke
+```
+
+目前repo尚未建立frontend lint authority；`typecheck`、Vitest、production build与browser smoke各自是独立Gate，不得把`typecheck`改称lint。
 
 繁中checker採owner核准的嚴格baseline ratchet：現有1,501項是公開的技術債，不代表符合規範；只有finding集合與`scripts/繁中checker-baseline.json`完全相同，或問題真正歸零時才通過。新增、移除、替換、移動任何finding都會失敗並顯示差異。Baseline不得在feature或acceptance卡為恢復綠燈而刷新；只有獨立修債變更、完整checker測試及獨立review通過後，才可更新manifest。

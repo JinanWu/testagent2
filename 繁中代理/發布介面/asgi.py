@@ -25,8 +25,15 @@ from .嚴格JSON import 解析嚴格JSON
 from .憑證.加密 import AESGCM憑證封套
 from .生產Web代理 import 生產Web代理建構器
 from .生產Published執行 import Published生產設定, 生產Controller建構器
+from .生產SPA import (
+    ProductionSPA設定,
+    建立ProductionSPA相依項,
+    拒絕ProductionSPA未知方法Middleware,
+)
 from .生產技能工具 import 安裝生產技能工具
-from .生產組裝 import 建立生產應用程式
+from .生產組裝 import 建立生產應用程式, 建立生產相依項
+from .應用程式 import 建立網頁應用程式
+from .相依項 import 發布介面相依項
 from .設定 import 生產設定
 
 資料庫環境名稱 = "TESTAGENT2_DB_PATH"
@@ -42,6 +49,7 @@ Published資料庫環境名稱 = "TESTAGENT2_PUBLISHED_DB_PATH"
 技能套件根環境名稱 = "TESTAGENT2_PUBLISHED_BUNDLE_ROOT"
 憑證Active版本環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION"
 憑證Keyring環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON"
+ProductionSPADist環境名稱 = "TESTAGENT2_WEB_DIST_ROOT"
 _錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
 _核准設定環境名稱 = frozenset((
     資料庫環境名稱, 來源環境名稱, 供應器環境名稱, 安全Cookie環境名稱,
@@ -87,6 +95,33 @@ def 建立CP4ASGI應用程式(設定: 生產設定, Published設定: Published�
     if type(設定) is not 生產設定 or type(Published設定) is not Published生產設定:
         raise ValueError("ASGI設定無效") from None
     return 建立生產應用程式(設定, 生產Controller建構器(Published設定))
+
+
+def 建立CP4SPAASGI應用程式(
+    設定: 生產設定, Published設定: Published生產設定, SPA設定: ProductionSPA設定,
+) -> FastAPI:
+    """以既有route/lifespan authority組成canonical backend與production SPA。
+
+    SPA router固定最後匹配，確保backend優先；SPA snapshot resource固定最先啟動，
+    使dist損壞在建立資料庫或provider前失敗關閉。
+    """
+    if (
+        type(設定) is not 生產設定
+        or type(Published設定) is not Published生產設定
+        or type(SPA設定) is not ProductionSPA設定
+    ):
+        raise ValueError("ASGI設定無效") from None
+    Backend相依 = 建立生產相依項(設定, 生產Controller建構器(Published設定))
+    SPA相依 = 建立ProductionSPA相依項(SPA設定)
+    完整相依 = 發布介面相依項(
+        (*Backend相依.路由器清單, *SPA相依.路由器清單),
+        (*SPA相依.資源工廠清單, *Backend相依.資源工廠清單),
+    )
+    return 建立網頁應用程式(
+        完整相依,
+        設定.建立網頁安全設定(),
+        內層Middleware類別=拒絕ProductionSPA未知方法Middleware,
+    )
 
 
 建立Canonical應用程式 = 建立CP4ASGI應用程式
@@ -252,6 +287,27 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         raise ValueError("Canonical環境設定無效") from None
 
 
+def 解析Production環境設定(
+    環境: Mapping[str, str],
+) -> tuple[生產設定, Published生產設定, ProductionSPA設定]:
+    """解析root production composition的backend authorities與exact dist root。"""
+    try:
+        if not isinstance(環境, Mapping):
+            raise ValueError
+        Dist文字 = 環境.get(ProductionSPADist環境名稱)
+        if type(Dist文字) is not str or not Dist文字:
+            raise ValueError
+        Backend環境 = dict(環境)
+        del Backend環境[ProductionSPADist環境名稱]
+        Web設定, Published設定 = 解析Canonical環境設定(Backend環境)
+        SPA設定 = ProductionSPA設定(Path(Dist文字))
+        return Web設定, Published設定, SPA設定
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        raise ValueError("Production環境設定無效") from None
+
+
 def 建立環境應用程式() -> FastAPI:
     """供 ``uvicorn --factory`` 使用並延遲建立完整 Controller。
 
@@ -264,10 +320,11 @@ def 建立環境應用程式() -> FastAPI:
     副作用：
         呼叫時讀取 process environment 並建立 app，不在此階段建立資料庫。
     """
-    return 建立Canonical應用程式(*解析Canonical環境設定(os.environ))
+    return 建立CP4SPAASGI應用程式(*解析Production環境設定(os.environ))
 
 
 __all__ = (
-    "建立ASGI應用程式", "建立CP4ASGI應用程式", "建立Canonical應用程式",
-    "建立環境應用程式", "解析環境生產設定", "解析Canonical環境設定",
+    "建立ASGI應用程式", "建立CP4ASGI應用程式", "建立CP4SPAASGI應用程式",
+    "建立Canonical應用程式", "建立環境應用程式", "解析環境生產設定",
+    "解析Canonical環境設定", "解析Production環境設定",
 )
