@@ -7,6 +7,7 @@ import traceback
 
 import pytest
 
+from 繁中代理.發布介面.治理 import 查詢投影
 from 繁中代理.發布介面.治理.查詢投影 import (
     管理員原始資料稽核閘門,
     查詢投影錯誤,
@@ -479,7 +480,8 @@ def test_管理員原始資料先提交安全稽核才呼叫detail且不保存ra
         )
 
     閘門 = 管理員原始資料稽核閘門(
-        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0), detail
+        SQLite稽核服務(str(呼叫資料庫), 時鐘=lambda: 101.0), detail,
+        lambda _端點, _呼叫: True,
     )
     結果 = 閘門.查詢管理員原始資料(
         True, "admin-1", "req-admin-1", "evt-admin-1", 100.0, "ep-1", "inv-1"
@@ -497,6 +499,99 @@ def test_管理員原始資料先提交安全稽核才呼叫detail且不保存ra
         assert 標記 not in repr(閘門)
 
 
+def test_A18_missing_pairing仍提交nullable_FK稽核後固定404且detail零呼叫(呼叫資料庫):
+    """不存在的requested IDs不得因audit FK失敗變成503，也不得先讀raw。"""
+    呼叫 = []
+
+    def pairing_exists(端點識別碼, 呼叫識別碼):
+        return SQLite呼叫查詢投影(str(呼叫資料庫)).管理員呼叫配對存在(
+            端點識別碼, 呼叫識別碼
+        )
+
+    def detail(*引數):
+        呼叫.append(引數)
+        pytest.fail("missing pairing不得讀取raw detail")
+
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, pairing_exists,
+    )
+    with pytest.raises(管理員呼叫不存在錯誤) as 捕捉:
+        閘門.查詢管理員原始資料(
+            True, "admin-1", "req-missing", "evt-missing", 100.0,
+            "ep-1", "inv-missing",
+        )
+    assert 捕捉.value.args == ("找不到呼叫紀錄",)
+    assert 呼叫 == []
+    with closing(sqlite3.connect(呼叫資料庫)) as 連線:
+        assert 連線.execute(
+            "SELECT event_id,action,outcome,actor_id,resource_type,resource_id,"
+            "request_id,endpoint_id,invocation_id,metadata_json FROM audit_events"
+        ).fetchone() == (
+            "evt-missing", "audit.detail.view", "success", "admin-1",
+            "endpoint.invocation", "inv-missing", "req-missing", None, None, "{}",
+        )
+
+
+def test_A18_pairing_preflight只查存在性且故障不寫audit不讀raw(呼叫資料庫, monkeypatch):
+    """Preflight必須零raw；非bool／一般故障固定query error並停在audit前。"""
+    投影 = SQLite呼叫查詢投影(str(呼叫資料庫))
+    assert 投影.管理員呼叫配對存在("ep-1", "inv-1") is True
+    assert 投影.管理員呼叫配對存在("ep-1", "inv-missing") is False
+
+    for 結果 in (None, 1, "true", RuntimeError("PAIRING_PRIVATE")):
+        稽核呼叫 = []
+        detail呼叫 = []
+
+        class Sink:
+            def append_audit_event(self, event):
+                稽核呼叫.append(event)
+
+        def pairing(*_引數):
+            if isinstance(結果, BaseException):
+                raise 結果
+            return 結果
+
+        def detail(*引數):
+            detail呼叫.append(引數)
+
+        with pytest.raises(管理員呼叫查詢錯誤) as 捕捉:
+            管理員原始資料稽核閘門(Sink(), detail, pairing).查詢管理員原始資料(
+                True, "admin-1", "req-pair", "evt-pair", 100.0, "ep-1", "inv-1",
+            )
+        assert 捕捉.value.args == ("呼叫紀錄不可取得",)
+        assert "PAIRING_PRIVATE" not in repr(捕捉.value)
+        assert 稽核呼叫 == [] and detail呼叫 == []
+
+    class 連線代理:
+        def __init__(self, 連線):
+            self._連線 = 連線
+            self.語句 = []
+
+        def execute(self, SQL, *參數):
+            self.語句.append(SQL)
+            return self._連線.execute(SQL, *參數)
+
+        def __getattr__(self, 名稱):
+            return getattr(self._連線, 名稱)
+
+    代理列 = []
+    原連線 = sqlite3.connect
+
+    def 建立代理(*引數, **關鍵字):
+        代理 = 連線代理(原連線(*引數, **關鍵字))
+        代理列.append(代理)
+        return 代理
+
+    monkeypatch.setattr(查詢投影, "_建立連線", 建立代理)
+    assert SQLite呼叫查詢投影(str(呼叫資料庫)).管理員呼叫配對存在("ep-1", "inv-1")
+    配對SQL = [
+        語句 for 語句 in 代理列[-1].語句
+        if 語句.startswith("SELECT") and "endpoint_invocations" in 語句
+    ]
+    assert 配對SQL == ["SELECT 1 FROM endpoint_invocations WHERE endpoint_id=? AND id=? LIMIT 2"]
+    assert not any(欄位 in 配對SQL[0] for 欄位 in ("input_json", "metadata_json", "output_json", "error_json"))
+
+
 @pytest.mark.parametrize("授權", [False, 0, 1, "admin", None])
 def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資料庫, 授權):
     呼叫 = []
@@ -505,7 +600,9 @@ def test_非精確管理員仍先安全稽核denied且detail零呼叫(呼叫資�
         呼叫.append(1)
         return {"raw": "不得取得"}
 
-    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+    )
     with pytest.raises(查詢投影錯誤) as 錯誤:
         閘門.查詢管理員原始資料(
             授權, "admin-1", "req-denied", f"evt-denied-{type(授權).__name__}",
@@ -539,7 +636,7 @@ def test_稽核失敗或偽造收據都fail_closed且detail零呼叫(呼叫資�
         呼叫.append(1)
         return {"raw": "RAW_PRIVATE"}
 
-    閘門 = 管理員原始資料稽核閘門(Sink(), detail)
+    閘門 = 管理員原始資料稽核閘門(Sink(), detail, lambda _端點, _呼叫: True)
     with pytest.raises(管理員呼叫稽核錯誤) as 錯誤:
         閘門.查詢管理員原始資料(
             True, "admin-1", "req-fail", "evt-fail", 100.0, "ep-1", "inv-1"
@@ -558,7 +655,9 @@ def test_A18稽核stage禁止偽裝404且已提交後provider不存在原樣穿�
         pytest.fail("audit未提交不得進detail")
 
     with pytest.raises(管理員呼叫稽核錯誤) as 稽核錯誤:
-        管理員原始資料稽核閘門(偽裝不存在Sink(), 不應呼叫).查詢管理員原始資料(
+        管理員原始資料稽核閘門(
+            偽裝不存在Sink(), 不應呼叫, lambda _端點, _呼叫: True,
+        ).查詢管理員原始資料(
             True, "admin-1", "req-hostile", "evt-hostile", 100.0, "ep-1", "inv-1"
         )
     assert "HOSTILE_404" not in repr(稽核錯誤.value)
@@ -572,7 +671,9 @@ def test_A18稽核stage禁止偽裝404且已提交後provider不存在原樣穿�
         raise 管理員呼叫不存在錯誤("PROVIDER_PRIVATE")
 
     with pytest.raises(管理員呼叫不存在錯誤) as 不存在:
-        管理員原始資料稽核閘門(已提交Sink(), 真detail).查詢管理員原始資料(
+        管理員原始資料稽核閘門(
+            已提交Sink(), 真detail, lambda _端點, _呼叫: True,
+        ).查詢管理員原始資料(
             True, "admin-1", "req-missing", "evt-missing", 100.0, "ep-1", "inv-missing"
         )
     assert 不存在.value.args == ("找不到呼叫紀錄",)
@@ -594,7 +695,9 @@ def test_A18稽核閘門在committed後仍重建typed_detail並拒絕callback_ra
             return _raw
 
         with pytest.raises(管理員呼叫查詢錯誤):
-            管理員原始資料稽核閘門(已提交Sink(), detail).查詢管理員原始資料(
+            管理員原始資料稽核閘門(
+                已提交Sink(), detail, lambda _端點, _呼叫: True,
+            ).查詢管理員原始資料(
                 True, "admin-1", "req-1", "audit-1", 1.0, "ep-1", "inv-1",
             )
 
@@ -609,7 +712,7 @@ def test_detail只接受exact_function而不觸發敵對callable():
 
     detail = 敵對Callable()
     with pytest.raises(查詢投影錯誤):
-        管理員原始資料稽核閘門(object(), detail)
+        管理員原始資料稽核閘門(object(), detail, lambda _端點, _呼叫: True)
     assert detail.呼叫次數 == 0
 
 
@@ -622,7 +725,9 @@ def test_detail自訂base固定失敗而KISG保留identity且清空閘門locals(
     def detail(*_引數):
         raise 狀態[0]
 
-    閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(呼叫資料庫)), detail)
+    閘門 = 管理員原始資料稽核閘門(
+        SQLite稽核服務(str(呼叫資料庫)), detail, lambda _端點, _呼叫: True,
+    )
     with pytest.raises(查詢投影錯誤) as 固定:
         閘門.查詢管理員原始資料(
             True, "admin-1", "req-custom", "evt-custom", 100.0, "ep-1", "inv-1"

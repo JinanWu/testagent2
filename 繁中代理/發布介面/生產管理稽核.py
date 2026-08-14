@@ -113,8 +113,14 @@ class 管理稽核提供者:
             """讓audit gate只持有exact function seam。"""
             return 投影.查詢管理員原始資料(True, 端點識別碼, 呼叫識別碼)
 
+        def 配對存在(端點識別碼: str, 呼叫識別碼: str):
+            """在audit前只判定exact pairing，不讀取raw payload。"""
+            return 投影.管理員呼叫配對存在(端點識別碼, 呼叫識別碼)
+
         self._投影 = 投影
-        self._閘門 = 管理員原始資料稽核閘門(SQLite稽核服務(str(資料庫路徑)), 讀取詳情)
+        self._閘門 = 管理員原始資料稽核閘門(
+            SQLite稽核服務(str(資料庫路徑)), 讀取詳情, 配對存在,
+        )
 
     def 列出管理員安全呼叫(self, 條件, 位置, /):
         """委派不讀raw JSON的safe projection。"""
