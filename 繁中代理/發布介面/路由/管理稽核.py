@@ -11,7 +11,7 @@ from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import AfterValidator, ConfigDict, Field, WithJsonSchema, create_model
+from pydantic import AfterValidator, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -69,11 +69,11 @@ def _驗證遮蔽回應時間(值: float, /) -> float:
 
 
 _遮蔽識別碼回應 = Annotated[
-    str, AfterValidator(_驗證遮蔽回應識別碼),
+    str, BeforeValidator(_驗證遮蔽回應識別碼),
     WithJsonSchema({"type": "string", "pattern": _識別碼格式, "maxLength": 128}),
 ]
 _遮蔽時間回應 = Annotated[
-    float, AfterValidator(_驗證遮蔽回應時間),
+    float, BeforeValidator(_驗證遮蔽回應時間),
     WithJsonSchema({"type": "number", "minimum": 0}),
 ]
 

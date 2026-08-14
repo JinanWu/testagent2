@@ -231,9 +231,12 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
         {"reason": "\u0085"},
         {"reason": "\ufeff"},
         {"id": "contains whitespace"},
+        {"id": b"redaction-1"},
         {"target_row_id": "contains whitespace"},
         {"redacted_at": -1.0},
         {"redacted_at": float("nan")},
+        {"redacted_at": True},
+        {"redacted_at": "9"},
     ):
         with pytest.raises(Exception):
             管理員遮蔽回應(**{**有效, **覆寫})
@@ -254,6 +257,19 @@ def test_A18_detail真HTTP_response_model攔截domain故障注入的非法redact
     回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
     assert 回應.status_code == 500
     assert "\u0085" not in 回應.text
+
+
+@pytest.mark.parametrize("覆寫", [
+    {"id": b"redaction-1"}, {"redacted_at": True}, {"redacted_at": "9"},
+])
+def test_A18_detail真HTTP_response_model拒絕redaction_scalar_coercion(monkeypatch, 覆寫):
+    詳情DTO = 管理員呼叫完整詳情(_詳情資料())
+    非法 = _詳情資料()
+    非法["redactions"][0].update(覆寫)
+    monkeypatch.setattr(管理員呼叫完整詳情, "建立JSON", lambda _self: 非法)
+    客戶端, _ = _詳情客戶端(詳情DTO, raise_server_exceptions=False)
+    回應 = 客戶端.get("/api/admin/endpoints/ep-1/invocations/inv-1")
+    assert 回應.status_code == 500
 
 
 def test_A18_detail固定404_503_500且零內部訊息():
