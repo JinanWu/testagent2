@@ -17,15 +17,17 @@ import secrets
 import sqlite3
 import stat
 import time
+from asyncio import CancelledError
 from dataclasses import dataclass
 from typing import Callable
 
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移, 驗證資料庫結構
 from .擷取政策 import 敏感偵測擷取結果, 目標敏感命中
 
-_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit, CancelledError)
 _Path具體型別 = type(Path())
 _安全識別格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
+_最大呼叫命中數 = 1024
 _稽核結構 = (
     ("index", "idx_audit_events_endpoint_time", "audit_events",
      "CREATE INDEX idx_audit_events_endpoint_time\n  ON audit_events(endpoint_id, occurred_at)"),
@@ -124,37 +126,43 @@ class SQLite敏感稽核儲存庫:
 
         成功或失敗都回滾並關閉連線；不寫入 hit/audit，不保留 connection authority。
         """
-        連線 = None
+        連線 = 主要錯誤 = 清理控制 = None
+        已回滾 = 已嘗試關閉 = False
         try:
             連線 = self._開啟連線()
             連線.execute("BEGIN IMMEDIATE")
             驗證資料庫結構(連線)
             _驗證稽核結構(連線)
+            已回滾 = True
             連線.rollback()
+            已嘗試關閉 = True
             連線.close()
             連線 = None
             return
-        except _控制流程例外:
-            if 連線 is not None:
+        except BaseException as 錯誤:
+            主要錯誤 = 錯誤
+            主要是控制流程 = type(錯誤) in _控制流程例外
+            if 連線 is not None and not 已回滾:
                 try:
                     連線.rollback()
-                except BaseException:
-                    pass
+                except BaseException as 回滾錯誤:
+                    if (not 主要是控制流程 and 清理控制 is None
+                            and type(回滾錯誤) in _控制流程例外):
+                        清理控制 = 回滾錯誤
+            if 連線 is not None and not 已嘗試關閉:
                 try:
                     連線.close()
-                except BaseException:
-                    pass
-            raise
-        except BaseException:
-            if 連線 is not None:
-                try:
-                    連線.rollback()
-                except BaseException:
-                    pass
-                try:
-                    連線.close()
-                except BaseException:
-                    pass
+                except BaseException as 關閉錯誤:
+                    if (not 主要是控制流程 and 清理控制 is None
+                            and type(關閉錯誤) in _控制流程例外):
+                        清理控制 = 關閉錯誤
+        if 主要是控制流程:
+            raise 主要錯誤
+        if 清理控制 is not None:
+            主要錯誤 = None
+            清理控制.__cause__ = 清理控制.__context__ = None
+            清理控制.__suppress_context__ = True
+            raise 清理控制
         raise 敏感稽核錯誤("敏感稽核啟動結構無效") from None
 
     def 寫入呼叫交易(
@@ -210,11 +218,21 @@ class SQLite敏感稽核儲存庫:
             )
             來源們 = tuple(dict.fromkeys((列[0], 列[1]) for 列 in 期望們))
             已存列們 = _讀取來源命中(連線, 呼叫識別碼, 來源們)
+            總命中數列 = 連線.execute(
+                "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=?",
+                (呼叫識別碼,),
+            ).fetchone()
+            if (type(總命中數列) is not tuple or len(總命中數列) != 1
+                    or type(總命中數列[0]) is not int
+                    or not 0 <= 總命中數列[0] <= _最大呼叫命中數):
+                raise ValueError
             if 已存列們:
                 _驗證回放完整集合(連線, 呼叫識別碼, 端點識別碼, 期望們, 已存列們)
                 稽核識別碼們 = tuple(列[6] for 列 in 已存列們)
                 命中識別碼們 = tuple(列[7] for 列 in 已存列們)
                 return _建立交易收據(呼叫識別碼, 稽核識別碼們, 命中識別碼們)
+            if 總命中數列[0] + len(命中們) > _最大呼叫命中數:
+                raise ValueError
             if not 命中們:
                 return _建立交易收據(呼叫識別碼, (), ())
             稽核識別碼們 = _配置安全識別碼們(self._識別碼工廠, len(命中們), ())
@@ -278,112 +296,8 @@ class SQLite敏感稽核儲存庫:
 
     def 附加偵測事件(self, 結果: 敏感偵測擷取結果, 呼叫識別碼: str,
                  端點識別碼: str, 請求識別碼: str) -> tuple[str, ...]:
-        """舊式 self-owned audit-only convenience；不得用於 production pair integration。"""
-        命中們 = 稽核識別碼們 = 稽核識別碼 = 時間 = 稽核中繼資料 = 中繼資料JSON = None
-        資料列們 = 連線 = 命中 = None
-        交易開始 = 已提交 = False
-        try:
-            _驗證識別碼(呼叫識別碼, 端點識別碼, 請求識別碼)
-            命中們 = _重建命中們(結果)
-            結果 = None
-            if not 命中們:
-                呼叫識別碼 = 端點識別碼 = 請求識別碼 = 命中們 = self = None
-                return ()
-            稽核識別碼們 = []
-            for 命中 in 命中們:
-                稽核識別碼 = self._識別碼工廠()
-                if (type(稽核識別碼) is not str or not 稽核識別碼.strip()
-                        or len(稽核識別碼) > 256 or 稽核識別碼 in 稽核識別碼們):
-                    raise ValueError
-                稽核識別碼們.append(稽核識別碼)
-                稽核識別碼 = None
-            時間 = self._時鐘()
-            if not _是非負有限時間(時間):
-                raise ValueError
-            資料列們 = []
-            for 索引 in range(len(命中們)):
-                命中 = 命中們[索引]
-                稽核中繼資料 = {
-                    "warning_code": "sensitive_data_detected",
-                    "target": object.__getattribute__(命中, "目標代碼"),
-                    "detector_type": object.__getattribute__(命中, "類型代碼"),
-                    "json_path": object.__getattribute__(命中, "JSON路徑"),
-                    "start": object.__getattribute__(命中, "開始"),
-                    "end": object.__getattribute__(命中, "結束"),
-                }
-                中繼資料JSON = json.dumps(稽核中繼資料, ensure_ascii=False, sort_keys=True,
-                                           separators=(",", ":"), allow_nan=False)
-                資料列們.append((稽核識別碼們[索引], 稽核識別碼們[索引], 時間,
-                    "published_api.sensitive_data_detected", "success", "system", None,
-                    "invocation", 呼叫識別碼, 請求識別碼, 端點識別碼, 呼叫識別碼,
-                    中繼資料JSON, 時間))
-                命中 = 稽核中繼資料 = 中繼資料JSON = None
-            命中們 = None
-            連線 = self._開啟連線()
-            連線.execute("BEGIN IMMEDIATE")
-            交易開始 = True
-            _驗證稽核結構(連線)
-            for 資料列 in 資料列們:
-                連線.execute(
-                    "INSERT INTO audit_events(id,event_id,occurred_at,action,outcome,actor_type,actor_id,"
-                    "resource_type,resource_id,request_id,endpoint_id,invocation_id,metadata_json,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", 資料列,
-                )
-                資料列 = None
-            連線.commit()
-            已提交 = True
-            try:
-                連線.close()
-            except BaseException as 關閉錯誤:
-                關閉是控制流程 = type(關閉錯誤) in _控制流程例外
-                if 關閉是控制流程:
-                    關閉錯誤.__cause__ = 關閉錯誤.__context__ = None
-                    關閉錯誤.__suppress_context__ = True
-                關閉錯誤 = None
-                if 關閉是控制流程:
-                    raise
-            回傳值 = tuple(稽核識別碼們)
-            self = 呼叫識別碼 = 端點識別碼 = 請求識別碼 = 稽核識別碼們 = 資料列們 = 連線 = None
-            return 回傳值
-        except BaseException as 錯誤:
-            是控制流程 = type(錯誤) in _控制流程例外
-            if 是控制流程:
-                錯誤.__cause__ = 錯誤.__context__ = None
-                錯誤.__suppress_context__ = True
-            清理控制 = None
-            if 連線 is not None and 交易開始 and not 已提交:
-                try:
-                    連線.rollback()
-                except BaseException as 回滾錯誤:
-                    if not 是控制流程 and type(回滾錯誤) in _控制流程例外:
-                        清理控制 = 回滾錯誤
-                    回滾錯誤 = None
-            if 連線 is not None and not 已提交:
-                try:
-                    連線.close()
-                except BaseException as 關閉錯誤:
-                    if (not 是控制流程 and 清理控制 is None
-                            and type(關閉錯誤) in _控制流程例外):
-                        清理控制 = 關閉錯誤
-                    關閉錯誤 = None
-            self = 結果 = 呼叫識別碼 = 端點識別碼 = 請求識別碼 = 命中們 = None
-            稽核識別碼們 = 稽核識別碼 = 時間 = 稽核中繼資料 = 中繼資料JSON = 資料列們 = None
-            連線 = 命中 = 資料列 = 索引 = None
-            if 是控制流程:
-                錯誤.__cause__ = 錯誤.__context__ = None
-                錯誤.__suppress_context__ = True
-                錯誤 = 清理控制 = None
-                raise
-            錯誤 = None
-            if 清理控制 is not None:
-                try:
-                    raise 清理控制
-                except BaseException as 選定:
-                    選定.__cause__ = 選定.__context__ = None
-                    選定.__suppress_context__ = True
-                    清理控制 = 選定 = None
-                    raise
-        raise 敏感稽核錯誤("敏感稽核附加失敗") from None
+        """保留 import/class compatibility，但永久拒絕 audit-only authority。"""
+        raise 敏感稽核錯誤("舊式敏感稽核附加已停用") from None
 
     def _開啟連線(self) -> sqlite3.Connection:
         """只以 rw 開啟釘住的既有非空一般檔並啟用外鍵。"""

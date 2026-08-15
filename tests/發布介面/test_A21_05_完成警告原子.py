@@ -231,14 +231,9 @@ class _提交失敗代理:
     def __getattr__(self, name):
         return getattr(self._connection, name)
 
-    def __enter__(self):
-        return self
-
-    def __exit__(self, error_type, error, traceback):
-        if error_type is None:
-            self._connection.rollback()
-            raise sqlite3.OperationalError("fixed")
-        return self._connection.__exit__(error_type, error, traceback)
+    def commit(self):
+        self._connection.rollback()
+        raise sqlite3.OperationalError("fixed")
 
     def close(self):
         return self._connection.close()
