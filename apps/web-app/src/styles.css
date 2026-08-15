@@ -66,3 +66,28 @@ h1 {
   font-size: 1.05rem;
   line-height: 1.8;
 }
+
+.endpoint-detail { width: min(100%, 64rem); text-align: left; }
+.endpoint-detail nav,
+.owner-diagnostics header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.owner-diagnostics { margin-top: 2rem; }
+.owner-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 1rem;
+}
+.owner-metrics p {
+  padding: 1rem;
+  border-radius: 1rem;
+  background: rgb(255 255 255 / 60%);
+}
+.owner-metrics strong { display: block; margin-top: 0.4rem; font-size: 1.3rem; }
+.owner-metrics h3,
+.owner-metrics ul,
+.owner-metrics ol { grid-column: 1 / -1; }
