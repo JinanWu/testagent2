@@ -11,7 +11,11 @@ import pytest
 from 繁中代理.發布介面.呼叫.敏感稽核 import (
     SQLite敏感稽核儲存庫,
     敏感命中交易收據,
+    敏感操作模式,
     敏感稽核錯誤,
+    建立呼叫來源族,
+    建立工具成功來源族,
+    建立完成來源族,
 )
 from 繁中代理.發布介面.呼叫.擷取政策 import (
     呼叫擷取命令,
@@ -70,6 +74,17 @@ def _三命中():
     )
 
 
+def _呼叫命中():
+    return _結果(
+        目標敏感命中("input", "email", "/a", 1, 3),
+        目標敏感命中("metadata", "phone", "/b", 2, 5),
+    )
+
+
+def _工具命中():
+    return _結果(目標敏感命中("tool_result", "tw_national_id_format", "/c", 3, 7))
+
+
 def _開交易(路徑, *, 外鍵=True):
     連線 = sqlite3.connect(路徑, isolation_level=None)
     if 外鍵:
@@ -87,25 +102,38 @@ def _writer(路徑, *, 時鐘=lambda: 17, audits=None, hits=None):
     )
 
 
+def _寫(writer, 連線, 結果, *, family=None, mode=敏感操作模式.FIRST_WRITE):
+    """以sealed operation seam寫入，同時讓既有node保留原驗證焦點。"""
+    return writer.寫入呼叫交易(
+        連線, mode, 建立呼叫來源族() if family is None else family,
+        結果, "inv-main", "ep-main",
+    )
+
+
 def test_caller交易內逐筆原子寫audit_hit且回安全不可變收據(tmp_path):
     路徑 = _建立資料庫(tmp_path)
     連線 = _開交易(路徑)
     try:
-        收據 = _writer(路徑).寫入呼叫交易(
-            連線, _三命中(), "inv-main", "ep-main",
-            工具呼叫識別碼們=(None, None, "tool-main"),
+        writer = _writer(路徑)
+        呼叫收據 = _寫(writer, 連線, _呼叫命中())
+        工具收據 = _寫(
+            writer, 連線, _工具命中(), family=建立工具成功來源族("tool-main"),
         )
         assert 連線.in_transaction
-        assert type(收據) is 敏感命中交易收據
-        assert (收據.呼叫識別碼, 收據.命中數, 收據.稽核識別碼們, 收據.命中識別碼們) == (
+        assert type(呼叫收據) is type(工具收據) is 敏感命中交易收據
+        assert (
+            呼叫收據.呼叫識別碼, 呼叫收據.命中數 + 工具收據.命中數,
+            呼叫收據.稽核識別碼們 + 工具收據.稽核識別碼們,
+            呼叫收據.命中識別碼們 + 工具收據.命中識別碼們,
+        ) == (
             "inv-main", 3, ("audit-1", "audit-2", "audit-3"),
             ("hit-1", "hit-2", "hit-3"),
         )
         with pytest.raises(FrozenInstanceError):
-            收據.命中數 = 4
+            呼叫收據.命中數 = 4
         with pytest.raises(TypeError):
             敏感命中交易收據("inv-main", 3, (), ())
-        assert not any(hasattr(收據, 名稱) for 名稱 in (
+        assert not any(hasattr(呼叫收據, 名稱) for 名稱 in (
             "json_path", "開始", "結束", "payload", "request_id", "session_id", "message_id"
         ))
 
@@ -146,10 +174,9 @@ def test_caller交易內逐筆原子寫audit_hit且回安全不可變收據(tmp_
 def test_caller_rollback同時移除audit與hit且writer不接管連線(tmp_path):
     路徑 = _建立資料庫(tmp_path)
     連線 = _開交易(路徑)
-    _writer(路徑).寫入呼叫交易(
-        連線, _三命中(), "inv-main", "ep-main",
-        工具呼叫識別碼們=(None, None, "tool-main"),
-    )
+    writer = _writer(路徑)
+    _寫(writer, 連線, _呼叫命中())
+    _寫(writer, 連線, _工具命中(), family=建立工具成功來源族("tool-main"))
     連線.rollback()
     assert not 連線.in_transaction
     assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
@@ -171,9 +198,9 @@ def test_exact_connection必須已在caller交易且啟用外鍵(tmp_path, 情�
         連線.execute("BEGIN IMMEDIATE")
     try:
         with pytest.raises(敏感稽核錯誤, match="敏感命中交易寫入失敗"):
-            _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫).寫入呼叫交易(
-                連線, _三命中(), "inv-main", "ep-main",
-                工具呼叫識別碼們=(None, None, "tool-main"),
+            _寫(
+                _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫),
+                連線, _呼叫命中(),
             )
         assert 次數 == [0]
     finally:
@@ -182,16 +209,17 @@ def test_exact_connection必須已在caller交易且啟用外鍵(tmp_path, 情�
         連線.close()
 
 
-def test_tool_target要求exact_mapping且非tool必須NULL(tmp_path):
+def test_tool_target要求sealed_family且outcome必須吻合(tmp_path):
     路徑 = _建立資料庫(tmp_path)
-    for 對照 in (None, (None, None, None), ("tool-main", None, "tool-main"),
-               (None, None, "tool-other")):
+    for family, 結果 in (
+        (建立呼叫來源族(), _工具命中()),
+        (建立工具成功來源族("tool-main"), _呼叫命中()),
+        (建立工具成功來源族("tool-other"), _工具命中()),
+    ):
         連線 = _開交易(路徑)
         try:
             with pytest.raises(敏感稽核錯誤):
-                _writer(路徑).寫入呼叫交易(
-                    連線, _三命中(), "inv-main", "ep-main", 工具呼叫識別碼們=對照,
-                )
+                _寫(_writer(路徑), 連線, 結果, family=family)
             assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
             assert 連線.execute(
                 "SELECT count(*) FROM invocation_sensitive_hits"
@@ -209,8 +237,9 @@ def test_zero_hits不碰factory或time且不寫入(tmp_path):
         raise AssertionError
     連線 = _開交易(路徑)
     try:
-        收據 = _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫).寫入呼叫交易(
-            連線, _結果(), "inv-main", "ep-main", 工具呼叫識別碼們=(),
+        收據 = _寫(
+            _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫),
+            連線, _結果(),
         )
         assert (收據.呼叫識別碼, 收據.命中數, 收據.稽核識別碼們,
                 收據.命中識別碼們) == ("inv-main", 0, (), ())
@@ -226,9 +255,10 @@ def test_same_content_replay驗證exact_set後回同收據且不重複(tmp_path)
     路徑 = _建立資料庫(tmp_path)
     連線 = _開交易(路徑)
     try:
-        收據 = _writer(路徑).寫入呼叫交易(
-            連線, _三命中(), "inv-main", "ep-main",
-            工具呼叫識別碼們=(None, None, "tool-main"),
+        writer = _writer(路徑)
+        呼叫收據 = _寫(writer, 連線, _呼叫命中())
+        工具收據 = _寫(
+            writer, 連線, _工具命中(), family=建立工具成功來源族("tool-main"),
         )
         連線.commit()
     finally:
@@ -240,13 +270,16 @@ def test_same_content_replay驗證exact_set後回同收據且不重複(tmp_path)
         raise AssertionError
     連線 = _開交易(路徑)
     try:
-        replay = _writer(
-            路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫,
-        ).寫入呼叫交易(
-            連線, _三命中(), "inv-main", "ep-main",
-            工具呼叫識別碼們=(None, None, "tool-main"),
+        writer = _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫)
+        呼叫replay = _寫(
+            writer, 連線, _呼叫命中(), mode=敏感操作模式.REPLAY,
         )
-        assert replay == 收據 and replay is not 收據 and 次數 == [0]
+        工具replay = _寫(
+            writer, 連線, _工具命中(), family=建立工具成功來源族("tool-main"),
+            mode=敏感操作模式.REPLAY,
+        )
+        assert 呼叫replay == 呼叫收據 and 呼叫replay is not 呼叫收據
+        assert 工具replay == 工具收據 and 工具replay is not 工具收據 and 次數 == [0]
         assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (3,)
         assert 連線.execute("SELECT count(*) FROM invocation_sensitive_hits").fetchone() == (3,)
     finally:
@@ -257,9 +290,9 @@ def test_same_content_replay驗證exact_set後回同收據且不重複(tmp_path)
 def test_same_source_different_hit_set拒絕且不碰factory或time(tmp_path):
     路徑 = _建立資料庫(tmp_path)
     連線 = _開交易(路徑)
-    _writer(路徑).寫入呼叫交易(
-        連線, _結果(目標敏感命中("input", "email", "/a", 1, 3)),
-        "inv-main", "ep-main", 工具呼叫識別碼們=(None,),
+    _寫(
+        _writer(路徑), 連線,
+        _結果(目標敏感命中("input", "email", "/a", 1, 3)),
     )
     連線.commit()
     連線.execute("BEGIN IMMEDIATE")
@@ -269,11 +302,12 @@ def test_same_source_different_hit_set拒絕且不碰factory或time(tmp_path):
         raise AssertionError
     try:
         with pytest.raises(敏感稽核錯誤):
-            _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫).寫入呼叫交易(
+            _寫(
+                _writer(路徑, 時鐘=不可呼叫, audits=不可呼叫, hits=不可呼叫),
                 連線, _結果(
                     目標敏感命中("input", "email", "/a", 1, 3),
                     目標敏感命中("input", "phone", "/z", 2, 5),
-                ), "inv-main", "ep-main", 工具呼叫識別碼們=(None, None),
+                ), mode=敏感操作模式.REPLAY,
             )
         assert 次數 == [0]
         assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
@@ -287,20 +321,19 @@ def test_same_source_different_hit_set拒絕且不碰factory或time(tmp_path):
 def test_audit或hit失敗固定拒絕且不替caller回滾(tmp_path, 失敗階段):
     路徑 = _建立資料庫(tmp_path)
     連線 = _開交易(路徑)
-    _writer(
-        路徑, audits=lambda: "audit-existing", hits=lambda: "hit-existing",
-    ).寫入呼叫交易(
+    _寫(
+        _writer(路徑, audits=lambda: "audit-existing", hits=lambda: "hit-existing"),
         連線, _結果(目標敏感命中("metadata", "email", "/a", 1, 3)),
-        "inv-main", "ep-main", 工具呼叫識別碼們=(None,),
     )
     連線.commit()
     連線.execute("BEGIN IMMEDIATE")
     audits = (lambda: "audit-existing") if 失敗階段 == "audit" else (lambda: "audit-new")
     hits = (lambda: "hit-new") if 失敗階段 == "audit" else (lambda: "hit-existing")
     with pytest.raises(敏感稽核錯誤, match="敏感命中交易寫入失敗"):
-        _writer(路徑, audits=audits, hits=hits).寫入呼叫交易(
-            連線, _結果(目標敏感命中("input", "phone", "/b", 2, 5)),
-            "inv-main", "ep-main", 工具呼叫識別碼們=(None,),
+        _寫(
+            _writer(路徑, audits=audits, hits=hits), 連線,
+            _結果(目標敏感命中("response_data", "phone", "/b", 2, 5)),
+            family=建立完成來源族(),
         )
     assert 連線.in_transaction
     assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (
@@ -319,10 +352,7 @@ def test_schema_drift_fail_closed且不rollback_caller(tmp_path):
     連線 = _開交易(路徑)
     try:
         with pytest.raises(敏感稽核錯誤):
-            _writer(路徑).寫入呼叫交易(
-                連線, _三命中(), "inv-main", "ep-main",
-                工具呼叫識別碼們=(None, None, "tool-main"),
-            )
+            _寫(_writer(路徑), 連線, _呼叫命中())
         assert 連線.in_transaction
     finally:
         連線.rollback()
@@ -336,10 +366,7 @@ def test_time_control_flow保留exact_identity且caller仍決定rollback(tmp_pat
     連線 = _開交易(路徑)
     try:
         with pytest.raises(KeyboardInterrupt) as 資訊:
-            _writer(路徑, 時鐘=時鐘).寫入呼叫交易(
-                連線, _三命中(), "inv-main", "ep-main",
-                工具呼叫識別碼們=(None, None, "tool-main"),
-            )
+            _寫(_writer(路徑, 時鐘=時鐘), 連線, _呼叫命中())
         assert 資訊.value is 控制 and 資訊.value.args == ("control", 9)
         assert 連線.in_transaction
         assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)

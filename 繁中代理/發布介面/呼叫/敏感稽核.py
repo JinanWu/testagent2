@@ -19,6 +19,7 @@ import stat
 import time
 from asyncio import CancelledError
 from dataclasses import dataclass
+from enum import Enum
 from typing import Callable
 
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移, 驗證資料庫結構
@@ -66,6 +67,54 @@ END"""),
 
 class 敏感稽核錯誤(RuntimeError):
     """代表 sanitized 敏感稽核批次被固定拒絕。"""
+
+
+class 敏感操作模式(Enum):
+    """由 durable parent operation 明確指定來源族是首次寫入或重播。"""
+
+    FIRST_WRITE = "first_write"
+    REPLAY = "replay"
+
+
+_來源族封印 = object()
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class 敏感來源族:
+    """只能由本模組工廠建立的完整敏感來源族描述。"""
+
+    _種類: str
+    _工具識別碼: str | None
+    _封印: object
+
+
+def _建立來源族(種類: str, 工具識別碼: str | None = None) -> 敏感來源族:
+    """建立帶 module-owned seal 的不可變來源族。"""
+    來源族 = object.__new__(敏感來源族)
+    object.__setattr__(來源族, "_種類", 種類)
+    object.__setattr__(來源族, "_工具識別碼", 工具識別碼)
+    object.__setattr__(來源族, "_封印", _來源族封印)
+    return 來源族
+
+
+def 建立呼叫來源族() -> 敏感來源族:
+    """建立 input＋metadata 且 tool identity 固定為 NULL 的 invocation family。"""
+    return _建立來源族("invocation")
+
+
+def 建立工具成功來源族(工具呼叫識別碼: str) -> 敏感來源族:
+    """建立 arguments＋result 綁定同一 durable tool row 的成功 family。"""
+    return _建立來源族("tool_success", 工具呼叫識別碼)
+
+
+def 建立工具錯誤來源族(工具呼叫識別碼: str) -> 敏感來源族:
+    """建立只有 arguments authority、並拒絕任何 result 污染的失敗 family。"""
+    return _建立來源族("tool_error", 工具呼叫識別碼)
+
+
+def 建立完成來源族() -> 敏感來源族:
+    """建立 response_data 且 tool identity 固定為 NULL 的 completion family。"""
+    return _建立來源族("completion")
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -168,36 +217,41 @@ class SQLite敏感稽核儲存庫:
     def 寫入呼叫交易(
         self,
         連線: sqlite3.Connection,
+        模式: 敏感操作模式,
+        來源族: 敏感來源族,
         結果: 敏感偵測擷取結果,
         呼叫識別碼: str,
         端點識別碼: str,
-        *,
-        工具呼叫識別碼們: tuple[str | None, ...] | None = None,
-        回放來源: tuple[str, str | None] | None = None,
     ) -> 敏感命中交易收據:
-        """在 caller 已持有的交易內寫入一對一 audit/hit，不控制交易或連線。
+        """依 parent mode 協調完整 sealed family 的一對一 audit/hit。
 
-        相同 invocation/target/tool source 的完整 hit set 可安全 replay；任何 set 或
-        已存 audit/hit 漂移都固定拒絕。回傳只證明目前 caller transaction 中可見的
-        exact 寫入，不宣稱 caller 尚未執行的 commit。
+        參數：caller transaction、明確 FIRST_WRITE/REPLAY、sealed family、偵測結果與
+        invocation/endpoint identity。返回值：只含安全 identity 的 exact family 收據。
         """
         命中們 = 對照 = 期望們 = 來源們 = 已存列們 = None
         稽核識別碼們 = 命中識別碼們 = 時間 = 資料列們 = None
         try:
-            if type(連線) is not sqlite3.Connection:
+            if not isinstance(連線, sqlite3.Connection) or type(模式) is not 敏感操作模式:
                 raise ValueError
             _驗證交易識別碼(呼叫識別碼, 端點識別碼)
+            種類, 工具識別碼, 來源們, 允許目標們 = _重建完整來源族(來源族)
             命中們 = _重建命中們(結果)
             結果 = None
-            對照 = _重建工具對照(命中們, 工具呼叫識別碼們)
-            工具呼叫識別碼們 = None
-            if 回放來源 is not None:
-                if (type(回放來源) is not tuple or len(回放來源) != 2
-                        or type(回放來源[0]) is not str
-                        or 回放來源[0] not in {
-                            "input", "metadata", "response_data", "tool_arguments", "tool_result",
-                        }
-                        or (回放來源[1] is not None and type(回放來源[1]) is not str)):
+            對照 = tuple(工具識別碼 if object.__getattribute__(命中, "目標代碼").startswith("tool_")
+                       else None for 命中 in 命中們)
+            if any(object.__getattribute__(命中, "目標代碼") not in 允許目標們 for 命中 in 命中們):
+                raise ValueError
+            if 種類 == "tool_error" and any(
+                object.__getattribute__(命中, "目標代碼") == "tool_result" for 命中 in 命中們
+            ):
+                raise ValueError
+            if 種類.startswith("tool_"):
+                工具列 = 連線.execute(
+                    "SELECT id,invocation_id,outcome FROM endpoint_tool_calls WHERE id=?",
+                    (工具識別碼,),
+                ).fetchone()
+                期望outcome = "success" if 種類 == "tool_success" else "error"
+                if 工具列 != (工具識別碼, 呼叫識別碼, 期望outcome):
                     raise ValueError
             if not 連線.in_transaction:
                 raise ValueError
@@ -210,14 +264,6 @@ class SQLite敏感稽核儲存庫:
             ).fetchone()
             if type(呼叫列) is not tuple or 呼叫列 != (呼叫識別碼, 端點識別碼):
                 raise ValueError
-            for 工具識別碼 in dict.fromkeys(值 for 值 in 對照 if 值 is not None):
-                工具列 = 連線.execute(
-                    "SELECT id,invocation_id FROM endpoint_tool_calls WHERE id=?",
-                    (工具識別碼,),
-                ).fetchone()
-                if type(工具列) is not tuple or 工具列 != (工具識別碼, 呼叫識別碼):
-                    raise ValueError
-
             期望們 = tuple(
                 (object.__getattribute__(命中, "目標代碼"), 對照[索引],
                  object.__getattribute__(命中, "類型代碼"),
@@ -225,11 +271,6 @@ class SQLite敏感稽核儲存庫:
                  object.__getattribute__(命中, "開始"), object.__getattribute__(命中, "結束"))
                 for 索引, 命中 in enumerate(命中們)
             )
-            來源們 = tuple(dict.fromkeys((列[0], 列[1]) for 列 in 期望們))
-            if 回放來源 is not None:
-                if any(來源 != 回放來源 for 來源 in 來源們):
-                    raise ValueError
-                來源們 = (回放來源,)
             已存列們 = _讀取來源命中(連線, 呼叫識別碼, 來源們)
             總命中數列 = 連線.execute(
                 "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=?",
@@ -239,12 +280,13 @@ class SQLite敏感稽核儲存庫:
                     or type(總命中數列[0]) is not int
                     or not 0 <= 總命中數列[0] <= _最大呼叫命中數):
                 raise ValueError
-            if 回放來源 is not None or 已存列們:
+            _驗證無孤立敏感稽核(連線, 呼叫識別碼)
+            if 模式 is 敏感操作模式.REPLAY:
                 _驗證回放完整集合(連線, 呼叫識別碼, 端點識別碼, 期望們, 已存列們)
                 稽核識別碼們 = tuple(列[6] for 列 in 已存列們)
                 命中識別碼們 = tuple(列[7] for 列 in 已存列們)
                 return _建立交易收據(呼叫識別碼, 稽核識別碼們, 命中識別碼們)
-            if 總命中數列[0] + len(命中們) > _最大呼叫命中數:
+            if 已存列們 or 總命中數列[0] + len(命中們) > _最大呼叫命中數:
                 raise ValueError
             if not 命中們:
                 return _建立交易收據(呼叫識別碼, (), ())
@@ -421,27 +463,27 @@ def _驗證交易識別碼(呼叫識別碼: object, 端點識別碼: object) -> 
         raise ValueError
 
 
-def _重建工具對照(
-    命中們: tuple[目標敏感命中, ...],
-    工具呼叫識別碼們: tuple[str | None, ...] | None,
-) -> tuple[str | None, ...]:
-    """建立與 deterministic hit order 等長的 exact nullable tool mapping。"""
-    if 工具呼叫識別碼們 is None:
-        if any(object.__getattribute__(命中, "目標代碼").startswith("tool_") for 命中 in 命中們):
-            raise ValueError
-        return (None,) * len(命中們)
-    if type(工具呼叫識別碼們) is not tuple or len(工具呼叫識別碼們) != len(命中們):
+def _重建完整來源族(
+    不可信來源族: object,
+) -> tuple[str, str | None, tuple[tuple[str, str | None], ...], frozenset[str]]:
+    """重建 sealed family，並在模組內展開完整 durable source scope。"""
+    if type(不可信來源族) is not 敏感來源族:
         raise ValueError
-    結果: list[str | None] = []
-    for 命中, 工具識別碼 in zip(命中們, 工具呼叫識別碼們):
-        是工具 = object.__getattribute__(命中, "目標代碼").startswith("tool_")
-        if 是工具:
-            if type(工具識別碼) is not str or _安全識別格式.fullmatch(工具識別碼) is None:
-                raise ValueError
-        elif 工具識別碼 is not None:
-            raise ValueError
-        結果.append(工具識別碼)
-    return tuple(結果)
+    種類 = object.__getattribute__(不可信來源族, "_種類")
+    工具識別碼 = object.__getattribute__(不可信來源族, "_工具識別碼")
+    封印 = object.__getattribute__(不可信來源族, "_封印")
+    if 封印 is not _來源族封印:
+        raise ValueError
+    if 種類 == "invocation" and 工具識別碼 is None:
+        return 種類, None, (("input", None), ("metadata", None)), frozenset(("input", "metadata"))
+    if 種類 == "completion" and 工具識別碼 is None:
+        return 種類, None, (("response_data", None),), frozenset(("response_data",))
+    if (種類 in ("tool_success", "tool_error") and type(工具識別碼) is str
+            and _安全識別格式.fullmatch(工具識別碼) is not None):
+        來源們 = (("tool_arguments", 工具識別碼), ("tool_result", 工具識別碼))
+        允許 = ("tool_arguments", "tool_result") if 種類 == "tool_success" else ("tool_arguments",)
+        return 種類, 工具識別碼, 來源們, frozenset(允許)
+    raise ValueError
 
 
 def _配置安全識別碼們(
@@ -533,6 +575,11 @@ def _驗證回放完整集合(
         )
         if type(列[21]) is not str or 列[21] != 預期JSON:
             raise ValueError
+    _驗證無孤立敏感稽核(連線, 呼叫識別碼)
+
+
+def _驗證無孤立敏感稽核(連線: sqlite3.Connection, 呼叫識別碼: str) -> None:
+    """無條件拒絕沒有normalized hit配對的敏感稽核附屬列。"""
     孤立列 = 連線.execute(
         "SELECT count(*) FROM audit_events AS a LEFT JOIN invocation_sensitive_hits AS h "
         "ON h.audit_event_id=a.id WHERE a.invocation_id=? "
