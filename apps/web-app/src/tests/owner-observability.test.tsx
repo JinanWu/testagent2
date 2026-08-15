@@ -142,6 +142,19 @@ describe('A19-03 OwnerDiagnostics state lifecycle', () => {
     expect(text(renderer!)).toContain('無樣本')
   })
 
+  it('具名呈現完整safe redacted_fields且不呈現被遮蔽值', async () => {
+    const redacted = {
+      ...item(), error_code: 'diagnostic_secret_value', schema_path: '$.diagnostic_secret_value',
+      redacted_fields: ['error_code', 'schema_path'],
+    }
+    fetchMock.mockResolvedValueOnce(jsonResponse(metrics())).mockResolvedValueOnce(jsonResponse(diagnostics([redacted])))
+    await act(async () => { renderer = create(<OwnerDiagnostics endpointId="endpoint-1" />) })
+    await flush()
+    const rendered = text(renderer!)
+    expect(rendered).toContain('遮蔽欄位：error_code、schema_path')
+    expect(rendered).not.toContain('diagnostic_secret_value')
+  })
+
   it('卸載會abort所有in-flight觀測request', async () => {
     fetchMock.mockImplementation(() => new Promise<Response>(() => undefined))
     await act(async () => { renderer = create(<OwnerDiagnostics endpointId="endpoint-1" />) })
