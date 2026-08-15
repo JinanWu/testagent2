@@ -198,15 +198,21 @@ class _提交失敗連線:
         """
         return self
 
+    def commit(self):
+        """攔截 production 明確提交並模擬 COMMIT failure。
+
+        參數：無。
+        返回值：不返回；先回滾再固定拋普通 SQLite 錯誤。
+        """
+        self._連線.rollback()
+        raise sqlite3.OperationalError("temporary commit failure")
+
     def __exit__(self, 錯誤型別, 錯誤, traceback):
-        """在成功離開 transaction context 時先回滾，再模擬 COMMIT failure。
+        """保留一般 connection context 相容行為。
 
         參數：context manager 的 exception triple。
-        返回值：不返回；固定拋普通 SQLite 錯誤。
+        返回值：真實 connection 的退出結果。
         """
-        if 錯誤型別 is None:
-            self._連線.rollback()
-            raise sqlite3.OperationalError("temporary commit failure")
         return self._連線.__exit__(錯誤型別, 錯誤, traceback)
 
 

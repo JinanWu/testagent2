@@ -15,6 +15,7 @@ import secrets
 import sqlite3
 import stat
 import time
+from asyncio import CancelledError
 from contextlib import closing
 from dataclasses import dataclass
 from decimal import Decimal, localcontext
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 from ..嚴格JSON import 建立正規JSON
-from ..資料庫結構契約 import 遷移帳本 as _必要遷移
+from ..資料庫結構契約 import 遷移帳本 as _必要遷移, 驗證資料庫結構
 from .Published工作階段 import Published成功對話提交, 最大歷史位元組
 from .擷取政策 import 擷取階段, 準備含敏感偵測的呼叫擷取
 
@@ -31,7 +32,7 @@ class 呼叫儲存錯誤(RuntimeError):
     """代表呼叫紀錄寫入或狀態轉換被固定錯誤拒絕。"""
 
 
-_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit, CancelledError)
 _Path具體型別 = type(Path())
 _呼叫建表SQL = """CREATE TABLE endpoint_invocations (
   id TEXT PRIMARY KEY,
@@ -194,6 +195,7 @@ _成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{0,27}[1-9])?\Z")
 _定價版本格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _敏感警告代碼 = "sensitive_data_detected"
 _敏感警告訊息 = "回應包含可能的敏感資料。"
+_最大敏感命中數 = 1024
 _警告最大數量 = 64
 _警告代碼最大位元組 = 256
 _警告訊息最大位元組 = 2048
@@ -318,6 +320,84 @@ def _合併完成警告(
     if 有回應命中:
         結果 += ((_敏感警告代碼, _敏感警告訊息),)
     return _重建完成警告純量(結果)
+
+
+def _讀取invocation命中數(連線: sqlite3.Connection, invocation_id: str) -> int:
+    """在 caller 的 BEGIN IMMEDIATE 內讀取 Admin 可完整投影的 bounded hit count。"""
+    資料列 = 連線.execute(
+        "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=?",
+        (invocation_id,),
+    ).fetchone()
+    if (type(資料列) is not tuple or len(資料列) != 1 or type(資料列[0]) is not int
+            or not 0 <= 資料列[0] <= _最大敏感命中數):
+        raise ValueError
+    return 資料列[0]
+
+
+class _明確交易範圍:
+    """讓 A21 transaction 的 rollback/close callback 遵守固定控制流程優先序。"""
+
+    __slots__ = ("_連線",)
+
+    def __init__(self, 連線: sqlite3.Connection) -> None:
+        self._連線 = 連線
+
+    def __enter__(self) -> sqlite3.Connection:
+        return self._連線
+
+    def __exit__(self, 錯誤型別, 錯誤, _追蹤) -> bool:
+        連線 = self._連線
+        if 錯誤型別 is None:
+            try:
+                連線.commit()
+            except BaseException as 提交錯誤:
+                return self._提交失敗(提交錯誤)
+            連線.close()
+            return False
+
+        主要是控制流程 = type(錯誤) in _控制流程例外
+        清理控制 = None
+        try:
+            連線.rollback()
+        except BaseException as 回滾錯誤:
+            if not 主要是控制流程 and type(回滾錯誤) in _控制流程例外:
+                清理控制 = 回滾錯誤
+        try:
+            連線.close()
+        except BaseException as 關閉錯誤:
+            if (not 主要是控制流程 and 清理控制 is None
+                    and type(關閉錯誤) in _控制流程例外):
+                清理控制 = 關閉錯誤
+        if 清理控制 is not None:
+            錯誤 = None
+            清理控制.__cause__ = 清理控制.__context__ = None
+            清理控制.__suppress_context__ = True
+            raise 清理控制
+        return False
+
+    def _提交失敗(self, 提交錯誤: BaseException) -> bool:
+        """commit failure 視為 primary，仍明確 rollback/close 並套用相同優先序。"""
+        主要是控制流程 = type(提交錯誤) in _控制流程例外
+        清理控制 = None
+        try:
+            self._連線.rollback()
+        except BaseException as 回滾錯誤:
+            if not 主要是控制流程 and type(回滾錯誤) in _控制流程例外:
+                清理控制 = 回滾錯誤
+        try:
+            self._連線.close()
+        except BaseException as 關閉錯誤:
+            if (not 主要是控制流程 and 清理控制 is None
+                    and type(關閉錯誤) in _控制流程例外):
+                清理控制 = 關閉錯誤
+        if 主要是控制流程:
+            raise 提交錯誤
+        if 清理控制 is not None:
+            提交錯誤 = None
+            清理控制.__cause__ = 清理控制.__context__ = None
+            清理控制.__suppress_context__ = True
+            raise 清理控制
+        raise 提交錯誤
 
 
 class 呼叫敏感交易協調器:
@@ -464,7 +544,8 @@ class SQLite呼叫儲存庫:
         連線 = 呼叫識別碼 = 建立時間原值 = 建立時間 = None
         輸入快照 = metadata快照 = 輸入JSON = metadata_json = 偵測結果 = None
         命中們 = 已存命中數 = None
-        已提交 = False
+        已提交 = 關閉已嘗試 = False
+        主要錯誤 = 清理控制 = None
         try:
             呼叫識別碼 = self._識別碼工廠()
             self._驗證建立值((呼叫識別碼, endpoint_id, endpoint_version_id, request_id),
@@ -491,6 +572,13 @@ class SQLite呼叫儲存庫:
             ).fetchone()
             預期 = (endpoint_id, endpoint_version_id, credential_id, request_id, session_id, message_id,
                   "pending", 輸入JSON, metadata_json, metadata_size_bytes, metadata_sha256, 建立時間)
+            命中們 = object.__getattribute__(偵測結果, "命中們")
+            if type(命中們) is not tuple:
+                raise ValueError
+            invocation命中數 = _讀取invocation命中數(連線, 呼叫識別碼)
+            if 已有 is None and (invocation命中數 != 0
+                              or invocation命中數 + len(命中們) > _最大敏感命中數):
+                raise ValueError
             if 已有 is None:
                 游標 = 連線.execute(
                     "INSERT INTO endpoint_invocations("
@@ -506,9 +594,6 @@ class SQLite呼叫儲存庫:
             elif 已有 != 預期:
                 raise ValueError
             if 已有 is not None:
-                命中們 = object.__getattribute__(偵測結果, "命中們")
-                if type(命中們) is not tuple:
-                    raise ValueError
                 已存命中數 = 連線.execute(
                     "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=? "
                     "AND tool_call_id IS NULL AND target_type IN ('input','metadata')",
@@ -516,7 +601,8 @@ class SQLite呼叫儲存庫:
                 ).fetchone()
                 if (已存命中數 is None or len(已存命中數) != 1
                         or type(已存命中數[0]) is not int
-                        or 已存命中數[0] != len(命中們)):
+                        or 已存命中數[0] != len(命中們)
+                        or invocation命中數 < 已存命中數[0]):
                     raise ValueError
             self._敏感交易協調器.寫入呼叫交易(
                 連線, 偵測結果, 呼叫識別碼, endpoint_id,
@@ -524,28 +610,39 @@ class SQLite呼叫儲存庫:
             )
             連線.commit()
             已提交 = True
+            關閉已嘗試 = True
             連線.close()
             連線 = None
             return 呼叫識別碼
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
+            主要錯誤 = 邊界錯誤
             if 連線 is not None and not 已提交:
                 try:
                     連線.rollback()
-                except BaseException:
-                    pass
-            if 連線 is not None:
+                except BaseException as 回滾錯誤:
+                    if (not 是控制流程 and 清理控制 is None
+                            and type(回滾錯誤) in _控制流程例外):
+                        清理控制 = 回滾錯誤
+            if 連線 is not None and not 關閉已嘗試:
                 try:
                     連線.close()
-                except BaseException:
-                    pass
+                except BaseException as 關閉錯誤:
+                    if (not 是控制流程 and 清理控制 is None
+                            and type(關閉錯誤) in _控制流程例外):
+                        清理控制 = 關閉錯誤
             endpoint_id = endpoint_version_id = request_id = input = credential_id = session_id = None
             message_id = metadata = metadata_sha256 = 呼叫識別碼 = 建立時間原值 = None
             metadata_size_bytes = 建立時間 = 輸入快照 = metadata快照 = None
             輸入JSON = metadata_json = 偵測結果 = 連線 = None
             已有 = 預期 = 游標 = 命中們 = 已存命中數 = None
-            if 是控制流程:
-                raise
+        if 是控制流程:
+            raise 主要錯誤
+        if 清理控制 is not None:
+            主要錯誤 = None
+            清理控制.__cause__ = 清理控制.__context__ = None
+            清理控制.__suppress_context__ = True
+            raise 清理控制
         raise 呼叫儲存錯誤("呼叫建立失敗") from None
 
     def 標記執行中(self, invocation_id: str) -> None:
@@ -615,8 +712,10 @@ class SQLite呼叫儲存庫:
                 工作階段對話組位元組 = len(工作階段使用者JSON.encode("utf-8")) + len(工作階段助理JSON.encode("utf-8"))
                 if not 0 < 工作階段對話組位元組 <= 最大歷史位元組:
                     raise ValueError
-            with closing(self._開啟連線()) as 連線, 連線:
+            with _明確交易範圍(self._開啟連線()) as 連線:
                 連線.execute("BEGIN IMMEDIATE")
+                if warnings is not _未提供:
+                    驗證資料庫結構(連線)
                 payload快照 = self._建立可信JSON樹(payload)
                 if type(payload快照) is not dict:
                     raise ValueError
@@ -629,27 +728,18 @@ class SQLite呼叫儲存庫:
                 error_json = None if error快照 is None else 建立正規JSON(error快照)
                 usage_json = None if usage快照 is None else 建立正規JSON(usage快照)
                 最終警告純量 = 警告純量
-                if warnings is not _未提供:
-                    有回應命中 = False
-                    if self._敏感交易協調器 is not None:
-                        偵測方法 = object.__getattribute__(self._敏感交易協調器, "偵測回應")
-                        if not callable(偵測方法):
-                            raise ValueError
-                        偵測結果 = 偵測方法(output快照)
-                        if 建立正規JSON(output快照) != output_json:
-                            raise ValueError
-                        命中們 = object.__getattribute__(偵測結果, "命中們")
-                        if (type(命中們) is not tuple
-                                or any(object.__getattribute__(命中, "目標代碼") != "response_data"
-                                       for 命中 in 命中們)):
-                            raise ValueError
-                        有回應命中 = bool(命中們)
-                    最終警告純量 = _合併完成警告(警告純量, 有回應命中)
-                    if 最終警告純量:
-                        payload快照["warnings"] = [
-                            {"code": 代碼, "message": 訊息} for 代碼, 訊息 in 最終警告純量
-                        ]
-                    payload_json = 建立正規JSON(payload快照)
+                if warnings is not _未提供 and self._敏感交易協調器 is not None:
+                    偵測方法 = object.__getattribute__(self._敏感交易協調器, "偵測回應")
+                    if not callable(偵測方法):
+                        raise ValueError
+                    偵測結果 = 偵測方法(output快照)
+                    if 建立正規JSON(output快照) != output_json:
+                        raise ValueError
+                    命中們 = object.__getattribute__(偵測結果, "命中們")
+                    if (type(命中們) is not tuple
+                            or any(object.__getattribute__(命中, "目標代碼") != "response_data"
+                                   for 命中 in 命中們)):
+                        raise ValueError
                 呼叫列 = 連線.execute(
                     "SELECT status,output_json,error_json,usage_json,latency_ms,pricing_version,completed_at,"
                     "endpoint_id FROM endpoint_invocations WHERE id=?", (invocation_id,),
@@ -660,6 +750,16 @@ class SQLite呼叫儲存庫:
                     self._敏感交易協調器.寫入呼叫交易(
                         連線, 偵測結果, invocation_id, 呼叫列[7], 工具呼叫識別碼們=None,
                     )
+                if warnings is not _未提供:
+                    invocation命中數 = _讀取invocation命中數(連線, invocation_id)
+                    最終警告純量 = _合併完成警告(
+                        警告純量, invocation命中數 > 0,
+                    )
+                    if 最終警告純量:
+                        payload快照["warnings"] = [
+                            {"code": 代碼, "message": 訊息} for 代碼, 訊息 in 最終警告純量
+                        ]
+                    payload_json = 建立正規JSON(payload快照)
                 事件列 = 連線.execute(
                     "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
                     (event_id,),
@@ -750,6 +850,8 @@ class SQLite呼叫儲存庫:
             工作階段使用者JSON = 工作階段助理JSON = 工作階段對話組位元組 = None
             時間原值 = 時間 = 序號 = None
             if 是控制流程:
+                邊界錯誤.__cause__ = 邊界錯誤.__context__ = None
+                邊界錯誤.__suppress_context__ = True
                 raise
         raise 呼叫儲存錯誤("執行事件原子提交失敗") from None
 
@@ -794,7 +896,8 @@ class SQLite呼叫儲存庫:
         連線 = 呼叫列 = 參數快照 = result快照 = error快照 = None
         arguments_json = result_json = error_json = 偵測結果 = 最大序號列 = None
         序號 = 時間原值 = 時間 = 對照 = 已存命中數 = None
-        已提交 = False
+        已提交 = 關閉已嘗試 = False
+        主要錯誤 = 清理控制 = None
         try:
             if (any(type(值) is not str or not 值.strip()
                     for 值 in (invocation_id, tool_call_id, tool_name))
@@ -838,6 +941,27 @@ class SQLite呼叫儲存庫:
                 "result_json,error_json,latency_ms,retry_of_tool_call_id FROM endpoint_tool_calls WHERE id=?",
                 (tool_call_id,),
             ).fetchone()
+            命中們 = object.__getattribute__(偵測結果, "命中們")
+            if type(命中們) is not tuple:
+                raise ValueError
+            對照 = tuple(
+                tool_call_id if object.__getattribute__(命中, "目標代碼").startswith("tool_") else None
+                for 命中 in 命中們
+            )
+            invocation命中數 = _讀取invocation命中數(連線, invocation_id)
+            if 已有 is not None:
+                已存命中數 = 連線.execute(
+                    "SELECT count(*) FROM invocation_sensitive_hits "
+                    "WHERE invocation_id=? AND tool_call_id=?",
+                    (invocation_id, tool_call_id),
+                ).fetchone()
+                if (已存命中數 is None or len(已存命中數) != 1
+                        or type(已存命中數[0]) is not int
+                        or 已存命中數[0] != len(命中們)
+                        or invocation命中數 < 已存命中數[0]):
+                    raise ValueError
+            elif invocation命中數 + len(命中們) > _最大敏感命中數:
+                raise ValueError
             if 已有 is None:
                 時間原值 = self._時鐘()
                 if type(時間原值) not in (int, float) or not self._非負有限(時間原值):
@@ -869,51 +993,45 @@ class SQLite呼叫儲存庫:
                     result_json, error_json, latency_ms, retry_of_tool_call_id,
                 )):
                     raise ValueError
-            命中們 = object.__getattribute__(偵測結果, "命中們")
-            if type(命中們) is not tuple:
-                raise ValueError
-            對照 = tuple(
-                tool_call_id if object.__getattribute__(命中, "目標代碼").startswith("tool_") else None
-                for 命中 in 命中們
-            )
-            if 已有 is not None:
-                已存命中數 = 連線.execute(
-                    "SELECT count(*) FROM invocation_sensitive_hits "
-                    "WHERE invocation_id=? AND tool_call_id=?",
-                    (invocation_id, tool_call_id),
-                ).fetchone()
-                if (已存命中數 is None or len(已存命中數) != 1
-                        or type(已存命中數[0]) is not int
-                        or 已存命中數[0] != len(命中們)):
-                    raise ValueError
             self._敏感交易協調器.寫入呼叫交易(
                 連線, 偵測結果, invocation_id, 呼叫列[1], 工具呼叫識別碼們=對照,
             )
             連線.commit()
             已提交 = True
+            關閉已嘗試 = True
             連線.close()
             連線 = None
             return 序號
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
+            主要錯誤 = 邊界錯誤
             if 連線 is not None and not 已提交:
                 try:
                     連線.rollback()
-                except BaseException:
-                    pass
-            if 連線 is not None:
+                except BaseException as 回滾錯誤:
+                    if (not 是控制流程 and 清理控制 is None
+                            and type(回滾錯誤) in _控制流程例外):
+                        清理控制 = 回滾錯誤
+            if 連線 is not None and not 關閉已嘗試:
                 try:
                     連線.close()
-                except BaseException:
-                    pass
+                except BaseException as 關閉錯誤:
+                    if (not 是控制流程 and 清理控制 is None
+                            and type(關閉錯誤) in _控制流程例外):
+                        清理控制 = 關閉錯誤
             invocation_id = tool_call_id = tool_name = arguments = outcome = result = error = None
             run_event_id = retry_of_tool_call_id = latency_ms = 連線 = 呼叫列 = None
             參數快照 = result快照 = error快照 = arguments_json = result_json = None
             error_json = 偵測結果 = 最大序號列 = 序號 = 時間原值 = 時間 = 對照 = None
             已存命中數 = None
             已有 = 游標 = 命中們 = 命中 = 參照列 = None
-            if 是控制流程:
-                raise
+        if 是控制流程:
+            raise 主要錯誤
+        if 清理控制 is not None:
+            主要錯誤 = None
+            清理控制.__cause__ = 清理控制.__context__ = None
+            清理控制.__suppress_context__ = True
+            raise 清理控制
         raise ValueError from None
 
     def _附加紀錄(
