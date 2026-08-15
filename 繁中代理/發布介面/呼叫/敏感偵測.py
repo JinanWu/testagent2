@@ -11,6 +11,7 @@ _每物件最大鍵數 = 128
 _最大字串位元組 = 4 * 1024
 _最大總位元組 = 32 * 1024
 _最大節點數 = 4096
+_最大命中數 = 1024
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 _敏感類型代碼 = frozenset({
     "email", "tw_national_id_format", "phone", "payment_card_candidate",
@@ -225,6 +226,8 @@ def _掃描字串(文字, 路徑, 命中們) -> None:
     try:
         候選們 = _找出字串命中(文字)
         for 類型代碼, 開始, 結束 in 候選們:
+            if len(命中們) >= _最大命中數:
+                raise ValueError
             命中們.append(敏感命中(類型代碼, 路徑, 開始, 結束))
     except BaseException:
         文字 = 路徑 = 命中們 = 候選們 = 類型代碼 = 開始 = 結束 = None
