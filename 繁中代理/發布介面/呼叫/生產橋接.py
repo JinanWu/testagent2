@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from ...上下文壓縮器 import 估算訊息預算Token
-from ..領域模型 import InvocationRef
+from ..領域模型 import InvocationRef, PublishedWarning
 from .儲存庫 import SQLite呼叫儲存庫
 from .Published工作階段 import Published成功對話提交
 from .編排器 import 執行嘗試結果, 執行嘗試紀錄收據, 執行嘗試請求
@@ -284,13 +284,23 @@ class InvocationLedger橋接:
         if (種類 == "success") != (schema_valid is not None):
             raise 生產橋接錯誤("invocation ledger記錄失敗") from None
         狀態 = 輸出 = 錯誤 = 用量資料 = None
-        工作階段對話組 = None
+        工作階段對話組 = 警告純量 = None
         if 種類 == "success" and schema_valid is True:
             用量 = result.usage
             用量資料 = None if 用量 is None else {
                 "total_tokens": object.__getattribute__(用量, "total_tokens"),
             }
             狀態, 輸出 = "succeeded", result.data
+            警告純量 = tuple(
+                (
+                    object.__getattribute__(警告, "code"),
+                    object.__getattribute__(警告, "message"),
+                )
+                for 警告 in object.__getattribute__(result, "warnings")
+                if type(警告) is PublishedWarning
+            )
+            if len(警告純量) != len(object.__getattribute__(result, "warnings")):
+                raise 生產橋接錯誤("invocation ledger記錄失敗") from None
             工作階段 = invocation.session_id
             if 工作階段 is not None:
                 釘選 = request.pinned_version
@@ -312,10 +322,20 @@ class InvocationLedger橋接:
         elif 種類 != "success" or 次數 == 2:
             錯誤碼 = 種類 if 種類 != "success" else "model_output_schema_invalid"
             狀態, 錯誤 = "failed", {"code": 錯誤碼}
-        序號 = self._儲存庫.原子記錄執行事件並結案(
+        結案結果 = self._儲存庫.原子記錄執行事件並結案(
             invocation.id, f"{invocation.id}:attempt:{次數}", "model_attempt",
             {"attempt": 次數, "kind": 種類, "schema_valid": schema_valid}, 次數,
             status=狀態, output=輸出, error=錯誤, usage=用量資料,
             工作階段對話組=工作階段對話組,
+            **({"warnings": 警告純量} if 狀態 == "succeeded" else {}),
         )
-        return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號)
+        if 狀態 == "succeeded":
+            if (type(結案結果) is not tuple or len(結案結果) != 2
+                    or type(結案結果[0]) is not int or type(結案結果[1]) is not tuple):
+                raise 生產橋接錯誤("invocation ledger記錄失敗") from None
+            序號, 已提交警告純量 = 結案結果
+            已提交警告 = tuple(PublishedWarning(代碼, 訊息) for 代碼, 訊息 in 已提交警告純量)
+            return 執行嘗試紀錄收據(invocation.id, 次數, True, 序號, 已提交警告)
+        if type(結案結果) is not int:
+            raise 生產橋接錯誤("invocation ledger記錄失敗") from None
+        return 執行嘗試紀錄收據(invocation.id, 次數, True, 結案結果)
