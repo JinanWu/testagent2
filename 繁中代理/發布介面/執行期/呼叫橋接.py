@@ -54,13 +54,14 @@ class 發布執行嘗試橋接:
     例外：直接建立不屬公開契約。副作用：建構只保存 callback 與 registry 複本。
     """
 
-    __slots__ = ("_快照", "_帳戶", "_套件", "_發布", "_模型")
+    __slots__ = ("_快照", "_帳戶", "_套件", "_發布", "_模型", "_工具呼叫紀錄器")
 
     def __init__(self, 快照: Callable[..., object], 帳戶: Callable[..., object],
                  套件: Callable[..., object], 發布: Callable[..., object],
-                 模型: dict[str, object]) -> None:
+                 模型: dict[str, object], 工具呼叫紀錄器: Callable[..., object] | None = None) -> None:
         self._快照, self._帳戶, self._套件, self._發布 = 快照, 帳戶, 套件, 發布
         self._模型 = 模型
+        self._工具呼叫紀錄器 = 工具呼叫紀錄器
 
     def __call__(self, 請求: 執行嘗試請求) -> 執行嘗試結果:
         """完成一個 INV-owned attempt，schema correction 留給 INV 的第二次 attempt。
@@ -70,12 +71,34 @@ class 發布執行嘗試橋接:
         例外：K/I/S/G 原物件穿透；普通例外不離開 bridge。
         副作用：exact version 與 release 各 lookup 一次，執行一個發布請求及有界工具回合。
         """
+        呼叫識別 = 嘗試次數 = None
+        工具序號 = [0]
         try:
+            if type(請求) is not 執行嘗試請求:
+                raise ValueError
+            呼叫識別 = object.__getattribute__(請求, "invocation_id")
+            嘗試次數 = object.__getattribute__(請求, "attempt")
+            if self._工具呼叫紀錄器 is not None and (
+                type(呼叫識別) is not str or not 呼叫識別
+                or type(嘗試次數) is not int or 嘗試次數 not in (1, 2)
+            ):
+                raise ValueError
             版本, 輸入 = self._建立執行材料(請求)
         except _控制流程:
             raise
         except BaseException:
             return 執行嘗試結果("endpoint_misconfigured")
+
+        def 紀錄工具(_provider識別: str, 名稱: str, 參數: object, 結果: object) -> None:
+            """以 invocation/attempt/local ordinal 產生 ledger identity，不回傳修改 runtime payload。"""
+            紀錄器 = self._工具呼叫紀錄器
+            if 紀錄器 is None:
+                return
+            工具序號[0] += 1
+            紀錄器(
+                呼叫識別, f"{呼叫識別}:attempt:{嘗試次數}:tool:{工具序號[0]}",
+                名稱, 參數, "success", result=結果,
+            )
 
         try:
             release = self._發布(版本.tool_handler_release)
@@ -92,6 +115,7 @@ class 發布執行嘗試橋接:
                 技能套件載入器=_方法載入器(self._套件),
                 工具修訂提供者=release,
                 模型供應商註冊表=dict(self._模型),
+                工具呼叫觀察器=紀錄工具 if self._工具呼叫紀錄器 is not None else None,
             )
         except _控制流程:
             raise
@@ -177,7 +201,8 @@ def _轉成嘗試結果(回應: object, 結構化: bool) -> 執行嘗試結果:
 
 def 建立發布執行嘗試橋接(*, 發布快照儲存庫: object, 技能套件載入器: object,
                          工具發布庫: object,
-                         模型供應商註冊表: dict[str, object]) -> 發布執行嘗試橋接:
+                         模型供應商註冊表: dict[str, object],
+                         工具呼叫紀錄器: Callable[..., object] | None = None) -> 發布執行嘗試橋接:
     """捕捉 production dependencies，建立不受後續 method/registry mutation 影響的 bridge。
 
     參數：snapshot repository、bundle loader、release repository 與 provider registry。
@@ -191,12 +216,13 @@ def 建立發布執行嘗試橋接(*, 發布快照儲存庫: object, 技能套�
         發布 = getattr(工具發布庫, "取得發布")
         if not all(callable(項) for 項 in (快照, 帳戶, 套件, 發布)):
             raise ValueError
-        if type(模型供應商註冊表) is not dict:
+        if (type(模型供應商註冊表) is not dict
+                or (工具呼叫紀錄器 is not None and not callable(工具呼叫紀錄器))):
             raise ValueError
         模型 = dict(模型供應商註冊表)
         if any(type(鍵) is not str for 鍵 in 模型):
             raise ValueError
-        return 發布執行嘗試橋接(快照, 帳戶, 套件, 發布, 模型)
+        return 發布執行嘗試橋接(快照, 帳戶, 套件, 發布, 模型, 工具呼叫紀錄器)
     except _控制流程:
         raise
     except BaseException:

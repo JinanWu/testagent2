@@ -248,22 +248,25 @@ class 執行嘗試請求:
     metadata: object | None
     history: tuple[object, ...]
     attempt: int
+    invocation_id: str | None
 
     def __init__(self, 釘選版本: object, 輸入: object, 中繼資料: object | None, 嘗試次數: int,
-                 歷史: tuple[object, ...] = ()) -> None:
+                 歷史: tuple[object, ...] = (), *, 呼叫識別: str | None = None) -> None:
         """驗證並保存一次釘選執行嘗試的不可變請求。
 
         參數：釘選版本、輸入、中繼資料、attempt 1/2 與 bounded successful history。
         返回值：無；完成 detached immutable request 的初始化。
         """
-        if 釘選版本 is None or type(嘗試次數) is not int or 嘗試次數 not in (1, 2):
-            釘選版本 = 輸入 = 中繼資料 = 嘗試次數 = None
+        if (釘選版本 is None or type(嘗試次數) is not int or 嘗試次數 not in (1, 2)
+                or (呼叫識別 is not None and (type(呼叫識別) is not str or not 呼叫識別))):
+            釘選版本 = 輸入 = 中繼資料 = 嘗試次數 = 呼叫識別 = None
             raise ValueError("執行嘗試請求不符合契約") from None
         object.__setattr__(self, "pinned_version", 釘選版本)
         object.__setattr__(self, "input", 輸入)
         object.__setattr__(self, "metadata", 中繼資料)
         object.__setattr__(self, "history", tuple(歷史))
         object.__setattr__(self, "attempt", 嘗試次數)
+        object.__setattr__(self, "invocation_id", 呼叫識別)
 
 
 def _擷取有界警告純量(警告清單: object) -> tuple[tuple[str, str], ...]:
@@ -678,12 +681,14 @@ class 外部呼叫編排器:
                 for 次數 in (1, 2):
                     請求 = 執行嘗試請求(
                         私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數, 歷史,
+                        呼叫識別=呼叫識別,
                     )
                     if 次數 == 1 and 開始函式 is not None:
                         開始函式(
                             InvocationRef(呼叫識別, 私有請求識別, 工作階段識別),
                             執行嘗試請求(
                                 私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
+                                呼叫識別=呼叫識別,
                             ),
                         )
                     原始結果 = 執行函式(請求)
@@ -709,7 +714,7 @@ class 外部呼叫編排器:
                     紀錄呼叫 = InvocationRef(呼叫識別, 私有請求識別, 工作階段識別)
                     紀錄請求 = 執行嘗試請求(
                         私有釘選, 私有快照.建立輸入(), 私有快照.建立中繼資料(), 次數,
-                        歷史,
+                        歷史, 呼叫識別=呼叫識別,
                     )
                     紀錄結果 = 終局快照.建立結果()
                     收據 = 紀錄函式(紀錄呼叫, 紀錄請求, 紀錄結果, 終局快照.結構有效)
