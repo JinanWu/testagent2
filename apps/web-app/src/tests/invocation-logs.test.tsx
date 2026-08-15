@@ -359,6 +359,12 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     { ...detail('invocation-1'), input: { note: 'paßword' } },
     { ...detail('invocation-1'), input: { note: 'paſſword' } },
     { ...detail('invocation-1'), input: { cooKie: 'marker' } },
+    { ...detail('invocation-1'), input: { authorizatioŉ: 'marker' } },
+    { ...detail('invocation-1'), input: { autẖorization: 'marker' } },
+    { ...detail('invocation-1'), input: { auẗhorization: 'marker' } },
+    { ...detail('invocation-1'), input: { note: 'passẘord=marker' } },
+    { ...detail('invocation-1'), input: { apikeẙ: 'marker' } },
+    { ...detail('invocation-1'), input: { mẚsterkey: 'marker' } },
   ])('frontend與Python casefold semantic secret判定一致', (body) => {
     expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
   })
@@ -372,8 +378,8 @@ describe('A18 Admin logs production decoder與API boundary', () => {
       'import json,sys',
       'rows=[]',
       'for cp in range(128,sys.maxunicode+1):',
-      ' c=chr(cp); folded=c.casefold()',
-      " if folded and all(('a'<=x<='z') or ('0'<=x<='9') for x in folded): rows.append([cp,folded])",
+      " c=chr(cp); folded=''.join(x for x in c.casefold() if ('a'<=x<='z') or ('0'<=x<='9'))",
+      ' if folded: rows.append([cp,folded])',
       'print(json.dumps(rows,separators=(\",\",\":\")))',
     ].join('\n')
     const generated = JSON.parse(execFileSync(python, ['-c', script], {
@@ -382,11 +388,18 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     expect(generated).toEqual(PYTHON_CASEFOLD_ASCII_ENTRIES.map((entry) => [...entry]))
     const differences = generated.filter(([codePoint, folded]) =>
       String.fromCodePoint(codePoint).toLowerCase().replace(/[^a-z0-9]/g, '') !== folded)
-    expect(differences).toHaveLength(10)
+    expect(differences).toEqual(expect.arrayContaining([
+      [0x0149, 'n'], [0x01f0, 'j'], [0x1e96, 'h'], [0x1e97, 't'],
+      [0x1e98, 'w'], [0x1e99, 'y'], [0x1e9a, 'a'],
+    ]))
     for (const [codePoint, folded] of generated) {
       expect(normalizePythonCasefoldAscii(String.fromCodePoint(codePoint))).toBe(folded)
     }
-    expect(generated).toEqual(expect.arrayContaining([[0x00df, 'ss'], [0x017f, 's'], [0x212a, 'k']]))
+    expect(generated).toEqual(expect.arrayContaining([
+      [0x00df, 'ss'], [0x0130, 'i'], [0x0149, 'n'], [0x017f, 's'], [0x01f0, 'j'],
+      [0x1e96, 'h'], [0x1e97, 't'], [0x1e98, 'w'], [0x1e99, 'y'], [0x1e9a, 'a'],
+      [0x212a, 'k'],
+    ]))
   })
 
   it('frontend鏡射backend semantic value matrix並保留合法raw', () => {
