@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import ChatPage from '../pages/ChatPage'
 import InvocationLogsPage from '../pages/InvocationLogsPage'
+import EndpointDetailPage from '../pages/EndpointDetailPage'
 import LoginPage from '../pages/LoginPage'
 import { SessionProvider, useSession } from './SessionProvider'
 import {
@@ -36,6 +37,7 @@ function RouteShell() {
   // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
   useEffect(() => {
     if (status !== 'authenticated' || route === DEFAULT_APP_ROUTE ||
+        (typeof route === 'object' && route?.kind === 'endpoint-detail') ||
         (route === ADMIN_LOGS_ROUTE && user?.role === 'admin')) {
       return
     }
@@ -59,6 +61,9 @@ function RouteShell() {
   }
   if (route === ADMIN_LOGS_ROUTE && user?.role === 'admin') {
     return <InvocationLogsPage onClose={openDefaultRoute} />
+  }
+  if (typeof route === 'object' && route?.kind === 'endpoint-detail') {
+    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} />
   }
   return (
     <main className="app-shell">
