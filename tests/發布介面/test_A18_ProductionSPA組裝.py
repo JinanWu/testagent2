@@ -107,6 +107,9 @@ def _建立Production環境(tmp_path: Path) -> dict[str, str]:
         "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
             "1": base64.urlsafe_b64encode(b"J" * 32).rstrip(b"=").decode("ascii"),
         }, separators=(",", ":")),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": base64.urlsafe_b64encode(
+            b"O" * 32
+        ).rstrip(b"=").decode("ascii"),
     }
 
 

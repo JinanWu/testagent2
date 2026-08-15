@@ -31,6 +31,10 @@ class 診斷查詢錯誤(RuntimeError):
     """Cursor、schema、ledger 或 persisted row 無法安全驗證。"""
 
 
+class 診斷游標無效錯誤(診斷查詢錯誤):
+    """不透明游標無法驗簽、已失效或與查詢 scope 不符。"""
+
+
 def 列出安全診斷(
     路徑: str, 時鐘: Callable[[], float], 金鑰: bytes, 擁有者: str, 管理者: bool,
     端點: str, 視窗秒數: int, 上限: int, 游標文字: str | None,
@@ -39,7 +43,7 @@ def 列出安全診斷(
     連線 = 查詢游標 = 列 = 資料列 = 結果 = None
     參數 = 條件 = 項目們 = 最後 = 下一頁 = 清理控制 = None
     開始 = 結束 = 位置時間 = 位置識別碼 = None
-    已開始 = 失敗 = False
+    已開始 = 失敗 = 游標失敗 = False
     控制 = None
     try:
         if (not _安全識別碼(擁有者) or type(管理者) is not bool or not _安全識別碼(端點)
@@ -54,7 +58,12 @@ def 列出安全診斷(
             結束 = float(結束)
             開始 = 結束 - 視窗秒數
         else:
-            開始, 結束, 位置時間, 位置識別碼 = _解碼游標(金鑰, 游標文字, 端點, 視窗秒數)
+            try:
+                開始, 結束, 位置時間, 位置識別碼 = _解碼游標(金鑰, 游標文字, 端點, 視窗秒數)
+            except _控制流程:
+                raise
+            except BaseException:
+                raise 診斷游標無效錯誤(_固定錯誤) from None
         連線 = _開啟唯讀快照(路徑)
         連線.execute("BEGIN")
         已開始 = True
@@ -112,6 +121,8 @@ def 列出安全診斷(
         連線.commit(); 已開始 = False
     except _控制流程 as 捕捉控制:
         _清理控制鏈(捕捉控制); 控制 = 捕捉控制; 捕捉控制 = None
+    except 診斷游標無效錯誤:
+        游標失敗 = True
     except BaseException:
         失敗 = True
     if 查詢游標 is not None:
@@ -129,6 +140,9 @@ def 列出安全診斷(
     開始 = 結束 = 位置時間 = 位置識別碼 = None
     if 控制 is not None:
         控制盒 = [控制]; 控制 = 結果 = None; _重拋控制(控制盒.pop())
+    if 游標失敗:
+        結果 = None
+        raise 診斷游標無效錯誤(_固定錯誤) from None
     if 失敗 or type(結果) not in (診斷查詢成功, 端點不可見結果):
         結果 = None
         raise 診斷查詢錯誤(_固定錯誤) from None
