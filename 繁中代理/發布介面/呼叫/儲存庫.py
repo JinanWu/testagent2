@@ -24,6 +24,7 @@ from typing import Callable, cast
 from ..嚴格JSON import 建立正規JSON
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移
 from .Published工作階段 import Published成功對話提交, 最大歷史位元組
+from .擷取政策 import 擷取階段, 準備含敏感偵測的呼叫擷取
 
 
 class 呼叫儲存錯誤(RuntimeError):
@@ -279,12 +280,51 @@ def _重建呼叫計量(usage: object) -> 呼叫計量:
     raise ValueError from None
 
 
+class 呼叫敏感交易協調器:
+    """只組合 observer detector 與 caller-owned transaction writer。"""
+
+    def __init__(self, 交易寫入器: object, *,
+                 偵測器: Callable[..., object] = 準備含敏感偵測的呼叫擷取) -> None:
+        """保存可注入依賴；不開連線、不接管交易。"""
+        try:
+            writer = object.__getattribute__(交易寫入器, "寫入呼叫交易")
+            if not callable(偵測器) or not callable(writer):
+                raise ValueError
+            self._偵測器 = 偵測器
+            self._交易寫入器 = 交易寫入器
+        except _控制流程例外:
+            raise
+        except BaseException:
+            raise 呼叫儲存錯誤("敏感交易協調器初始化失敗") from None
+
+    def 偵測呼叫(self, input快照: object, metadata快照: object | None) -> object:
+        """偵測 canonical invocation input 與 metadata，不修改內容。"""
+        return self._偵測器(擷取階段.AUTHENTICATED, input快照, metadata快照)
+
+    def 偵測工具(self, arguments快照: object, result快照: object | None) -> object:
+        """只偵測 tool arguments 與成功 result；error 不屬於此邊界。"""
+        return self._偵測器(
+            擷取階段.AUTHENTICATED, {}, None,
+            tool_arguments=arguments快照, tool_result=result快照,
+        )
+
+    def 寫入呼叫交易(self, 連線: sqlite3.Connection, 結果: object,
+                 呼叫識別碼: str, 端點識別碼: str, *,
+                 工具呼叫識別碼們: tuple[str | None, ...] | None = None) -> object:
+        """精確委派 A21-03 caller-owned writer，不呼叫 self-owned wrapper。"""
+        return self._交易寫入器.寫入呼叫交易(
+            連線, 結果, 呼叫識別碼, 端點識別碼,
+            工具呼叫識別碼們=工具呼叫識別碼們,
+        )
+
+
 class SQLite呼叫儲存庫:
     """只寫入既有endpoint_invocations，不建立任何備援結構。"""
 
     def __init__(self, 資料庫: str | Path, *, 時鐘: Callable[[], float] = time.time,
                  識別碼工廠: Callable[[], str] | None = None,
-                 連線工廠: Callable[..., sqlite3.Connection] | None = None) -> None:
+                 連線工廠: Callable[..., sqlite3.Connection] | None = None,
+                 敏感交易協調器: object | None = None) -> None:
         """保存資料庫位置與可測試依賴；不開啟連線或變更資料庫。
 
         描述：建立 invocation ledger repository，並延後到操作時才開啟 SQLite。
@@ -297,10 +337,20 @@ class SQLite呼叫儲存庫:
         if (not callable(時鐘) or (連線工廠 is not None and not callable(連線工廠))
                 or (識別碼工廠 is not None and not callable(識別碼工廠))):
             raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
+        if 敏感交易協調器 is not None:
+            try:
+                for 名稱 in ("偵測呼叫", "偵測工具", "寫入呼叫交易"):
+                    if not callable(object.__getattribute__(敏感交易協調器, 名稱)):
+                        raise ValueError
+            except _控制流程例外:
+                raise
+            except BaseException:
+                raise 呼叫儲存錯誤("呼叫儲存庫初始化失敗") from None
         self._資料庫 = Path(資料庫)
         self._時鐘 = 時鐘
         self._識別碼工廠 = 識別碼工廠 or (lambda: f"inv-{secrets.token_hex(16)}")
         self._連線工廠 = sqlite3.connect if 連線工廠 is None else 連線工廠
+        self._敏感交易協調器 = 敏感交易協調器
 
     def 建立已解析呼叫(
         self, endpoint_id: str, endpoint_version_id: str, request_id: str, input: object, *,
@@ -309,6 +359,21 @@ class SQLite呼叫儲存庫:
         metadata_size_bytes: int | None = None, metadata_sha256: str | None = None,
     ) -> str:
         """slug解析成功後建立pending紀錄；回傳id，任何失敗完整回滾並丟固定錯誤。"""
+        if self._敏感交易協調器 is not None:
+            try:
+                return self._建立敏感已解析呼叫(
+                    endpoint_id, endpoint_version_id, request_id, input,
+                    credential_id=credential_id, session_id=session_id, message_id=message_id,
+                    metadata=metadata, metadata_size_bytes=metadata_size_bytes,
+                    metadata_sha256=metadata_sha256,
+                )
+            except BaseException as 邊界錯誤:
+                是控制流程 = type(邊界錯誤) in _控制流程例外
+                endpoint_id = endpoint_version_id = request_id = input = credential_id = None
+                session_id = message_id = metadata = metadata_size_bytes = metadata_sha256 = None
+                if 是控制流程:
+                    raise
+            raise 呼叫儲存錯誤("呼叫建立失敗") from None
         呼叫識別碼 = 建立時間原值 = 建立時間 = 輸入JSON = metadata_json = None
         try:
             呼叫識別碼 = self._識別碼工廠()
@@ -339,6 +404,100 @@ class SQLite呼叫儲存庫:
             endpoint_id = endpoint_version_id = request_id = input = credential_id = session_id = None
             message_id = metadata = metadata_sha256 = 呼叫識別碼 = 建立時間原值 = 建立時間 = None
             metadata_size_bytes = 輸入快照 = metadata快照 = 輸入JSON = metadata_json = 連線 = None
+            if 是控制流程:
+                raise
+        raise 呼叫儲存錯誤("呼叫建立失敗") from None
+
+    def _建立敏感已解析呼叫(
+        self, endpoint_id: str, endpoint_version_id: str, request_id: str, input: object, *,
+        credential_id: str | None, session_id: str | None, message_id: str | None,
+        metadata: object | None, metadata_size_bytes: int | None,
+        metadata_sha256: str | None,
+    ) -> str:
+        """在單一立即交易偵測並寫入 invocation/hit/audit。"""
+        連線 = 呼叫識別碼 = 建立時間原值 = 建立時間 = None
+        輸入快照 = metadata快照 = 輸入JSON = metadata_json = 偵測結果 = None
+        命中們 = 已存命中數 = None
+        已提交 = False
+        try:
+            呼叫識別碼 = self._識別碼工廠()
+            self._驗證建立值((呼叫識別碼, endpoint_id, endpoint_version_id, request_id),
+                         (credential_id, session_id, message_id), metadata_size_bytes, metadata_sha256)
+            建立時間原值 = self._時鐘()
+            if type(建立時間原值) not in (int, float) or not self._非負有限(建立時間原值):
+                raise ValueError
+            建立時間 = float(建立時間原值)
+            輸入快照 = self._建立可信JSON樹(input)
+            metadata快照 = None if metadata is None else self._建立可信JSON樹(metadata)
+            input = metadata = None
+            輸入JSON = 建立正規JSON(輸入快照)
+            metadata_json = None if metadata快照 is None else 建立正規JSON(metadata快照)
+            連線 = self._開啟連線()
+            連線.execute("BEGIN IMMEDIATE")
+            偵測結果 = self._敏感交易協調器.偵測呼叫(輸入快照, metadata快照)
+            if (建立正規JSON(輸入快照) != 輸入JSON
+                    or (None if metadata快照 is None else 建立正規JSON(metadata快照)) != metadata_json):
+                raise ValueError
+            已有 = 連線.execute(
+                "SELECT endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,"
+                "status,input_json,metadata_json,metadata_size_bytes,metadata_sha256,created_at "
+                "FROM endpoint_invocations WHERE id=?", (呼叫識別碼,),
+            ).fetchone()
+            預期 = (endpoint_id, endpoint_version_id, credential_id, request_id, session_id, message_id,
+                  "pending", 輸入JSON, metadata_json, metadata_size_bytes, metadata_sha256, 建立時間)
+            if 已有 is None:
+                游標 = 連線.execute(
+                    "INSERT INTO endpoint_invocations("
+                    "id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,status,"
+                    "input_json,metadata_json,metadata_size_bytes,metadata_sha256,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?)",
+                    (呼叫識別碼, endpoint_id, endpoint_version_id, credential_id, request_id,
+                     session_id, message_id, 輸入JSON, metadata_json, metadata_size_bytes,
+                     metadata_sha256, 建立時間),
+                )
+                if type(游標.rowcount) is not int or 游標.rowcount != 1:
+                    raise ValueError
+            elif 已有 != 預期:
+                raise ValueError
+            if 已有 is not None:
+                命中們 = object.__getattribute__(偵測結果, "命中們")
+                if type(命中們) is not tuple:
+                    raise ValueError
+                已存命中數 = 連線.execute(
+                    "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=? "
+                    "AND tool_call_id IS NULL AND target_type IN ('input','metadata')",
+                    (呼叫識別碼,),
+                ).fetchone()
+                if (已存命中數 is None or len(已存命中數) != 1
+                        or type(已存命中數[0]) is not int
+                        or 已存命中數[0] != len(命中們)):
+                    raise ValueError
+            self._敏感交易協調器.寫入呼叫交易(
+                連線, 偵測結果, 呼叫識別碼, endpoint_id,
+                工具呼叫識別碼們=None,
+            )
+            連線.commit()
+            已提交 = True
+            連線.close()
+            連線 = None
+            return 呼叫識別碼
+        except BaseException as 邊界錯誤:
+            是控制流程 = type(邊界錯誤) in _控制流程例外
+            if 連線 is not None and not 已提交:
+                try:
+                    連線.rollback()
+                except BaseException:
+                    pass
+            if 連線 is not None:
+                try:
+                    連線.close()
+                except BaseException:
+                    pass
+            endpoint_id = endpoint_version_id = request_id = input = credential_id = session_id = None
+            message_id = metadata = metadata_sha256 = 呼叫識別碼 = 建立時間原值 = None
+            metadata_size_bytes = 建立時間 = 輸入快照 = metadata快照 = None
+            輸入JSON = metadata_json = 偵測結果 = 連線 = None
+            已有 = 預期 = 游標 = 命中們 = 已存命中數 = None
             if 是控制流程:
                 raise
         raise 呼叫儲存錯誤("呼叫建立失敗") from None
@@ -519,6 +678,12 @@ class SQLite呼叫儲存庫:
                     or (outcome == "error") != (error is not _未提供)
                     or not self._非負有限(latency_ms)):
                 raise ValueError
+            if self._敏感交易協調器 is not None:
+                return self._附加敏感工具呼叫(
+                    invocation_id, tool_call_id, tool_name, arguments, outcome,
+                    result=result, error=error, run_event_id=run_event_id,
+                    retry_of_tool_call_id=retry_of_tool_call_id, latency_ms=latency_ms,
+                )
             return self._附加紀錄(
                 "工具", invocation_id, tool_call_id, tool_name, arguments, outcome=outcome,
                 result=result, error=error, run_event_id=run_event_id,
@@ -531,6 +696,137 @@ class SQLite呼叫儲存庫:
             if 是控制流程:
                 raise
         raise 呼叫儲存錯誤("工具呼叫附加失敗") from None
+
+    def _附加敏感工具呼叫(
+        self, invocation_id: str, tool_call_id: str, tool_name: str, arguments: object,
+        outcome: str, *, result: object, error: object, run_event_id: str | None,
+        retry_of_tool_call_id: str | None, latency_ms: float | None,
+    ) -> int:
+        """在單一立即交易偵測並寫入 tool/hit/audit。"""
+        連線 = 呼叫列 = 參數快照 = result快照 = error快照 = None
+        arguments_json = result_json = error_json = 偵測結果 = 最大序號列 = None
+        序號 = 時間原值 = 時間 = 對照 = 已存命中數 = None
+        已提交 = False
+        try:
+            if (any(type(值) is not str or not 值.strip()
+                    for 值 in (invocation_id, tool_call_id, tool_name))
+                    or any(值 is not None and (type(值) is not str or not 值.strip())
+                           for 值 in (run_event_id, retry_of_tool_call_id))):
+                raise ValueError
+            連線 = self._開啟連線()
+            連線.execute("BEGIN IMMEDIATE")
+            呼叫列 = 連線.execute(
+                "SELECT id,endpoint_id,status FROM endpoint_invocations WHERE id=?", (invocation_id,),
+            ).fetchone()
+            if (呼叫列 is None or len(呼叫列) != 3 or 呼叫列[0] != invocation_id
+                    or type(呼叫列[1]) is not str or 呼叫列[2] != "running"):
+                raise ValueError
+            for 參照表, 參照識別碼 in (("run_events", run_event_id),
+                                     ("endpoint_tool_calls", retry_of_tool_call_id)):
+                if 參照識別碼 is not None:
+                    參照列 = 連線.execute(
+                        f"SELECT id,invocation_id FROM {參照表} WHERE id=?", (參照識別碼,),
+                    ).fetchone()
+                    if 參照列 != (參照識別碼, invocation_id):
+                        raise ValueError
+            參數快照 = self._建立可信JSON樹(arguments)
+            if type(參數快照) is not dict:
+                raise ValueError
+            result快照 = None if result is _未提供 else self._建立可信JSON樹(result)
+            error快照 = None if error is _未提供 else self._建立可信JSON樹(error)
+            arguments = result = error = None
+            arguments_json = 建立正規JSON(參數快照)
+            result_json = None if outcome != "success" else 建立正規JSON(result快照)
+            error_json = None if outcome != "error" else 建立正規JSON(error快照)
+            偵測結果 = self._敏感交易協調器.偵測工具(
+                參數快照, result快照 if outcome == "success" else None,
+            )
+            if (建立正規JSON(參數快照) != arguments_json
+                    or (outcome == "success" and 建立正規JSON(result快照) != result_json)
+                    or (outcome == "error" and 建立正規JSON(error快照) != error_json)):
+                raise ValueError
+            已有 = 連線.execute(
+                "SELECT invocation_id,run_event_id,sequence_number,tool_name,arguments_json,outcome,"
+                "result_json,error_json,latency_ms,retry_of_tool_call_id FROM endpoint_tool_calls WHERE id=?",
+                (tool_call_id,),
+            ).fetchone()
+            if 已有 is None:
+                時間原值 = self._時鐘()
+                if type(時間原值) not in (int, float) or not self._非負有限(時間原值):
+                    raise ValueError
+                時間 = float(時間原值)
+                最大序號列 = 連線.execute(
+                    "SELECT MAX(sequence_number) FROM endpoint_tool_calls WHERE invocation_id=?",
+                    (invocation_id,),
+                ).fetchone()
+                if (最大序號列 is None or len(最大序號列) != 1
+                        or (最大序號列[0] is not None and
+                            (type(最大序號列[0]) is not int or 最大序號列[0] <= 0))):
+                    raise ValueError
+                序號 = 1 if 最大序號列[0] is None else 最大序號列[0] + 1
+                游標 = 連線.execute(
+                    "INSERT INTO endpoint_tool_calls("
+                    "id,invocation_id,run_event_id,sequence_number,tool_name,arguments_json,outcome,"
+                    "result_json,error_json,latency_ms,retry_of_tool_call_id,created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (tool_call_id, invocation_id, run_event_id, 序號, tool_name, arguments_json,
+                     outcome, result_json, error_json, latency_ms, retry_of_tool_call_id, 時間),
+                )
+                if type(游標.rowcount) is not int or 游標.rowcount != 1:
+                    raise ValueError
+            else:
+                序號 = 已有[2]
+                if (type(序號) is not int or 序號 < 1 or 已有 != (
+                    invocation_id, run_event_id, 序號, tool_name, arguments_json, outcome,
+                    result_json, error_json, latency_ms, retry_of_tool_call_id,
+                )):
+                    raise ValueError
+            命中們 = object.__getattribute__(偵測結果, "命中們")
+            if type(命中們) is not tuple:
+                raise ValueError
+            對照 = tuple(
+                tool_call_id if object.__getattribute__(命中, "目標代碼").startswith("tool_") else None
+                for 命中 in 命中們
+            )
+            if 已有 is not None:
+                已存命中數 = 連線.execute(
+                    "SELECT count(*) FROM invocation_sensitive_hits "
+                    "WHERE invocation_id=? AND tool_call_id=?",
+                    (invocation_id, tool_call_id),
+                ).fetchone()
+                if (已存命中數 is None or len(已存命中數) != 1
+                        or type(已存命中數[0]) is not int
+                        or 已存命中數[0] != len(命中們)):
+                    raise ValueError
+            self._敏感交易協調器.寫入呼叫交易(
+                連線, 偵測結果, invocation_id, 呼叫列[1], 工具呼叫識別碼們=對照,
+            )
+            連線.commit()
+            已提交 = True
+            連線.close()
+            連線 = None
+            return 序號
+        except BaseException as 邊界錯誤:
+            是控制流程 = type(邊界錯誤) in _控制流程例外
+            if 連線 is not None and not 已提交:
+                try:
+                    連線.rollback()
+                except BaseException:
+                    pass
+            if 連線 is not None:
+                try:
+                    連線.close()
+                except BaseException:
+                    pass
+            invocation_id = tool_call_id = tool_name = arguments = outcome = result = error = None
+            run_event_id = retry_of_tool_call_id = latency_ms = 連線 = 呼叫列 = None
+            參數快照 = result快照 = error快照 = arguments_json = result_json = None
+            error_json = 偵測結果 = 最大序號列 = 序號 = 時間原值 = 時間 = 對照 = None
+            已存命中數 = None
+            已有 = 游標 = 命中們 = 命中 = 參照列 = None
+            if 是控制流程:
+                raise
+        raise ValueError from None
 
     def _附加紀錄(
         self, 種類: str, invocation_id: str, record_id: str, name: str, input_value: object, *,
