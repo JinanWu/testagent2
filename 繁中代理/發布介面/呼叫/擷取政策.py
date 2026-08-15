@@ -64,7 +64,7 @@ class 目標敏感命中:
         try:
             目標 = object.__getattribute__(self, "目標代碼")
             if type(self) is not 目標敏感命中 or type(目標) is not str or 目標 not in {
-                    "input", "metadata", "response_data"}:
+                    "input", "metadata", "response_data", "tool_arguments", "tool_result"}:
                 raise ValueError
             暫存 = 敏感命中(
                 object.__getattribute__(self, "類型代碼"),
@@ -179,18 +179,21 @@ def 準備呼叫擷取(階段: 擷取階段, input: object, metadata: object | N
 
 
 def 準備含敏感偵測的呼叫擷取(
-    階段: 擷取階段, input: object, metadata: object | None, *, response_data: object | None = None,
+    階段: 擷取階段, input: object, metadata: object | None, *,
+    response_data: object | None = None, tool_arguments: object | None = None,
+    tool_result: object | None = None,
 ) -> 敏感偵測擷取結果 | None:
     """只從 L03 canonical 脫離值產生位置旁路，不寫入或修改管線物件。"""
-    命令 = input值 = metadata值 = response快照 = response值 = 命中們 = None
-    metadata文字 = response文字 = 計數器 = None
+    命令 = input值 = metadata值 = 額外快照 = 額外值 = 命中們 = None
+    metadata文字 = 額外文字 = 計數器 = 目標 = 原值 = None
     try:
         命令 = 準備呼叫擷取(階段, input, metadata)
         input = metadata = None
         if 命令 is None:
-            response_data = None
+            response_data = tool_arguments = tool_result = None
             return None
-        if response_data is not None and 階段 is not 擷取階段.AUTHENTICATED:
+        if (response_data is not None or tool_arguments is not None or tool_result is not None) \
+                and 階段 is not 擷取階段.AUTHENTICATED:
             raise ValueError
         命令 = _重建旁路命令(命令)
         input值 = _解析正規JSON(object.__getattribute__(命令, "input_json"))
@@ -201,24 +204,37 @@ def 準備含敏感偵測的呼叫擷取(
         if metadata值 is not None:
             命中們.extend(_偵測目標("metadata", metadata值))
             metadata值 = None
-        if response_data is not None:
+        for 目標, 原值 in (
+            ("response_data", response_data),
+            ("tool_arguments", tool_arguments),
+            ("tool_result", tool_result),
+        ):
+            if 原值 is None:
+                continue
             計數器 = [0]
-            response快照 = _建立精確JSON快照(response_data, 0, 計數器)
-            response_data = None
-            response文字 = 建立正規JSON(response快照)
-            if len(str.encode(response文字, "utf-8")) > _最大輸入位元組:
+            額外快照 = _建立精確JSON快照(原值, 0, 計數器)
+            原值 = None
+            if 目標 == "response_data":
+                response_data = None
+            elif 目標 == "tool_arguments":
+                tool_arguments = None
+            else:
+                tool_result = None
+            額外文字 = 建立正規JSON(額外快照)
+            if len(str.encode(額外文字, "utf-8")) > _最大輸入位元組:
                 raise ValueError
-            response值 = _解析正規JSON(response文字)
-            response快照 = response文字 = 計數器 = None
-            命中們.extend(_偵測目標("response_data", response值))
-            response值 = None
+            額外值 = _解析正規JSON(額外文字)
+            額外快照 = 額外文字 = 計數器 = None
+            命中們.extend(_偵測目標(目標, 額外值))
+            額外值 = None
         命中們.sort(key=lambda x: (x.目標代碼, x.JSON路徑, x.開始, x.結束, x.類型代碼))
         return 敏感偵測擷取結果(命令, tuple(命中們),
                          ("sensitive_data_detected",) if 命中們 else ())
     except BaseException as 錯誤:
         是控制流程 = type(錯誤) in _控制流程例外
-        階段 = input = metadata = response_data = 命令 = input值 = metadata值 = None
-        response快照 = response值 = 命中們 = metadata文字 = response文字 = 計數器 = 錯誤 = None
+        階段 = input = metadata = response_data = tool_arguments = tool_result = None
+        命令 = input值 = metadata值 = 額外快照 = 額外值 = 命中們 = None
+        metadata文字 = 額外文字 = 計數器 = 目標 = 原值 = 錯誤 = None
         if 是控制流程:
             raise
     raise 敏感旁路錯誤("敏感資料旁路建立失敗") from None

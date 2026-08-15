@@ -407,7 +407,7 @@ def test_L06公開API沒有儲存稽核供應商提示或schema_handle(monkeypat
                 lambda *_a, **_k: 寫入次數.__setitem__(0, 1))
     準備含敏感偵測的呼叫擷取(擷取階段.AUTHENTICATED, {}, None)
     參數 = set(inspect.signature(準備含敏感偵測的呼叫擷取).parameters)
-    assert 參數 == {"階段", "input", "metadata", "response_data"}
+    assert 參數 == {"階段", "input", "metadata", "response_data", "tool_arguments", "tool_result"}
     assert not ({"repository", "audit", "provider", "prompt", "schema_validator"} & 參數)
     assert not any("audit" in 名稱.lower() for 名稱 in vars(政策模組))
     assert 寫入次數 == [0]
