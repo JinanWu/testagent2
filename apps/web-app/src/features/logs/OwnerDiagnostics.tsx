@@ -11,6 +11,8 @@ import {
 
 export interface OwnerDiagnosticsProps { endpointId: string }
 
+function latency(value: number | null): string { return value === null ? '無樣本' : `${value} ms` }
+
 export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) {
   const [windowSeconds, setWindowSeconds] = useState(86400)
   const [metrics, setMetrics] = useState<OwnerMetrics | null>(null)
@@ -97,11 +99,29 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
       {error && <p role="alert">{error}</p>}
       {metrics && <div className="owner-metrics" aria-label="端點指標">
         <p>呼叫數<strong>{metrics.invocationCount}</strong></p>
+        <p>終態數<strong>{metrics.terminalCount}</strong></p>
+        <p>錯誤數<strong>{metrics.errorCount}</strong></p>
         <p>錯誤率<strong>{(metrics.errorRate * 100).toFixed(1)}%</strong></p>
-        <p>Token總數<strong>{metrics.usage.totalTokens}</strong></p>
+        <h3>延遲</h3>
+        <dl><dt>樣本數</dt><dd>{metrics.latencyMs.sampleCount}</dd>
+          <dt>平均</dt><dd>{latency(metrics.latencyMs.average)}</dd>
+          <dt>P50</dt><dd>{latency(metrics.latencyMs.p50)}</dd>
+          <dt>P95</dt><dd>{latency(metrics.latencyMs.p95)}</dd>
+          <dt>最大</dt><dd>{latency(metrics.latencyMs.maximum)}</dd></dl>
+        <h3>Token 用量</h3>
+        <dl><dt>樣本數</dt><dd>{metrics.usage.sampleCount}</dd>
+          <dt>輸入</dt><dd>{metrics.usage.inputTokens}</dd>
+          <dt>輸出</dt><dd>{metrics.usage.outputTokens}</dd>
+          <dt>總數</dt><dd>{metrics.usage.totalTokens}</dd></dl>
         <p>預估成本<strong>US$ {metrics.estimatedCostUsd}</strong></p>
-        <h3>每日趨勢</h3>
-        <ul>{metrics.daily.map((day) => <li key={day.date}>{day.date}：{day.invocationCount} 次／{day.errorCount} 錯誤</li>)}</ul>
+        <h3>歷史價格版本</h3>
+        <ul>{metrics.costByPricingVersion.map((entry) => <li key={entry.pricingVersion}>
+          {entry.pricingVersion}：US$ {entry.estimatedCostUsd}
+        </li>)}</ul>
+        <h3>每日趨勢（{metrics.window.timezone}）</h3>
+        <ul>{metrics.daily.map((day) => <li key={day.date}>{day.date}：{day.invocationCount} 次／
+          {day.terminalCount} 終態／{day.errorCount} 錯誤／{day.usageTotalTokens} tokens／US$ {day.estimatedCostUsd}
+        </li>)}</ul>
         <h3>常見錯誤</h3>
         {metrics.topErrors.length === 0 ? <p>沒有安全錯誤摘要。</p> :
           <ol>{metrics.topErrors.map((entry) => <li key={entry.errorCode}>{entry.errorCode}：{entry.count}</li>)}</ol>}
@@ -110,6 +130,11 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
       <ul aria-label="安全診斷紀錄">{items.map((item) => <li key={item.invocationId}>
         <strong>{item.invocationId}</strong> — {item.status}
         {item.errorCode && !item.redactedFields.includes('error_code') ? `／${item.errorCode}` : ''}
+        {item.schemaPath && !item.redactedFields.includes('schema_path') ? `／${item.schemaPath}` : ''}
+        <span>／request {item.requestId}／version {item.endpointVersionId}／延遲 {latency(item.latencyMs)}
+          ／tokens {item.usage?.totalTokens ?? '無樣本'}／工具 {item.toolNames.length === 0 ? '無' : item.toolNames.join('、')}
+          ／建立 {item.createdAt}／完成 {item.completedAt ?? '未完成'}
+        </span>
         {item.redactedFields.length > 0 ? '（部分欄位已遮蔽）' : ''}
       </li>)}</ul>
       {nextCursor && <button type="button" disabled={paging} onClick={() => { void loadMore() }}>

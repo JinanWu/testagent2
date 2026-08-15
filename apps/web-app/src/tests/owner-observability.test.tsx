@@ -123,9 +123,23 @@ describe('A19-03 OwnerDiagnostics state lifecycle', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(metrics())).mockResolvedValueOnce(jsonResponse(diagnostics()))
     await act(async () => { renderer = create(<OwnerDiagnostics endpointId="endpoint-1" />) })
     await flush()
-    expect(text(renderer!)).toContain('端點觀測')
-    expect(text(renderer!)).toContain('invocation-1')
-    expect(text(renderer!)).not.toContain('error_json')
+    const rendered = text(renderer!)
+    for (const expected of ['端點觀測', '終態數', '錯誤數', '平均', '15 ms', 'P50', 'P95',
+      'Token 用量', '輸入', '輸出', '歷史價格版本', 'v1', '每日趨勢（', 'UTC',
+      ' 終態／', ' tokens／US$ ', 'invocation-1', 'request-invocation-1', 'version-1',
+      'skills_list', '建立 ', '完成 ']) {
+      expect(rendered).toContain(expected)
+    }
+    expect(rendered).not.toContain('error_json')
+  })
+
+  it('latency零樣本顯示無樣本而非偽裝成0', async () => {
+    const zero = { ...metrics(),
+      latency_ms: { sample_count: 0, average: null, p50: null, p95: null, maximum: null } }
+    fetchMock.mockResolvedValueOnce(jsonResponse(zero)).mockResolvedValueOnce(jsonResponse(diagnostics([])))
+    await act(async () => { renderer = create(<OwnerDiagnostics endpointId="endpoint-1" />) })
+    await flush()
+    expect(text(renderer!)).toContain('無樣本')
   })
 
   it('卸載會abort所有in-flight觀測request', async () => {

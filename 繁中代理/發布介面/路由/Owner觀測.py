@@ -177,7 +177,7 @@ def 建立Owner觀測路由器(服務: 端點觀測查詢服務, 目前工作階
         使用者: 網頁使用者 = Depends(取得安全工作階段),
     ) -> dict[str, object]:
         """只以canonical session owner讀取單一端點安全指標。"""
-        _驗證請求(請求, 端點識別碼, _允許指標查詢)
+        await _驗證請求(請求, 端點識別碼, _允許指標查詢)
         視窗秒數 = _解析正整數(視窗文件, 2_592_000)
         try:
             結果 = await run_in_threadpool(
@@ -210,7 +210,7 @@ def 建立Owner觀測路由器(服務: 端點觀測查詢服務, 目前工作階
         使用者: 網頁使用者 = Depends(取得安全工作階段),
     ) -> dict[str, object]:
         """只以canonical session owner列出單一端點安全診斷。"""
-        _驗證請求(請求, 端點識別碼, _允許診斷查詢)
+        await _驗證請求(請求, 端點識別碼, _允許診斷查詢)
         視窗秒數 = _解析正整數(視窗文件, 2_592_000)
         數量 = _解析正整數(數量文件, 100)
         if 游標文件 is not None and (type(游標文件) is not str or not 1 <= len(游標文件) <= 1024):
@@ -245,13 +245,27 @@ def 建立Owner觀測路由器(服務: 端點觀測查詢服務, 目前工作階
     return 路由器
 
 
-def _驗證請求(請求: Request, 端點識別碼: object, 允許: frozenset[str]) -> None:
-    """以 route-owned fixed validator 拒絕 malformed path、unknown 與 duplicate query。"""
+async def _驗證請求(請求: Request, 端點識別碼: object, 允許: frozenset[str]) -> None:
+    """拒絕實際body bytes、malformed path、unknown與duplicate query。"""
     if type(端點識別碼) is not str or _識別碼格式.fullmatch(端點識別碼) is None:
         _拋出驗證錯誤()
     配對 = list(請求.query_params.multi_items())
     名稱們 = [名稱 for 名稱, _ in 配對]
     if any(名稱 not in 允許 for 名稱 in 名稱們) or len(名稱們) != len(set(名稱們)):
+        _拋出驗證錯誤()
+    if 請求.headers.get("transfer-encoding") is not None:
+        _拋出驗證錯誤()
+    if 請求.headers.get("content-length") not in (None, "0"):
+        _拋出驗證錯誤()
+    try:
+        async for 區塊 in 請求.stream():
+            if 區塊:
+                _拋出驗證錯誤()
+    except RequestValidationError:
+        raise
+    except _控制流程:
+        raise
+    except BaseException:
         _拋出驗證錯誤()
 
 
