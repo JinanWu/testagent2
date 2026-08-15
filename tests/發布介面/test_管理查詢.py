@@ -1565,7 +1565,7 @@ def test_A18完整詳情由module_owned_DTO深複製且repr零raw():
         "metadata_size_bytes": 2,
         "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0,
         "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [],
+        "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
     詳情 = 建立管理員呼叫完整詳情(原始)
     assert "RAW_MARKER" not in repr(詳情)
@@ -1588,6 +1588,7 @@ def test_A18完整詳情逐欄bounded且內部儲存不可變():
         "output": None, "error": None, "usage": None, "metadata_size_bytes": None,
         "metadata_sha256": None, "latency_ms": None, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
+        "sensitive_hits": [],
     }
     for 破壞 in (
         {**基本, "invocation": "not-an-object"},
@@ -1634,7 +1635,7 @@ def test_A18完整詳情child與時間必須符合canonical_storage語意():
         "output": None, "error": {"code": "timeout"}, "usage": None,
         "metadata_size_bytes": None, "metadata_sha256": None, "latency_ms": None,
         "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [],
+        "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
     事件 = {
         "id": "event-1", "sequence_number": 1, "event_type": "model",
@@ -1679,7 +1680,7 @@ def test_A18完整詳情metadata_size與hash必須綁定canonical_UTF8_bytes():
         "metadata_size_bytes": len(canonical),
         "metadata_sha256": hashlib.sha256(canonical).hexdigest(),
         "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [],
+        "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["metadata"] == metadata
     for 破壞 in (
@@ -1708,7 +1709,7 @@ def test_A18完整詳情redaction_ledger與canonical_tombstone必須雙向精確
         "metadata": {"private": 墓碑}, "output": None, "error": {"code": "timeout"},
         "usage": None, "metadata_size_bytes": 99, "metadata_sha256": "a" * 64,
         "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [遮蔽],
+        "run_events": [], "tool_calls": [], "redactions": [遮蔽], "sensitive_hits": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["metadata"] == {"private": 墓碑}
     for 破壞 in (
@@ -1734,6 +1735,7 @@ def test_A18完整詳情保留合法raw_JSON但禁止治理secret與filesystem_p
         "output": 3.14, "error": False, "usage": [1], "metadata_size_bytes": 2,
         "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
+        "sensitive_hits": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["input"] == 7
     for 敏感 in (
@@ -1759,6 +1761,7 @@ def test_A18完整詳情禁止值位置與child_payload繞過secret掃描():
         "output": None, "error": None, "usage": None, "metadata_size_bytes": 2,
         "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a", "latency_ms": 1.0, "pricing_version": None,
         "created_at": 1.0, "completed_at": 2.0, "run_events": [], "tool_calls": [], "redactions": [],
+        "sensitive_hits": [],
     }
     event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
              "payload": {}, "created_at": 1.0}
@@ -1793,7 +1796,7 @@ def test_A18完整詳情所有raw位置共用完整secret_value_matrix():
         "error": None, "usage": None, "metadata_size_bytes": 2,
         "metadata_sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "latency_ms": 1.0, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [],
+        "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
     event = {"id": "event-1", "sequence_number": 0, "event_type": "model",
              "payload": {}, "created_at": 1.0}
@@ -1829,7 +1832,7 @@ def test_A18完整詳情以品牌中立token_shape拒絕一般API_key():
         "message_id": None, "status": "failed", "input": {}, "metadata": {}, "output": None,
         "error": None, "usage": None, "metadata_size_bytes": None, "metadata_sha256": None,
         "latency_ms": None, "pricing_version": None, "created_at": 1.0, "completed_at": 2.0,
-        "run_events": [], "tool_calls": [], "redactions": [],
+        "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
     for key in (
         "pak_" + "A" * 43,

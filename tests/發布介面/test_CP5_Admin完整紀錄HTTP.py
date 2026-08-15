@@ -124,7 +124,7 @@ def _詳情資料():
             "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
             "json_path": "/secret", "reason": "privacy",
             "is_tombstone": True, "redacted_at": 9.0,
-        }],
+        }], "sensitive_hits": [],
     }
 
 

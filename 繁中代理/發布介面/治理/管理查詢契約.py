@@ -94,7 +94,7 @@ ADMIN_INVOCATION_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_id", "endpoint_version_id", "credential_id", "message_id",
     "status", "input", "metadata", "output", "error", "usage", "metadata_size_bytes",
     "metadata_sha256", "latency_ms", "pricing_version", "created_at", "completed_at",
-    "run_events", "tool_calls", "redactions",
+    "run_events", "tool_calls", "redactions", "sensitive_hits",
 })
 OWNER_SAFE_DETAIL_FIELDS = frozenset({
     "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
@@ -119,6 +119,17 @@ _工具欄位 = frozenset({
 _遮蔽欄位 = frozenset({
     "id", "target_type", "target_row_id", "json_path", "reason", "is_tombstone", "redacted_at",
 })
+_敏感命中欄位 = frozenset({
+    "id", "target", "tool_call_id", "detector_type", "json_path",
+    "start", "end", "detected_at",
+})
+_敏感命中目標 = frozenset({
+    "input", "metadata", "response_data", "tool_arguments", "tool_result",
+})
+_偵測器格式 = re.compile(r"[a-z][a-z0-9_]{0,127}\Z")
+_最大敏感命中數 = 1024
+_最大敏感路徑位元組 = 8192
+_最大安全時間 = 253_402_300_799
 
 _禁止敏感鍵 = frozenset({
     "authorization", "proxyauthorization", "cookie", "setcookie", "apikey",
@@ -240,8 +251,10 @@ def _驗證管理員完整詳情(值: object) -> None:
                 and cast(int | float, 詳情["completed_at"])
                 < cast(int | float, 詳情["created_at"]))
             or type(詳情["run_events"]) is not list or type(詳情["tool_calls"]) is not list
-            or type(詳情["redactions"]) is not list
-            or len(詳情["run_events"]) + len(詳情["tool_calls"]) + len(詳情["redactions"]) > 4096):
+            or type(詳情["redactions"]) is not list or type(詳情["sensitive_hits"]) is not list
+            or len(詳情["sensitive_hits"]) > _最大敏感命中數
+            or len(詳情["run_events"]) + len(詳情["tool_calls"])
+            + len(詳情["redactions"]) + len(詳情["sensitive_hits"]) > 4096):
         raise ValueError
     for raw值 in (詳情["input"], 詳情["metadata"], 詳情["output"], 詳情["error"], 詳情["usage"]):
         _驗證raw無禁止secret(raw值)
@@ -293,8 +306,47 @@ def _驗證管理員完整詳情(值: object) -> None:
                 or not _是有限時間(遮蔽["redacted_at"])):
             raise ValueError
         驗證遮蔽公開欄位(遮蔽["target_type"], 遮蔽["json_path"], 遮蔽["reason"])
+    前鍵 = None
+    工具序號 = {
+        cast(str, 工具["id"]): cast(int, 工具["sequence_number"])
+        for 工具 in cast(list[dict[str, object]], 詳情["tool_calls"])
+    }
+    for 原命中 in cast(list[object], 詳情["sensitive_hits"]):
+        if type(原命中) is not dict or set(原命中) != _敏感命中欄位:
+            raise ValueError
+        命中 = cast(dict[str, object], 原命中)
+        目標, 工具ID = 命中["target"], 命中["tool_call_id"]
+        是工具 = 目標 in ("tool_arguments", "tool_result")
+        if (not _是識別碼(命中["id"]) or type(目標) is not str
+                or 目標 not in _敏感命中目標
+                or (是工具 and (not _是識別碼(工具ID) or 工具ID not in 工具序號))
+                or (not 是工具 and 工具ID is not None)
+                or type(命中["detector_type"]) is not str
+                or _偵測器格式.fullmatch(cast(str, 命中["detector_type"])) is None
+                or not _是敏感路徑(命中["json_path"])
+                or type(命中["start"]) is not int or type(命中["end"]) is not int
+                or not 0 <= cast(int, 命中["start"]) < cast(int, 命中["end"]) <= _最大安全JSON整數
+                or not _是有界敏感時間(命中["detected_at"])):
+            raise ValueError
+        鍵 = (目標, 0 if 工具ID is None else 工具序號[cast(str, 工具ID)],
+             命中["json_path"], 命中["start"], 命中["end"], 命中["detector_type"])
+        if 前鍵 is not None and 鍵 <= 前鍵:
+            raise ValueError
+        前鍵 = 鍵
     _驗證完整詳情墓碑一致性(詳情)
     _驗證metadata關聯(詳情)
+
+
+def _是敏感路徑(值: object) -> bool:
+    """Exact RFC 6901 pointer，並以 UTF-8 bytes 實作儲存界限。"""
+    if type(值) is not str or len(值.encode("utf-8")) > _最大敏感路徑位元組:
+        return False
+    return 值 == "" or (值.startswith("/") and "~" not in 值.replace("~0", "").replace("~1", ""))
+
+
+def _是有界敏感時間(值: object) -> bool:
+    """Sensitive hit transport 時間只接受非負 finite Unix 時間範圍。"""
+    return type(值) in (int, float) and math.isfinite(值) and 0 <= 值 <= _最大安全時間
 
 
 def _驗證metadata關聯(詳情: dict[str, object]) -> None:

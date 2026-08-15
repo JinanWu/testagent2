@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
+import re
 import sqlite3
 import stat
 import sys
@@ -44,6 +46,18 @@ _最大JSON位元組 = 1_048_576
 _最大JSON節點 = 4096
 _最大JSON深度 = 128
 _最大子列 = 4096
+_最大敏感命中 = 1024
+_最大安全整數 = 2**53 - 1
+_最大安全時間 = 253_402_300_799
+_敏感命中物件摘要 = (
+    ("index", "idx_invocation_sensitive_hits_admin_sort", "e8acbd29e01fc9109b1318397e59dcd2124ff3ccdb538cf3759dee711d4c55bc"),
+    ("index", "uq_invocation_sensitive_hits_with_tool", "63b908e94a920d183a97452d52e08b4c446a4aeeefbe1881115fcf9c516c437f"),
+    ("index", "uq_invocation_sensitive_hits_without_tool", "90bcc4f208888aa3dc1aa0bddc8e45fa8490e79634decd0a99ddea07324ba851"),
+    ("table", "invocation_sensitive_hits", "73de75e6c13657264a48fc1c7bbd64696fa8e4fe5af84f2a38d6761c8908771d"),
+    ("trigger", "invocation_sensitive_hits_audit_scope_before_insert", "e6a7124820053a15099dd2478504a0953853d5adbd1488cfd38b8bc2ad570a05"),
+    ("trigger", "invocation_sensitive_hits_no_delete", "6d0b62ae901c1e33a3f3e999f31f82650d2a21e2a9133f715143087681342425"),
+    ("trigger", "invocation_sensitive_hits_no_update", "d9a19fb87d4bc6ca82632a2e1fa1a5b0aeab55b0650602670749f7d624a84dd5"),
+)
 _欄位指紋 = {
     "published_endpoints": (
         ("id", "TEXT", 0, None, 1), ("owner_user_id", "TEXT", 1, None, 0),
@@ -596,7 +610,7 @@ def _讀取管理員原始資料(
 ) -> dict[str, Any]:
     """同一 read transaction 先核算全部 JSON 長度，再按權威鍵取 payload。"""
     連線 = 游標 = 列 = 項 = 內容列 = 事件列 = 工具列 = 結果 = None
-    遮蔽列 = None
+    遮蔽列 = 敏感命中列 = None
     輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = 事件 = 工具 = None
     已開始 = 失敗 = 不存在 = False
     控制 = None
@@ -608,6 +622,7 @@ def _讀取管理員原始資料(
         已開始 = True
         _驗證路徑與結構(連線, 路徑)
         _驗證遮蔽schema(連線)
+        _驗證敏感命中schema(連線)
         游標 = 連線.execute(
             "SELECT id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,"
             "message_id,status,metadata_size_bytes,metadata_sha256,latency_ms,pricing_version,"
@@ -667,6 +682,10 @@ def _讀取管理員原始資料(
             連線, 呼叫識別碼, 端點識別碼, 遮蔽中繼
         )
         子列數 += len(遮蔽列)
+        敏感命中列 = _讀取驗證敏感命中列(
+            連線, 呼叫識別碼, 端點識別碼
+        )
+        子列數 += len(敏感命中列)
         if 子列數 > _最大子列:
             raise ValueError
         游標 = 連線.execute(
@@ -723,6 +742,11 @@ def _讀取管理員原始資料(
                 "json_path": 遮蔽[4], "reason": 遮蔽[6],
                 "is_tombstone": True, "redacted_at": 遮蔽[11],
             } for 遮蔽 in 遮蔽列],
+            "sensitive_hits": [{
+                "id": 命中[0], "target": 命中[1], "tool_call_id": 命中[2],
+                "detector_type": 命中[3], "json_path": 命中[4],
+                "start": 命中[5], "end": 命中[6], "detected_at": 命中[7],
+            } for 命中 in 敏感命中列],
         }
         _驗證完整詳情墓碑一致性(結果)
         連線.commit()
@@ -748,7 +772,8 @@ def _讀取管理員原始資料(
         if 控制 is None and 清理控制:
             控制 = 清理控制.pop()
     路徑 = 端點識別碼 = 呼叫識別碼 = 連線 = 游標 = 列 = 項 = 內容列 = None
-    事件列 = 工具列 = 遮蔽中繼 = 遮蔽列 = 事件 = 工具 = 輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
+    事件列 = 工具列 = 遮蔽中繼 = 遮蔽列 = 敏感命中列 = 事件 = 工具 = None
+    輸入 = 中繼資料 = 輸出 = 錯誤 = 用量 = None
     預算 = 清理控制 = 工具JSON = None
     if 控制 is not None:
         控制盒 = [控制]
@@ -778,6 +803,118 @@ def _開啟唯讀快照(路徑: str) -> sqlite3.Connection:
         uri=True, isolation_level=None, timeout=30.0,
     )
     return 連線
+
+
+def _驗證敏感命中schema(連線: sqlite3.Connection) -> None:
+    """只在 Admin detail callback 內驗證 hit table 的 exact schema/FK/index/trigger。"""
+    欄位 = tuple(連線.execute("PRAGMA table_info(invocation_sensitive_hits)"))
+    外鍵 = tuple(連線.execute("PRAGMA foreign_key_list(invocation_sensitive_hits)"))
+    索引 = tuple(sorted((列[1], 列[2], 列[3], 列[4], tuple(
+        項[2] for 項 in 連線.execute(f'PRAGMA index_info("{列[1]}")')
+    )) for 列 in 連線.execute("PRAGMA index_list(invocation_sensitive_hits)")))
+    物件 = tuple((類型, 名稱, hashlib.sha256(SQL.encode()).hexdigest())
+               for 類型, 名稱, SQL in 連線.execute(
+        "SELECT type,name,sql FROM sqlite_master WHERE tbl_name='invocation_sensitive_hits' "
+        "AND sql IS NOT NULL AND type IN ('table','index','trigger') ORDER BY type,name"
+    ))
+    if (欄位 != (
+            (0,"id","TEXT",0,None,1),(1,"invocation_id","TEXT",1,None,0),
+            (2,"tool_call_id","TEXT",0,None,0),(3,"target_type","TEXT",1,None,0),
+            (4,"detector_type","TEXT",1,None,0),(5,"json_path","TEXT",1,None,0),
+            (6,"start_offset","INTEGER",1,None,0),(7,"end_offset","INTEGER",1,None,0),
+            (8,"audit_event_id","TEXT",1,None,0),(9,"detected_at","REAL",1,None,0),
+        ) or 外鍵 != (
+            (0,0,"endpoint_tool_calls","tool_call_id","id","NO ACTION","RESTRICT","NONE"),
+            (0,1,"endpoint_tool_calls","invocation_id","invocation_id","NO ACTION","RESTRICT","NONE"),
+            (1,0,"audit_events","audit_event_id","id","NO ACTION","CASCADE","NONE"),
+            (2,0,"endpoint_invocations","invocation_id","id","NO ACTION","RESTRICT","NONE"),
+        ) or 索引 != (
+            ("idx_invocation_sensitive_hits_admin_sort",0,"c",0,
+             ("invocation_id","target_type","tool_call_id","json_path","start_offset",
+              "end_offset","detector_type","id")),
+            ("sqlite_autoindex_invocation_sensitive_hits_1",1,"pk",0,("id",)),
+            ("sqlite_autoindex_invocation_sensitive_hits_2",1,"u",0,("audit_event_id",)),
+            ("uq_invocation_sensitive_hits_with_tool",1,"c",1,
+             ("invocation_id","tool_call_id","target_type","json_path","start_offset",
+              "end_offset","detector_type")),
+            ("uq_invocation_sensitive_hits_without_tool",1,"c",1,
+             ("invocation_id","target_type","json_path","start_offset","end_offset","detector_type")),
+        ) or 物件 != _敏感命中物件摘要):
+        raise ValueError
+
+
+def _讀取驗證敏感命中列(
+    連線: sqlite3.Connection, 呼叫ID: str, 端點ID: str,
+) -> tuple[tuple[Any, ...], ...]:
+    """有界讀取 location-only rows，驗證 audit 一對一、ownership 與固定排序。"""
+    孤立稽核 = 連線.execute(
+        "SELECT count(*) FROM audit_events a LEFT JOIN invocation_sensitive_hits h "
+        "ON h.audit_event_id=a.id WHERE a.invocation_id=? "
+        "AND a.action='published_api.sensitive_data_detected' AND h.id IS NULL",
+        (呼叫ID,),
+    ).fetchone()
+    if 孤立稽核 != (0,):
+        raise ValueError
+    游標 = 連線.execute(
+        "SELECT h.id,h.target_type,h.tool_call_id,h.detector_type,h.json_path,"
+        "h.start_offset,h.end_offset,h.detected_at,h.audit_event_id,t.sequence_number,"
+        "a.id,a.event_id,a.occurred_at,a.action,a.outcome,a.actor_type,a.actor_id,"
+        "a.resource_type,a.resource_id,a.request_id,a.endpoint_id,a.invocation_id,"
+        "a.metadata_json,a.created_at FROM invocation_sensitive_hits h "
+        "LEFT JOIN endpoint_tool_calls t ON t.id=h.tool_call_id AND t.invocation_id=h.invocation_id "
+        "LEFT JOIN audit_events a ON a.id=h.audit_event_id WHERE h.invocation_id=? "
+        "ORDER BY h.target_type,CASE WHEN h.tool_call_id IS NULL THEN 0 ELSE t.sequence_number END,"
+        "h.json_path,h.start_offset,h.end_offset,h.detector_type,h.id LIMIT ?",
+        (呼叫ID, _最大敏感命中 + 1),
+    )
+    try:
+        列們 = tuple(游標.fetchall())
+    finally:
+        _關閉查詢游標並保留主要控制(游標)
+    if len(列們) > _最大敏感命中:
+        raise ValueError
+    結果 = []
+    前鍵 = None
+    for 列 in 列們:
+        if type(列) is not tuple or len(列) != 24:
+            raise ValueError
+        (命中ID, 目標, 工具ID, 偵測器, JSON路徑, 開始, 結束, 偵測時間,
+         命中稽核ID, 工具序號, 稽核ID, 稽核事件ID, 稽核時間, 行動, 結果碼,
+         操作者類型, 操作者ID, 資源類型, 資源ID, 請求ID, 稽核端點ID,
+         稽核呼叫ID, 稽核中繼, 稽核建立時間) = 列
+        是工具 = 目標 in ("tool_arguments", "tool_result")
+        if (not _安全識別碼(命中ID) or 目標 not in
+                ("input", "metadata", "response_data", "tool_arguments", "tool_result")
+                or type(目標) is not str or not _安全識別碼(命中稽核ID)
+                or (是工具 and (not _安全識別碼(工具ID) or not _安全正整數(工具序號)))
+                or (not 是工具 and (工具ID is not None or 工具序號 is not None))
+                or type(偵測器) is not str or not 1 <= len(偵測器.encode("utf-8")) <= 128
+                or re.fullmatch(r"[a-z][a-z0-9_]{0,127}", 偵測器) is None
+                or type(JSON路徑) is not str or len(JSON路徑.encode("utf-8")) > 8192
+                or not (JSON路徑 == "" or (JSON路徑.startswith("/")
+                        and "~" not in JSON路徑.replace("~0", "").replace("~1", "")))
+                or type(開始) is not int or type(結束) is not int
+                or not 0 <= 開始 < 結束 <= _最大安全整數
+                or not _安全時間(偵測時間) or 偵測時間 > _最大安全時間):
+            raise ValueError
+        預期中繼 = json.dumps({
+            "warning_code": "sensitive_data_detected", "target": 目標,
+            "detector_type": 偵測器, "json_path": JSON路徑, "start": 開始, "end": 結束,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if (稽核ID != 命中稽核ID or 稽核事件ID != 命中稽核ID
+                or 稽核時間 != 偵測時間 or 稽核建立時間 != 偵測時間
+                or (行動, 結果碼, 操作者類型, 操作者ID, 資源類型, 資源ID, 請求ID,
+                    稽核端點ID, 稽核呼叫ID, 稽核中繼) !=
+                   ("published_api.sensitive_data_detected", "success", "system", None,
+                    "invocation", 呼叫ID, None, 端點ID, 呼叫ID, 預期中繼)):
+            raise ValueError
+        鍵 = (目標, 0 if 工具ID is None else 工具序號,
+             JSON路徑, 開始, 結束, 偵測器)
+        if 前鍵 is not None and 鍵 <= 前鍵:
+            raise ValueError
+        前鍵 = 鍵
+        結果.append(列[:8])
+    return tuple(結果)
 
 
 def _遮蔽中繼選取() -> tuple[str, tuple[str, ...], tuple[str, ...]]:
