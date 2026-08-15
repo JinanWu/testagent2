@@ -26,8 +26,8 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
-_完整結構數 = 70
-_完整結構雜湊 = "b4746cd11498f4ab58ab98ff9032080140a53bf2d038bc738c870205113433dc"
+_完整結構數 = 77
+_完整結構雜湊 = "eb3206e3ea93349aa8ccbebe7a0debd96513296e7cf972163df42770454fd02d"
 _單一結構SQL最大位元組 = 65536
 _完整結構SQL總最大位元組 = 1048576
 _完整結構物件 = tuple(
@@ -42,15 +42,18 @@ _完整結構物件 = tuple(
             "idx_endpoint_invocations_status_created", "idx_endpoint_redactions_audit",
             "idx_endpoint_redactions_invocation_time", "idx_endpoint_redactions_retention_invocation_id",
             "idx_endpoint_tool_calls_invocation_created", "idx_endpoint_tool_calls_retention_invocation_id",
+            "idx_invocation_sensitive_hits_admin_sort",
             "idx_published_draft_consumptions_time", "idx_published_endpoints_owner_status",
             "idx_published_session_turn_pairs_latest",
             "idx_published_skill_bundles_state_time", "idx_run_events_retention_invocation_id",
             "idx_web_sessions_user_revoked_expires", "uq_endpoint_credentials_id_endpoint",
+            "uq_invocation_sensitive_hits_with_tool", "uq_invocation_sensitive_hits_without_tool",
         )),
         ("table", (
             "audit_events", "auth_failure_rate_counters", "endpoint_credentials",
             "endpoint_invocation_safe_errors", "endpoint_invocations", "endpoint_redactions",
-            "endpoint_tool_calls", "published_api_schema_migrations", "published_draft_consumptions",
+            "endpoint_tool_calls", "invocation_sensitive_hits", "published_api_schema_migrations",
+            "published_draft_consumptions",
             "published_endpoint_version_metadata", "published_endpoint_versions", "published_endpoints",
             "published_session_turn_pairs", "published_skill_bundles", "rate_limit_counters", "run_events",
             "service_accounts", "web_sessions",
@@ -62,6 +65,8 @@ _完整結構物件 = tuple(
             "endpoint_redactions_no_delete", "endpoint_redactions_no_update",
             "endpoint_redactions_require_tombstone", "endpoint_redactions_target_before_insert",
             "finite_endpoint_credentials_insert", "finite_endpoint_credentials_update",
+            "invocation_sensitive_hits_audit_scope_before_insert",
+            "invocation_sensitive_hits_no_delete", "invocation_sensitive_hits_no_update",
             "published_draft_consumptions_no_delete", "published_draft_consumptions_no_update",
             "published_endpoint_version_metadata_no_delete", "published_endpoint_version_metadata_no_update",
             "published_endpoint_versions_no_delete", "published_endpoint_versions_no_update",

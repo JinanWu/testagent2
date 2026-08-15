@@ -43,11 +43,11 @@ def test_fresh_upgrade重跑與結構契約(tmp_path):
     返回值：無；所有結構與 ledger assertions 必須通過。
     """
     新資料庫 = tmp_path / "fresh.db"
-    assert 初始化發布介面資料庫(新資料庫) == tuple(range(1, 15))
+    assert 初始化發布介面資料庫(新資料庫) == tuple(range(1, 16))
     assert 初始化發布介面資料庫(新資料庫) == ()
     升級資料庫 = tmp_path / "upgrade.db"
     assert 執行遷移(升級資料庫, 載入發布介面遷移()[:12]) == tuple(range(1, 13))
-    assert 初始化發布介面資料庫(升級資料庫) == (13, 14)
+    assert 初始化發布介面資料庫(升級資料庫) == (13, 14, 15)
     with sqlite3.connect(升級資料庫) as 連線:
         assert 連線.execute("PRAGMA foreign_key_check").fetchall() == []
         欄位 = [列[1] for 列 in 連線.execute("PRAGMA table_info(published_session_turn_pairs)")]

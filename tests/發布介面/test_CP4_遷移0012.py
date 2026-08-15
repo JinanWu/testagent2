@@ -23,7 +23,7 @@ def _建立資料庫(tmp_path):
     副作用：在暫存目錄建立資料庫檔案並寫入測試種子資料。
     """
     路徑 = tmp_path / "db.sqlite3"
-    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 15))
+    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 16))
     連線 = sqlite3.connect(路徑)
     連線.execute("PRAGMA foreign_keys=ON")
     連線.execute("INSERT INTO service_accounts VALUES('sa-1',1,NULL)")
