@@ -14,12 +14,19 @@ const REDACTION_TARGET = new Set([
   'invocation_input', 'metadata', 'output', 'error', 'run_event',
   'tool_arguments', 'tool_result', 'tool_error',
 ])
+const SENSITIVE_HIT_TARGETS = new Set([
+  'input', 'metadata', 'response_data', 'tool_arguments', 'tool_result',
+])
+const SENSITIVE_DETECTOR = /^[a-z][a-z0-9_]{0,127}$/
 const REDACTION_SECRET = /(?:bearer|(?:sk|pk)[_-])|(?:^|[^0-9a-f])[0-9a-f]{64}(?:$|[^0-9a-f])/i
 const REDACTION_BLANK = /^[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*$/u
 const MAX_DETAIL_BYTES = 1024 * 1024
 const MAX_DETAIL_NODES = 4096
 const MAX_DETAIL_DEPTH = 128
 const MAX_CHILD_ROWS = 4096
+const MAX_SENSITIVE_HITS = 1024
+const MAX_SENSITIVE_PATH_BYTES = 8192
+const MAX_SAFE_TIME = 253_402_300_799
 const MAX_LIST_RESPONSE_BYTES = 256 * 1024
 const MAX_DETAIL_RESPONSE_BYTES = 7 * 1024 * 1024
 const MAX_EMPTY_STREAM_READS = 4096
@@ -98,6 +105,20 @@ export interface InvocationRedaction {
   redactedAt: number
 }
 
+export type InvocationSensitiveHitTarget =
+  'input' | 'metadata' | 'response_data' | 'tool_arguments' | 'tool_result'
+
+export interface InvocationSensitiveHit {
+  id: string
+  target: InvocationSensitiveHitTarget
+  toolCallId: string | null
+  detectorType: string
+  jsonPath: string
+  start: number
+  end: number
+  detectedAt: number
+}
+
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 
 export interface AdminInvocationDetail {
@@ -121,6 +142,7 @@ export interface AdminInvocationDetail {
   runEvents: InvocationRunEvent[]
   toolCalls: InvocationToolCall[]
   redactions: InvocationRedaction[]
+  sensitiveHits: InvocationSensitiveHit[]
 }
 
 export interface InvocationListFilters {
@@ -219,6 +241,54 @@ function canonicalRedactionReason(value: unknown): value is string {
     !REDACTION_BLANK.test(value) && !REDACTION_SECRET.test(value)
 }
 
+function scalarString(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const unit = value.charCodeAt(index)
+    if (unit >= 0xd800 && unit <= 0xdbff) {
+      if (++index >= value.length) return false
+      const low = value.charCodeAt(index)
+      if (low < 0xdc00 || low > 0xdfff) return false
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) return false
+  }
+  return true
+}
+
+function canonicalSensitivePath(value: unknown): value is string {
+  if (typeof value !== 'string' || !scalarString(value) ||
+      new TextEncoder().encode(value).byteLength > MAX_SENSITIVE_PATH_BYTES) return false
+  return value === '' || (value.startsWith('/') && !/~(?![01])/.test(value))
+}
+
+function safeSensitiveOffset(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function safeSensitiveTime(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_SAFE_TIME
+}
+
+function compareCodePoints(left: string, right: string): number {
+  const leftPoints = Array.from(left, (value) => value.codePointAt(0)!)
+  const rightPoints = Array.from(right, (value) => value.codePointAt(0)!)
+  const length = Math.min(leftPoints.length, rightPoints.length)
+  for (let index = 0; index < length; index += 1) {
+    if (leftPoints[index] !== rightPoints[index]) return leftPoints[index] - rightPoints[index]
+  }
+  return leftPoints.length - rightPoints.length
+}
+
+type SensitiveOrderKey = readonly [string, number, string, number, number, string]
+
+function compareSensitiveOrder(left: SensitiveOrderKey, right: SensitiveOrderKey): number {
+  for (let index = 0; index < left.length; index += 1) {
+    const compared = typeof left[index] === 'string'
+      ? compareCodePoints(left[index] as string, right[index] as string)
+      : (left[index] as number) - (right[index] as number)
+    if (compared !== 0) return compared
+  }
+  return 0
+}
+
 function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
   const work: Array<{ value: unknown; depth: number }> = [{ value, depth: 1 }]
   let nodes = 0
@@ -304,6 +374,7 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
     'invocation', 'endpoint_id', 'endpoint_version_id', 'credential_id', 'message_id', 'status',
     'input', 'metadata', 'output', 'error', 'usage', 'metadata_size_bytes', 'metadata_sha256',
     'latency_ms', 'pricing_version', 'created_at', 'completed_at', 'run_events', 'tool_calls', 'redactions',
+    'sensitive_hits',
   ])
   const invocation = detail === null ? null : exactObject(detail.invocation, ['id', 'request_id', 'session_id'])
   if (detail === null || invocation === null || !identifier(invocation.id) || !identifier(invocation.request_id) ||
@@ -318,8 +389,10 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       !(detail.pricing_version === null || boundedCodePointString(detail.pricing_version, 256, true)) ||
       !finiteNonNegative(detail.created_at) || !nullableFinite(detail.completed_at) ||
       !Array.isArray(detail.run_events) || !Array.isArray(detail.tool_calls) ||
-      !Array.isArray(detail.redactions) ||
-      detail.run_events.length + detail.tool_calls.length + detail.redactions.length > MAX_CHILD_ROWS) {
+      !Array.isArray(detail.redactions) || !Array.isArray(detail.sensitive_hits) ||
+      detail.sensitive_hits.length > MAX_SENSITIVE_HITS ||
+      detail.run_events.length + detail.tool_calls.length + detail.redactions.length +
+        detail.sensitive_hits.length > MAX_CHILD_ROWS) {
     throw new ApiFormatError()
   }
 
@@ -388,6 +461,40 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
       isTombstone: true, redactedAt: redaction.redacted_at,
     }
   })
+  const hitIds = new Set<string>()
+  const toolSequenceById = new Map(tools.map((tool) => [tool.id, tool.sequenceNumber]))
+  let previousHitKey: SensitiveOrderKey | null = null
+  const sensitiveHits = (safe.sensitive_hits as JsonValue[]).map((raw): InvocationSensitiveHit => {
+    const hit = exactObject(raw, [
+      'id', 'target', 'tool_call_id', 'detector_type', 'json_path', 'start', 'end', 'detected_at',
+    ])
+    if (hit === null || !identifier(hit.id) || hitIds.has(hit.id) ||
+        typeof hit.target !== 'string' || !SENSITIVE_HIT_TARGETS.has(hit.target) ||
+        !(hit.tool_call_id === null || identifier(hit.tool_call_id)) ||
+        typeof hit.detector_type !== 'string' || !SENSITIVE_DETECTOR.test(hit.detector_type) ||
+        !canonicalSensitivePath(hit.json_path) || !safeSensitiveOffset(hit.start) ||
+        !safeSensitiveOffset(hit.end) || hit.start >= hit.end || !safeSensitiveTime(hit.detected_at)) {
+      throw new ApiFormatError()
+    }
+    const isTool = hit.target === 'tool_arguments' || hit.target === 'tool_result'
+    const toolSequence = hit.tool_call_id === null ? undefined : toolSequenceById.get(hit.tool_call_id)
+    if ((isTool && toolSequence === undefined) || (!isTool && hit.tool_call_id !== null)) {
+      throw new ApiFormatError()
+    }
+    const key: SensitiveOrderKey = [
+      hit.target, toolSequence ?? 0, hit.json_path, hit.start, hit.end, hit.detector_type,
+    ]
+    if (previousHitKey !== null && compareSensitiveOrder(key, previousHitKey) <= 0) {
+      throw new ApiFormatError()
+    }
+    previousHitKey = key
+    hitIds.add(hit.id)
+    return {
+      id: hit.id, target: hit.target as InvocationSensitiveHitTarget,
+      toolCallId: hit.tool_call_id, detectorType: hit.detector_type, jsonPath: hit.json_path,
+      start: hit.start, end: hit.end, detectedAt: hit.detected_at,
+    }
+  })
   const found = new Set<string>()
   const invocationId = safeInvocation.id as string
   collectTombstones(safe.input, 'invocation_input', invocationId, '', found)
@@ -434,6 +541,7 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
     runEvents: events,
     toolCalls: tools,
     redactions,
+    sensitiveHits,
   }
 }
 
