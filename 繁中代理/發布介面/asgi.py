@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+
 import os
 from collections.abc import Mapping
 from pathlib import Path
@@ -50,12 +51,13 @@ Published資料庫環境名稱 = "TESTAGENT2_PUBLISHED_DB_PATH"
 憑證Active版本環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION"
 憑證Keyring環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON"
 ProductionSPADist環境名稱 = "TESTAGENT2_WEB_DIST_ROOT"
+Owner觀測游標金鑰環境名稱 = "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY"
 _錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
 _核准設定環境名稱 = frozenset((
     資料庫環境名稱, 來源環境名稱, 供應器環境名稱, 安全Cookie環境名稱,
     工作階段TTL環境名稱, 模型名稱環境名稱, Gemini專案環境名稱,
     Gemini位置環境名稱, Published資料庫環境名稱, 技能套件根環境名稱,
-    憑證Active版本環境名稱, 憑證Keyring環境名稱,
+    憑證Active版本環境名稱, 憑證Keyring環境名稱, Owner觀測游標金鑰環境名稱,
 ))
 _來源JSON最大位元組 = 16_384
 _來源最大數量 = 64
@@ -209,6 +211,7 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         根文字 = 環境.get(技能套件根環境名稱)
         Active版本文字 = 環境.get(憑證Active版本環境名稱)
         Keyring文字 = 環境.get(憑證Keyring環境名稱)
+        Owner游標金鑰文字 = 環境.get(Owner觀測游標金鑰環境名稱)
         if any(type(值) is not str or not 值 for 值 in (Web文字, Published文字, 根文字)):
             raise ValueError
         Web路徑, Published路徑, 根路徑 = Path(Web文字), Path(Published文字), Path(根文字)
@@ -247,6 +250,14 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
             材料 = None
         if Active版本 not in Keyring文字副本:
             raise ValueError
+        if type(Owner游標金鑰文字) is not str or len(Owner游標金鑰文字) != 43:
+            raise ValueError
+        Owner游標金鑰 = base64.b64decode(
+            Owner游標金鑰文字 + "=", altchars=b"-_", validate=True,
+        )
+        if (len(Owner游標金鑰) != 32
+                or base64.urlsafe_b64encode(Owner游標金鑰).rstrip(b"=").decode("ascii") != Owner游標金鑰文字):
+            raise ValueError
         明示供應器 = 環境.get(供應器環境名稱)
         if 明示供應器 not in (None, "gemini-adc"):
             raise ValueError
@@ -279,6 +290,7 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         Published設定 = Published生產設定(
             Published路徑, 根路徑, 安裝生產技能工具, 建立模型註冊表,
             憑證封套工廠=建立憑證封套,
+            Owner觀測游標金鑰=Owner游標金鑰,
         )
         return Web設定, Published設定
     except (KeyboardInterrupt, SystemExit, GeneratorExit):

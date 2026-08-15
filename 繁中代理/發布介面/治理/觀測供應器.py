@@ -19,7 +19,7 @@ from .觀測契約 import (
     安全錯誤排行, 定價版本成本, 延遲摘要, 指標查詢成功, 指標查詢結果, 每日端點指標, 用量摘要,
     端點不可見結果, 端點指標, 診斷查詢成功, 診斷查詢結果, 觀測視窗,
 )
-from .觀測診斷 import 列出安全診斷
+from .觀測診斷 import 列出安全診斷, 診斷游標無效錯誤
 from ..資料庫結構契約 import 驗證資料庫結構
 
 _固定錯誤 = "端點觀測不可取得"
@@ -36,6 +36,10 @@ _最大遮蔽列 = 4096
 
 class 端點觀測查詢錯誤(RuntimeError):
     """資料庫、schema、cursor 或 persisted row 無法安全驗證的固定錯誤。"""
+
+
+class 端點觀測游標錯誤(端點觀測查詢錯誤):
+    """HTTP adapter可安全映射為422的invalid diagnostics cursor。"""
 
 
 class SQLite端點觀測查詢服務:
@@ -130,7 +134,7 @@ class SQLite端點觀測查詢服務:
                  游標: str | None) -> 診斷查詢結果:
         """委派單一 authoritative paginated safe-diagnostics operation。"""
         結果 = 控制 = None
-        失敗 = False
+        失敗 = 游標失敗 = False
         路徑, 時鐘, 金鑰 = self._path, self._clock, self._cursor_key
         try:
             結果 = 列出安全診斷(
@@ -141,6 +145,8 @@ class SQLite端點觀測查詢服務:
             _清理控制鏈(捕捉控制)
             控制 = 捕捉控制
             捕捉控制 = None
+        except 診斷游標無效錯誤:
+            游標失敗 = True
         except BaseException:
             失敗 = True
         self = 路徑 = 時鐘 = 金鑰 = 擁有者使用者識別碼 = 是否管理者 = None
@@ -149,6 +155,9 @@ class SQLite端點觀測查詢服務:
             控制盒 = [控制]
             控制 = 結果 = None
             _重拋控制(控制盒.pop())
+        if 游標失敗:
+            結果 = None
+            raise 端點觀測游標錯誤(_固定錯誤) from None
         if 失敗 or type(結果) not in (診斷查詢成功, 端點不可見結果):
             結果 = None
             raise 端點觀測查詢錯誤(_固定錯誤) from None

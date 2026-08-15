@@ -72,6 +72,9 @@ def _設定環境(monkeypatch, web: Path, db: Path, bundles: Path, Dist根: Path
         "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
             "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
         }, separators=(",", ":")),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": base64.urlsafe_b64encode(
+            b"O" * 32
+        ).rstrip(b"=").decode("ascii"),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
