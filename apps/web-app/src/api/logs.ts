@@ -45,6 +45,14 @@ const ABSOLUTE_PATH = /(?:^|[\s:="'])(?:~[/\\]|\/(?:Users|home|etc|var|tmp|priva
 const API_KEY = /(?:^|[^A-Za-z0-9_-])pk_[A-Za-z0-9_-]{43}(?:$|[^A-Za-z0-9_-])/
 const CREDENTIAL_SHAPE = /(?:^|[^A-Za-z0-9_-])(?:[A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{32,}|[A-Za-z0-9]{2,4}[_-][A-Za-z0-9]{2,16}[_-][A-Za-z0-9_-]{16,})(?:$|[^A-Za-z0-9_-])/
 
+// Python 3.12 Unicode casefold中，所有非 ASCII code point 且fold後只含ASCII alnum的完整集合。
+export const PYTHON_CASEFOLD_ASCII_ENTRIES = [
+  [0x00df, 'ss'], [0x017f, 's'], [0x1e9e, 'ss'], [0x212a, 'k'],
+  [0xfb00, 'ff'], [0xfb01, 'fi'], [0xfb02, 'fl'], [0xfb03, 'ffi'],
+  [0xfb04, 'ffl'], [0xfb05, 'st'], [0xfb06, 'st'],
+] as const
+const PYTHON_CASEFOLD_ASCII = new Map<number, string>(PYTHON_CASEFOLD_ASCII_ENTRIES)
+
 export const LOGS_ERROR_MESSAGE = '目前無法載入完整呼叫紀錄，請稍後再試。'
 export const LOGS_NOT_FOUND_MESSAGE = '找不到呼叫紀錄。'
 export const LOGS_FORBIDDEN_MESSAGE = '只有管理者可查看完整呼叫紀錄。'
@@ -161,8 +169,14 @@ export class LogsError extends Error {
   }
 }
 
+export function normalizePythonCasefoldAscii(value: string): string {
+  return Array.from(value, (character) =>
+    PYTHON_CASEFOLD_ASCII.get(character.codePointAt(0)!) ?? character.toLowerCase()
+  ).join('').replace(/[^a-z0-9]/g, '')
+}
+
 function normalized(value: string): string {
-  return value.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalizePythonCasefoldAscii(value)
 }
 
 function identifier(value: unknown): value is string {

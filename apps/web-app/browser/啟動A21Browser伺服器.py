@@ -1,7 +1,8 @@
-"""啟動 A21 真 SQLite 與 canonical production SPA ASGI。"""
+"""A21 canonical invoke 與 production SPA 的 hermetic browser server。"""
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sqlite3
@@ -12,17 +13,16 @@ import uvicorn
 
 _專案根 = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_專案根))
+sys.path.insert(0, str(_專案根 / "tests" / "發布介面"))
 
 import asgi as root_asgi
+from a08_3_formal_publish import 建立正式v1
 from 繁中代理.使用者 import 使用者庫
-from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
-from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
+from 繁中代理.模型供應商 import GeminiADC供應商
+from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
 
 _管理員帳號 = "browser-admin-a21"
-_成員帳號 = "browser-owner-a21"
-_端點 = "endpoint-browser-a21"
-_版本 = "version-browser-a21"
-_呼叫 = "invocation-browser-a21"
 
 
 def _必要路徑(名稱: str) -> Path:
@@ -41,95 +41,75 @@ def _必要文字(名稱: str, 最小: int, 最大: int) -> str:
 
 
 def _合成標記們() -> tuple[str, str, str, str, str]:
-    """只在 fixture 內合成安全值，runner 不輸出內容。"""
+    """只在 fixture 內合成，不輸出內容。"""
     郵件 = lambda 前綴: 前綴 + chr(64) + "safe.invalid"
-    return (郵件("input"), "0912-345-678", "4" + "1" * 15,
+    return (郵件("input"), "0912" + "-345-678", "4" + "1" * 15,
             郵件("arguments"), 郵件("result"))
 
 
-def _建立首次資料(根: Path, 密碼: str) -> None:
-    """以真 user store/migration/DB 建立五 target durable fixture。"""
+class _五目標模型:
+    """Deterministic adapter：經兩次真實skill tool call產生工具列與最終回應。"""
+
+    def __init__(self, 工具參數標記: str, 回應標記: str) -> None:
+        self._工具參數標記 = 工具參數標記
+        self._回應標記 = 回應標記
+
+    def 產生(self, **參數: object) -> 模型回應快照:
+        工具訊息 = [項 for 項 in 參數["messages"] if 項["role"] == "tool"]
+        if not 工具訊息:
+            名稱, 工具參數 = "skills_list", {"category": self._工具參數標記}
+        elif len(工具訊息) == 1:
+            名稱, 工具參數 = "skill_view", {"name": "stable"}
+        else:
+            return 模型回應快照(
+                json.dumps({"answer": self._回應標記}, separators=(",", ":")),
+                "stop", {"total_tokens": 3}, [],
+            )
+        呼叫 = {
+            "id": f"call-{len(工具訊息) + 1}", "type": "function",
+            "function": {"name": 名稱, "arguments": json.dumps(工具參數, separators=(",", ":"))},
+        }
+        return 模型回應快照("", "tool_calls", {}, [呼叫])
+
+
+def _建立靜態先決圖形(
+    根: Path, 管理員密碼: str, API金鑰: str, 憑證加密金鑰: str,
+) -> None:
+    """重用A21-06的production publish authority；不建立dynamic invocation列。"""
+    根.mkdir(parents=True, exist_ok=False)
+    _, _, _, _, 結果 = _合成標記們()
+    身分 = 建立正式v1(
+        web=根 / "web.sqlite3", db=根 / "published.sqlite3",
+        bundles=根 / "bundles", skill_root=根 / "skills",
+        skill_body="BUNDLE-V1 " + 結果,
+    )
+    金鑰材料 = base64.urlsafe_b64decode(憑證加密金鑰 + "=")
+    已加密 = None
+    with sqlite3.connect(根 / "published.sqlite3") as 連線:
+        憑證列 = 連線.execute(
+            "SELECT id FROM endpoint_credentials WHERE endpoint_id=?", (身分["endpoint"],)
+        ).fetchall()
+        if len(憑證列) != 1:
+            raise RuntimeError("A21 browser fixture設定無效") from None
+        憑證ID = 憑證列[0][0]
+        已加密 = AESGCM憑證封套({1: 金鑰材料}, 1).加密(
+            API金鑰, 身分["endpoint"], 憑證ID
+        )
+        更新 = 連線.execute(
+            "UPDATE endpoint_credentials SET key_version=?,key_nonce=?,key_ciphertext=?,"
+            "key_hash=?,key_prefix=?,key_last4=? WHERE id=? AND endpoint_id=?",
+            (已加密.envelope.key_version, 已加密.envelope.nonce,
+             已加密.envelope.ciphertext, 已加密.key_hash, 已加密.key_prefix,
+             已加密.key_last4, 憑證ID, 身分["endpoint"]),
+        )
+        if 更新.rowcount != 1:
+            raise RuntimeError("A21 browser fixture設定無效") from None
+    API金鑰 = 憑證加密金鑰 = 金鑰材料 = 已加密 = None
     使用者 = 使用者庫(根 / "web.sqlite3")
     try:
-        使用者.建立使用者(_管理員帳號, 密碼, roles=["admin"])
-        owner = 使用者.建立使用者(_成員帳號, 密碼, roles=["user"])["id"]
+        使用者.建立使用者(_管理員帳號, 管理員密碼, roles=["admin"])
     finally:
         使用者.連線.close()
-    路徑 = 根 / "published.sqlite3"
-    初始化發布介面資料庫(路徑)
-    輸入, 中繼, 回應, 參數, 結果 = _合成標記們()
-    with sqlite3.connect(路徑) as 連線:
-        連線.execute("PRAGMA foreign_keys=ON")
-        連線.execute("INSERT INTO service_accounts VALUES(?,?,NULL)", ("service-browser-a21", 1.0))
-        連線.execute(
-            "INSERT INTO published_endpoints VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (_端點, owner, "service-browser-a21", "browser-a21", "active", None, 1.0, 1.0, 60, 60),
-        )
-        連線.execute(
-            "INSERT INTO published_endpoint_versions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (_版本, _端點, 1, "safe", "safe", "[]", "[]", "{}", "revision", "{}",
-             "{}", "{}", None, "{}", 0, owner, 1.0),
-        )
-        連線.execute("UPDATE published_endpoints SET current_version_id=? WHERE id=?", (_版本, _端點))
-        連線.execute(
-            "INSERT INTO endpoint_invocations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (_呼叫, _端點, _版本, None, "request-browser-a21", None, None, "succeeded",
-             json.dumps({"contact": 輸入}), json.dumps({"phone": 中繼}),
-             json.dumps({"answer": 回應}), None, json.dumps({"total_tokens": 3}),
-             None, None, 4.0, "price-a21", 10.0, 14.0),
-        )
-        警告 = {"warnings": [{
-            "code": "sensitive_data_detected", "message": "回應包含可能的敏感資料。",
-        }]}
-        連線.execute(
-            "INSERT INTO run_events VALUES(?,?,?,?,?,?)",
-            ("event-browser-a21", _呼叫, 1, "completed", json.dumps(警告), 14.0),
-        )
-        連線.execute(
-            "INSERT INTO endpoint_tool_calls VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("tool-browser-a21-1", _呼叫, None, 1, "skills_list", json.dumps({"category": 參數}),
-             "success", json.dumps({"success": True, "result": {"skills": []}}), None, None, None, 12.0),
-        )
-        連線.execute(
-            "INSERT INTO endpoint_tool_calls VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("tool-browser-a21-2", _呼叫, None, 2, "skill_view", json.dumps({"name": "stable"}),
-             "success", json.dumps({"success": True, "result": {"content": 結果}}), None, None, None, 13.0),
-        )
-    遮蔽 = SQLite不可逆遮蔽服務(str(路徑))
-    for 後綴, 目標, 列, JSON路徑 in (
-        ("input", "invocation_input", _呼叫, "/contact"),
-        ("metadata", "metadata", _呼叫, "/phone"),
-        ("response", "output", _呼叫, "/answer"),
-        ("arguments", "tool_arguments", "tool-browser-a21-1", "/category"),
-        ("result", "tool_result", "tool-browser-a21-2", "/result/content"),
-    ):
-        遮蔽.遮蔽(True, f"redaction-a21-{後綴}", f"audit-redaction-a21-{後綴}",
-                 _管理員帳號, f"request-redaction-a21-{後綴}", _呼叫,
-                 目標, 列, JSON路徑, "privacy", 15.0)
-    命中們 = (
-        ("input", None, "email_detector", "/contact", 1, 4),
-        ("metadata", None, "phone_detector", "/phone", 0, 3),
-        ("response_data", None, "card_detector", "/answer", 2, 8),
-        ("tool_arguments", "tool-browser-a21-1", "email_detector", "/category", 0, 2),
-        ("tool_result", "tool-browser-a21-2", "email_detector", "/result/content", 3, 9),
-    )
-    with sqlite3.connect(路徑) as 連線:
-        連線.execute("PRAGMA foreign_keys=ON")
-        for 序號, (目標, 工具, 類型, JSON路徑, 開始, 結束) in enumerate(命中們, 1):
-            命中ID, 稽核ID, 時間 = f"hit-browser-a21-{序號}", f"audit-hit-browser-a21-{序號}", 20.0 + 序號
-            中繼資料 = json.dumps({
-                "warning_code": "sensitive_data_detected", "target": 目標,
-                "detector_type": 類型, "json_path": JSON路徑, "start": 開始, "end": 結束,
-            }, sort_keys=True, separators=(",", ":"))
-            連線.execute(
-                "INSERT INTO audit_events VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (稽核ID, 稽核ID, 時間, "published_api.sensitive_data_detected", "success",
-                 "system", None, "invocation", _呼叫, None, _端點, _呼叫, 中繼資料, 時間),
-            )
-            連線.execute(
-                "INSERT INTO invocation_sensitive_hits VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (命中ID, _呼叫, 工具, 目標, 類型, JSON路徑, 開始, 結束, 稽核ID, 時間),
-            )
 
 
 def _設定生產環境(根: Path, Dist根: Path, Port: str) -> None:
@@ -146,7 +126,9 @@ def _設定生產環境(根: Path, Dist根: Path, Port: str) -> None:
         "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
             "1": _必要文字("A21_BROWSER_CREDENTIAL_KEY", 43, 43),
         }, separators=(",", ":")),
-        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": _必要文字("A21_BROWSER_OWNER_CURSOR_KEY", 43, 43),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": _必要文字(
+            "A21_BROWSER_OWNER_CURSOR_KEY", 43, 43
+        ),
     }
     for 名稱 in tuple(os.environ):
         if 名稱.startswith(("TESTAGENT2_", "AIAGENT_")):
@@ -161,15 +143,24 @@ def main() -> int:
     if not Port.isdecimal() or not 1024 <= int(Port) <= 65535:
         raise RuntimeError("A21 browser fixture設定無效") from None
     密碼 = _必要文字("A21_BROWSER_PASSWORD", 32, 128)
+    API金鑰 = _必要文字("A21_BROWSER_API_KEY", 46, 46)
+    憑證加密金鑰 = _必要文字("A21_BROWSER_CREDENTIAL_KEY", 43, 43)
     if not 根.exists():
-        根.mkdir(parents=True, exist_ok=False)
-        (根 / "bundles").mkdir()
-        _建立首次資料(根, 密碼)
+        _建立靜態先決圖形(根, 密碼, API金鑰, 憑證加密金鑰)
     _設定生產環境(根, Dist根, Port)
-    密碼 = ""
-    for 名稱 in ("A21_BROWSER_PASSWORD", "A21_BROWSER_CREDENTIAL_KEY", "A21_BROWSER_OWNER_CURSOR_KEY"):
+    _, _, 回應標記, 參數標記, _ = _合成標記們()
+    模型 = _五目標模型(參數標記, 回應標記)
+    GeminiADC供應商.產生發布回應 = lambda self, **kw: 模型.產生(**kw)
+    密碼 = API金鑰 = 憑證加密金鑰 = ""
+    for 名稱 in (
+        "A21_BROWSER_PASSWORD", "A21_BROWSER_API_KEY", "A21_BROWSER_CREDENTIAL_KEY",
+        "A21_BROWSER_OWNER_CURSOR_KEY",
+    ):
         os.environ.pop(名稱, None)
-    uvicorn.run(root_asgi.建立應用程式(), host="127.0.0.1", port=int(Port), log_level="warning", access_log=False)
+    uvicorn.run(
+        root_asgi.建立應用程式(), host="127.0.0.1", port=int(Port),
+        log_level="warning", access_log=False,
+    )
     return 0
 
 
