@@ -180,6 +180,46 @@ def test_same_completion_identity_different_response_hit_set拒絕且不改已�
         assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
 
 
+def test_same_completion_identity從非空response_hit重播為空集合時拒絕(tmp_path):
+    路徑 = _建立資料庫(tmp_path)
+    result = 執行嘗試結果("success", {"mail": _安全標記()})
+    _完成(路徑, result)
+    原結果 = 準備含敏感偵測的呼叫擷取(
+        擷取階段.AUTHENTICATED, {}, None, response_data=result.data,
+    )
+    assert 原結果 is not None
+
+    def 空偵測(*args, **kwargs):
+        del args, kwargs
+        return 敏感偵測擷取結果(原結果.命令, (), ())
+
+    with pytest.raises(呼叫儲存錯誤, match="^執行事件原子提交失敗$"):
+        _完成(路徑, result, detector=空偵測)
+    with sqlite3.connect(路徑) as 連線:
+        assert 連線.execute("SELECT count(*) FROM invocation_sensitive_hits").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+
+
+def test_same_completion_identity從空response_hit重播為非空集合時拒絕(tmp_path):
+    路徑 = _建立資料庫(tmp_path)
+    result = 執行嘗試結果("success", {"ok": True})
+    _完成(路徑, result)
+    改變結果 = 準備含敏感偵測的呼叫擷取(
+        擷取階段.AUTHENTICATED, {}, None, response_data={"mail": _安全標記()},
+    )
+    assert 改變結果 is not None
+
+    def 非空偵測(*args, **kwargs):
+        del args, kwargs
+        return 敏感偵測擷取結果(改變結果.命令, 改變結果.命中們, 改變結果.警告代碼們)
+
+    with pytest.raises(呼叫儲存錯誤, match="^執行事件原子提交失敗$"):
+        _完成(路徑, result, detector=非空偵測)
+    with sqlite3.connect(路徑) as 連線:
+        assert 連線.execute("SELECT count(*) FROM invocation_sensitive_hits").fetchone() == (0,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+
+
 @pytest.mark.parametrize("stage", ["detector", "writer", "audit", "hit", "completion", "warning"])
 def test_completion任一階段失敗皆rollback且不completed_partial(tmp_path, stage):
     路徑 = _建立資料庫(tmp_path)
