@@ -11,7 +11,9 @@ from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
+from pydantic import (
+    BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model, model_validator,
+)
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -241,8 +243,26 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "detected_at": (_敏感時間回應, ...),
     },
 )
+
+
+class _管理員呼叫詳情回應基底(BaseModel):
+    """HTTP transport 獨立拒絕重複 sensitive-hit ID。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="after")
+    def _驗證命中識別碼唯一(self):
+        命中們 = getattr(self, "sensitive_hits", None)
+        if type(命中們) is not list:
+            raise ValueError
+        識別碼 = [getattr(命中, "id", None) for 命中 in 命中們]
+        if any(type(值) is not str for 值 in 識別碼) or len(識別碼) != len(set(識別碼)):
+            raise ValueError
+        return self
+
+
 管理員呼叫詳情回應 = create_model(
-    "AdminInvocationDetail", __config__=ConfigDict(extra="forbid", strict=True),
+    "AdminInvocationDetail", __base__=_管理員呼叫詳情回應基底,
     **{名稱: 定義 for 名稱, 定義 in {
         "invocation": (管理員呼叫識別回應, ...), "endpoint_id": (str, ...),
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),

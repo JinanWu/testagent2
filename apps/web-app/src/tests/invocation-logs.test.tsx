@@ -1,15 +1,18 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { ApiFormatError } from '../api/client'
 import {
   LOGS_ERROR_MESSAGE,
   LOGS_FORBIDDEN_MESSAGE,
   LOGS_NOT_FOUND_MESSAGE,
   LogsError,
+  PYTHON_CASEFOLD_ASCII_ENTRIES,
   getInvocationDetail,
   listInvocations,
   parseInvocationDetail,
   parseInvocationList,
+  normalizePythonCasefoldAscii,
 } from '../api/logs'
 import App from '../App'
 import { ADMIN_LOGS_ROUTE, DEFAULT_APP_ROUTE } from '../app/routes'
@@ -350,6 +353,57 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     { ...detail('invocation-1'), input: { path: '/Users/example/private.json' } },
   ])('拒絕額外欄位與semantic secret/path', (body) => {
     expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
+  })
+
+  it.each([
+    { ...detail('invocation-1'), input: { note: 'paßword' } },
+    { ...detail('invocation-1'), input: { note: 'paſſword' } },
+    { ...detail('invocation-1'), input: { cooKie: 'marker' } },
+  ])('frontend與Python casefold semantic secret判定一致', (body) => {
+    expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
+  })
+
+  it('casefold小表由全Unicode code point機械證明完整且含已知差異', () => {
+    const python = process.env.A21_BROWSER_PYTHON ?? process.env.PYTHON ?? 'python3'
+    const environment = { ...process.env }
+    for (const name of ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE']) delete environment[name]
+    environment.PYTHONNOUSERSITE = '1'
+    const script = [
+      'import json,sys',
+      'rows=[]',
+      'for cp in range(128,sys.maxunicode+1):',
+      ' c=chr(cp); folded=c.casefold()',
+      " if folded and all(('a'<=x<='z') or ('0'<=x<='9') for x in folded): rows.append([cp,folded])",
+      'print(json.dumps(rows,separators=(\",\",\":\")))',
+    ].join('\n')
+    const generated = JSON.parse(execFileSync(python, ['-c', script], {
+      encoding: 'utf8', env: environment,
+    })) as Array<[number, string]>
+    expect(generated).toEqual(PYTHON_CASEFOLD_ASCII_ENTRIES.map((entry) => [...entry]))
+    const differences = generated.filter(([codePoint, folded]) =>
+      String.fromCodePoint(codePoint).toLowerCase().replace(/[^a-z0-9]/g, '') !== folded)
+    expect(differences).toHaveLength(10)
+    for (const [codePoint, folded] of generated) {
+      expect(normalizePythonCasefoldAscii(String.fromCodePoint(codePoint))).toBe(folded)
+    }
+    expect(generated).toEqual(expect.arrayContaining([[0x00df, 'ss'], [0x017f, 's'], [0x212a, 'k']]))
+  })
+
+  it('frontend鏡射backend semantic value matrix並保留合法raw', () => {
+    const invalid = [
+      'note Authorization', 'Cookie', 'signing-private_key', 'client_secret=TOPSECRET',
+      'api_key=TOPSECRET', 'API KEY TOPSECRET', 'access_token=TOPSECRET',
+      'refresh_token=TOPSECRET', 'master_key=TOPSECRET', 'credential_hash=TOPSECRET',
+      'credential_ciphertext=TOPSECRET', 'password=TOPSECRET', 'secret_key=TOPSECRET',
+      'provider-secret TOPSECRET',
+    ]
+    for (const value of invalid) {
+      expect(() => parseInvocationDetail({ ...detail('invocation-1'), input: { note: value } }))
+        .toThrow(ApiFormatError)
+    }
+    const valid = detail('invocation-1')
+    valid.input = { route: '/api/v1/items', text: 'bearer market analysis' } as unknown as typeof valid.input
+    expect(parseInvocationDetail(valid).input).toEqual(valid.input)
   })
 
   it('只發exact same-origin credentialed list/detail GET', async () => {

@@ -10,6 +10,7 @@ from contextlib import closing
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from 繁中代理.發布介面.治理 import 查詢投影 as 查詢投影模組
 from 繁中代理.發布介面.治理.查詢投影 import SQLite呼叫查詢投影
@@ -24,7 +25,8 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
 )
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
-from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器
+from 繁中代理.發布介面.路由 import 管理稽核 as 管理稽核模組
+from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器, 管理員呼叫詳情回應
 from 繁中代理.發布介面.生產管理稽核 import 管理稽核提供者
 
 
@@ -181,6 +183,57 @@ def _空詳情():
         "latency_ms": None, "pricing_version": None, "created_at": 2.0, "completed_at": 3.0,
         "run_events": [], "tool_calls": [], "redactions": [], "sensitive_hits": [],
     }
+
+
+def _重複命中詳情():
+    資料 = _空詳情()
+    資料["sensitive_hits"] = [
+        {"id": "hit-same", "target": "input", "tool_call_id": None,
+         "detector_type": "format_detector", "json_path": "/a", "start": 0,
+         "end": 1, "detected_at": 5.0},
+        {"id": "hit-same", "target": "input", "tool_call_id": None,
+         "detector_type": "format_detector", "json_path": "/b", "start": 0,
+         "end": 1, "detected_at": 6.0},
+    ]
+    return 資料
+
+
+def test_A21_GateB_domain直接拒絕sensitive_hit重複ID():
+    with pytest.raises(管理員呼叫查詢錯誤, match="^呼叫紀錄不可取得$"):
+        建立管理員呼叫完整詳情(_重複命中詳情())
+
+
+def test_A21_GateB_HTTP_model直接拒絕sensitive_hit重複ID():
+    with pytest.raises(ValidationError):
+        管理員呼叫詳情回應.model_validate(_重複命中詳情(), strict=True)
+
+
+def test_A21_GateB_canonical_HTTP_final_release重複ID固定500(monkeypatch):
+    權威 = 管理員拒絕稽核收據權威(b"r" * 32)
+
+    class Provider:
+        def 列出管理員安全呼叫(self, *_args):
+            raise AssertionError
+
+        def 查詢管理員原始資料(self, *args):
+            return 管理員呼叫完整詳情(_空詳情()) if args[0] else 權威.簽發(*args[1:])
+
+    class PoisonedRelease:
+        def 建立JSON(self):
+            return _重複命中詳情()
+
+    monkeypatch.setattr(管理稽核模組, "建立管理員呼叫完整詳情", lambda _value: PoisonedRelease())
+    app = FastAPI()
+    provider = Provider()
+    app.include_router(建立管理稽核路由器(
+        provider, provider, 管理員呼叫游標編解碼器(b"k" * 32),
+        lambda: 網頁使用者("admin-a21", "admin", "admin"), 拒絕收據權威=權威,
+    ))
+    回應 = TestClient(app, raise_server_exceptions=False).get(
+        "/api/admin/endpoints/ep-a21/invocations/inv-a21"
+    )
+    assert 回應.status_code == 500
+    assert 回應.json() == {"detail": "呼叫紀錄不可取得"}
 
 
 def test_A21_07_DTO拒絕禁止欄位與無界rows_path_offset_time():

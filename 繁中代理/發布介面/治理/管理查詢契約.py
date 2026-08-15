@@ -311,13 +311,15 @@ def _驗證管理員完整詳情(值: object) -> None:
         cast(str, 工具["id"]): cast(int, 工具["sequence_number"])
         for 工具 in cast(list[dict[str, object]], 詳情["tool_calls"])
     }
+    命中識別碼: set[str] = set()
     for 原命中 in cast(list[object], 詳情["sensitive_hits"]):
         if type(原命中) is not dict or set(原命中) != _敏感命中欄位:
             raise ValueError
         命中 = cast(dict[str, object], 原命中)
         目標, 工具ID = 命中["target"], 命中["tool_call_id"]
         是工具 = 目標 in ("tool_arguments", "tool_result")
-        if (not _是識別碼(命中["id"]) or type(目標) is not str
+        if (not _是識別碼(命中["id"]) or 命中["id"] in 命中識別碼
+                or type(目標) is not str
                 or 目標 not in _敏感命中目標
                 or (是工具 and (not _是識別碼(工具ID) or 工具ID not in 工具序號))
                 or (not 是工具 and 工具ID is not None)
@@ -328,6 +330,7 @@ def _驗證管理員完整詳情(值: object) -> None:
                 or not 0 <= cast(int, 命中["start"]) < cast(int, 命中["end"]) <= _最大安全JSON整數
                 or not _是有界敏感時間(命中["detected_at"])):
             raise ValueError
+        命中識別碼.add(cast(str, 命中["id"]))
         鍵 = (目標, 0 if 工具ID is None else 工具序號[cast(str, 工具ID)],
              命中["json_path"], 命中["start"], 命中["end"], 命中["detector_type"])
         if 前鍵 is not None and 鍵 <= 前鍵:
