@@ -7,6 +7,7 @@ import math
 import os
 import sqlite3
 import stat
+import sys
 from types import BuiltinFunctionType, FunctionType
 from urllib.parse import quote
 from typing import Any
@@ -810,7 +811,7 @@ def _預檢遮蔽中繼(
     try:
         中繼列 = _讀取有限列(游標, 53)
     finally:
-        游標.close()
+        _關閉查詢游標並保留主要控制(游標)
     if len(中繼列) > _最大子列:
         raise ValueError
     結果 = []
@@ -854,7 +855,7 @@ def _讀取遮蔽身分中繼(
             raise ValueError
         return 列
     finally:
-        游標.close()
+        _關閉查詢游標並保留主要控制(游標)
 
 
 def _讀取驗證遮蔽列(
@@ -884,7 +885,7 @@ def _讀取驗證遮蔽列(
             if 游標.fetchone() is not None or type(列) is not tuple or len(列) != 79:
                 raise ValueError
         finally:
-            游標.close()
+            _關閉查詢游標並保留主要控制(游標)
         if 列[:53] != 中繼[:53]:
             raise ValueError
         項 = 列[53:]
@@ -1165,6 +1166,14 @@ def _清理資源操作(資源: Any, 操作: str) -> list[BaseException]:
         pass
     資源 = 操作 = None
     return 控制盒
+
+
+def _關閉查詢游標並保留主要控制(游標: Any) -> None:
+    """關閉查詢游標；active控制流程永遠優先於ordinary或cleanup控制。"""
+    主要控制 = sys.exception()
+    控制盒 = _清理資源操作(游標, "close")
+    if 控制盒 and not isinstance(主要控制, _控制流程):
+        _重拋控制(控制盒.pop())
 
 
 def _清理控制鏈(控制: BaseException) -> None:
