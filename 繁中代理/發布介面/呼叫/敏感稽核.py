@@ -173,6 +173,7 @@ class SQLite敏感稽核儲存庫:
         端點識別碼: str,
         *,
         工具呼叫識別碼們: tuple[str | None, ...] | None = None,
+        回放來源: tuple[str, str | None] | None = None,
     ) -> 敏感命中交易收據:
         """在 caller 已持有的交易內寫入一對一 audit/hit，不控制交易或連線。
 
@@ -190,6 +191,14 @@ class SQLite敏感稽核儲存庫:
             結果 = None
             對照 = _重建工具對照(命中們, 工具呼叫識別碼們)
             工具呼叫識別碼們 = None
+            if 回放來源 is not None:
+                if (type(回放來源) is not tuple or len(回放來源) != 2
+                        or type(回放來源[0]) is not str
+                        or 回放來源[0] not in {
+                            "input", "metadata", "response_data", "tool_arguments", "tool_result",
+                        }
+                        or (回放來源[1] is not None and type(回放來源[1]) is not str)):
+                    raise ValueError
             if not 連線.in_transaction:
                 raise ValueError
             外鍵列 = 連線.execute("PRAGMA foreign_keys").fetchone()
@@ -217,6 +226,10 @@ class SQLite敏感稽核儲存庫:
                 for 索引, 命中 in enumerate(命中們)
             )
             來源們 = tuple(dict.fromkeys((列[0], 列[1]) for 列 in 期望們))
+            if 回放來源 is not None:
+                if any(來源 != 回放來源 for 來源 in 來源們):
+                    raise ValueError
+                來源們 = (回放來源,)
             已存列們 = _讀取來源命中(連線, 呼叫識別碼, 來源們)
             總命中數列 = 連線.execute(
                 "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=?",
@@ -226,7 +239,7 @@ class SQLite敏感稽核儲存庫:
                     or type(總命中數列[0]) is not int
                     or not 0 <= 總命中數列[0] <= _最大呼叫命中數):
                 raise ValueError
-            if 已存列們:
+            if 回放來源 is not None or 已存列們:
                 _驗證回放完整集合(連線, 呼叫識別碼, 端點識別碼, 期望們, 已存列們)
                 稽核識別碼們 = tuple(列[6] for 列 in 已存列們)
                 命中識別碼們 = tuple(列[7] for 列 in 已存列們)

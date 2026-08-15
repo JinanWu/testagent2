@@ -436,11 +436,13 @@ class 呼叫敏感交易協調器:
 
     def 寫入呼叫交易(self, 連線: sqlite3.Connection, 結果: object,
                  呼叫識別碼: str, 端點識別碼: str, *,
-                 工具呼叫識別碼們: tuple[str | None, ...] | None = None) -> object:
+                 工具呼叫識別碼們: tuple[str | None, ...] | None = None,
+                 回放來源: tuple[str, str | None] | None = None) -> object:
         """精確委派 A21-03 caller-owned writer，不呼叫 self-owned wrapper。"""
         return self._交易寫入器.寫入呼叫交易(
             連線, 結果, 呼叫識別碼, 端點識別碼,
             工具呼叫識別碼們=工具呼叫識別碼們,
+            回放來源=回放來源,
         )
 
 
@@ -749,6 +751,8 @@ class SQLite呼叫儲存庫:
                         raise ValueError
                     self._敏感交易協調器.寫入呼叫交易(
                         連線, 偵測結果, invocation_id, 呼叫列[7], 工具呼叫識別碼們=None,
+                        回放來源=(("response_data", None)
+                                  if 呼叫列[0] != "running" else None),
                     )
                 if warnings is not _未提供:
                     invocation命中數 = _讀取invocation命中數(連線, invocation_id)
