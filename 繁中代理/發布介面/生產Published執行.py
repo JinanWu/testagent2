@@ -43,7 +43,8 @@ from .規劃.版本服務 import (
     SQLite目前版本解析器, SQLite版本配置服務, 已釘選版本, 目前版本不存在錯誤,
 )
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
-from .呼叫.儲存庫 import SQLite呼叫儲存庫
+from .呼叫.儲存庫 import SQLite呼叫儲存庫, 呼叫敏感交易協調器
+from .呼叫.敏感稽核 import SQLite敏感稽核儲存庫
 from .呼叫.Published工作階段 import SQLitePublished工作階段儲存庫
 from .呼叫.限流 import 限流決策
 from .呼叫.擷取政策 import 擷取階段, 準備呼叫擷取, 寫入呼叫擷取
@@ -866,9 +867,12 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
     初始化發布介面資料庫(資料庫)
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
+    敏感writer = SQLite敏感稽核儲存庫(資料庫)
+    敏感writer.驗證啟動結構()
+    敏感協調器 = 呼叫敏感交易協調器(敏感writer)
+    呼叫庫 = SQLite呼叫儲存庫(資料庫, 敏感交易協調器=敏感協調器)
     套件協調器 = _執行技能套件啟動協調(發布)
     解析器 = SQLite目前版本解析器(資料庫)
-    呼叫庫 = SQLite呼叫儲存庫(資料庫)
     工作階段庫 = SQLitePublished工作階段儲存庫(資料庫)
     憑證 = SQLite憑證驗證服務(資料庫)
     限流器 = SQLite雙層限流器(資料庫)
@@ -891,6 +895,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
         Runtime橋接 = 建立發布執行嘗試橋接(
             發布快照儲存庫=快照庫, 技能套件載入器=套件載入器,
             工具發布庫=工具庫, 模型供應商註冊表=模型表,
+            工具呼叫紀錄器=呼叫庫.附加工具呼叫,
         )
         台帳 = InvocationLedger橋接(呼叫庫)
         編排器 = 外部呼叫編排器(

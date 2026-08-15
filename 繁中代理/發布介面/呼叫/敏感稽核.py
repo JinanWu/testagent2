@@ -119,6 +119,44 @@ class SQLite敏感稽核儲存庫:
                 raise
             raise 敏感稽核錯誤("敏感稽核儲存庫初始化失敗") from None
 
+    def 驗證啟動結構(self) -> None:
+        """startup 以短生命週期交易驗證 writer 所需完整 schema。
+
+        成功或失敗都回滾並關閉連線；不寫入 hit/audit，不保留 connection authority。
+        """
+        連線 = None
+        try:
+            連線 = self._開啟連線()
+            連線.execute("BEGIN IMMEDIATE")
+            驗證資料庫結構(連線)
+            _驗證稽核結構(連線)
+            連線.rollback()
+            連線.close()
+            連線 = None
+            return
+        except _控制流程例外:
+            if 連線 is not None:
+                try:
+                    連線.rollback()
+                except BaseException:
+                    pass
+                try:
+                    連線.close()
+                except BaseException:
+                    pass
+            raise
+        except BaseException:
+            if 連線 is not None:
+                try:
+                    連線.rollback()
+                except BaseException:
+                    pass
+                try:
+                    連線.close()
+                except BaseException:
+                    pass
+        raise 敏感稽核錯誤("敏感稽核啟動結構無效") from None
+
     def 寫入呼叫交易(
         self,
         連線: sqlite3.Connection,
