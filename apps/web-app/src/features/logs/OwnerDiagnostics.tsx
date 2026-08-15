@@ -135,7 +135,9 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
           ／tokens {item.usage?.totalTokens ?? '無樣本'}／工具 {item.toolNames.length === 0 ? '無' : item.toolNames.join('、')}
           ／建立 {item.createdAt}／完成 {item.completedAt ?? '未完成'}
         </span>
-        {item.redactedFields.length > 0 ? '（部分欄位已遮蔽）' : ''}
+        {item.redactedFields.length > 0
+          ? `（遮蔽欄位：${item.redactedFields.join('、')}）`
+          : ''}
       </li>)}</ul>
       {nextCursor && <button type="button" disabled={paging} onClick={() => { void loadMore() }}>
         {paging ? '載入中…' : '載入更多'}
