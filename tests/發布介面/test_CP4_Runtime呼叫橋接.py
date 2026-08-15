@@ -23,7 +23,7 @@ from 繁中代理.發布介面.執行期.工具版本庫 import (
 from 繁中代理.發布介面.執行期.模型契約 import 供應商逾時, 模型回應快照, 模型設定快照
 from 繁中代理.發布介面.執行期.服務帳戶 import ServiceAccountContext
 from 繁中代理.發布介面.執行期.執行器 import (
-    技能套件快照, 技能套件檔案, 發布執行快照, 計算技能套件雜湊,
+    工具結果觀察, 技能套件快照, 技能套件檔案, 發布執行快照, 計算技能套件雜湊,
 )
 from 繁中代理.發布介面.執行期.呼叫橋接 import 建立發布執行嘗試橋接
 
@@ -357,13 +357,17 @@ def test_tool治理控制流程保留identity且executor_traceback不留canonica
         bridge(request)
     assert captured.value is signal
     traceback = captured.tb
-    executor_frames = []
+    production_frames = []
     while traceback is not None:
-        if traceback.tb_frame.f_code.co_name == "_附加工具回合":
-            executor_frames.append(traceback.tb_frame)
+        if "/繁中代理/" in traceback.tb_frame.f_code.co_filename:
+            production_frames.append(traceback.tb_frame)
         traceback = traceback.tb_next
-    assert len(executor_frames) == 1
-    assert marker not in repr(executor_frames[0].f_locals)
+    assert {frame.f_code.co_name for frame in production_frames} >= {"_附加工具回合", "紀錄工具"}
+    assert all(marker not in repr(frame.f_locals) for frame in production_frames)
+    for frame in production_frames:
+        for value in frame.f_locals.values():
+            if type(value) is 工具結果觀察:
+                assert marker not in repr(value.arguments)
 
 
 def test_preflight_invalid工具不呼叫handler也不觀察():

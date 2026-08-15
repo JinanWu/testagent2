@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 from ..呼叫.編排器 import 執行嘗試請求, 執行嘗試結果
 from ..領域模型 import PublishedUsage
@@ -96,31 +96,36 @@ class 發布執行嘗試橋接:
             參數：executor-owned ``工具結果觀察``；失敗觀察不含 provider error payload。
             返回值：無；recorder ordinary failure 原樣回到 executor，標示治理失敗來源。
             """
-            紀錄器 = self._工具呼叫紀錄器
-            if 紀錄器 is None:
-                return
-            if type(觀察) is not 工具結果觀察:
-                raise ValueError
-            工具序號[0] += 1
-            識別 = f"{呼叫識別}:attempt:{嘗試次數}:tool:{工具序號[0]}"
-            if 觀察.outcome == "success":
-                結果 = 觀察.result
-                if type(結果) is not dict:
+            紀錄器 = 識別 = 結果 = None
+            try:
+                紀錄器 = self._工具呼叫紀錄器
+                if 紀錄器 is None:
+                    return
+                if type(觀察) is not 工具結果觀察:
+                    raise ValueError
+                工具序號[0] += 1
+                識別 = f"{呼叫識別}:attempt:{嘗試次數}:tool:{工具序號[0]}"
+                if 觀察.outcome == "success":
+                    結果 = 觀察.result
+                    if type(結果) is not dict:
+                        raise ValueError
+                    紀錄器(
+                        呼叫識別, 識別, 觀察.tool_name, 觀察.arguments,
+                        "success", result=結果,
+                    )
+                    return
+                if (觀察.outcome != "error"
+                        or 觀察.safe_error_code not in (
+                            "tool_timeout", "endpoint_misconfigured", "tool_execution_failed",
+                        ) or 觀察.result is not None):
                     raise ValueError
                 紀錄器(
                     呼叫識別, 識別, 觀察.tool_name, 觀察.arguments,
-                    "success", result=結果,
+                    "error", error={"code": 觀察.safe_error_code},
                 )
-                return
-            if (觀察.outcome != "error"
-                    or 觀察.safe_error_code not in (
-                        "tool_timeout", "endpoint_misconfigured", "tool_execution_failed",
-                    ) or 觀察.result is not None):
-                raise ValueError
-            紀錄器(
-                呼叫識別, 識別, 觀察.tool_name, 觀察.arguments,
-                "error", error={"code": 觀察.safe_error_code},
-            )
+            except _控制流程:
+                觀察 = 紀錄器 = 識別 = 結果 = cast(Any, None)
+                raise
 
         try:
             release = self._發布(版本.tool_handler_release)
