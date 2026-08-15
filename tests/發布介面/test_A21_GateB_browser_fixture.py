@@ -32,4 +32,3 @@ def test_A21_restart階段不重新invoke或遮蔽():
     assert "/invoke" not in restart
     assert "redactCanonicalInvocation" not in restart
     assert "/invoke" in primary
-
