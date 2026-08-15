@@ -26,6 +26,13 @@ from ..嚴格JSON import 建立正規JSON
 from ..資料庫結構契約 import 遷移帳本 as _必要遷移, 驗證資料庫結構
 from .Published工作階段 import Published成功對話提交, 最大歷史位元組
 from .擷取政策 import 擷取階段, 準備含敏感偵測的呼叫擷取
+from .敏感稽核 import (
+    敏感操作模式,
+    建立呼叫來源族,
+    建立工具成功來源族,
+    建立工具錯誤來源族,
+    建立完成來源族,
+)
 
 
 class 呼叫儲存錯誤(RuntimeError):
@@ -337,10 +344,17 @@ def _讀取invocation命中數(連線: sqlite3.Connection, invocation_id: str) -
 class _明確交易範圍:
     """讓 A21 transaction 的 rollback/close callback 遵守固定控制流程優先序。"""
 
-    __slots__ = ("_連線",)
+    __slots__ = ("_連線", "_提交重驗")
 
     def __init__(self, 連線: sqlite3.Connection) -> None:
         self._連線 = 連線
+        self._提交重驗: Callable[[], object] | None = None
+
+    def 設定提交重驗(self, callback: Callable[[], object]) -> None:
+        """設定ordinary commit acknowledgement loss後的fresh authority readback。"""
+        if not callable(callback):
+            raise ValueError
+        self._提交重驗 = callback
 
     def __enter__(self) -> sqlite3.Connection:
         return self._連線
@@ -351,8 +365,29 @@ class _明確交易範圍:
             try:
                 連線.commit()
             except BaseException as 提交錯誤:
+                if type(提交錯誤) not in _控制流程例外 and self._提交重驗 is not None:
+                    try:
+                        if 連線.in_transaction:
+                            連線.rollback()
+                    except _控制流程例外:
+                        raise
+                    except BaseException:
+                        pass
+                    try:
+                        連線.close()
+                    except _控制流程例外:
+                        raise
+                    except BaseException:
+                        pass
+                    self._提交重驗()
+                    return False
                 return self._提交失敗(提交錯誤)
-            連線.close()
+            try:
+                連線.close()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                pass
             return False
 
         主要是控制流程 = type(錯誤) in _控制流程例外
@@ -434,15 +469,12 @@ class 呼叫敏感交易協調器:
             擷取階段.AUTHENTICATED, {}, None, response_data=response快照,
         )
 
-    def 寫入呼叫交易(self, 連線: sqlite3.Connection, 結果: object,
-                 呼叫識別碼: str, 端點識別碼: str, *,
-                 工具呼叫識別碼們: tuple[str | None, ...] | None = None,
-                 回放來源: tuple[str, str | None] | None = None) -> object:
-        """精確委派 A21-03 caller-owned writer，不呼叫 self-owned wrapper。"""
+    def 寫入呼叫交易(self, 連線: sqlite3.Connection, 模式: 敏感操作模式,
+                 來源族: object, 結果: object, 呼叫識別碼: str,
+                 端點識別碼: str) -> object:
+        """只委派明確 mode 與 sealed family，不接受 target/tool 自由組合。"""
         return self._交易寫入器.寫入呼叫交易(
-            連線, 結果, 呼叫識別碼, 端點識別碼,
-            工具呼叫識別碼們=工具呼叫識別碼們,
-            回放來源=回放來源,
+            連線, 模式, 來源族, 結果, 呼叫識別碼, 端點識別碼,
         )
 
 
@@ -487,51 +519,17 @@ class SQLite呼叫儲存庫:
         metadata_size_bytes: int | None = None, metadata_sha256: str | None = None,
     ) -> str:
         """slug解析成功後建立pending紀錄；回傳id，任何失敗完整回滾並丟固定錯誤。"""
-        if self._敏感交易協調器 is not None:
-            try:
-                return self._建立敏感已解析呼叫(
-                    endpoint_id, endpoint_version_id, request_id, input,
-                    credential_id=credential_id, session_id=session_id, message_id=message_id,
-                    metadata=metadata, metadata_size_bytes=metadata_size_bytes,
-                    metadata_sha256=metadata_sha256,
-                )
-            except BaseException as 邊界錯誤:
-                是控制流程 = type(邊界錯誤) in _控制流程例外
-                endpoint_id = endpoint_version_id = request_id = input = credential_id = None
-                session_id = message_id = metadata = metadata_size_bytes = metadata_sha256 = None
-                if 是控制流程:
-                    raise
-            raise 呼叫儲存錯誤("呼叫建立失敗") from None
-        呼叫識別碼 = 建立時間原值 = 建立時間 = 輸入JSON = metadata_json = None
         try:
-            呼叫識別碼 = self._識別碼工廠()
-            self._驗證建立值((呼叫識別碼, endpoint_id, endpoint_version_id, request_id),
-                         (credential_id, session_id, message_id), metadata_size_bytes, metadata_sha256)
-            建立時間原值 = self._時鐘()
-            if type(建立時間原值) not in (int, float) or not self._非負有限(建立時間原值):
-                raise ValueError
-            建立時間 = float(建立時間原值)
-            輸入快照 = self._建立可信JSON樹(input)
-            metadata快照 = None if metadata is None else self._建立可信JSON樹(metadata)
-            input = metadata = None
-            輸入JSON = 建立正規JSON(輸入快照)
-            metadata_json = None if metadata快照 is None else 建立正規JSON(metadata快照)
-            with closing(self._開啟連線()) as 連線, 連線:
-                連線.execute("BEGIN IMMEDIATE")
-                連線.execute(
-                    "INSERT INTO endpoint_invocations("
-                    "id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,status,"
-                    "input_json,metadata_json,metadata_size_bytes,metadata_sha256,created_at) "
-                    "VALUES (?,?,?,?,?,?,?,'pending',?,?,?,?,?)",
-                    (呼叫識別碼, endpoint_id, endpoint_version_id, credential_id, request_id, session_id,
-                     message_id, 輸入JSON, metadata_json, metadata_size_bytes, metadata_sha256, 建立時間),
-                )
-            return 呼叫識別碼
+            return self._建立敏感已解析呼叫(
+                endpoint_id, endpoint_version_id, request_id, input,
+                credential_id=credential_id, session_id=session_id, message_id=message_id,
+                metadata=metadata, metadata_size_bytes=metadata_size_bytes,
+                metadata_sha256=metadata_sha256,
+            )
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
-            endpoint_id = endpoint_version_id = request_id = input = credential_id = session_id = None
-            message_id = metadata = metadata_sha256 = 呼叫識別碼 = 建立時間原值 = 建立時間 = None
-            metadata_size_bytes = 輸入快照 = metadata快照 = 輸入JSON = metadata_json = 連線 = None
+            endpoint_id = endpoint_version_id = request_id = input = credential_id = None
+            session_id = message_id = metadata = metadata_size_bytes = metadata_sha256 = None
             if 是控制流程:
                 raise
         raise 呼叫儲存錯誤("呼叫建立失敗") from None
@@ -542,20 +540,20 @@ class SQLite呼叫儲存庫:
         metadata: object | None, metadata_size_bytes: int | None,
         metadata_sha256: str | None,
     ) -> str:
-        """在單一立即交易偵測並寫入 invocation/hit/audit。"""
+        """依 request identity 在單一交易建立或重播 pending invocation。
+
+        參數：immutable creation fields 與 detached payload。返回值：首次或重播的 durable
+        invocation ID；重播不呼叫 ID factory 或 clock。
+        """
         連線 = 呼叫識別碼 = 建立時間原值 = 建立時間 = None
         輸入快照 = metadata快照 = 輸入JSON = metadata_json = 偵測結果 = None
-        命中們 = 已存命中數 = None
         已提交 = 關閉已嘗試 = False
         主要錯誤 = 清理控制 = None
         try:
-            呼叫識別碼 = self._識別碼工廠()
-            self._驗證建立值((呼叫識別碼, endpoint_id, endpoint_version_id, request_id),
-                         (credential_id, session_id, message_id), metadata_size_bytes, metadata_sha256)
-            建立時間原值 = self._時鐘()
-            if type(建立時間原值) not in (int, float) or not self._非負有限(建立時間原值):
-                raise ValueError
-            建立時間 = float(建立時間原值)
+            self._驗證建立值(
+                (endpoint_id, endpoint_version_id, request_id),
+                (credential_id, session_id, message_id), metadata_size_bytes, metadata_sha256,
+            )
             輸入快照 = self._建立可信JSON樹(input)
             metadata快照 = None if metadata is None else self._建立可信JSON樹(metadata)
             input = metadata = None
@@ -563,25 +561,21 @@ class SQLite呼叫儲存庫:
             metadata_json = None if metadata快照 is None else 建立正規JSON(metadata快照)
             連線 = self._開啟連線()
             連線.execute("BEGIN IMMEDIATE")
-            偵測結果 = self._敏感交易協調器.偵測呼叫(輸入快照, metadata快照)
-            if (建立正規JSON(輸入快照) != 輸入JSON
-                    or (None if metadata快照 is None else 建立正規JSON(metadata快照)) != metadata_json):
-                raise ValueError
             已有 = 連線.execute(
-                "SELECT endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,"
-                "status,input_json,metadata_json,metadata_size_bytes,metadata_sha256,created_at "
-                "FROM endpoint_invocations WHERE id=?", (呼叫識別碼,),
+                "SELECT id,endpoint_id,endpoint_version_id,credential_id,session_id,message_id,status,"
+                "input_json,metadata_json,metadata_size_bytes,metadata_sha256,created_at "
+                "FROM endpoint_invocations WHERE request_id=?", (request_id,),
             ).fetchone()
-            預期 = (endpoint_id, endpoint_version_id, credential_id, request_id, session_id, message_id,
-                  "pending", 輸入JSON, metadata_json, metadata_size_bytes, metadata_sha256, 建立時間)
-            命中們 = object.__getattribute__(偵測結果, "命中們")
-            if type(命中們) is not tuple:
-                raise ValueError
-            invocation命中數 = _讀取invocation命中數(連線, 呼叫識別碼)
-            if 已有 is None and (invocation命中數 != 0
-                              or invocation命中數 + len(命中們) > _最大敏感命中數):
-                raise ValueError
             if 已有 is None:
+                呼叫識別碼 = self._識別碼工廠()
+                self._驗證建立值(
+                    (呼叫識別碼, endpoint_id, endpoint_version_id, request_id),
+                    (credential_id, session_id, message_id), metadata_size_bytes, metadata_sha256,
+                )
+                建立時間原值 = self._時鐘()
+                if type(建立時間原值) not in (int, float) or not self._非負有限(建立時間原值):
+                    raise ValueError
+                建立時間 = float(建立時間原值)
                 游標 = 連線.execute(
                     "INSERT INTO endpoint_invocations("
                     "id,endpoint_id,endpoint_version_id,credential_id,request_id,session_id,message_id,status,"
@@ -593,27 +587,56 @@ class SQLite呼叫儲存庫:
                 )
                 if type(游標.rowcount) is not int or 游標.rowcount != 1:
                     raise ValueError
-            elif 已有 != 預期:
-                raise ValueError
-            if 已有 is not None:
-                已存命中數 = 連線.execute(
-                    "SELECT count(*) FROM invocation_sensitive_hits WHERE invocation_id=? "
-                    "AND tool_call_id IS NULL AND target_type IN ('input','metadata')",
-                    (呼叫識別碼,),
-                ).fetchone()
-                if (已存命中數 is None or len(已存命中數) != 1
-                        or type(已存命中數[0]) is not int
-                        or 已存命中數[0] != len(命中們)
-                        or invocation命中數 < 已存命中數[0]):
+                模式 = 敏感操作模式.FIRST_WRITE
+            else:
+                呼叫識別碼 = 已有[0]
+                if (type(呼叫識別碼) is not str or 已有[1:11] != (
+                    endpoint_id, endpoint_version_id, credential_id, session_id, message_id,
+                    "pending", 輸入JSON, metadata_json, metadata_size_bytes, metadata_sha256,
+                ) or type(已有[11]) not in (int, float) or not self._非負有限(已有[11])):
                     raise ValueError
-            self._敏感交易協調器.寫入呼叫交易(
-                連線, 偵測結果, 呼叫識別碼, endpoint_id,
-                工具呼叫識別碼們=None,
-            )
-            連線.commit()
+                模式 = 敏感操作模式.REPLAY
+            if self._敏感交易協調器 is not None:
+                偵測結果 = self._敏感交易協調器.偵測呼叫(輸入快照, metadata快照)
+                if (建立正規JSON(輸入快照) != 輸入JSON
+                        or (None if metadata快照 is None else 建立正規JSON(metadata快照)) != metadata_json):
+                    raise ValueError
+                self._敏感交易協調器.寫入呼叫交易(
+                    連線, 模式, 建立呼叫來源族(), 偵測結果, 呼叫識別碼, endpoint_id,
+                )
+            try:
+                連線.commit()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                try:
+                    if 連線.in_transaction:
+                        連線.rollback()
+                except _控制流程例外:
+                    raise
+                except BaseException:
+                    pass
+                try:
+                    連線.close()
+                except _控制流程例外:
+                    raise
+                except BaseException:
+                    pass
+                連線 = None
+                return self._重驗建立提交(
+                    endpoint_id, endpoint_version_id, request_id, 輸入快照,
+                    credential_id=credential_id, session_id=session_id, message_id=message_id,
+                    metadata=metadata快照, metadata_size_bytes=metadata_size_bytes,
+                    metadata_sha256=metadata_sha256,
+                )
             已提交 = True
             關閉已嘗試 = True
-            連線.close()
+            try:
+                連線.close()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                pass
             連線 = None
             return 呼叫識別碼
         except BaseException as 邊界錯誤:
@@ -636,8 +659,7 @@ class SQLite呼叫儲存庫:
             endpoint_id = endpoint_version_id = request_id = input = credential_id = session_id = None
             message_id = metadata = metadata_sha256 = 呼叫識別碼 = 建立時間原值 = None
             metadata_size_bytes = 建立時間 = 輸入快照 = metadata快照 = None
-            輸入JSON = metadata_json = 偵測結果 = 連線 = None
-            已有 = 預期 = 游標 = 命中們 = 已存命中數 = None
+            輸入JSON = metadata_json = 偵測結果 = 連線 = 已有 = 游標 = 模式 = None
         if 是控制流程:
             raise 主要錯誤
         if 清理控制 is not None:
@@ -646,6 +668,26 @@ class SQLite呼叫儲存庫:
             清理控制.__suppress_context__ = True
             raise 清理控制
         raise 呼叫儲存錯誤("呼叫建立失敗") from None
+
+    def _重驗建立提交(
+        self, endpoint_id: str, endpoint_version_id: str, request_id: str, input: object, *,
+        credential_id: str | None, session_id: str | None, message_id: str | None,
+        metadata: object | None, metadata_size_bytes: int | None,
+        metadata_sha256: str | None,
+    ) -> str:
+        """ordinary commit acknowledgement遺失後，以fresh exact replay重建creation receipt。"""
+        if not self._fresh_identity存在("endpoint_invocations", "request_id", request_id):
+            raise ValueError
+        fresh = SQLite呼叫儲存庫(
+            self._資料庫, 時鐘=self._時鐘, 識別碼工廠=self._識別碼工廠,
+            敏感交易協調器=self._敏感交易協調器,
+        )
+        return fresh.建立已解析呼叫(
+            endpoint_id, endpoint_version_id, request_id, input,
+            credential_id=credential_id, session_id=session_id, message_id=message_id,
+            metadata=metadata, metadata_size_bytes=metadata_size_bytes,
+            metadata_sha256=metadata_sha256,
+        )
 
     def 標記執行中(self, invocation_id: str) -> None:
         """將pending轉為running；不存在、畸形或其他狀態固定拒絕並回滾。"""
@@ -714,7 +756,8 @@ class SQLite呼叫儲存庫:
                 工作階段對話組位元組 = len(工作階段使用者JSON.encode("utf-8")) + len(工作階段助理JSON.encode("utf-8"))
                 if not 0 < 工作階段對話組位元組 <= 最大歷史位元組:
                     raise ValueError
-            with _明確交易範圍(self._開啟連線()) as 連線:
+            交易範圍 = _明確交易範圍(self._開啟連線())
+            with 交易範圍 as 連線:
                 連線.execute("BEGIN IMMEDIATE")
                 if warnings is not _未提供:
                     驗證資料庫結構(連線)
@@ -749,10 +792,19 @@ class SQLite呼叫儲存庫:
                 if 偵測結果 is not None:
                     if 呼叫列 is None or len(呼叫列) != 8 or type(呼叫列[7]) is not str:
                         raise ValueError
+                    事件列 = 連線.execute(
+                        "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
+                        (event_id,),
+                    ).fetchone()
+                    if 呼叫列[0] == "running" and 事件列 is None:
+                        敏感模式 = 敏感操作模式.FIRST_WRITE
+                    elif 呼叫列[0] == status and 事件列 is not None:
+                        敏感模式 = 敏感操作模式.REPLAY
+                    else:
+                        raise ValueError
                     self._敏感交易協調器.寫入呼叫交易(
-                        連線, 偵測結果, invocation_id, 呼叫列[7], 工具呼叫識別碼們=None,
-                        回放來源=(("response_data", None)
-                                  if 呼叫列[0] != "running" else None),
+                        連線, 敏感模式, 建立完成來源族(), 偵測結果,
+                        invocation_id, 呼叫列[7],
                     )
                 if warnings is not _未提供:
                     invocation命中數 = _讀取invocation命中數(連線, invocation_id)
@@ -764,10 +816,11 @@ class SQLite呼叫儲存庫:
                             {"code": 代碼, "message": 訊息} for 代碼, 訊息 in 最終警告純量
                         ]
                     payload_json = 建立正規JSON(payload快照)
-                事件列 = 連線.execute(
-                    "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
-                    (event_id,),
-                ).fetchone()
+                if 偵測結果 is None:
+                    事件列 = 連線.execute(
+                        "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
+                        (event_id,),
+                    ).fetchone()
                 if 事件列 is not None:
                     if 事件列 != (invocation_id, expected_sequence, event_type, payload_json):
                         raise ValueError
@@ -841,6 +894,12 @@ class SQLite呼叫儲存庫:
                     )
                     if 游標.rowcount != 1:
                         raise ValueError
+                交易範圍.設定提交重驗(lambda: self._重驗完成提交(
+                    invocation_id, event_id, event_type, payload快照, expected_sequence,
+                    status=status, output=output快照, error=error快照, usage=usage快照,
+                    工作階段對話組=工作階段對話組,
+                    warnings=(警告純量 if warnings is not _未提供 else _未提供),
+                ))
             if warnings is _未提供:
                 return expected_sequence
             return expected_sequence, cast(tuple[tuple[str, str], ...], 最終警告純量)
@@ -858,6 +917,35 @@ class SQLite呼叫儲存庫:
                 邊界錯誤.__suppress_context__ = True
                 raise
         raise 呼叫儲存錯誤("執行事件原子提交失敗") from None
+
+    def _重驗完成提交(
+        self, invocation_id: str, event_id: str, event_type: str, payload: object,
+        expected_sequence: int, *, status: str | None, output: object | None,
+        error: object | None, usage: object | None,
+        工作階段對話組: Published成功對話提交 | None, warnings: object,
+    ) -> None:
+        """以fresh connection重播完整completion graph，只有exact committed才返回。"""
+        if not self._fresh_identity存在("run_events", "id", event_id):
+            raise ValueError
+        fresh = SQLite呼叫儲存庫(
+            self._資料庫, 時鐘=self._時鐘, 識別碼工廠=self._識別碼工廠,
+            敏感交易協調器=self._敏感交易協調器,
+        )
+        kwargs = {
+            "status": status, "output": output, "error": error, "usage": usage,
+            "工作階段對話組": 工作階段對話組,
+        }
+        if warnings is not _未提供:
+            kwargs["warnings"] = warnings
+        結果 = fresh.原子記錄執行事件並結案(
+            invocation_id, event_id, event_type, payload, expected_sequence, **kwargs,
+        )
+        if warnings is _未提供:
+            if 結果 != expected_sequence:
+                raise ValueError
+        elif (type(結果) is not tuple or len(結果) != 2
+              or 結果[0] != expected_sequence):
+            raise ValueError
 
     def 附加工具呼叫(
         self, invocation_id: str, tool_call_id: str, tool_name: str, arguments: object,
@@ -914,7 +1002,8 @@ class SQLite呼叫儲存庫:
                 "SELECT id,endpoint_id,status FROM endpoint_invocations WHERE id=?", (invocation_id,),
             ).fetchone()
             if (呼叫列 is None or len(呼叫列) != 3 or 呼叫列[0] != invocation_id
-                    or type(呼叫列[1]) is not str or 呼叫列[2] != "running"):
+                    or type(呼叫列[1]) is not str
+                    or 呼叫列[2] not in ("running", "succeeded", "failed")):
                 raise ValueError
             for 參照表, 參照識別碼 in (("run_events", run_event_id),
                                      ("endpoint_tool_calls", retry_of_tool_call_id)):
@@ -945,26 +1034,13 @@ class SQLite呼叫儲存庫:
                 "result_json,error_json,latency_ms,retry_of_tool_call_id FROM endpoint_tool_calls WHERE id=?",
                 (tool_call_id,),
             ).fetchone()
+            if 已有 is None and 呼叫列[2] != "running":
+                raise ValueError
             命中們 = object.__getattribute__(偵測結果, "命中們")
             if type(命中們) is not tuple:
                 raise ValueError
-            對照 = tuple(
-                tool_call_id if object.__getattribute__(命中, "目標代碼").startswith("tool_") else None
-                for 命中 in 命中們
-            )
             invocation命中數 = _讀取invocation命中數(連線, invocation_id)
-            if 已有 is not None:
-                已存命中數 = 連線.execute(
-                    "SELECT count(*) FROM invocation_sensitive_hits "
-                    "WHERE invocation_id=? AND tool_call_id=?",
-                    (invocation_id, tool_call_id),
-                ).fetchone()
-                if (已存命中數 is None or len(已存命中數) != 1
-                        or type(已存命中數[0]) is not int
-                        or 已存命中數[0] != len(命中們)
-                        or invocation命中數 < 已存命中數[0]):
-                    raise ValueError
-            elif invocation命中數 + len(命中們) > _最大敏感命中數:
+            if 已有 is None and invocation命中數 + len(命中們) > _最大敏感命中數:
                 raise ValueError
             if 已有 is None:
                 時間原值 = self._時鐘()
@@ -990,6 +1066,7 @@ class SQLite呼叫儲存庫:
                 )
                 if type(游標.rowcount) is not int or 游標.rowcount != 1:
                     raise ValueError
+                模式 = 敏感操作模式.FIRST_WRITE
             else:
                 序號 = 已有[2]
                 if (type(序號) is not int or 序號 < 1 or 已有 != (
@@ -997,13 +1074,45 @@ class SQLite呼叫儲存庫:
                     result_json, error_json, latency_ms, retry_of_tool_call_id,
                 )):
                     raise ValueError
+                模式 = 敏感操作模式.REPLAY
             self._敏感交易協調器.寫入呼叫交易(
-                連線, 偵測結果, invocation_id, 呼叫列[1], 工具呼叫識別碼們=對照,
+                連線, 模式,
+                (建立工具成功來源族(tool_call_id)
+                 if outcome == "success" else 建立工具錯誤來源族(tool_call_id)),
+                偵測結果, invocation_id, 呼叫列[1],
             )
-            連線.commit()
+            try:
+                連線.commit()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                try:
+                    if 連線.in_transaction:
+                        連線.rollback()
+                except _控制流程例外:
+                    raise
+                except BaseException:
+                    pass
+                try:
+                    連線.close()
+                except _控制流程例外:
+                    raise
+                except BaseException:
+                    pass
+                連線 = None
+                return self._重驗工具提交(
+                    invocation_id, tool_call_id, tool_name, 參數快照, outcome,
+                    result=result快照, error=error快照, run_event_id=run_event_id,
+                    retry_of_tool_call_id=retry_of_tool_call_id, latency_ms=latency_ms,
+                )
             已提交 = True
             關閉已嘗試 = True
-            連線.close()
+            try:
+                連線.close()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                pass
             連線 = None
             return 序號
         except BaseException as 邊界錯誤:
@@ -1037,6 +1146,53 @@ class SQLite呼叫儲存庫:
             清理控制.__suppress_context__ = True
             raise 清理控制
         raise ValueError from None
+
+    def _重驗工具提交(
+        self, invocation_id: str, tool_call_id: str, tool_name: str, arguments: object,
+        outcome: str, *, result: object, error: object, run_event_id: str | None,
+        retry_of_tool_call_id: str | None, latency_ms: float | None,
+    ) -> int:
+        """ordinary commit acknowledgement遺失後，以fresh exact replay重建tool receipt。"""
+        if not self._fresh_identity存在("endpoint_tool_calls", "id", tool_call_id):
+            raise ValueError
+        fresh = SQLite呼叫儲存庫(
+            self._資料庫, 時鐘=self._時鐘, 識別碼工廠=self._識別碼工廠,
+            敏感交易協調器=self._敏感交易協調器,
+        )
+        kwargs = {
+            "run_event_id": run_event_id,
+            "retry_of_tool_call_id": retry_of_tool_call_id,
+            "latency_ms": latency_ms,
+        }
+        if outcome == "success":
+            kwargs["result"] = result
+        else:
+            kwargs["error"] = error
+        return fresh.附加工具呼叫(
+            invocation_id, tool_call_id, tool_name, arguments, outcome, **kwargs,
+        )
+
+    def _fresh_identity存在(self, table: str, column: str, identity: str) -> bool:
+        """以fresh標準SQLite connection確認穩定operation identity已durable存在。"""
+        if (table, column) not in {
+            ("endpoint_invocations", "request_id"),
+            ("endpoint_tool_calls", "id"),
+            ("run_events", "id"),
+        }:
+            raise ValueError
+        fresh = SQLite呼叫儲存庫(self._資料庫)._開啟連線()
+        try:
+            row = fresh.execute(
+                f"SELECT 1 FROM {table} WHERE {column}=? LIMIT 1", (identity,),
+            ).fetchone()
+            return row == (1,)
+        finally:
+            try:
+                fresh.close()
+            except _控制流程例外:
+                raise
+            except BaseException:
+                pass
 
     def _附加紀錄(
         self, 種類: str, invocation_id: str, record_id: str, name: str, input_value: object, *,

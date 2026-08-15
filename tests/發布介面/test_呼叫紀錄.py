@@ -334,6 +334,9 @@ class _交易假連線:
         self.關閉錯誤 = 關閉錯誤
         self.離開例外 = []
         self.關閉次數 = 0
+        self.提交次數 = 0
+        self.回滾次數 = 0
+        self.in_transaction = False
 
     def __enter__(self):
         """模擬 SQLite connection context 進入。"""
@@ -345,11 +348,26 @@ class _交易假連線:
 
     def execute(self, SQL, _參數=None):
         """模擬狀態查詢與可選寫入失敗。"""
+        if SQL.startswith("BEGIN"):
+            self.in_transaction = True
+            return _假結果()
+        if SQL.startswith("SELECT id,endpoint_id,endpoint_version_id"):
+            return _假結果(None)
         if SQL.startswith("SELECT status"):
             return _假結果(("pending", None, None, None, None, None, None))
         if self.寫入失敗 and (SQL.startswith("INSERT") or SQL.startswith("UPDATE")):
             raise sqlite3.OperationalError("不可外洩的資料庫細節")
         return _假結果()
+
+    def commit(self):
+        """記錄明確提交並離開交易。"""
+        self.提交次數 += 1
+        self.in_transaction = False
+
+    def rollback(self):
+        """記錄明確回滾並離開交易。"""
+        self.回滾次數 += 1
+        self.in_transaction = False
 
     def close(self):
         """記錄關閉並依設定丟出關閉錯誤。"""
@@ -360,7 +378,7 @@ class _交易假連線:
 
 @pytest.mark.parametrize(("動作", "寫入失敗"), [("建立", False), ("建立", True), ("更新", False), ("更新", True)])
 def test_建立與更新成功失敗皆交易離開後精確關閉一次(monkeypatch, 動作, 寫入失敗):
-    """closing只關閉一次；一般DB更新失敗先由交易context回滾再固定化。"""
+    """明確交易或既有context都只關閉一次；一般DB失敗先回滾再固定化。"""
     假連線 = _交易假連線(寫入失敗=寫入失敗)
     儲存庫 = SQLite呼叫儲存庫("unused", 時鐘=lambda: 1, 識別碼工廠=lambda: "inv-close")
     monkeypatch.setattr(儲存庫, "_開啟連線", lambda: 假連線)
@@ -372,10 +390,16 @@ def test_建立與更新成功失敗皆交易離開後精確關閉一次(monkeyp
     if 寫入失敗:
         with pytest.raises(呼叫儲存錯誤):
             呼叫()
-        assert 假連線.離開例外 == [sqlite3.OperationalError]
+        if 動作 == "建立":
+            assert 假連線.提交次數 == 0 and 假連線.回滾次數 == 1
+        else:
+            assert 假連線.離開例外 == [sqlite3.OperationalError]
     else:
         呼叫()
-        assert 假連線.離開例外 == [None]
+        if 動作 == "建立":
+            assert 假連線.提交次數 == 1 and 假連線.回滾次數 == 0
+        else:
+            assert 假連線.離開例外 == [None]
     assert 假連線.關閉次數 == 1
 
 
@@ -457,6 +481,8 @@ def test_三種控制流程跨邊界原樣傳播且production框架清理(tmp_pa
     錯誤 = 錯誤類型(秘密)
     儲存庫 = SQLite呼叫儲存庫(tmp_path / "missing", 識別碼工廠=lambda: "inv-flow")
     if 邊界 == "建立":
+        假連線 = _交易假連線()
+        monkeypatch.setattr(儲存庫, "_開啟連線", lambda: 假連線)
         monkeypatch.setattr(儲存庫, "_識別碼工廠", lambda: (_ for _ in ()).throw(錯誤))
         呼叫, 框架 = lambda: 儲存庫.建立已解析呼叫("ep", "ver", "req", {}), {"建立已解析呼叫"}
     elif 邊界 == "完成":

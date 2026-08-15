@@ -18,6 +18,7 @@ from .執行器 import (
     發布執行快照,
     發布執行請求,
     發布工具執行錯誤,
+    工具結果觀察,
     建立發布執行器,
     _解析模型JSON,
 )
@@ -89,15 +90,36 @@ class 發布執行嘗試橋接:
         except BaseException:
             return 執行嘗試結果("endpoint_misconfigured")
 
-        def 紀錄工具(_provider識別: str, 名稱: str, 參數: object, 結果: object) -> None:
-            """以 invocation/attempt/local ordinal 產生 ledger identity，不回傳修改 runtime payload。"""
+        def 紀錄工具(觀察: 工具結果觀察) -> None:
+            """以 typed safe outcome 原子保存工具參數及成功結果或固定錯誤分類。
+
+            參數：executor-owned ``工具結果觀察``；失敗觀察不含 provider error payload。
+            返回值：無；recorder ordinary failure 原樣回到 executor，標示治理失敗來源。
+            """
             紀錄器 = self._工具呼叫紀錄器
             if 紀錄器 is None:
                 return
+            if type(觀察) is not 工具結果觀察:
+                raise ValueError
             工具序號[0] += 1
+            識別 = f"{呼叫識別}:attempt:{嘗試次數}:tool:{工具序號[0]}"
+            if 觀察.outcome == "success":
+                結果 = 觀察.result
+                if type(結果) is not dict:
+                    raise ValueError
+                紀錄器(
+                    呼叫識別, 識別, 觀察.tool_name, 觀察.arguments,
+                    "success", result=結果,
+                )
+                return
+            if (觀察.outcome != "error"
+                    or 觀察.safe_error_code not in (
+                        "tool_timeout", "endpoint_misconfigured", "tool_execution_failed",
+                    ) or 觀察.result is not None):
+                raise ValueError
             紀錄器(
-                呼叫識別, f"{呼叫識別}:attempt:{嘗試次數}:tool:{工具序號[0]}",
-                名稱, 參數, "success", result=結果,
+                呼叫識別, 識別, 觀察.tool_name, 觀察.arguments,
+                "error", error={"code": 觀察.safe_error_code},
             )
 
         try:
