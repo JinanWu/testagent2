@@ -354,19 +354,34 @@ class 執行嘗試紀錄收據:
     attempt: int
     committed: bool
     sequence: int
+    warnings: tuple[PublishedWarning, ...] | None = field(default=None, compare=False)
 
-    def __init__(self, 呼叫識別: str, 嘗試次數: int, 已提交: bool, 序號: int) -> None:
+    def __init__(
+        self, 呼叫識別: str, 嘗試次數: int, 已提交: bool, 序號: int,
+        警告清單: tuple[PublishedWarning, ...] | None = None,
+    ) -> None:
         """建立不可變且可由編排器重新驗證的執行嘗試收據。"""
         if (type(呼叫識別) is not str or not 呼叫識別
                 or type(嘗試次數) is not int or 嘗試次數 not in (1, 2)
                 or 已提交 is not True or type(已提交) is not bool
                 or type(序號) is not int or not 1 <= 序號 <= 2**63 - 1):
-            呼叫識別 = 嘗試次數 = 已提交 = 序號 = None
+            呼叫識別 = 嘗試次數 = 已提交 = 序號 = 警告清單 = None
             raise ValueError("執行嘗試紀錄收據不符合契約") from None
+        安全警告 = None
+        if 警告清單 is not None:
+            try:
+                安全警告 = tuple(
+                    PublishedWarning(代碼, 訊息)
+                    for 代碼, 訊息 in _擷取有界警告純量(警告清單)
+                )
+            except ValueError:
+                呼叫識別 = 嘗試次數 = 已提交 = 序號 = 警告清單 = 安全警告 = None
+                raise ValueError("執行嘗試紀錄收據不符合契約") from None
         object.__setattr__(self, "invocation_id", 呼叫識別)
         object.__setattr__(self, "attempt", 嘗試次數)
         object.__setattr__(self, "committed", 已提交)
         object.__setattr__(self, "sequence", 序號)
+        object.__setattr__(self, "warnings", 安全警告)
 
 
 @dataclass(frozen=True, slots=True)
@@ -621,6 +636,7 @@ class 外部呼叫編排器:
             return 入口.error
 
         請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+        已提交警告 = 公開警告 = None
         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
         私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
         端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
@@ -698,7 +714,7 @@ class 外部呼叫編排器:
                     紀錄結果 = 終局快照.建立結果()
                     收據 = 紀錄函式(紀錄呼叫, 紀錄請求, 紀錄結果, 終局快照.結構有效)
                     紀錄呼叫 = 紀錄請求 = 紀錄結果 = 請求 = 安全結果 = None
-                    _確認執行嘗試收據(收據, 呼叫識別, 次數)
+                    已提交警告 = _確認執行嘗試收據(收據, 呼叫識別, 次數)
                     收據 = None
                     if 終局快照.種類 != "success":
                         錯誤碼 = 終局快照.種類
@@ -706,15 +722,19 @@ class 外部呼叫編排器:
                         break
                     if 終局快照.結構有效:
                         安全結果 = 終局快照.建立結果()
+                        公開警告 = object.__getattribute__(安全結果, "warnings")
+                        if 已提交警告 is not None:
+                            公開警告 = 已提交警告
                         信封 = 建立成功信封(
                             EndpointRef(端點識別, 端點短名, 端點版本),
                             InvocationRef(呼叫識別, 私有請求識別, 工作階段識別),
                             object.__getattribute__(安全結果, "data"),
                             usage=object.__getattribute__(安全結果, "usage"),
-                            warnings=object.__getattribute__(安全結果, "warnings"),
+                            warnings=公開警告,
                         )
                         結果 = 呼叫成功結果(信封)
                         請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+                        已提交警告 = 公開警告 = None
                         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
                         開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = 入口 = None
                         私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
@@ -725,6 +745,7 @@ class 外部呼叫編排器:
         except _控制流程 as 控制:
             self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
             入口 = 請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+            已提交警告 = 公開警告 = None
             紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
             私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
             端點識別 = 端點短名 = 呼叫識別 = 私有請求識別 = 工作階段識別 = None
@@ -737,6 +758,7 @@ class 外部呼叫編排器:
         端點, 呼叫 = 私有端點, 私有呼叫
         self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = None
         入口 = 請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None
+        已提交警告 = 公開警告 = None
         紀錄呼叫 = 紀錄請求 = 紀錄結果 = 終局快照 = None
         私有端點 = 私有呼叫 = 私有快照 = 私有釘選 = None
         開始函式 = 執行函式 = 驗證函式 = 紀錄函式 = None
@@ -921,7 +943,9 @@ class 外部呼叫編排器:
         return 結果
 
 
-def _確認執行嘗試收據(原始收據: object, 呼叫識別: str, 嘗試次數: int) -> None:
+def _確認執行嘗試收據(
+    原始收據: object, 呼叫識別: str, 嘗試次數: int,
+) -> tuple[PublishedWarning, ...] | None:
     """trusted-rebuild recorder receipt 並要求 authoritative identity 完全匹配。"""
     if type(原始收據) is not 執行嘗試紀錄收據:
         raise ValueError("執行嘗試紀錄失敗") from None
@@ -930,11 +954,13 @@ def _確認執行嘗試收據(原始收據: object, 呼叫識別: str, 嘗試次
         object.__getattribute__(原始收據, "attempt"),
         object.__getattribute__(原始收據, "committed"),
         object.__getattribute__(原始收據, "sequence"),
+        object.__getattribute__(原始收據, "warnings"),
     )
     if (object.__getattribute__(安全收據, "invocation_id") != 呼叫識別
             or object.__getattribute__(安全收據, "attempt") != 嘗試次數):
         原始收據 = 安全收據 = 呼叫識別 = 嘗試次數 = None
         raise ValueError("執行嘗試紀錄失敗") from None
+    return object.__getattribute__(安全收據, "warnings")
 
 
 def _認證錯誤(

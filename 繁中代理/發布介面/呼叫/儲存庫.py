@@ -192,6 +192,12 @@ _未提供 = object()
 _最大TOKEN數 = 2**63 - 1
 _成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{0,27}[1-9])?\Z")
 _定價版本格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_敏感警告代碼 = "sensitive_data_detected"
+_敏感警告訊息 = "回應包含可能的敏感資料。"
+_警告最大數量 = 64
+_警告代碼最大位元組 = 256
+_警告訊息最大位元組 = 2048
+_警告合計最大位元組 = 16384
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +286,40 @@ def _重建呼叫計量(usage: object) -> 呼叫計量:
     raise ValueError from None
 
 
+def _重建完成警告純量(警告們: object) -> tuple[tuple[str, str], ...]:
+    """重建 recorder 提供的 bounded provider warning snapshot。"""
+    if type(警告們) is not tuple or len(警告們) > _警告最大數量:
+        raise ValueError
+    結果 = []
+    合計 = 0
+    for 警告 in tuple.__iter__(警告們):
+        if type(警告) is not tuple or len(警告) != 2:
+            raise ValueError
+        代碼, 訊息 = 警告
+        if type(代碼) is not str or not 代碼 or type(訊息) is not str or not 訊息:
+            raise ValueError
+        代碼長度 = len(str.encode(代碼, "utf-8"))
+        訊息長度 = len(str.encode(訊息, "utf-8"))
+        合計 += 代碼長度 + 訊息長度
+        if (代碼長度 > _警告代碼最大位元組 or 訊息長度 > _警告訊息最大位元組
+                or 合計 > _警告合計最大位元組):
+            raise ValueError
+        結果.append((代碼, 訊息))
+    return tuple(結果)
+
+
+def _合併完成警告(
+    provider警告們: tuple[tuple[str, str], ...], 有回應命中: bool,
+) -> tuple[tuple[str, str], ...]:
+    """保留 provider warnings，並由 response hit authority 唯一決定固定敏感警告。"""
+    if type(有回應命中) is not bool:
+        raise ValueError
+    結果 = tuple(警告 for 警告 in provider警告們 if 警告[0] != _敏感警告代碼)
+    if 有回應命中:
+        結果 += ((_敏感警告代碼, _敏感警告訊息),)
+    return _重建完成警告純量(結果)
+
+
 class 呼叫敏感交易協調器:
     """只組合 observer detector 與 caller-owned transaction writer。"""
 
@@ -306,6 +346,12 @@ class 呼叫敏感交易協調器:
         return self._偵測器(
             擷取階段.AUTHENTICATED, {}, None,
             tool_arguments=arguments快照, tool_result=result快照,
+        )
+
+    def 偵測回應(self, response快照: object) -> object:
+        """只偵測 accepted response data，不混入 invocation input/metadata 命中。"""
+        return self._偵測器(
+            擷取階段.AUTHENTICATED, {}, None, response_data=response快照,
         )
 
     def 寫入呼叫交易(self, 連線: sqlite3.Connection, 結果: object,
@@ -523,7 +569,8 @@ class SQLite呼叫儲存庫:
         expected_sequence: int, *, status: str | None = None, output: object | None = None,
         error: object | None = None, usage: object | None = None,
         工作階段對話組: Published成功對話提交 | None = None,
-    ) -> int:
+        warnings: object = _未提供,
+    ) -> int | tuple[int, tuple[tuple[str, str], ...]]:
         """以單一立即交易附加 expected event，並可同時完成 running invocation。
 
         描述：將terminal event、invocation completion與可選session pair原子提交。
@@ -535,6 +582,7 @@ class SQLite呼叫儲存庫:
         連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
         payload快照 = output快照 = error快照 = usage快照 = session快照 = None
         payload_json = output_json = error_json = usage_json = None
+        警告純量 = 最終警告純量 = 偵測結果 = 命中們 = None
         工作階段使用者JSON = 工作階段助理JSON = None
         工作階段對話組位元組 = None
         時間原值 = 時間 = 序號 = None
@@ -544,11 +592,16 @@ class SQLite呼叫儲存庫:
                     or status not in (None, "succeeded", "failed")):
                 raise ValueError
             if status is None:
-                if output is not None or error is not None or usage is not None or 工作階段對話組 is not None:
+                if (output is not None or error is not None or usage is not None
+                        or 工作階段對話組 is not None or warnings is not _未提供):
                     raise ValueError
             elif ((status == "succeeded" and (output is None or error is not None))
                   or (status == "failed" and (output is not None or error is None))):
                 raise ValueError
+            if warnings is not _未提供:
+                if status != "succeeded":
+                    raise ValueError
+                警告純量 = _重建完成警告純量(warnings)
             if 工作階段對話組 is not None:
                 if status != "succeeded" or type(工作階段對話組) is not Published成功對話提交:
                     raise ValueError
@@ -575,10 +628,38 @@ class SQLite呼叫儲存庫:
                 output_json = None if output快照 is None else 建立正規JSON(output快照)
                 error_json = None if error快照 is None else 建立正規JSON(error快照)
                 usage_json = None if usage快照 is None else 建立正規JSON(usage快照)
+                最終警告純量 = 警告純量
+                if warnings is not _未提供:
+                    有回應命中 = False
+                    if self._敏感交易協調器 is not None:
+                        偵測方法 = object.__getattribute__(self._敏感交易協調器, "偵測回應")
+                        if not callable(偵測方法):
+                            raise ValueError
+                        偵測結果 = 偵測方法(output快照)
+                        if 建立正規JSON(output快照) != output_json:
+                            raise ValueError
+                        命中們 = object.__getattribute__(偵測結果, "命中們")
+                        if (type(命中們) is not tuple
+                                or any(object.__getattribute__(命中, "目標代碼") != "response_data"
+                                       for 命中 in 命中們)):
+                            raise ValueError
+                        有回應命中 = bool(命中們)
+                    最終警告純量 = _合併完成警告(警告純量, 有回應命中)
+                    if 最終警告純量:
+                        payload快照["warnings"] = [
+                            {"code": 代碼, "message": 訊息} for 代碼, 訊息 in 最終警告純量
+                        ]
+                    payload_json = 建立正規JSON(payload快照)
                 呼叫列 = 連線.execute(
-                    "SELECT status,output_json,error_json,usage_json,latency_ms,pricing_version,completed_at "
-                    "FROM endpoint_invocations WHERE id=?", (invocation_id,),
+                    "SELECT status,output_json,error_json,usage_json,latency_ms,pricing_version,completed_at,"
+                    "endpoint_id FROM endpoint_invocations WHERE id=?", (invocation_id,),
                 ).fetchone()
+                if 偵測結果 is not None:
+                    if 呼叫列 is None or len(呼叫列) != 8 or type(呼叫列[7]) is not str:
+                        raise ValueError
+                    self._敏感交易協調器.寫入呼叫交易(
+                        連線, 偵測結果, invocation_id, 呼叫列[7], 工具呼叫識別碼們=None,
+                    )
                 事件列 = 連線.execute(
                     "SELECT invocation_id,sequence_number,event_type,payload_json FROM run_events WHERE id=?",
                     (event_id,),
@@ -587,9 +668,10 @@ class SQLite呼叫儲存庫:
                     if 事件列 != (invocation_id, expected_sequence, event_type, payload_json):
                         raise ValueError
                     if status is None:
-                        if 呼叫列 != ("running", None, None, None, None, None, None):
+                        if (呼叫列 is None or len(呼叫列) != 8
+                                or 呼叫列[:7] != ("running", None, None, None, None, None, None)):
                             raise ValueError
-                    elif (呼叫列 is None or len(呼叫列) != 7 or 呼叫列[0] != status
+                    elif (呼叫列 is None or len(呼叫列) != 8 or 呼叫列[0] != status
                           or 呼叫列[1:4] != (output_json, error_json, usage_json)
                           or 呼叫列[4] is not None or 呼叫列[5] is not None
                           or type(呼叫列[6]) not in (int, float)):
@@ -604,8 +686,11 @@ class SQLite呼叫儲存庫:
                         if session列 != (session快照[3], 工作階段使用者JSON, 工作階段助理JSON,
                                          工作階段對話組位元組, session快照[7]):
                             raise ValueError
-                    return expected_sequence
-                if 呼叫列 != ("running", None, None, None, None, None, None):
+                    if warnings is _未提供:
+                        return expected_sequence
+                    return expected_sequence, cast(tuple[tuple[str, str], ...], 最終警告純量)
+                if (呼叫列 is None or len(呼叫列) != 8
+                        or 呼叫列[:7] != ("running", None, None, None, None, None, None)):
                     raise ValueError
                 最大序號列 = 連線.execute(
                     "SELECT MAX(sequence_number) FROM run_events WHERE invocation_id=?", (invocation_id,),
@@ -652,10 +737,13 @@ class SQLite呼叫儲存庫:
                     )
                     if 游標.rowcount != 1:
                         raise ValueError
-            return expected_sequence
+            if warnings is _未提供:
+                return expected_sequence
+            return expected_sequence, cast(tuple[tuple[str, str], ...], 最終警告純量)
         except BaseException as 邊界錯誤:
             是控制流程 = type(邊界錯誤) in _控制流程例外
             invocation_id = event_id = event_type = payload = expected_sequence = status = 工作階段對話組 = None
+            warnings = 警告純量 = 最終警告純量 = 偵測結果 = 命中們 = None
             output = error = usage = 連線 = 呼叫列 = 事件列 = 最大序號列 = 游標 = None
             payload快照 = output快照 = error快照 = usage快照 = session快照 = None
             payload_json = output_json = error_json = usage_json = None
