@@ -6,7 +6,11 @@ import base64
 import json
 import os
 import sqlite3
+import subprocess
+import sys
 import time
+from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -127,6 +131,29 @@ def _無Raw(*候選) -> None:
     assert all(標記 not in 文字 for 標記 in _標記)
 
 
+def _執行RestartWorker(*, cursor: str | None, 環境覆寫: dict[str, str] | None = None) -> dict[str, Any]:
+    """以全新Python程序執行canonical app，且不回顯worker stderr或環境。"""
+    環境 = dict(os.environ)
+    for 名稱 in ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONUSERBASE"):
+        環境.pop(名稱, None)
+    環境["PYTHONNOUSERSITE"] = "1"
+    環境["A19_RESTART_PASSWORD"] = _密碼
+    if 環境覆寫:
+        環境.update(環境覆寫)
+    結果 = subprocess.run(
+        [sys.executable, str(Path(__file__).with_name("a19_restart_worker.py"))],
+        input=json.dumps({"mode": "snapshot" if cursor is None else "continue", "cursor": cursor}),
+        text=True, capture_output=True, timeout=30, env=環境,
+        cwd=Path(__file__).resolve().parents[2], check=False,
+    )
+    assert 結果.returncode == 0
+    assert len(結果.stdout.encode("utf-8")) <= 262_144
+    _無Raw(結果.stdout, 結果.stderr)
+    輸出 = json.loads(結果.stdout)
+    assert type(輸出) is dict
+    return 輸出
+
+
 def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch):
     """以fresh canonical app證明tenant isolation、stable restart與zero raw。"""
     Web資料庫, Published資料庫, Owner金鑰文字 = _設定環境(tmp_path, monkeypatch)
@@ -159,9 +186,19 @@ def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch
         assert (A外來.status_code, A外來.content) == (A不存在.status_code, A不存在.content)
         assert (B外來.status_code, B外來.content) == (A不存在.status_code, A不存在.content)
         assert A外來.status_code == 404
-        assert A.get(f"{路徑A}/{指標Query}&owner_id={OwnerB}").status_code == 422
-        assert A.get(f"{路徑A}/{指標Query}", headers={"X-Owner-ID": OwnerB}).json()["invocation_count"] == 5
-        assert A.request("GET", f"{路徑A}/{指標Query}", content=b'{"owner_id":"spoof"}').status_code == 422
+        A診斷外來 = A.get(f"{路徑B}/{診斷Query}")
+        A診斷不存在 = A.get(f"/api/published-endpoints/endpoint-missing/{診斷Query}")
+        assert (A診斷外來.status_code, A診斷外來.content) == (
+            A診斷不存在.status_code, A診斷不存在.content,
+        ) == (404, A診斷外來.content)
+        for Claim in ("owner_id=spoof", "scope=all", "admin=true"):
+            assert A.get(f"{路徑A}/{指標Query}&{Claim}").status_code == 422
+        for Header in ({"X-Owner-ID": OwnerB}, {"X-Scope": "all"}, {"X-Admin": "true"}):
+            assert A.get(f"{路徑A}/{指標Query}", headers=Header).json()["invocation_count"] == 5
+        assert A.request(
+            "GET", f"{路徑A}/{指標Query}",
+            content=b'{"owner_id":"spoof","scope":"all","admin":true}',
+        ).status_code == 422
 
         第一頁 = A.get(f"{路徑A}/{診斷Query}")
         assert 第一頁.status_code == 200 and len(第一頁.json()["items"]) == 1
@@ -169,7 +206,18 @@ def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch
         assert type(游標) is str and 游標
         第二頁 = A.get(f"{路徑A}/{診斷Query}&cursor={游標}")
         assert 第二頁.status_code == 200
-        assert 第一頁.json()["items"][0]["invocation_id"] != 第二頁.json()["items"][0]["invocation_id"]
+        assert 第一頁.json()["items"][0]["invocation_id"] == "invocation-a-5"
+        assert 第二頁.json()["items"][0]["invocation_id"] == "invocation-a-3"
+        全部識別碼: list[str] = []
+        全部游標 = None
+        for _ in range(5):
+            參數 = f"{診斷Query}&cursor={全部游標}" if 全部游標 is not None else 診斷Query
+            頁 = A.get(f"{路徑A}/{參數}")
+            assert 頁.status_code == 200 and len(頁.json()["items"]) == 1
+            全部識別碼.append(頁.json()["items"][0]["invocation_id"])
+            全部游標 = 頁.json()["next_cursor"]
+        assert 全部識別碼 == ["invocation-a-5", "invocation-a-3", "invocation-a-2", "invocation-a-1", "invocation-a-4"]
+        assert 全部游標 is None
         跨端點Replay = A.get(f"{路徑B}/{診斷Query}&cursor={游標}")
         MissingReplay = A.get(f"/api/published-endpoints/endpoint-missing/{診斷Query}&cursor={游標}")
         assert 跨端點Replay.status_code == 422
@@ -182,6 +230,17 @@ def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch
         _無Raw(A指標.text, B指標.text, 第一頁.text, 第二頁.text, 游標, A外來.text, OpenAPI.text)
         App1指標 = A指標.json()
         B.close()
+
+    程序1 = _執行RestartWorker(cursor=None)
+    程序游標 = 程序1["first"]["next_cursor"]
+    assert type(程序游標) is str
+    程序2 = _執行RestartWorker(cursor=程序游標)
+    assert 程序2["status"] == 200
+    assert 程序2["continuation"] == 程序1["continuation"]
+    for 欄位 in ("invocation_count", "terminal_count", "error_count", "usage", "estimated_cost_usd",
+               "cost_by_pricing_version", "daily", "top_errors"):
+        assert 程序2["metrics"][欄位] == 程序1["metrics"][欄位]
+    _無Raw(程序1, 程序2, 程序游標)
 
     App2 = root_asgi.建立應用程式()
     assert App2 is not App1
@@ -197,6 +256,12 @@ def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch
         _無Raw(重啟指標.text, 重啟續頁.text)
 
     輪替金鑰文字 = base64.urlsafe_b64encode(b"W" * 32).rstrip(b"=").decode("ascii")
+    程序3 = _執行RestartWorker(
+        cursor=程序游標,
+        環境覆寫={"TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": 輪替金鑰文字},
+    )
+    assert 程序3["status"] == 422
+    _無Raw(程序3)
     monkeypatch.setenv("TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY", 輪替金鑰文字)
     App3 = root_asgi.建立應用程式()
     with TestClient(App3, raise_server_exceptions=False) as A3:
@@ -205,7 +270,11 @@ def test_A19_canonical_two_owner_restart_cursor與zero_raw(tmp_path, monkeypatch
 
     資料庫位元組 = Published資料庫.read_bytes()
     assert Owner金鑰文字.encode("ascii") not in 資料庫位元組
+    assert b"O" * 32 not in 資料庫位元組
     assert 輪替金鑰文字.encode("ascii") not in 資料庫位元組
+    assert b"W" * 32 not in 資料庫位元組
     設定Repr = repr(production_asgi.解析Production環境設定(dict(os.environ)))
     assert Owner金鑰文字 not in 設定Repr
     assert 輪替金鑰文字 not in 設定Repr
+    assert repr(b"O" * 32) not in 設定Repr
+    assert repr(b"W" * 32) not in 設定Repr

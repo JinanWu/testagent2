@@ -6,6 +6,7 @@ const PASSWORD: string = passwordAuthority
 const RAW_MARKER = 'A19_BROWSER_RAW_MARKER'
 const ENDPOINT_A = 'endpoint-browser-a19-a'
 const ENDPOINT_B = 'endpoint-browser-a19-b'
+const ENDPOINT_MISSING = 'endpoint-browser-a19-missing'
 
 async function login(page: Page, username: string) {
   await page.getByLabel('帳號').fill(username)
@@ -19,9 +20,16 @@ async function assertRawAbsent(page: Page, consoleMessages: string[], responseBo
     visible: document.body.innerText,
     html: document.body.innerHTML,
     url: location.href,
-    local: Object.values(localStorage),
-    session: Object.values(sessionStorage),
-    caches: await caches.keys(),
+    local: Object.entries(localStorage),
+    session: Object.entries(sessionStorage),
+    caches: await Promise.all((await caches.keys()).map(async (name) => {
+      const cache = await caches.open(name)
+      return { name, entries: await Promise.all((await cache.keys()).map(async (request) => {
+        const response = await cache.match(request)
+        if (!response) throw new Error('cache entry disappeared during inspection')
+        return { url: request.url, body: await response.text() }
+      })) }
+    })),
   }))
   expect(JSON.stringify([state, consoleMessages, responseBodies])).not.toContain(RAW_MARKER)
 }
@@ -40,7 +48,7 @@ function observeOwnerResponses(page: Page) {
     if (response.url().includes('/api/published-endpoints/')) {
       const url = new URL(response.url())
       responses.push(`${response.status()} ${url.pathname}${url.search}`)
-      bodies.push(response.text().catch(() => ''))
+      bodies.push(response.text())
     }
   })
   return { requests, responses, bodies }
@@ -103,6 +111,13 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
     `404 /api/published-endpoints/${ENDPOINT_B}/metrics?window_seconds=86400`,
   ])
   await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
+  await pageA.goto(`/endpoints/${ENDPOINT_MISSING}`)
+  await expect(pageA.getByRole('alert')).toHaveText('找不到這個端點。')
+  await expect.poll(() => endpointResponses(observedA.responses, ENDPOINT_MISSING)).toEqual([
+    `404 /api/published-endpoints/${ENDPOINT_MISSING}/diagnostics?window_seconds=86400&limit=50`,
+    `404 /api/published-endpoints/${ENDPOINT_MISSING}/metrics?window_seconds=86400`,
+  ])
+  await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
   await pageA.goto('/')
   await expect(pageA.getByRole('heading', { name: '開始對話' })).toBeVisible()
   await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
@@ -118,7 +133,9 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
   const ownerB = await browser.newContext()
   const pageB = await ownerB.newPage()
   const consoleB: string[] = []
+  const errorsB: string[] = []
   pageB.on('console', (message) => consoleB.push(message.text()))
+  pageB.on('pageerror', (error) => errorsB.push(error.message))
   const observedB = observeOwnerResponses(pageB)
   await pageB.goto('/')
   await login(pageB, 'browser-owner-b')
@@ -136,5 +153,6 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
     `404 /api/published-endpoints/${ENDPOINT_A}/metrics?window_seconds=86400`,
   ])
   await assertRawAbsent(pageB, consoleB, await Promise.all(observedB.bodies))
+  expect(errorsB).toEqual([])
   await closeCleanly(ownerB)
 })
