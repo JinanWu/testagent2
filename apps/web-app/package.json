@@ -8,6 +8,7 @@
     "build": "tsc --noEmit && vite build",
     "browser:typecheck": "tsc --noEmit -p tsconfig.browser.json",
     "browser:smoke": "npm run build && npm run browser:typecheck && node browser/run-smoke.mjs",
+    "browser:owner-smoke": "npm run build && npm run browser:typecheck && node browser/run-a19-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

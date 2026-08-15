@@ -14,6 +14,7 @@ if (!python || !baseURL || !outputDir) {
 
 export default defineConfig({
   testDir: './browser/tests',
+  testMatch: 'a18-admin-logs.spec.ts',
   outputDir,
   fullyParallel: false,
   workers: 1,

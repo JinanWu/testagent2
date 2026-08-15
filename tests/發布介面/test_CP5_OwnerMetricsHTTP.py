@@ -194,6 +194,16 @@ def test_A19_required_integer_query缺漏與非canonical格式皆422_provider零
         assert 回應.status_code == 422 and 服務.呼叫 == []
 
 
+def test_A19_GET實際body即使採chunked_framing仍在provider前固定拒絕():
+    客戶端, 服務 = _客戶端()
+    回應 = 客戶端.request(
+        "GET", "/api/published-endpoints/ep-1/metrics?window_seconds=86400",
+        content='{"owner_id":"敵對"}'.encode("utf-8"), headers={"transfer-encoding": "chunked"},
+    )
+    assert 回應.status_code == 422 and "敵對" not in 回應.text
+    assert 服務.呼叫 == []
+
+
 def test_A19_canonical_app建構零IO且明示stable_key才掛載Owner_routes(tmp_path, monkeypatch):
     monkeypatch.setattr("sqlite3.connect", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("不得I/O")))
     設定 = 生產設定((tmp_path / "web.db").resolve(), ("https://client.example",), "fake", "fake")
