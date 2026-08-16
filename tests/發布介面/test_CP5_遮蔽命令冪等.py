@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from inspect import signature
@@ -12,7 +14,10 @@ import pytest
 
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫, 載入發布介面遷移
 from 繁中代理.發布介面.資料庫結構契約 import 遷移帳本
+from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
+from 繁中代理.發布介面.治理 import 稽核資料庫 as 稽核資料庫模組
 from 繁中代理.發布介面.治理.保存期限 import SQLite保存清除服務
+from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務, 不可逆遮蔽錯誤
 from 繁中代理.發布介面.治理.遮蔽命令 import (
     SQLite遮蔽命令服務,
     遮蔽命令冪等衝突,
@@ -99,7 +104,8 @@ def _建立命令資料庫(路徑: Path) -> None:
         連線.execute(
             "INSERT INTO endpoint_invocations("
             "id,endpoint_id,endpoint_version_id,request_id,status,input_json,created_at"
-            ") VALUES('invocation-main','endpoint-main','version-main','invoke-request','succeeded','{}',2)"
+            ") VALUES('invocation-main','endpoint-main','version-main','invoke-request','succeeded',"
+            "'{\"private\":\"RAW_A20_02\"}',2)"
         )
 
 
@@ -127,6 +133,234 @@ def _服務(*, 前綴: str = "stable", 時間: float = 123.5) -> SQLite遮蔽命
         請求識別碼工廠=lambda: f"request-{前綴}",
         時鐘=lambda: 時間,
     )
+
+
+def test_server_command與mapping_audit_payload_ledger共用單一commit_point(tmp_path: Path) -> None:
+    """整合 seam 由 G04 擁有 transaction；首次與 restart replay 回傳同一不可逆 receipt。"""
+    資料庫 = tmp_path / "integrated-command.sqlite3"
+    _建立命令資料庫(資料庫)
+    遮蔽服務 = SQLite不可逆遮蔽服務(str(資料庫))
+
+    首次 = 遮蔽服務.執行命令(_服務(), **_命令參數())
+    assert 首次["redaction_id"] == "redaction-stable"
+    assert 首次["audit_event_id"] == "audit-stable"
+    assert 首次["actor_id"] == "admin-main"
+    assert 首次["redacted_at"] == 123.5
+
+    with sqlite3.connect(資料庫) as 連線:
+        payload = json.loads(連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+        ).fetchone()[0])
+        assert payload == {
+            "private": {"$tombstone": {"redaction_id": "redaction-stable", "redacted_at": 123.5}}
+        }
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
+
+    def 不得重配():
+        raise AssertionError("restart replay 不得重新配置 server identity")
+
+    重啟命令服務 = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=不得重配,
+        稽核事件識別碼工廠=不得重配,
+        請求識別碼工廠=不得重配,
+        時鐘=不得重配,
+    )
+    assert SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+        重啟命令服務, **_命令參數()
+    ) == 首次
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
+
+
+def test_commit已durable但acknowledgement遺失仍回傳權威receipt且不重做(monkeypatch, tmp_path: Path) -> None:
+    """COMMIT 已完成時以 durable graph 為真；普通 acknowledgement error 不可謊報 rollback。"""
+    資料庫 = tmp_path / "commit-ack-loss.sqlite3"
+    _建立命令資料庫(資料庫)
+
+    class 提交後失聯連線(sqlite3.Connection):
+        def commit(self) -> None:
+            super().commit()
+            raise sqlite3.OperationalError("synthetic acknowledgement loss")
+
+    def 開啟(路徑: str):
+        檔案 = os.stat(路徑)
+        連線 = sqlite3.connect(
+            f"file:{路徑}?mode=rw",
+            uri=True,
+            isolation_level=None,
+            timeout=30,
+            factory=提交後失聯連線,
+        )
+        連線.execute("PRAGMA foreign_keys=ON")
+        return 連線, (檔案.st_dev, 檔案.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    receipt = SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    assert receipt["redaction_id"] == "redaction-stable"
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
+        assert "RAW_A20_02" not in 連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+        ).fetchone()[0]
+
+
+def test_commit後canonical_path換成相同graph的不同inode仍固定失敗(monkeypatch, tmp_path: Path) -> None:
+    """Fresh readback 必須證明原 owner inode；相同內容的 replacement 仍不是同一 commit authority。"""
+    資料庫 = tmp_path / "commit-replaced.sqlite3"
+    replacement = tmp_path / "replacement.sqlite3"
+    _建立命令資料庫(資料庫)
+
+    class 提交後替換連線(sqlite3.Connection):
+        def commit(self) -> None:
+            super().commit()
+            with sqlite3.connect(replacement) as 目標:
+                self.backup(目標)
+            os.replace(replacement, 資料庫)
+            raise sqlite3.OperationalError("synthetic post-commit path replacement")
+
+    def 開啟(路徑: str):
+        檔案 = os.stat(路徑)
+        連線 = sqlite3.connect(
+            f"file:{路徑}?mode=rw",
+            uri=True,
+            isolation_level=None,
+            timeout=30,
+            factory=提交後替換連線,
+        )
+        連線.execute("PRAGMA foreign_keys=ON")
+        return 連線, (檔案.st_dev, 檔案.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    with pytest.raises(不可逆遮蔽錯誤):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+
+
+def test_identity_capture_window不得把外來inode記成owner_authority(monkeypatch, tmp_path: Path) -> None:
+    """Path 在 validation/capture 間 ABA 時，foreign exact graph 不得被當作 owner outcome。"""
+    資料庫 = tmp_path / "capture-window.sqlite3"
+    外來資料庫 = tmp_path / "foreign.sqlite3"
+    暫存owner = tmp_path / "owner-hidden.sqlite3"
+    _建立命令資料庫(資料庫)
+    _建立命令資料庫(外來資料庫)
+    SQLite不可逆遮蔽服務(str(外來資料庫)).執行命令(_服務(), **_命令參數())
+
+    原始connect = sqlite3.connect
+
+    class 提交後切換連線(sqlite3.Connection):
+        def commit(self) -> None:
+            super().commit()
+            os.replace(資料庫, 暫存owner)
+            os.replace(外來資料庫, 資料庫)
+            raise sqlite3.OperationalError("synthetic acknowledgement loss after ABA")
+
+    def 開啟owner(*args, **kwargs):
+        kwargs["factory"] = 提交後切換連線
+        return 原始connect(*args, **kwargs)
+
+    monkeypatch.setattr(稽核資料庫模組.sqlite3, "connect", 開啟owner)
+    with pytest.raises(不可逆遮蔽錯誤):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    assert not hasattr(遮蔽模組, "_資料庫檔案識別")
+
+
+@pytest.mark.parametrize("失敗階段", ("mapping", "audit", "payload", "ledger", "commit"))
+def test_任一transaction階段失敗都完整rollback且raw不變(monkeypatch, tmp_path: Path, 失敗階段: str) -> None:
+    """在五個真 SQL seam 注入普通失敗；mapping/audit/payload/ledger 必須同為零。"""
+    資料庫 = tmp_path / f"rollback-{失敗階段}.sqlite3"
+    _建立命令資料庫(資料庫)
+
+    class 寫入失敗連線(sqlite3.Connection):
+        def execute(self, sql, parameters=(), /):
+            正規SQL = " ".join(sql.split())
+            前綴 = {
+                "mapping": "INSERT INTO redaction_idempotency_commands",
+                "audit": "INSERT INTO audit_events",
+                "payload": "UPDATE endpoint_invocations SET input_json=",
+                "ledger": "INSERT INTO endpoint_redactions",
+            }.get(失敗階段)
+            if 前綴 is not None and 正規SQL.startswith(前綴):
+                raise sqlite3.OperationalError(f"synthetic {失敗階段} failure")
+            return super().execute(sql, parameters)
+
+        def commit(self) -> None:
+            if 失敗階段 == "commit":
+                raise sqlite3.OperationalError("synthetic pre-commit failure")
+            super().commit()
+
+    def 開啟(路徑: str):
+        檔案 = os.stat(路徑)
+        連線 = sqlite3.connect(
+            f"file:{路徑}?mode=rw",
+            uri=True,
+            isolation_level=None,
+            timeout=30,
+            factory=寫入失敗連線,
+        )
+        連線.execute("PRAGMA foreign_keys=ON")
+        return 連線, (檔案.st_dev, 檔案.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    with pytest.raises(不可逆遮蔽錯誤):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+        ).fetchone() == ('{"private":"RAW_A20_02"}',)
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (0,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+
+
+def test_integrated_same_key_different_body保留固定conflict且零新增mutation(tmp_path: Path) -> None:
+    """Conflict 由 command authority 原樣穿出；既有 mapping/audit/ledger/tombstone 不變。"""
+    資料庫 = tmp_path / "integrated-conflict.sqlite3"
+    _建立命令資料庫(資料庫)
+    服務 = SQLite不可逆遮蔽服務(str(資料庫))
+    首次 = 服務.執行命令(_服務(), **_命令參數())
+
+    with pytest.raises(遮蔽命令冪等衝突) as 錯誤:
+        服務.執行命令(_服務(前綴="forbidden"), **_命令參數(原因="different request"))
+    assert 錯誤.value.args == ("遮蔽命令冪等衝突",)
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
+        payload = 連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+        ).fetchone()[0]
+        assert "RAW_A20_02" not in payload
+        assert 首次["redaction_id"] in payload
+
+
+def test_integrated_concurrent_retry只提交一組mapping_audit_tombstone_ledger(tmp_path: Path) -> None:
+    """四個真正 transaction owners 競爭時，所有 caller 都取得 winner 的完整 receipt。"""
+    資料庫 = tmp_path / "integrated-concurrency.sqlite3"
+    _建立命令資料庫(資料庫)
+
+    def 執行(索引: int):
+        return SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+            _服務(前綴=f"worker-{索引}", 時間=200.0 + 索引),
+            **_命令參數(),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as 執行池:
+        receipts = list(執行池.map(執行, range(4)))
+    assert receipts and all(receipt == receipts[0] for receipt in receipts)
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (1,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
+        payload = 連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+        ).fetchone()[0]
+        assert "RAW_A20_02" not in payload
+        assert receipts[0]["redaction_id"] in payload
 
 
 def test_same_principal_key與canonical_request回放同一server_identity且restart不重配(tmp_path: Path) -> None:
@@ -304,11 +538,13 @@ def test_mapping跟隨既有五年invocation保存政策且不阻斷purge(tmp_pa
 def test_public_command_seam拒絕client_controlled_authority_identity_time與不安全key(tmp_path: Path) -> None:
     """公開方法不接受 admin flag、internal IDs、timestamp、original value/hash。"""
     參數名稱 = set(signature(SQLite遮蔽命令服務.取得或建立).parameters)
+    整合參數名稱 = set(signature(SQLite不可逆遮蔽服務.執行命令).parameters)
     for 禁止 in (
         "管理員授權", "is_admin", "遮蔽識別碼", "稽核事件識別碼", "請求識別碼",
         "發生時間", "redacted_at", "original_value", "original_sha256", "payload",
     ):
         assert 禁止 not in 參數名稱
+        assert 禁止 not in 整合參數名稱
 
     資料庫 = tmp_path / "validation.sqlite3"
     _建立命令資料庫(資料庫)

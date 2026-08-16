@@ -11,6 +11,7 @@ import pytest
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務, 不可逆遮蔽錯誤
+from 繁中代理.發布介面.治理.遮蔽命令 import SQLite遮蔽命令服務
 from 繁中代理.發布介面.治理.查詢投影 import SQLite呼叫查詢投影, 查詢投影錯誤
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
 from 繁中代理.發布介面.治理.查詢投影 import 管理員原始資料稽核閘門
@@ -95,6 +96,37 @@ def test_每種目標整體與巢狀路徑皆留下不可逆canonical墓碑(資�
         "request_id,endpoint_id,invocation_id,metadata_json,occurred_at,created_at FROM audit_events") == [
         ("audit.payload.redact", "success", "user", "admin-1", "endpoint.redaction", "red-1",
          "request-1", "ep", "inv", '{"is_tombstone":true}', 123.5, 123.5)]
+
+
+@pytest.mark.parametrize("類型", tuple(目標))
+def test_server_command_adapter驅動八種target且四個artifact同時可見(資料庫, 類型):
+    """A20-02 public seam 對八種 target 皆由 server command 建立同一份 durable graph。"""
+    命令服務 = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=lambda: f"command-red-{類型}",
+        稽核事件識別碼工廠=lambda: f"command-audit-{類型}",
+        請求識別碼工廠=lambda: f"command-request-{類型}",
+        時鐘=lambda: 234.5,
+    )
+    receipt = SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+        命令服務,
+        管理員識別碼="admin-command",
+        冪等鍵=f"key-{類型}",
+        端點識別碼="ep",
+        呼叫識別碼="inv",
+        目標類型=類型,
+        目標列識別碼=目標[類型][2],
+        JSON路徑="/secret/value",
+        原因="privacy request",
+    )
+    assert receipt["redaction_id"] == f"command-red-{類型}"
+    assert receipt["actor_id"] == "admin-command"
+    assert _查詢(資料庫, "SELECT count(*) FROM redaction_idempotency_commands") == [(1,)]
+    assert _查詢(資料庫, "SELECT count(*) FROM audit_events") == [(1,)]
+    assert _查詢(資料庫, "SELECT count(*) FROM endpoint_redactions") == [(1,)]
+    表格, 欄位, 列ID = 目標[類型]
+    assert "RAW_G04" not in _查詢(
+        資料庫, f"SELECT {欄位} FROM {表格} WHERE id=?", (列ID,)
+    )[0][0]
 
 
 @pytest.mark.parametrize("位置,值", [(1,"red-2"),(2,"audit-2"),(3,"admin-2"),(4,"request-2"),
