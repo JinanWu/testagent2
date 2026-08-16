@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Condition, RLock
 from typing import Callable
@@ -43,7 +43,8 @@ from .規劃.版本服務 import (
     SQLite目前版本解析器, SQLite版本配置服務, 已釘選版本, 目前版本不存在錯誤,
 )
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
-from .呼叫.儲存庫 import SQLite呼叫儲存庫
+from .呼叫.儲存庫 import SQLite呼叫儲存庫, 呼叫敏感交易協調器
+from .呼叫.敏感稽核 import SQLite敏感稽核儲存庫
 from .呼叫.Published工作階段 import SQLitePublished工作階段儲存庫
 from .呼叫.限流 import 限流決策
 from .呼叫.擷取政策 import 擷取階段, 準備呼叫擷取, 寫入呼叫擷取
@@ -63,6 +64,7 @@ from .技能套件.協調器 import 技能套件協調器
 from .技能套件.發布器 import 技能套件發布器
 from .路由.外部呼叫 import 建立外部呼叫路由
 from .路由.憑證管理 import 建立憑證管理路由器
+from .生產Owner觀測 import 延遲Owner觀測服務, 建立Owner觀測路由, 安裝Owner觀測資源
 from .路由.規劃發布 import (
     建立安全規劃發布路由器, 建立安全草稿端點建立路由器, 建立安全草稿路由器,
 )
@@ -121,6 +123,7 @@ class Published生產設定:
     孤兒保留秒數: float = 86_400.0
     Planner設定: Planner生產設定 | None = None
     憑證封套工廠: Callable[[], AESGCM憑證封套] | None = None
+    Owner觀測游標金鑰: bytes | None = field(default=None, repr=False)
     def __post_init__(self) -> None:
         """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
         參數：無；讀取五個設定欄位。
@@ -137,6 +140,7 @@ class Published生產設定:
         保留秒數 = object.__getattribute__(self, "孤兒保留秒數")
         Planner組裝 = object.__getattribute__(self, "Planner設定")
         封套工廠 = object.__getattribute__(self, "憑證封套工廠")
+        觀測金鑰 = object.__getattribute__(self, "Owner觀測游標金鑰")
         if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
                 or type(根) is not _本機Path型別 or not 根.is_absolute()
                 or not callable(安裝器) or not callable(工廠)
@@ -145,6 +149,8 @@ class Published生產設定:
                 or (type(保留秒數) is float and not math.isfinite(保留秒數))
                 or (Planner組裝 is not None and type(Planner組裝) is not Planner生產設定)
                 or (封套工廠 is not None and not callable(封套工廠))):
+            raise ValueError("Published生產設定無效") from None
+        if 觀測金鑰 is not None and (type(觀測金鑰) is not bytes or len(觀測金鑰) != 32):
             raise ValueError("Published生產設定無效") from None
 
 
@@ -586,6 +592,7 @@ class 生產Published執行建構器:
         self._草稿規劃代理, self._發布管理代理 = 延遲草稿規劃服務(), 延遲發布管理服務()
         self._憑證管理代理 = 延遲憑證管理服務()
         self._管理稽核代理, self._管理稽核游標 = 建立管理稽核權限()
+        self._Owner觀測代理 = 延遲Owner觀測服務()
 
     def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
         """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
@@ -641,6 +648,8 @@ class 生產Published執行建構器:
                 self._憑證管理代理, 目前工作階段相依, CSRF相依,
             ),)
         路由器清單 += (建立管理稽核路由(self._管理稽核代理, self._管理稽核游標, 目前工作階段相依),)
+        if self._設定.Owner觀測游標金鑰 is not None:
+            路由器清單 += (建立Owner觀測路由(self._Owner觀測代理, 目前工作階段相依),)
         async def 建立資源() -> 生產Published執行資源:
             """在 threadpool 建立並安裝一次真實 Published composition。
 
@@ -651,10 +660,16 @@ class 生產Published執行建構器:
 
             描述：在 threadpool 建立並安裝一次真實 Published composition。
             """
-            return await 安裝管理稽核資源(await run_in_threadpool(
+            主資源 = await 安裝管理稽核資源(await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
                 self._發布管理代理, self._憑證管理代理,
             ), self._管理稽核代理, self._設定.發布資料庫路徑)
+            if self._設定.Owner觀測游標金鑰 is None:
+                return 主資源
+            return await 安裝Owner觀測資源(
+                主資源, self._Owner觀測代理, self._設定.發布資料庫路徑,
+                self._設定.Owner觀測游標金鑰,
+            )
         return 發布介面相依項(路由器清單, (建立資源,))
 class 生產Controller建構器:
     """依序組合 CP3 Web 與 CP4 Published routers/resources。
@@ -852,9 +867,12 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
     初始化發布介面資料庫(資料庫)
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
+    敏感writer = SQLite敏感稽核儲存庫(資料庫)
+    敏感writer.驗證啟動結構()
+    敏感協調器 = 呼叫敏感交易協調器(敏感writer)
+    呼叫庫 = SQLite呼叫儲存庫(資料庫, 敏感交易協調器=敏感協調器)
     套件協調器 = _執行技能套件啟動協調(發布)
     解析器 = SQLite目前版本解析器(資料庫)
-    呼叫庫 = SQLite呼叫儲存庫(資料庫)
     工作階段庫 = SQLitePublished工作階段儲存庫(資料庫)
     憑證 = SQLite憑證驗證服務(資料庫)
     限流器 = SQLite雙層限流器(資料庫)
@@ -877,6 +895,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
         Runtime橋接 = 建立發布執行嘗試橋接(
             發布快照儲存庫=快照庫, 技能套件載入器=套件載入器,
             工具發布庫=工具庫, 模型供應商註冊表=模型表,
+            工具呼叫紀錄器=呼叫庫.附加工具呼叫,
         )
         台帳 = InvocationLedger橋接(呼叫庫)
         編排器 = 外部呼叫編排器(

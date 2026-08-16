@@ -23,7 +23,7 @@ from 繁中代理.發布介面.執行期.工具版本庫 import (
 from 繁中代理.發布介面.執行期.模型契約 import 供應商逾時, 模型回應快照, 模型設定快照
 from 繁中代理.發布介面.執行期.服務帳戶 import ServiceAccountContext
 from 繁中代理.發布介面.執行期.執行器 import (
-    技能套件快照, 技能套件檔案, 發布執行快照, 計算技能套件雜湊,
+    工具結果觀察, 技能套件快照, 技能套件檔案, 發布執行快照, 計算技能套件雜湊,
 )
 from 繁中代理.發布介面.執行期.呼叫橋接 import 建立發布執行嘗試橋接
 
@@ -85,9 +85,10 @@ class _Model:
         return response
 
 
-def _materials(*, structured=False, schema=None, handler=None, provider="fake", release="rel-old"):
+def _materials(*, structured=False, schema=None, handler=None, provider="fake", release="rel-old",
+               parameters=None):
     handler = handler or (lambda args: {"release": "old", "value": args["value"]})
-    parameters = {
+    parameters = parameters or {
         "type": "object", "properties": {"value": {"type": "integer"}},
         "required": ["value"], "additionalProperties": False,
     }
@@ -120,14 +121,18 @@ def _materials(*, structured=False, schema=None, handler=None, provider="fake", 
     return snapshot, context, bundle, releases
 
 
-def _bridge(model, materials):
+def _bridge(model, materials, *, recorder=None):
     snapshot, context, bundle, release_repo = materials
     repo, loader, releases = _Repo(snapshot, context), _BundleLoader(bundle), _Releases(release_repo)
     bridge = 建立發布執行嘗試橋接(
         發布快照儲存庫=repo, 技能套件載入器=loader, 工具發布庫=releases,
         模型供應商註冊表={"fake": model},
+        工具呼叫紀錄器=recorder,
     )
-    request = 執行嘗試請求(_Pin("ep-1", "sa-1", "ver-1", 1), {"q": 1}, {"role": "system"}, 1)
+    request = 執行嘗試請求(
+        _Pin("ep-1", "sa-1", "ver-1", 1), {"q": 1}, {"role": "system"}, 1,
+        呼叫識別="inv-1" if recorder is not None else None,
+    )
     return bridge, request, repo, loader, releases
 
 
@@ -273,6 +278,112 @@ def test_handler普通失敗固定且控制流程保留identity():
     with pytest.raises(KeyboardInterrupt) as captured:
         bridge(request)
     assert captured.value is control
+
+
+@pytest.mark.parametrize(("failure", "expected", "safe_code"), [
+    (RuntimeError("raw-handler-secret"), "tool_execution_failed", "tool_execution_failed"),
+    (工具逾時("raw-timeout-secret"), "tool_timeout", "tool_timeout"),
+    (工具設定錯誤("raw-config-secret"), "endpoint_misconfigured", "endpoint_misconfigured"),
+])
+def test_failed_tool恰觀察一次arguments且只保存固定錯誤分類(failure, expected, safe_code):
+    """handler開始後的所有普通失敗都保存arguments，但不傳raw error payload。"""
+    call = {"id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":1}'}}
+    handler_calls, records = [], []
+
+    def failing(args):
+        handler_calls.append(args.copy())
+        raise failure
+
+    def recorder(*args, **kwargs):
+        records.append((args, kwargs))
+
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, _materials(handler=failing), recorder=recorder)
+
+    result = bridge(request)
+
+    assert result.kind == expected
+    assert handler_calls == [{"value": 1}]
+    assert len(records) == 1
+    args, kwargs = records[0]
+    assert args[2:] == ("lookup", {"value": 1}, "error")
+    assert kwargs == {"error": {"code": safe_code}}
+    assert "raw-" not in repr(records)
+
+
+def test_tool治理紀錄失敗映射internal_error且handler不重跑():
+    """成功handler後recorder失敗是治理來源，不可誤報工具失敗或重跑side effect。"""
+    call = {"id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": '{"value":1}'}}
+    handler_calls = []
+
+    def handler(args):
+        handler_calls.append(args.copy())
+        return {"ok": True}
+
+    def recorder(*_args, **_kwargs):
+        raise RuntimeError("raw-governance-secret")
+
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, _materials(handler=handler), recorder=recorder)
+
+    assert bridge(request).kind == "internal_error"
+    assert handler_calls == [{"value": 1}]
+    assert len(model.calls) == 1
+
+
+@pytest.mark.parametrize("control_type", [KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_tool治理控制流程保留identity且executor_traceback不留canonical_arguments(control_type):
+    """observer K/S/G 必須原例外重拋，且executor frame不可保留工具參數。"""
+    marker = "TRACEBACK-ARGUMENT-MARKER"
+    signal = control_type("control")
+    call = {"id": "call-1", "type": "function",
+            "function": {"name": "lookup", "arguments": json.dumps({"value": 1, "note": marker})}}
+
+    def recorder(*_args, **_kwargs):
+        raise signal
+
+    parameters = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}, "note": {"type": "string"}},
+        "required": ["value", "note"], "additionalProperties": False,
+    }
+    materials = _materials(handler=lambda _args: {"ok": True}, parameters=parameters)
+    model = _Model([模型回應快照("", "tool_calls", {}, [call])])
+    bridge, request, *_ = _bridge(model, materials, recorder=recorder)
+
+    with pytest.raises(control_type) as captured:
+        bridge(request)
+    assert captured.value is signal
+    traceback = captured.tb
+    production_frames = []
+    while traceback is not None:
+        if "/繁中代理/" in traceback.tb_frame.f_code.co_filename:
+            production_frames.append(traceback.tb_frame)
+        traceback = traceback.tb_next
+    assert {frame.f_code.co_name for frame in production_frames} >= {"_附加工具回合", "紀錄工具"}
+    assert all(marker not in repr(frame.f_locals) for frame in production_frames)
+    for frame in production_frames:
+        for value in frame.f_locals.values():
+            if type(value) is 工具結果觀察:
+                assert marker not in repr(value.arguments)
+
+
+def test_preflight_invalid工具不呼叫handler也不觀察():
+    """schema-invalid call尚未形成canonical operation，observer必須為零。"""
+    records = []
+    model = _Model([模型回應快照("", "tool_calls", {}, [{
+        "id": "call-1", "type": "function",
+        "function": {"name": "lookup", "arguments": '{"value":"bad"}'},
+    }])])
+    bridge, request, *_ = _bridge(
+        model, _materials(handler=lambda _args: pytest.fail("handler不可執行")),
+        recorder=lambda *args, **kwargs: records.append((args, kwargs)),
+    )
+
+    assert bridge(request).kind == "tool_execution_failed"
+    assert records == []
 
 
 @pytest.mark.parametrize("exception_type,expected", [

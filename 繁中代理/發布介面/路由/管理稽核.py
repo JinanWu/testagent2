@@ -11,7 +11,9 @@ from typing import Annotated, Any, Literal, Protocol, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model
+from pydantic import (
+    BaseModel, BeforeValidator, ConfigDict, Field, WithJsonSchema, create_model, model_validator,
+)
 from starlette.concurrency import run_in_threadpool
 
 from ..治理.管理查詢契約 import (
@@ -96,6 +98,44 @@ _列表錯誤碼回應 = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_.-]{0,127}$"),
 ]
 _列表時間回應 = Annotated[float, Field(ge=0, allow_inf_nan=False)]
+_敏感路徑格式 = r"^(?:$|/(?:[^~/]|~[01])*)$"
+
+
+def _驗證敏感路徑回應(值: str, /) -> str:
+    """與 durable schema 一致驗證 RFC 6901 與 UTF-8 byte bound。"""
+    if (type(值) is not str or len(值.encode("utf-8")) > 8192
+            or not (值 == "" or (值.startswith("/")
+                    and "~" not in 值.replace("~0", "").replace("~1", "")))):
+        raise ValueError
+    return 值
+
+
+def _驗證敏感offset(值: int, /) -> int:
+    """Offset 固定為 JSON-safe nonnegative exact integer。"""
+    if type(值) is not int or not 0 <= 值 <= 2**53 - 1:
+        raise ValueError
+    return 值
+
+
+def _驗證敏感時間(值: float, /) -> float:
+    """Detected time 固定為 finite bounded nonnegative number。"""
+    if type(值) not in (int, float) or not math.isfinite(值) or not 0 <= 值 <= 253_402_300_799:
+        raise ValueError
+    return float(值)
+
+
+_敏感路徑回應 = Annotated[
+    str, BeforeValidator(_驗證敏感路徑回應),
+    WithJsonSchema({"type": "string", "maxLength": 8192, "pattern": _敏感路徑格式}),
+]
+_敏感offset回應 = Annotated[
+    int, BeforeValidator(_驗證敏感offset),
+    WithJsonSchema({"type": "integer", "minimum": 0, "maximum": 2**53 - 1}),
+]
+_敏感時間回應 = Annotated[
+    float, BeforeValidator(_驗證敏感時間),
+    WithJsonSchema({"type": "number", "minimum": 0, "maximum": 253_402_300_799}),
+]
 
 
 class 管理員安全列表提供者(Protocol):
@@ -189,8 +229,40 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "is_tombstone": (_遮蔽墓碑回應, ...), "redacted_at": (_遮蔽時間回應, ...),
     }.items()},
 )
+管理員敏感命中回應 = create_model(
+    "AdminSensitiveHit", __config__=ConfigDict(extra="forbid", strict=True),
+    **{
+        "id": (_列表識別碼回應, ...),
+        "target": (Literal["input", "metadata", "response_data", "tool_arguments", "tool_result"], ...),
+        "tool_call_id": (_列表識別碼回應 | None, ...),
+        "detector_type": (Annotated[str, Field(
+            min_length=1, max_length=128, pattern=r"^[a-z][a-z0-9_]{0,127}$",
+        )], ...),
+        "json_path": (_敏感路徑回應, ...),
+        "start": (_敏感offset回應, ...), "end": (_敏感offset回應, ...),
+        "detected_at": (_敏感時間回應, ...),
+    },
+)
+
+
+class _管理員呼叫詳情回應基底(BaseModel):
+    """HTTP transport 獨立拒絕重複 sensitive-hit ID。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    @model_validator(mode="after")
+    def _驗證命中識別碼唯一(self):
+        命中們 = getattr(self, "sensitive_hits", None)
+        if type(命中們) is not list:
+            raise ValueError
+        識別碼 = [getattr(命中, "id", None) for 命中 in 命中們]
+        if any(type(值) is not str for 值 in 識別碼) or len(識別碼) != len(set(識別碼)):
+            raise ValueError
+        return self
+
+
 管理員呼叫詳情回應 = create_model(
-    "AdminInvocationDetail", __config__=ConfigDict(extra="forbid", strict=True),
+    "AdminInvocationDetail", __base__=_管理員呼叫詳情回應基底,
     **{名稱: 定義 for 名稱, 定義 in {
         "invocation": (管理員呼叫識別回應, ...), "endpoint_id": (str, ...),
         "endpoint_version_id": (str, ...), "credential_id": (str | None, ...),
@@ -201,6 +273,7 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
         "created_at": (float, ...), "completed_at": (float | None, ...),
         "run_events": (list[管理員執行事件回應], ...), "tool_calls": (list[管理員工具呼叫回應], ...),
         "redactions": (list[管理員遮蔽回應], ...),
+        "sensitive_hits": (list[管理員敏感命中回應], Field(max_length=1024)),
     }.items()},
 )
 

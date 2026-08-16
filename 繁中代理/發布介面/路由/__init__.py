@@ -6,6 +6,7 @@ from .技能 import 建立技能路由器
 from .網頁認證 import 建立CSRF相依項, 建立SQLite帳密驗證器, 建立目前工作階段相依項, 建立網頁認證路由器
 from .憑證管理 import 建立憑證管理路由器
 from .管理稽核 import 建立管理稽核路由器
+from .Owner觀測 import 建立Owner觀測路由器
 
 __all__ = (
     "建立CSRF相依項",
@@ -17,4 +18,5 @@ __all__ = (
     "建立技能路由器",
     "建立憑證管理路由器",
     "建立管理稽核路由器",
+    "建立Owner觀測路由器",
 )

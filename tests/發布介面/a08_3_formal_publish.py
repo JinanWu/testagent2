@@ -73,10 +73,16 @@ def _配置(版本: int) -> dict[str, Any]:
     }
 
 
-def 建立正式v1(*, web: Path, db: Path, bundles: Path, skill_root: Path) -> dict[str, str]:
+def 建立正式v1(
+    *, web: Path, db: Path, bundles: Path, skill_root: Path,
+    skill_body: str = "BUNDLE-V1",
+) -> dict[str, str]:
     skill = skill_root / "stable"
     skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("---\nname: stable\ndescription: A08 stable skill\n---\n\nBUNDLE-V1", encoding="utf-8")
+    (skill / "SKILL.md").write_text(
+        "---\nname: stable\ndescription: A08 stable skill\n---\n\n" + skill_body,
+        encoding="utf-8",
+    )
     users = 使用者庫(web)
     try:
         owner = users.建立使用者(

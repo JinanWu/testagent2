@@ -5,8 +5,12 @@ from contextlib import closing
 
 import pytest
 
-from 繁中代理.發布介面.治理.觀測供應器 import SQLite端點觀測查詢服務, 端點觀測查詢錯誤
+from 繁中代理.發布介面.治理.觀測供應器 import (
+    SQLite端點觀測查詢服務, _讀取有界用量列, 端點觀測查詢錯誤,
+)
+from 繁中代理.發布介面.治理.查詢投影 import _讀取驗證遮蔽列, _預檢遮蔽中繼
 from 繁中代理.發布介面.治理.觀測契約 import 指標查詢成功, 端點不可見結果
+from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 
@@ -29,17 +33,17 @@ def 指標資料庫(tmp_path):
             )
             連線.execute("UPDATE published_endpoints SET current_version_id=? WHERE id=?", (f"ver-{端點[-1]}", 端點))
         資料列 = (
-            ("i1", "succeeded", 10.0, '{"input_tokens":10,"output_tokens":2,"total_tokens":12,"estimated_cost_usd":"0.001"}', "price-b", 90.0),
-            ("i2", "failed", 20.0, '{"input_tokens":3,"output_tokens":4,"total_tokens":7,"estimated_cost_usd":"0.002"}', "price-a", 80.0),
-            ("i3", "pending", 30.0, None, None, 70.0),
-            ("i4", "rate_limited", None, None, None, 60.0),
-            ("old", "invalid_api_key", 999.0, None, None, 49.0),
+            ("i1", "succeeded", 10.0, '{"input_tokens":10,"output_tokens":2,"total_tokens":12,"estimated_cost_usd":"0.001"}', "price-b", None, 90.0),
+            ("i2", "failed", 20.0, '{"input_tokens":3,"output_tokens":4,"total_tokens":7,"estimated_cost_usd":"0.002"}', "price-a", '{"code":"schema_invalid"}', 80.0),
+            ("i3", "pending", 30.0, None, None, '{"code":"ignored_pending"}', 70.0),
+            ("i4", "rate_limited", None, None, None, '{"code":"quota_exceeded"}', 60.0),
+            ("old", "invalid_api_key", 999.0, None, None, '{"code":"old_error"}', 49.0),
         )
-        for 識別碼, 狀態, 延遲, 用量, 定價, 建立時間 in 資料列:
+        for 識別碼, 狀態, 延遲, 用量, 定價, 錯誤, 建立時間 in 資料列:
             連線.execute(
                 "INSERT INTO endpoint_invocations VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (識別碼, "ep-1", "ver-1", None, f"req-{識別碼}", None, None, 狀態,
-                 "{}", None, None, None, 用量, None, None, 延遲, 定價, 建立時間,
+                 "{}", None, None, 錯誤, 用量, None, None, 延遲, 定價, 建立時間,
                  建立時間 if 狀態 in ("pending", "running") else 建立時間 + 1),
             )
     return 路徑
@@ -58,12 +62,20 @@ def test_metrics聚合狀態延遲用量與歷史成本精確(指標資料庫):
     assert type(結果) is 指標查詢成功
     指標 = 結果.指標
     assert (指標.window.start_at, 指標.window.end_at) == (50.0, 100.0)
+    assert 指標.window.timezone == "UTC"
     assert (指標.invocation_count, 指標.terminal_count, 指標.error_count) == (4, 3, 2)
     assert 指標.error_rate == 2 / 3
     assert 指標.latency_ms == type(指標.latency_ms)(3, 20.0, 20.0, 30.0, 30.0)
     assert (指標.usage.sample_count, 指標.usage.input_tokens, 指標.usage.output_tokens, 指標.usage.total_tokens) == (2, 13, 6, 19)
     assert 指標.estimated_cost_usd == "0.003"
     assert tuple((項.pricing_version, 項.estimated_cost_usd) for 項 in 指標.cost_by_pricing_version) == (("price-a", "0.002"), ("price-b", "0.001"))
+    assert tuple((項.date, 項.invocation_count, 項.terminal_count, 項.error_count,
+                  項.usage_total_tokens, 項.estimated_cost_usd) for 項 in 指標.daily) == (
+        ("1970-01-01", 4, 3, 2, 19, "0.003"),
+    )
+    assert tuple((項.error_code, 項.count) for 項 in 指標.top_errors) == (
+        ("quota_exceeded", 1), ("schema_invalid", 1),
+    )
 
 
 @pytest.mark.parametrize(("擁有者", "端點"), (("owner-2", "ep-1"), ("owner-1", "missing")))
@@ -84,6 +96,54 @@ def test_admin可讀foreign且empty_window為exact_zero(指標資料庫):
     assert 結果.指標.invocation_count == 結果.指標.terminal_count == 結果.指標.error_count == 0
     assert 結果.指標.error_rate == 0.0
     assert 結果.指標.latency_ms.sample_count == 結果.指標.usage.sample_count == 0
+    assert 結果.指標.daily == 結果.指標.top_errors == ()
+
+
+def test_daily採UTC半開窗且top_errors排除遮蔽與非錯誤狀態(指標資料庫):
+    """UTC midnight、error status母集合與redaction policy屬同一snapshot。"""
+    with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
+        for 識別碼, 狀態, 時間, 錯誤 in (
+            ("mid-before", "failed", 86399.0, '{"code":"same"}'),
+            ("mid-after", "failed", 86400.0, '{"code":"same"}'),
+            ("mid-pending", "pending", 86400.5, '{"code":"not_an_error"}'),
+        ):
+            連線.execute(
+                "INSERT INTO endpoint_invocations(id,endpoint_id,endpoint_version_id,request_id,status,"
+                "input_json,error_json,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (識別碼, "ep-2", "ver-2", f"req-{識別碼}", 狀態, "{}", 錯誤, 時間),
+            )
+    SQLite不可逆遮蔽服務(str(指標資料庫)).遮蔽(
+        True, "redact-mid", "audit-redact-mid", "owner-2", "request-redact-mid",
+        "mid-after", "error", "mid-after", "", "privacy", 86400.75,
+    )
+    服務 = SQLite端點觀測查詢服務(
+        str(指標資料庫), 時鐘=lambda: 86401.0, 游標簽章金鑰=b"k" * 32,
+    )
+    指標 = 服務.讀取端點指標(
+        擁有者使用者識別碼="owner-2", 是否管理者=False, 端點識別碼="ep-2", 視窗秒數=2,
+    ).指標
+    assert tuple((項.date, 項.invocation_count, 項.error_count) for 項 in 指標.daily) == (
+        ("1970-01-01", 1, 1), ("1970-01-02", 2, 1),
+    )
+    assert tuple((項.error_code, 項.count) for 項 in 指標.top_errors) == (("same", 1),)
+
+
+def test_daily不將午夜前次微秒REAL四捨五入至隔日(指標資料庫):
+    with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
+        連線.execute(
+            "INSERT INTO endpoint_invocations(id,endpoint_id,endpoint_version_id,request_id,status,"
+            "input_json,created_at) VALUES(?,?,?,?,?,?,?)",
+            ("before-midnight-real", "ep-2", "ver-2", "req-before-midnight-real",
+             "succeeded", "{}", 86399.9999999),
+        )
+    服務 = SQLite端點觀測查詢服務(
+        str(指標資料庫), 時鐘=lambda: 86400.0, 游標簽章金鑰=b"k" * 32,
+    )
+    指標 = 服務.讀取端點指標(
+        擁有者使用者識別碼="owner-2", 是否管理者=False,
+        端點識別碼="ep-2", 視窗秒數=1,
+    ).指標
+    assert tuple(項.date for 項 in 指標.daily) == ("1970-01-01",)
 
 
 def test_畸形persisted_usage與動態欄位是operational_failure(指標資料庫):
@@ -96,6 +156,18 @@ def test_畸形persisted_usage與動態欄位是operational_failure(指標資料
         )
     assert 捕捉.value.args == ("端點觀測不可取得",)
     assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+
+
+def test_safe_error_projection_trigger漂移固定失敗(指標資料庫):
+    """Top Errors所依賴的維護trigger屬完整schema authority。"""
+    with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
+        連線.execute("DROP TRIGGER endpoint_invocation_safe_error_after_update")
+    with pytest.raises(端點觀測查詢錯誤) as 捕捉:
+        _服務(指標資料庫).讀取端點指標(
+            擁有者使用者識別碼="owner-1", 是否管理者=False,
+            端點識別碼="ep-1", 視窗秒數=50,
+        )
+    assert 捕捉.value.args == ("端點觀測不可取得",)
 
 
 def test_兩筆18位成本同版本形成19位canonical總和(指標資料庫):
@@ -142,7 +214,7 @@ def test_超大usage在任何payload_SELECT與fetchone前固定失敗(monkeypatc
     class 記錄連線:
         def __init__(self, 連線): self._連線 = 連線
         def execute(self, SQL, *參數):
-            是payload = ",usage_json FROM endpoint_invocations" in SQL
+            是payload = "i.usage_json FROM endpoint_invocations i" in SQL
             if 是payload: payload查詢.append(SQL)
             return 記錄游標(self._連線.execute(SQL, *參數), 是payload)
         def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
@@ -152,3 +224,62 @@ def test_超大usage在任何payload_SELECT與fetchone前固定失敗(monkeypatc
             擁有者使用者識別碼="owner-1", 是否管理者=False, 端點識別碼="ep-1", 視窗秒數=50)
     assert 捕捉.value.args == ("端點觀測不可取得",)
     assert payload查詢 == payload讀取 == []
+
+
+def test_payload_detector以正常查詢正向校準(monkeypatch, 指標資料庫):
+    from 繁中代理.發布介面.治理 import 查詢投影
+    原始 = 查詢投影._建立連線
+    payload查詢 = []
+    class 記錄連線:
+        def __init__(self, 連線): self._連線 = 連線
+        def execute(self, SQL, *參數):
+            if "i.usage_json FROM endpoint_invocations i" in SQL:
+                payload查詢.append(SQL)
+            return self._連線.execute(SQL, *參數)
+        def __getattr__(self, 名稱): return getattr(self._連線, 名稱)
+    monkeypatch.setattr(
+        查詢投影, "_建立連線",
+        lambda *參數, **關鍵字: 記錄連線(原始(*參數, **關鍵字)),
+    )
+    結果 = _服務(指標資料庫).讀取端點指標(
+        擁有者使用者識別碼="owner-1", 是否管理者=False,
+        端點識別碼="ep-1", 視窗秒數=50,
+    )
+    assert type(結果) is 指標查詢成功
+    assert len(payload查詢) == 結果.指標.invocation_count
+
+
+def test_讀取中繼遇控制流程時ordinary_close不得取代原錯誤():
+    class 敵對游標:
+        def fetchone(self):
+            raise KeyboardInterrupt("primary-control")
+        def close(self):
+            raise RuntimeError("hostile-close")
+    class 敵對連線:
+        def execute(self, *_參數):
+            return 敵對游標()
+    with pytest.raises(KeyboardInterrupt, match="primary-control"):
+        _讀取有界用量列(敵對連線(), "ep", 0.0, 1.0)
+
+
+@pytest.mark.parametrize("主要", (
+    KeyboardInterrupt("primary-keyboard"),
+    SystemExit("primary-system"),
+    GeneratorExit("primary-generator"),
+))
+@pytest.mark.parametrize("操作", ("metadata", "payload"))
+def test_redaction_helper保留三種主要控制流程(主要, 操作):
+    class 敵對游標:
+        def fetchone(self):
+            raise 主要
+        def close(self):
+            raise RuntimeError("hostile-close")
+    class 敵對連線:
+        def execute(self, *_參數):
+            return 敵對游標()
+    with pytest.raises(type(主要)) as 捕捉:
+        if 操作 == "metadata":
+            _預檢遮蔽中繼(敵對連線(), "inv", [0, 0])
+        else:
+            _讀取驗證遮蔽列(敵對連線(), "inv", "ep", ((1,) + (None,) * 52,))
+    assert 捕捉.value is 主要

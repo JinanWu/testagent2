@@ -1,15 +1,18 @@
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import { ApiFormatError } from '../api/client'
 import {
   LOGS_ERROR_MESSAGE,
   LOGS_FORBIDDEN_MESSAGE,
   LOGS_NOT_FOUND_MESSAGE,
   LogsError,
+  PYTHON_CASEFOLD_ASCII_ENTRIES,
   getInvocationDetail,
   listInvocations,
   parseInvocationDetail,
   parseInvocationList,
+  normalizePythonCasefoldAscii,
 } from '../api/logs'
 import App from '../App'
 import { ADMIN_LOGS_ROUTE, DEFAULT_APP_ROUTE } from '../app/routes'
@@ -79,7 +82,7 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       payload: marker === null ? {} : { state: marker },
       created_at: 10.5,
     }],
-    tool_calls: [],
+    tool_calls: [] as Array<Record<string, unknown>>,
     redactions: [{
       id: `redaction-${invocationId}`,
       target_type: 'metadata',
@@ -89,7 +92,37 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       is_tombstone: true,
       redacted_at: 9,
     }],
+    sensitive_hits: [] as Array<Record<string, unknown>>,
   }
+}
+
+function detailWithSensitiveHits(invocationId = 'invocation-1') {
+  const body = detail(invocationId, null)
+  body.tool_calls = [
+    {
+      id: 'tool-1', run_event_id: `event-${invocationId}`, sequence_number: 1,
+      tool_name: 'safe_one', arguments: {}, outcome: 'success', result: {}, error: null,
+      latency_ms: null, retry_of_tool_call_id: null, created_at: 10.6,
+    },
+    {
+      id: 'tool-2', run_event_id: `event-${invocationId}`, sequence_number: 2,
+      tool_name: 'safe_two', arguments: {}, outcome: 'success', result: {}, error: null,
+      latency_ms: null, retry_of_tool_call_id: null, created_at: 10.7,
+    },
+  ]
+  body.sensitive_hits = [
+    { id: 'hit-input', target: 'input', tool_call_id: null, detector_type: 'email_detector',
+      json_path: '/contact', start: 1, end: 4, detected_at: 20 },
+    { id: 'hit-metadata', target: 'metadata', tool_call_id: null, detector_type: 'phone_detector',
+      json_path: '', start: 0, end: 3, detected_at: 21 },
+    { id: 'hit-response', target: 'response_data', tool_call_id: null, detector_type: 'card_detector',
+      json_path: '/answer', start: 2, end: 8, detected_at: 22 },
+    { id: 'hit-arguments', target: 'tool_arguments', tool_call_id: 'tool-1', detector_type: 'email_detector',
+      json_path: '/category', start: 0, end: 2, detected_at: 23 },
+    { id: 'hit-result', target: 'tool_result', tool_call_id: 'tool-2', detector_type: 'email_detector',
+      json_path: '/result/content', start: 3, end: 9, detected_at: 24 },
+  ]
+  return body
 }
 
 async function flush(): Promise<void> {
@@ -243,6 +276,63 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     expect(parseInvocationDetail(escaped).redactions).toHaveLength(2)
   })
 
+  it('延伸單一exact sensitive_hits並接受五種target與bounded RFC6901位置', () => {
+    const parsed = parseInvocationDetail(detailWithSensitiveHits())
+    expect(parsed.sensitiveHits).toEqual([
+      { id: 'hit-input', target: 'input', toolCallId: null, detectorType: 'email_detector',
+        jsonPath: '/contact', start: 1, end: 4, detectedAt: 20 },
+      { id: 'hit-metadata', target: 'metadata', toolCallId: null, detectorType: 'phone_detector',
+        jsonPath: '', start: 0, end: 3, detectedAt: 21 },
+      { id: 'hit-response', target: 'response_data', toolCallId: null, detectorType: 'card_detector',
+        jsonPath: '/answer', start: 2, end: 8, detectedAt: 22 },
+      { id: 'hit-arguments', target: 'tool_arguments', toolCallId: 'tool-1', detectorType: 'email_detector',
+        jsonPath: '/category', start: 0, end: 2, detectedAt: 23 },
+      { id: 'hit-result', target: 'tool_result', toolCallId: 'tool-2', detectorType: 'email_detector',
+        jsonPath: '/result/content', start: 3, end: 9, detectedAt: 24 },
+    ])
+  })
+
+  it('sensitive_hits拒絕extra/raw-ish欄位、錯誤關聯、無界值與非deterministic順序', () => {
+    const invalidBodies: ReturnType<typeof detailWithSensitiveHits>[] = []
+    for (const field of ['extra', 'raw', 'value', 'snippet', 'hash', 'audit_event_id']) {
+      const body = detailWithSensitiveHits()
+      body.sensitive_hits[0] = { ...body.sensitive_hits[0], [field]: RAW_NEW }
+      invalidBodies.push(body)
+    }
+    for (const override of [
+      { target: 'credential' }, { target: 'input', tool_call_id: 'tool-1' },
+      { target: 'tool_result', tool_call_id: null }, { tool_call_id: 'tool-missing' },
+      { detector_type: 'RawDetector' }, { detector_type: `a${'b'.repeat(128)}` },
+      { json_path: '$.contact' }, { json_path: '/bad~2escape' },
+      { json_path: `/${'中'.repeat(2731)}` }, { start: -1 }, { start: 4, end: 4 },
+      { end: 2**53 }, { detected_at: -1 }, { detected_at: 253_402_300_800 },
+    ]) {
+      const body = detailWithSensitiveHits()
+      body.sensitive_hits[0] = { ...body.sensitive_hits[0], ...override }
+      invalidBodies.push(body)
+    }
+    const duplicateId = detailWithSensitiveHits()
+    duplicateId.sensitive_hits[1].id = duplicateId.sensitive_hits[0].id
+    invalidBodies.push(duplicateId)
+    const reordered = detailWithSensitiveHits()
+    reordered.sensitive_hits = [reordered.sensitive_hits[1], reordered.sensitive_hits[0],
+      ...reordered.sensitive_hits.slice(2)]
+    invalidBodies.push(reordered)
+    const toolSequenceReordered = detailWithSensitiveHits()
+    toolSequenceReordered.sensitive_hits = [
+      ...toolSequenceReordered.sensitive_hits.slice(0, 3),
+      { ...toolSequenceReordered.sensitive_hits[3], tool_call_id: 'tool-2' },
+      { ...toolSequenceReordered.sensitive_hits[4], target: 'tool_arguments', tool_call_id: 'tool-1' },
+    ]
+    invalidBodies.push(toolSequenceReordered)
+    const tooMany = detailWithSensitiveHits()
+    tooMany.sensitive_hits = Array.from({ length: 1025 }, (_, index) => ({
+      ...tooMany.sensitive_hits[0], id: `hit-${index}`, json_path: `/p${String(index).padStart(4, '0')}`,
+    }))
+    invalidBodies.push(tooMany)
+    for (const body of invalidBodies) expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
+  })
+
   it('拒絕storage不可能產生的child語意與raw unsafe integer', () => {
     const base = detail('invocation-1')
     const event = base.run_events[0]
@@ -263,6 +353,70 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     { ...detail('invocation-1'), input: { path: '/Users/example/private.json' } },
   ])('拒絕額外欄位與semantic secret/path', (body) => {
     expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
+  })
+
+  it.each([
+    { ...detail('invocation-1'), input: { note: 'paßword' } },
+    { ...detail('invocation-1'), input: { note: 'paſſword' } },
+    { ...detail('invocation-1'), input: { cooKie: 'marker' } },
+    { ...detail('invocation-1'), input: { authorizatioŉ: 'marker' } },
+    { ...detail('invocation-1'), input: { autẖorization: 'marker' } },
+    { ...detail('invocation-1'), input: { auẗhorization: 'marker' } },
+    { ...detail('invocation-1'), input: { note: 'passẘord=marker' } },
+    { ...detail('invocation-1'), input: { apikeẙ: 'marker' } },
+    { ...detail('invocation-1'), input: { mẚsterkey: 'marker' } },
+  ])('frontend與Python casefold semantic secret判定一致', (body) => {
+    expect(() => parseInvocationDetail(body)).toThrow(ApiFormatError)
+  })
+
+  it('casefold小表由全Unicode code point機械證明完整且含已知差異', () => {
+    const python = process.env.A21_BROWSER_PYTHON ?? process.env.PYTHON ?? 'python3'
+    const environment = { ...process.env }
+    for (const name of ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE']) delete environment[name]
+    environment.PYTHONNOUSERSITE = '1'
+    const script = [
+      'import json,sys',
+      'rows=[]',
+      'for cp in range(128,sys.maxunicode+1):',
+      " c=chr(cp); folded=''.join(x for x in c.casefold() if ('a'<=x<='z') or ('0'<=x<='9'))",
+      ' if folded: rows.append([cp,folded])',
+      'print(json.dumps(rows,separators=(\",\",\":\")))',
+    ].join('\n')
+    const generated = JSON.parse(execFileSync(python, ['-c', script], {
+      encoding: 'utf8', env: environment,
+    })) as Array<[number, string]>
+    expect(generated).toEqual(PYTHON_CASEFOLD_ASCII_ENTRIES.map((entry) => [...entry]))
+    const differences = generated.filter(([codePoint, folded]) =>
+      String.fromCodePoint(codePoint).toLowerCase().replace(/[^a-z0-9]/g, '') !== folded)
+    expect(differences).toEqual(expect.arrayContaining([
+      [0x0149, 'n'], [0x01f0, 'j'], [0x1e96, 'h'], [0x1e97, 't'],
+      [0x1e98, 'w'], [0x1e99, 'y'], [0x1e9a, 'a'],
+    ]))
+    for (const [codePoint, folded] of generated) {
+      expect(normalizePythonCasefoldAscii(String.fromCodePoint(codePoint))).toBe(folded)
+    }
+    expect(generated).toEqual(expect.arrayContaining([
+      [0x00df, 'ss'], [0x0130, 'i'], [0x0149, 'n'], [0x017f, 's'], [0x01f0, 'j'],
+      [0x1e96, 'h'], [0x1e97, 't'], [0x1e98, 'w'], [0x1e99, 'y'], [0x1e9a, 'a'],
+      [0x212a, 'k'],
+    ]))
+  })
+
+  it('frontend鏡射backend semantic value matrix並保留合法raw', () => {
+    const invalid = [
+      'note Authorization', 'Cookie', 'signing-private_key', 'client_secret=TOPSECRET',
+      'api_key=TOPSECRET', 'API KEY TOPSECRET', 'access_token=TOPSECRET',
+      'refresh_token=TOPSECRET', 'master_key=TOPSECRET', 'credential_hash=TOPSECRET',
+      'credential_ciphertext=TOPSECRET', 'password=TOPSECRET', 'secret_key=TOPSECRET',
+      'provider-secret TOPSECRET',
+    ]
+    for (const value of invalid) {
+      expect(() => parseInvocationDetail({ ...detail('invocation-1'), input: { note: value } }))
+        .toThrow(ApiFormatError)
+    }
+    const valid = detail('invocation-1')
+    valid.input = { route: '/api/v1/items', text: 'bearer market analysis' } as unknown as typeof valid.input
+    expect(parseInvocationDetail(valid).input).toEqual(valid.input)
   })
 
   it('只發exact same-origin credentialed list/detail GET', async () => {
@@ -405,6 +559,27 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     expect(source).not.toContain('redacted_at')
     expect(source).not.toContain('已刪除或無資料')
     expect(source).not.toMatch(/export|download|copy all|copy-all|share link|raw search|匯出|下載|複製全部|分享連結|全文搜尋/i)
+  })
+
+  it('Admin detail只顯示敏感命中安全位置且空值有固定顯示', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session('admin')))
+      .mockResolvedValueOnce(jsonResponse(listPage([listItem('invocation-1')])))
+      .mockResolvedValueOnce(jsonResponse(detailWithSensitiveHits()))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+    await submitList(renderer!)
+    await act(async () => button(renderer!, 'invocation-1 — failed').props.onClick())
+    const source = text(renderer!)
+    expect(source).toContain('敏感資料命中')
+    for (const value of ['輸入', 'Metadata', '回應資料', '工具參數', '工具結果',
+      'tool-1', '/contact', '根節點', '1–4', 'email_detector', '1970-01-01T00:00:20.000Z']) {
+      expect(source).toContain(value)
+    }
+    expect(source).toContain('工具呼叫識別碼')
+    expect(source).toContain('無資料')
+    expect(source).not.toContain(RAW_NEW)
+    expect(source).not.toMatch(/"(?:raw|snippet|hash|audit[_ -]?id)"|稽核識別碼|複製|下載|匯出/i)
   })
 
   it('detail 503先清除前一筆raw再顯示固定錯誤', async () => {

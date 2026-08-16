@@ -28,6 +28,9 @@ def _環境(tmp_path: Path) -> dict[str, str]:
             "1": base64.urlsafe_b64encode(b"J" * 32).rstrip(b"=").decode("ascii"),
             "2": base64.urlsafe_b64encode(b"K" * 32).rstrip(b"=").decode("ascii"),
         }, separators=(",", ":")),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": base64.urlsafe_b64encode(
+            b"O" * 32
+        ).rstrip(b"=").decode("ascii"),
     }
 
 
@@ -98,6 +101,26 @@ def test_construction零IO且root_app已包含stable_route(tmp_path: Path, monke
         路徑 = 目前應用.openapi()["paths"]
         assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials"]) == {"get", "post"}
         assert set(路徑["/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke"]) == {"post"}
+        assert set(路徑["/api/published-endpoints/{endpoint_id}/metrics"]) == {"get"}
+        assert set(路徑["/api/published-endpoints/{endpoint_id}/diagnostics"]) == {"get"}
+
+
+@pytest.mark.parametrize("值", (None, "", "not-base64", "A" * 42, "A" * 44))
+def test_Owner觀測cursor_key為獨立必填external_authority(tmp_path: Path, 值: str | None):
+    環境 = _環境(tmp_path)
+    if 值 is None:
+        del 環境["TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY"]
+    else:
+        環境["TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY"] = 值
+    with pytest.raises(ValueError, match="^Canonical環境設定無效$") as 捕捉:
+        asgi模組.解析Canonical環境設定(環境)
+    assert not 值 or 值 not in str(捕捉.value)
+
+
+def test_Owner觀測cursor_key不共用credential_key且repr不揭露(tmp_path: Path):
+    _, Published設定 = asgi模組.解析Canonical環境設定(_環境(tmp_path))
+    assert Published設定.Owner觀測游標金鑰 == b"O" * 32
+    assert "OOOO" not in repr(Published設定)
 
 
 @pytest.mark.parametrize(

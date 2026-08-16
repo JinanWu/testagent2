@@ -22,17 +22,19 @@ const JSON_CONTENT_TYPE = 'application/json'
 const ROUTES = new Set<string>(Object.values(API_ROUTES))
 const SESSION_DETAIL_ROUTE = /^\/api\/sessions\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
 const RESOURCE_DETAIL_ROUTE = /^\/api\/(?:sessions|skills)\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
+const OWNER_OBSERVABILITY_ROUTE = /^\/api\/published-endpoints\/[A-Za-z0-9_-]{1,128}\/(?:metrics\?window_seconds=[1-9]\d{0,6}|diagnostics\?window_seconds=[1-9]\d{0,6}&limit=[1-9]\d{0,2}(?:&cursor=[A-Za-z0-9_.!~*'()%-]{1,3072})?)$/
 
 function isAllowedRoute(route: string): boolean {
   return ROUTES.has(route) ||
     /^\/api\/sessions\?limit=(?:[1-9]|[1-4]\d|50)$/.test(route) ||
-    RESOURCE_DETAIL_ROUTE.test(route)
+    RESOURCE_DETAIL_ROUTE.test(route) || OWNER_OBSERVABILITY_ROUTE.test(route)
 }
 
 function responseLimit(route: string): number {
   if (SESSION_DETAIL_ROUTE.test(route)) {
     return MAX_SESSION_DETAIL_RESPONSE_BYTES
   }
+  if (OWNER_OBSERVABILITY_ROUTE.test(route)) return MAX_LARGE_RESPONSE_BYTES
   return route === API_ROUTES.chat || route.startsWith('/api/sessions') || route.startsWith('/api/skills')
     ? MAX_LARGE_RESPONSE_BYTES : MAX_RESPONSE_BYTES
 }

@@ -81,6 +81,9 @@ print('FRESH_ROOT_FACTORY_OK')
         "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
             "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
         }, separators=(",", ":")),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": base64.urlsafe_b64encode(
+            b"O" * 32
+        ).rstrip(b"=").decode("ascii"),
     }
     result = subprocess.run(
         [sys.executable, "-c", code], cwd=Path(__file__).parents[2], env=env,

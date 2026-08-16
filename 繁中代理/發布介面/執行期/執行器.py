@@ -14,7 +14,7 @@ import hmac
 import json
 import re
 import unicodedata
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol, cast
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -48,6 +48,50 @@ class 結構化輸出錯誤(發布執行錯誤):
 
 class 發布工具執行錯誤(發布執行錯誤):
     """釘選工具呼叫無效、失敗或超過有界執行額度。"""
+
+
+class 工具治理失敗(發布執行錯誤):
+    """canonical tool observer 無法保存治理 authority。"""
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class 工具結果觀察:
+    """module-owned、safe-repr 的成功或固定失敗工具觀察 DTO。"""
+
+    tool_name: str
+    outcome: str
+    safe_error_code: str | None
+    _arguments_json: str
+    _result_json: str | None
+
+    @property
+    def arguments(self) -> dict[str, Any]:
+        """返回 fresh canonical arguments tree。"""
+        return _解析正規JSON(self._arguments_json, 32_768)
+
+    @property
+    def result(self) -> dict[str, Any] | None:
+        """成功時返回 fresh canonical result；失敗時固定為 ``None``。"""
+        return None if self._result_json is None else _解析正規JSON(
+            self._result_json, _最大工具結果位元組,
+        )
+
+
+def _建立工具結果觀察(
+    名稱: str, 參數: dict[str, Any], *, 結果: dict[str, Any] | None = None,
+    錯誤代碼: str | None = None,
+) -> 工具結果觀察:
+    """從 detached canonical values 建立 success/error 互斥觀察。"""
+    if ((結果 is None) == (錯誤代碼 is None)
+            or 錯誤代碼 not in (None, "tool_timeout", "endpoint_misconfigured", "tool_execution_failed")):
+        raise ValueError
+    觀察 = object.__new__(工具結果觀察)
+    object.__setattr__(觀察, "tool_name", 名稱)
+    object.__setattr__(觀察, "outcome", "success" if 錯誤代碼 is None else "error")
+    object.__setattr__(觀察, "safe_error_code", 錯誤代碼)
+    object.__setattr__(觀察, "_arguments_json", _建立正規JSON(參數))
+    object.__setattr__(觀察, "_result_json", None if 結果 is None else _建立正規JSON(結果))
+    return 觀察
 
 class 發布執行快照提供者(Protocol):
     """只依 exact endpoint version id 取得 immutable 快照。"""
@@ -688,7 +732,8 @@ def _工具綱要索引(登錄器: object) -> dict[str, dict[str, Any]]:
 
 
 def _附加工具回合(訊息: list[dict[str, Any]], 回應: object,
-                   登錄器: object, 呼叫們: list[dict[str, Any]]) -> None:
+                   登錄器: object, 呼叫們: list[dict[str, Any]],
+                   觀察器: Callable[[工具結果觀察], None] | None = None) -> None:
     """嚴格驗證並執行一回 captured-release calls，再附加 assistant/tool messages。
 
     參數：local transcript、模型回應、釘選登錄器及 detached calls。回傳：無。
@@ -722,18 +767,51 @@ def _附加工具回合(訊息: list[dict[str, Any]], 回應: object,
                    "finish_reason": object.__getattribute__(回應, "finish_reason")})
         結果總量 = 0
         for 識別, 名稱, 參數 in 描述:
-            工具結果 = 登錄器.呼叫工具(名稱, 參數)  # type: ignore[union-attr]
-            if type(工具結果) is not str:
-                raise ValueError
-            結果總量 += len(工具結果.encode("utf-8"))
-            if 結果總量 > _最大工具結果位元組:
-                raise ValueError
-            結果物件 = _解析模型JSON(工具結果, _最大工具結果位元組)
-            if type(結果物件) is not dict or dict.get(結果物件, "success") is not True:
-                raise ValueError
+            try:
+                工具結果 = 登錄器.呼叫工具(名稱, 複製JSON(參數, 32_768))  # type: ignore[union-attr]
+                if type(工具結果) is not str:
+                    raise ValueError
+                結果總量 += len(工具結果.encode("utf-8"))
+                if 結果總量 > _最大工具結果位元組:
+                    raise ValueError
+                結果物件 = _解析模型JSON(工具結果, _最大工具結果位元組)
+                if type(結果物件) is not dict or dict.get(結果物件, "success") is not True:
+                    raise ValueError
+            except _控制流程:
+                raise
+            except BaseException as 工具錯誤:
+                錯誤代碼 = (
+                    "tool_timeout" if type(工具錯誤) is 工具逾時 else
+                    "endpoint_misconfigured" if type(工具錯誤) is 工具設定錯誤 else
+                    "tool_execution_failed"
+                )
+                if 觀察器 is not None:
+                    try:
+                        觀察器(_建立工具結果觀察(名稱, 參數, 錯誤代碼=錯誤代碼))
+                    except _控制流程:
+                        raise
+                    except BaseException:
+                        raise 工具治理失敗("工具治理保存失敗") from None
+                if 錯誤代碼 == "tool_timeout":
+                    raise 工具錯誤
+                if 錯誤代碼 == "endpoint_misconfigured":
+                    raise 工具錯誤
+                raise 發布工具執行錯誤("發布工具執行失敗") from None
+            if 觀察器 is not None:
+                try:
+                    觀察器(_建立工具結果觀察(名稱, 參數, 結果=結果物件))
+                except _控制流程:
+                    raise
+                except BaseException:
+                    raise 工具治理失敗("工具治理保存失敗") from None
             訊息.append({"role": "tool", "tool_call_id": 識別,
                        "name": 名稱, "content": 工具結果})
     except _控制流程:
+        訊息 = 回應 = 登錄器 = 呼叫們 = 觀察器 = 綱要們 = 已看 = 描述 = cast(Any, None)
+        呼叫 = 識別 = 類型 = 函數 = 名稱 = 參數原文 = 參數 = 安全呼叫 = None
+        結果總量 = 工具結果 = 結果物件 = 工具錯誤 = 錯誤代碼 = None
+        raise
+    except 工具治理失敗:
         raise
     except BaseException as 錯誤:
         if type(錯誤) is 工具逾時 or type(錯誤) is 工具設定錯誤:
@@ -760,7 +838,7 @@ class 發布執行器:
                 raise ValueError
             with _執行器狀態鎖:
                 狀態 = _執行器狀態.get(self)
-            if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
+            if type(狀態) is not tuple or len(狀態) != 6 or 狀態[0] is not _執行器封印:
                 raise ValueError
             輸入原值 = object.__getattribute__(請求, "_input_json")
             模型請求 = _建立執行模型請求(狀態, 輸入原值, False)
@@ -807,7 +885,7 @@ class 發布執行器:
                 raise ValueError
             with _執行器狀態鎖:
                 狀態 = _執行器狀態.get(self)
-            if type(狀態) is not tuple or len(狀態) != 5 or 狀態[0] is not _執行器封印:
+            if type(狀態) is not tuple or len(狀態) != 6 or 狀態[0] is not _執行器封印:
                 raise ValueError
             輸入原文 = object.__getattribute__(請求, "_input_json")
             歷史原文 = object.__getattribute__(請求, "_歷史JSON")
@@ -826,7 +904,7 @@ class 發布執行器:
                 工具總數 += len(呼叫們)
                 if not 1 <= len(呼叫們) <= _最大工具呼叫 or 工具總數 > _最大工具呼叫:
                     raise 發布工具執行錯誤("發布工具執行失敗")
-                _附加工具回合(訊息, 回應, 狀態[2], 呼叫們)
+                _附加工具回合(訊息, 回應, 狀態[2], 呼叫們, 狀態[5])
         except _控制流程:
             self = 請求 = 狀態 = 輸入原文 = 訊息 = 模型請求 = 回應 = 呼叫們 = None
             raise
@@ -908,13 +986,14 @@ class _方法代理:
 
 _執行器封印 = object()
 _執行器狀態鎖 = threading.Lock()
-_執行器狀態: weakref.WeakKeyDictionary[發布執行器, tuple[object, str, object, object, object]] = weakref.WeakKeyDictionary()
+_執行器狀態: weakref.WeakKeyDictionary[發布執行器, tuple[object, str, object, object, object, object]] = weakref.WeakKeyDictionary()
 
 
 def 建立發布執行器(
     *, endpoint_version_id: str, service_account_id: str,
     發布快照提供者: object, 服務帳戶載入器: object, 技能套件載入器: object,
     工具修訂提供者: object, 模型供應商註冊表: dict[str, object],
+    工具呼叫觀察器: Callable[[工具結果觀察], None] | None = None,
 ) -> 發布執行器:
     """先捕捉所有 callback，再依 version→SA→bundle→tool→model 階段封存。"""
     版本方法 = 帳戶方法 = 套件方法 = 工具方法 = None
@@ -922,7 +1001,8 @@ def 建立發布執行器(
     工具登錄器 = 模型轉接器 = 提示 = 執行器 = 結構 = None
     失敗 = False
     try:
-        if not _是識別碼(endpoint_version_id) or not _是識別碼(service_account_id):
+        if (not _是識別碼(endpoint_version_id) or not _是識別碼(service_account_id)
+                or (工具呼叫觀察器 is not None and not callable(工具呼叫觀察器))):
             raise ValueError
         if type(發布快照提供者) is 發布執行快照:
             版本原值 = 發布快照提供者
@@ -966,7 +1046,9 @@ def 建立發布執行器(
         模型轉接器 = 建立模型轉接器(dict(模型描述), 版本.model_config)
         執行器 = object.__new__(_發布執行器實作)
         with _執行器狀態鎖:
-            _執行器狀態[執行器] = (_執行器封印, 提示, 工具登錄器, 模型轉接器, 結構)
+            _執行器狀態[執行器] = (
+                _執行器封印, 提示, 工具登錄器, 模型轉接器, 結構, 工具呼叫觀察器,
+            )
         return 執行器
     except _控制流程:
         endpoint_version_id = service_account_id = 發布快照提供者 = 服務帳戶載入器 = None

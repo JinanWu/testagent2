@@ -23,6 +23,8 @@ _預期路由清單 = {
     "/api/chat": ("post",),
     "/api/published-endpoints/{endpoint_id}/credentials": ("get", "post"),
     "/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke": ("post",),
+    "/api/published-endpoints/{endpoint_id}/metrics": ("get",),
+    "/api/published-endpoints/{endpoint_id}/diagnostics": ("get",),
     "/api/published-endpoints/draft": ("post",),
     "/api/sessions": ("get",),
     "/api/sessions/{session_id}": ("get",),
@@ -51,6 +53,9 @@ def _設定Canonical環境(tmp_path: Path, monkeypatch) -> None:
         "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON": json.dumps({
             "1": base64.urlsafe_b64encode(b"A" * 32).rstrip(b"=").decode("ascii"),
         }, separators=(",", ":")),
+        "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY": base64.urlsafe_b64encode(
+            b"O" * 32
+        ).rstrip(b"=").decode("ascii"),
     }
     for 名稱 in tuple(os.environ):
         if 名稱.startswith("TESTAGENT2_") or 名稱.startswith("AIAGENT_"):

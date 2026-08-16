@@ -52,6 +52,10 @@ export default function AdminInvocationDetail({ detail, hasRedaction }: AdminInv
     run_event: '執行事件', tool_arguments: '工具參數', tool_result: '工具結果',
     tool_error: '工具錯誤',
   }
+  const sensitiveTargetLabels: Record<string, string> = {
+    input: '輸入', metadata: 'Metadata', response_data: '回應資料',
+    tool_arguments: '工具參數', tool_result: '工具結果',
+  }
   return (
     <article aria-labelledby="invocation-detail-title">
       <h2 id="invocation-detail-title">呼叫詳情</h2>
@@ -96,6 +100,24 @@ export default function AdminInvocationDetail({ detail, hasRedaction }: AdminInv
               <span>路徑：{redaction.jsonPath === '' ? '根節點' : redaction.jsonPath}</span>
               <span>原因：{redaction.reason}</span>
               <time dateTime={renderEpoch(redaction.redactedAt)}>{renderEpoch(redaction.redactedAt)}</time>
+            </li>
+          ))}</ul>
+        )}
+      </section>
+      <section aria-label="敏感資料命中">
+        <h3>敏感資料命中</h3>
+        {detail.sensitiveHits.length === 0 ? <p>沒有敏感資料命中。</p> : (
+          <ul>{detail.sensitiveHits.map((hit) => (
+            <li key={hit.id}>
+              <dl>
+                <dt>目標</dt><dd>{sensitiveTargetLabels[hit.target]}</dd>
+                <dt>工具呼叫識別碼</dt><dd>{hit.toolCallId ?? '無資料'}</dd>
+                <dt>JSON 路徑</dt><dd>{hit.jsonPath === '' ? '根節點' : hit.jsonPath}</dd>
+                <dt>位置</dt><dd>{`${hit.start}–${hit.end}`}</dd>
+                <dt>偵測類型</dt><dd>{hit.detectorType}</dd>
+                <dt>偵測時間</dt>
+                <dd><time dateTime={renderEpoch(hit.detectedAt)}>{renderEpoch(hit.detectedAt)}</time></dd>
+              </dl>
             </li>
           ))}</ul>
         )}
