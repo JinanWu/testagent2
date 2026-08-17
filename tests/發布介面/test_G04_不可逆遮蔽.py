@@ -295,6 +295,25 @@ def test_稽核動態型別在任何payload實體化前失敗關閉(monkeypatch,
     assert 解析次數 == []
 
 
+@pytest.mark.parametrize(("trigger", "sql"), [
+    ("endpoint_redactions_no_update", "UPDATE endpoint_redactions SET actor_id='forged-admin'"),
+    ("audit_events_no_update", "UPDATE audit_events SET actor_id='forged-admin'"),
+])
+def test_A20恢復exact觸發器後ledger與audit_actor不一致在materialize前失敗關閉(
+    monkeypatch, 資料庫, trigger, sql,
+):
+    from 繁中代理.發布介面.治理 import 查詢投影
+
+    SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
+    _暫停防護並竄改(資料庫, trigger, sql)
+    解析次數 = []
+    monkeypatch.setattr(查詢投影, "_解析可空JSON", lambda *_a, **_k: 解析次數.append(1))
+
+    with pytest.raises(查詢投影錯誤):
+        SQLite呼叫查詢投影(str(資料庫)).查詢管理員原始資料(True, "ep", "inv")
+    assert 解析次數 == []
+
+
 @pytest.mark.parametrize("欄位,值", [
     ("json_path", "/forged"), ("id", "forged-redaction"), ("redacted_at", 999.0),
 ])

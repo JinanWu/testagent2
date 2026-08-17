@@ -117,7 +117,8 @@ _工具欄位 = frozenset({
     "result", "error", "latency_ms", "retry_of_tool_call_id", "created_at",
 })
 _遮蔽欄位 = frozenset({
-    "id", "target_type", "target_row_id", "json_path", "reason", "is_tombstone", "redacted_at",
+    "id", "target_type", "target_row_id", "json_path", "original_sha256", "reason",
+    "actor", "audit_event_id", "is_tombstone", "redacted_at",
 })
 _敏感命中欄位 = frozenset({
     "id", "target", "tool_call_id", "detector_type", "json_path",
@@ -302,6 +303,13 @@ def _驗證管理員完整詳情(值: object) -> None:
         if (type(遮蔽) is not dict or set(遮蔽) != _遮蔽欄位
                 or not _是識別碼(遮蔽["id"])
                 or not _是識別碼(遮蔽["target_row_id"])
+                or 遮蔽["original_sha256"] is None
+                or not _是可空SHA256(遮蔽["original_sha256"])
+                or type(遮蔽["actor"]) is not dict
+                or set(遮蔽["actor"]) != {"type", "id"}
+                or 遮蔽["actor"]["type"] != "admin"
+                or not _是識別碼(遮蔽["actor"]["id"])
+                or not _是識別碼(遮蔽["audit_event_id"])
                 or 遮蔽["is_tombstone"] is not True
                 or not _是有限時間(遮蔽["redacted_at"])):
             raise ValueError

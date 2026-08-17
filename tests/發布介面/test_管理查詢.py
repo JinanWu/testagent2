@@ -1699,7 +1699,9 @@ def test_A18完整詳情redaction_ledger與canonical_tombstone必須雙向精確
     墓碑 = {"$tombstone": {"redaction_id": "red-1", "redacted_at": 3.0}}
     遮蔽 = {
         "id": "red-1", "target_type": "metadata", "target_row_id": "inv-1",
-        "json_path": "/private", "reason": "privacy", "is_tombstone": True,
+        "json_path": "/private", "original_sha256": "b" * 64, "reason": "privacy",
+        "actor": {"type": "admin", "id": "admin-1"}, "audit_event_id": "audit-red-1",
+        "is_tombstone": True,
         "redacted_at": 3.0,
     }
     基本 = {

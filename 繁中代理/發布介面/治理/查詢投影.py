@@ -739,7 +739,9 @@ def _讀取管理員原始資料(
             "completed_at": 列[13], "run_events": 事件, "tool_calls": 工具,
             "redactions": [{
                 "id": 遮蔽[0], "target_type": 遮蔽[2], "target_row_id": 遮蔽[3],
-                "json_path": 遮蔽[4], "reason": 遮蔽[6],
+                "json_path": 遮蔽[4], "original_sha256": 遮蔽[5],
+                "reason": 遮蔽[6], "actor": {"type": "admin", "id": 遮蔽[8]},
+                "audit_event_id": 遮蔽[9],
                 "is_tombstone": True, "redacted_at": 遮蔽[11],
             } for 遮蔽 in 遮蔽列],
             "sensitive_hits": [{

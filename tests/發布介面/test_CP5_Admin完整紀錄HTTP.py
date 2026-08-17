@@ -122,7 +122,9 @@ def _詳情資料():
         "pricing_version": None, "created_at": 10.0, "completed_at": 11.0,
         "run_events": [], "tool_calls": [], "redactions": [{
             "id": "redaction-1", "target_type": "metadata", "target_row_id": "inv-1",
-            "json_path": "/secret", "reason": "privacy",
+            "json_path": "/secret", "original_sha256": "a" * 64, "reason": "privacy",
+            "actor": {"type": "admin", "id": "admin-1"},
+            "audit_event_id": "audit-redaction-1",
             "is_tombstone": True, "redacted_at": 9.0,
         }], "sensitive_hits": [],
     }
@@ -247,6 +249,8 @@ def test_A18_detail_redactions沿用canonical遮蔽shape且OpenAPI同界線():
     assert schema["json_path"]["pattern"] == r"^(?:$|(?:/(?![^/]{257})(?:[^~/]|~[01]){0,256}){1,16})$"
     assert schema["reason"]["maxLength"] == 256
     assert "pattern" in schema["reason"]
+    assert schema["original_sha256"]["pattern"] == r"^[0-9a-f]{64}$"
+    assert schema["actor"]["$ref"].endswith("/AdminRedactionActor")
     assert schema["is_tombstone"]["const"] is True
     detail_path = "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}"
     detail_ref = 客戶端.get("/openapi.json").json()["paths"][detail_path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
@@ -295,6 +299,10 @@ def test_A18_detail真HTTP_response_model攔截domain故障注入的非法redact
 @pytest.mark.parametrize("覆寫", [
     {"id": b"redaction-1"}, {"redacted_at": True}, {"redacted_at": "9"},
     {"json_path": b"/safe"}, {"reason": b"policy"}, {"is_tombstone": 1},
+    {"original_sha256": b"a" * 64}, {"original_sha256": "A" * 64},
+    {"actor": {"type": "member", "id": "admin-1"}},
+    {"actor": {"type": "admin", "id": b"admin-1"}},
+    {"audit_event_id": b"audit-redaction-1"},
 ])
 def test_A18_detail真HTTP_response_model拒絕redaction_scalar_coercion(monkeypatch, 覆寫):
     詳情DTO = 管理員呼叫完整詳情(_詳情資料())

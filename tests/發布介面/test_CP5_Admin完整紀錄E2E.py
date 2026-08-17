@@ -236,9 +236,11 @@ def test_A18_正式遮蔽後主列事件工具只回墓碑且稽核零原文(tmp
         assert "$tombstone" in 詳情.json()["tool_calls"][0]["arguments"]
         assert len(詳情.json()["redactions"]) == 3
         assert all(set(項) == {
-            "id", "target_type", "target_row_id", "json_path", "reason",
-            "is_tombstone", "redacted_at",
+            "id", "target_type", "target_row_id", "json_path", "original_sha256",
+            "reason", "actor", "audit_event_id", "is_tombstone", "redacted_at",
         } for 項 in 詳情.json()["redactions"])
+        assert all(項["actor"] == {"type": "admin", "id": 環境.管理員識別碼}
+                   for 項 in 詳情.json()["redactions"])
         assert not any(標記 in 詳情.text for 標記 in _所有標記)
     with sqlite3.connect(環境.資料庫路徑) as 連線:
         安全持久資料 = repr(連線.execute(
