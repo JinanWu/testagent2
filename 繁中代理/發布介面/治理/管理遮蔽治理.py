@@ -23,7 +23,7 @@ from ..網頁工作階段 import (
     網頁工作階段服務,
     網頁認證不可用,
 )
-from .遮蔽 import SQLite不可逆遮蔽服務, 遮蔽目標衝突
+from .遮蔽 import SQLite不可逆遮蔽服務, 遮蔽目標衝突, 遮蔽路徑無效
 from .遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令冪等衝突, 遮蔽命令目標不存在
 
 _控制流程 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -102,6 +102,11 @@ class 管理遮蔽冪等衝突:
 @dataclass(frozen=True, slots=True)
 class 管理遮蔽目標衝突:
     """transaction owner證實target/path conflict。"""
+
+
+@dataclass(frozen=True, slots=True)
+class 管理遮蔽驗證失敗:
+    """transaction owner證明JSON Pointer無法定位既有值。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -196,6 +201,8 @@ class 管理遮蔽治理權限:
                 return 管理遮蔽不存在()
             except 遮蔽目標衝突:
                 return 管理遮蔽目標衝突()
+            except 遮蔽路徑無效:
+                return 管理遮蔽驗證失敗()
             except BaseException:
                 return 管理遮蔽內部失敗()
             if type(收據) is not 管理遮蔽收據:

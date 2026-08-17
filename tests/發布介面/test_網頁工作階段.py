@@ -1,5 +1,6 @@
 """AUTH A02 Web session、cookie、single-use CSRF 與 CORS 測試。"""
 
+import asyncio
 import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -166,6 +167,17 @@ def test_read_only身份驗證不接觸CSRF或session_state(tmp_path):
             (issued.識別碼,),
         ).fetchone()
     assert after == before
+
+
+def test_read_only身份驗證的clock_cancellation保持exact_identity(tmp_path):
+    cancellation = asyncio.CancelledError("CANCEL_AUTH")
+    service = 網頁工作階段服務(
+        tmp_path / "unused.sqlite3",
+        時鐘=lambda: (_ for _ in ()).throw(cancellation),
+    )
+    with pytest.raises(asyncio.CancelledError) as caught:
+        service.驗證身份("x" * 32)
+    assert caught.value is cancellation
 
 
 def test_expiry_boundary與disabled使用者永久失效(tmp_path):

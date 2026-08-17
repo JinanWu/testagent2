@@ -8,7 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
@@ -157,6 +157,13 @@ def test_A20_04_exact_route只接受一個module_owned_authority與嚴格OpenAPI
     body_schema = spec["requestBody"]["content"]["application/json"]["schema"]
     assert body_schema["additionalProperties"] is False
     assert set(body_schema["properties"]) == {"target_type", "target_row_id", "json_path", "reason"}
+    parameters = {(item["name"], item["in"]): item for item in spec["parameters"]}
+    assert parameters[("Idempotency-Key", "header")]["required"] is True
+    assert parameters[("X-CSRF-Token", "header")]["required"] is True
+    assert parameters[("X-CSRF-Token", "header")]["schema"] == {
+        "type": "string", "minLength": 32, "maxLength": 512,
+        "pattern": "^[A-Za-z0-9_\\-]+$",
+    }
 
     with client:
         csrf = _登入(client)
@@ -218,6 +225,61 @@ def test_A20_04超長Content_Length固定400且零治理mutation(tmp_path):
     assert response.json() == {"detail": {"code": "invalid_request"}}
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("額外標頭", [
+    [(b"content-length", b"1")],
+    [(b"content-length", b"ACTUAL"), (b"transfer-encoding", b"chunked")],
+])
+def test_A20_04_declared_streamed_length不符或TE加CL固定400且零mutation(tmp_path, 額外標頭):
+    _, router, _, path = _建立客戶端(tmp_path)
+    route = router.routes[0]
+    assert type(route) is APIRoute
+    body = json.dumps(本文).encode()
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"idempotency-key", b"idem-framing"),
+    ] + [(name, str(len(body)).encode() if value == b"ACTUAL" else value) for name, value in 額外標頭]
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.disconnect"}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request({
+        "type": "http", "method": "POST", "path": 路徑,
+        "query_string": b"", "headers": headers,
+    }, receive)
+
+    async def run():
+        with pytest.raises(HTTPException) as caught:
+            await route.endpoint(
+                request, "endpoint-1", "invocation-1", Response(),
+                管理遮蔽授權(網頁使用者("admin-1", "alice", "admin")),
+            )
+        assert caught.value.status_code == 400
+        assert caught.value.detail == {"code": "invalid_request"}
+
+    asyncio.run(run())
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+
+
+def test_A20_04_existing_target但JSON_pointer不存在固定422且整筆回滾(tmp_path):
+    client, _, _, path = _建立客戶端(tmp_path)
+    with client:
+        csrf = _登入(client)
+        response = _post(client, csrf, body={**本文, "json_path": "/result/missing"})
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"code": "redaction_validation_failed"}}
+    assert response.headers["X-CSRF-Token"]
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT count(*) FROM redaction_idempotency_commands").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
 
 
 def test_A20_04_auth與CSRF_runtime_codes精確可達(monkeypatch, tmp_path):

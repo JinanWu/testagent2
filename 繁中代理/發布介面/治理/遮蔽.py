@@ -73,6 +73,10 @@ class 遮蔽目標衝突(RuntimeError):
     """不同server command已處理同一target/path時的固定provenance。"""
 
 
+class 遮蔽路徑無效(RuntimeError):
+    """transaction owner確認JSON Pointer無法解析至既有值。"""
+
+
 class SQLite不可逆遮蔽服務:
     """原子提交 canonical audit、payload 墓碑與 append-only 遮蔽帳本。"""
 
@@ -170,7 +174,7 @@ class SQLite不可逆遮蔽服務:
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
         資料庫識別 = None
         已開始 = 已提交 = 一般失敗 = 提交待確認 = False
-        主要控制 = 保留衝突 = 可信目標衝突 = None
+        主要控制 = 保留衝突 = 可信目標衝突 = 可信路徑無效 = None
         回滾控制盒: list[BaseException] = []
         關閉控制盒: list[BaseException] = []
         捕捉路徑 = self._path
@@ -230,6 +234,10 @@ class SQLite不可逆遮蔽服務:
                 可信目標衝突 = 捕捉目標衝突
                 捕捉目標衝突 = None
                 raise 可信目標衝突 from None
+            except 遮蔽路徑無效 as 捕捉路徑無效:
+                可信路徑無效 = 捕捉路徑無效
+                捕捉路徑無效 = None
+                raise 可信路徑無效 from None
             try:
                 連線.commit()
             except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -246,6 +254,12 @@ class SQLite不可逆遮蔽服務:
             if 捕捉衝突 is 可信目標衝突:
                 保留衝突 = 捕捉衝突
                 捕捉衝突 = None
+            else:
+                一般失敗 = True
+        except 遮蔽路徑無效 as 捕捉路徑無效:
+            if 捕捉路徑無效 is 可信路徑無效:
+                保留衝突 = 捕捉路徑無效
+                捕捉路徑無效 = None
             else:
                 一般失敗 = True
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
@@ -358,8 +372,11 @@ def _在交易中遮蔽(
                 摘要來源 = _建立正規JSON(payload).encode("utf-8")
                 payload = 墓碑
             else:
-                容器, 鍵 = _尋找JSON位置(payload, JSON路徑)
-                舊值 = 容器[鍵]
+                try:
+                    容器, 鍵 = _尋找JSON位置(payload, JSON路徑)
+                    舊值 = 容器[鍵]
+                except (KeyError, IndexError, TypeError, ValueError):
+                    raise 遮蔽路徑無效("遮蔽路徑不存在") from None
                 摘要來源 = _建立正規JSON(舊值).encode("utf-8")
                 容器[鍵] = 墓碑
             摘要 = hashlib.sha256(摘要來源).hexdigest()

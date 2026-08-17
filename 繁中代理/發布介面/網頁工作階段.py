@@ -1,5 +1,6 @@
 """獨立於 CLI auth_sessions 的 hash-only Web session 服務。"""
 from __future__ import annotations
+import asyncio
 import hashlib
 import json
 import math
@@ -15,7 +16,7 @@ class 網頁CSRF無效(RuntimeError):
     """CSRF 缺少、不符或已使用。"""
 class 網頁認證不可用(RuntimeError):
     """Web 認證儲存層不可用或資料不可信。"""
-_控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_控制流程 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
 def _清除例外鏈(錯誤: BaseException) -> None:
     """不呼叫 hostile override 地移除可能帶敏感資料的例外鏈。"""
     BaseException.__setattr__(錯誤, "__cause__", None)

@@ -21,6 +21,7 @@ from ..治理.管理遮蔽治理 import (
     管理遮蔽目標衝突,
     管理遮蔽請求,
     管理遮蔽收據,
+    管理遮蔽驗證失敗,
 )
 from ..治理.遮蔽 import 驗證遮蔽公開欄位
 from ..設定 import 網頁CSRFHeader名稱
@@ -28,6 +29,7 @@ from ..設定 import 網頁CSRFHeader名稱
 _控制流程 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
 _本文位元上限 = 16_384
 _識別碼格式 = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_權杖格式 = re.compile(r"^[A-Za-z0-9_\-]+$")
 _目標類型 = Literal[
     "invocation_input", "metadata", "output", "error", "run_event",
     "tool_arguments", "tool_result", "tool_error",
@@ -128,11 +130,18 @@ def _錯誤文件(狀態碼: int) -> dict[str, object]:
 
 
 _本文OpenAPI = {
-    "parameters": [{
-        "name": "Idempotency-Key", "in": "header", "required": True,
-        "schema": {"type": "string", "minLength": 1, "maxLength": 128,
-                   "pattern": _識別碼格式.pattern},
-    }],
+    "parameters": [
+        {
+            "name": "Idempotency-Key", "in": "header", "required": True,
+            "schema": {"type": "string", "minLength": 1, "maxLength": 128,
+                       "pattern": _識別碼格式.pattern},
+        },
+        {
+            "name": 網頁CSRFHeader名稱, "in": "header", "required": True,
+            "schema": {"type": "string", "minLength": 32, "maxLength": 512,
+                       "pattern": _權杖格式.pattern},
+        },
+    ],
     "requestBody": {
         "required": True,
         "content": {"application/json": {"schema": 管理遮蔽HTTP請求.model_json_schema()}},
@@ -167,8 +176,8 @@ def 建立管理遮蔽路由器(治理權限: 管理遮蔽治理權限) -> APIRo
             _拋出固定錯誤(400, "invalid_request", 回應)
         端點識別碼 = _驗證識別碼(endpoint_id, 422, 回應)
         呼叫識別碼 = _驗證識別碼(invocation_id, 422, 回應)
-        冪等鍵 = _讀取原始標頭(請求, 回應)
-        本文 = await _解析本文(請求, 回應)
+        冪等鍵, 宣告本文長度 = _讀取原始標頭(請求, 回應)
+        本文 = await _解析本文(請求, 回應, 宣告本文長度)
         try:
             驗證遮蔽公開欄位(本文.target_type, 本文.json_path, 本文.reason)
         except _控制流程:
@@ -191,6 +200,8 @@ def 建立管理遮蔽路由器(治理權限: 管理遮蔽治理權限) -> APIRo
             _拋出固定錯誤(409, "idempotency_conflict", 回應)
         if type(結果) is 管理遮蔽目標衝突:
             _拋出固定錯誤(409, "redaction_conflict", 回應)
+        if type(結果) is 管理遮蔽驗證失敗:
+            _拋出固定錯誤(422, "redaction_validation_failed", 回應)
         if type(結果) is 管理遮蔽內部失敗 or type(結果) is not 管理遮蔽成功:
             _拋出固定錯誤(500, "redaction_failed", 回應)
         try:
@@ -220,15 +231,17 @@ def _原始標頭值(請求: Request, 名稱: bytes) -> list[bytes]:
     return [值 for 鍵, 值 in 請求.scope.get("headers", ()) if 鍵.lower() == 名稱]
 
 
-def _讀取原始標頭(請求: Request, 回應: Response) -> str:
+def _讀取原始標頭(請求: Request, 回應: Response) -> tuple[str, int | None]:
     """在body前拒絕重複representation、framing與idempotency headers。"""
     content_types = _原始標頭值(請求, b"content-type")
     content_lengths = _原始標頭值(請求, b"content-length")
+    transfer_encodings = _原始標頭值(請求, b"transfer-encoding")
     keys = _原始標頭值(請求, b"idempotency-key")
     if len(content_types) != 1 or content_types[0] != b"application/json":
         _拋出固定錯誤(400, "invalid_request", 回應)
-    if len(content_lengths) > 1 or len(keys) != 1:
+    if len(content_lengths) > 1 or len(keys) != 1 or (content_lengths and transfer_encodings):
         _拋出固定錯誤(400, "invalid_request", 回應)
+    宣告長度 = None
     if content_lengths:
         raw = content_lengths[0]
         if (
@@ -239,14 +252,19 @@ def _讀取原始標頭(請求: Request, 回應: Response) -> str:
             or int(raw) > _本文位元上限
         ):
             _拋出固定錯誤(400, "invalid_request", 回應)
+        宣告長度 = int(raw)
     try:
         key = keys[0].decode("ascii")
     except UnicodeDecodeError:
         _拋出固定錯誤(400, "invalid_request", 回應)
-    return _驗證識別碼(key, 400, 回應, "invalid_request")
+    return _驗證識別碼(key, 400, 回應, "invalid_request"), 宣告長度
 
 
-async def _解析本文(請求: Request, 回應: Response) -> 管理遮蔽HTTP請求:
+async def _解析本文(
+    請求: Request,
+    回應: Response,
+    宣告長度: int | None,
+) -> 管理遮蔽HTTP請求:
     try:
         片段清單: list[bytes] = []
         長度 = 0
@@ -255,6 +273,8 @@ async def _解析本文(請求: Request, 回應: Response) -> 管理遮蔽HTTP�
             if 長度 > _本文位元上限:
                 raise ValueError
             片段清單.append(片段)
+        if 宣告長度 is not None and 長度 != 宣告長度:
+            raise ValueError
         原始值: Any = 解析嚴格JSON(b"".join(片段清單).decode("utf-8"))
     except _控制流程:
         raise

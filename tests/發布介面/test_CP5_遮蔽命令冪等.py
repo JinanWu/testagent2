@@ -17,7 +17,11 @@ from 繁中代理.發布介面.資料庫結構契約 import 遷移帳本
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理 import 稽核資料庫 as 稽核資料庫模組
 from 繁中代理.發布介面.治理.保存期限 import SQLite保存清除服務
-from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務, 不可逆遮蔽錯誤
+from 繁中代理.發布介面.治理.遮蔽 import (
+    SQLite不可逆遮蔽服務,
+    不可逆遮蔽錯誤,
+    遮蔽路徑無效,
+)
 from 繁中代理.發布介面.治理.遮蔽命令 import (
     SQLite遮蔽命令服務,
     遮蔽命令冪等衝突,
@@ -566,7 +570,11 @@ def test_public_command_seam拒絕client_controlled_authority_identity_time與�
     assert 原值標記.encode() not in 資料庫.read_bytes()
 
 
-@pytest.mark.parametrize("語意錯誤", [遮蔽命令冪等衝突("spoof"), 遮蔽命令目標不存在("spoof")])
+@pytest.mark.parametrize("語意錯誤", [
+    遮蔽命令冪等衝突("spoof"),
+    遮蔽命令目標不存在("spoof"),
+    遮蔽路徑無效("spoof"),
+])
 @pytest.mark.parametrize("工廠名稱", [
     "遮蔽識別碼工廠", "稽核事件識別碼工廠", "請求識別碼工廠", "時鐘",
 ])
