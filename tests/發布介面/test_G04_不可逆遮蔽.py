@@ -199,6 +199,49 @@ def test_A20不同命令遮蔽同target_path保留專用衝突且第二筆mappin
     assert _查詢(資料庫, "SELECT COUNT(*) FROM audit_events") == [(1,)]
 
 
+@pytest.mark.parametrize(("欄位", "值"), [
+    ("request_fingerprint", "b" * 64),
+    ("endpoint_id", "foreign-endpoint"),
+])
+def test_A20不同key同target前必須驗證完整durable_command_graph否則固定失敗(
+    資料庫, 欄位, 值,
+):
+    服務 = SQLite不可逆遮蔽服務(str(資料庫))
+
+    def 命令服務(後綴):
+        return SQLite遮蔽命令服務(
+            遮蔽識別碼工廠=lambda: f"red-corrupt-{後綴}",
+            稽核事件識別碼工廠=lambda: f"audit-corrupt-{後綴}",
+            請求識別碼工廠=lambda: f"request-corrupt-{後綴}",
+            時鐘=lambda: 234.5,
+        )
+
+    共同 = {
+        "管理員識別碼": "admin-command", "端點識別碼": "ep",
+        "呼叫識別碼": "inv", "目標類型": "tool_result",
+        "目標列識別碼": "tool-ok", "JSON路徑": "/secret/value",
+        "原因": "privacy request",
+    }
+    服務.執行命令(命令服務("one"), 冪等鍵="corrupt-key-one", **共同)
+    with sqlite3.connect(資料庫) as 連線:
+        連線.execute(f"UPDATE redaction_idempotency_commands SET {欄位}=?", (值,))
+    before = (
+        _查詢(資料庫, "SELECT COUNT(*) FROM redaction_idempotency_commands"),
+        _查詢(資料庫, "SELECT COUNT(*) FROM endpoint_redactions"),
+        _查詢(資料庫, "SELECT COUNT(*) FROM audit_events"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    )
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        服務.執行命令(命令服務("two"), 冪等鍵="corrupt-key-two", **共同)
+    after = (
+        _查詢(資料庫, "SELECT COUNT(*) FROM redaction_idempotency_commands"),
+        _查詢(資料庫, "SELECT COUNT(*) FROM endpoint_redactions"),
+        _查詢(資料庫, "SELECT COUNT(*) FROM audit_events"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    )
+    assert after == before
+
+
 @pytest.mark.parametrize(("端點", "呼叫", "類型", "列ID"), [
     ("foreign-endpoint", "inv", "invocation_input", "inv"),
     ("ep", "missing-invocation", "invocation_input", "missing-invocation"),

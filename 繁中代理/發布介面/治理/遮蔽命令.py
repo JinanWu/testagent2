@@ -286,7 +286,8 @@ def _重建命令(列: object) -> 伺服器遮蔽命令:
 def _是相同請求(命令: 伺服器遮蔽命令, 指紋: str, 請求: dict[str, str]) -> bool:
     """同時比較 digest 與 durable canonical fields，避免只信任 hash equality。"""
     return (
-        命令.請求指紋 == 指紋
+        _命令正規指紋相符(命令)
+        and 命令.請求指紋 == 指紋
         and 命令.端點識別碼 == 請求["endpoint_id"]
         and 命令.呼叫識別碼 == 請求["invocation_id"]
         and 命令.JSON路徑 == 請求["json_path"]
@@ -294,3 +295,18 @@ def _是相同請求(命令: 伺服器遮蔽命令, 指紋: str, 請求: dict[st
         and 命令.目標列識別碼 == 請求["target_row_id"]
         and 命令.目標類型 == 請求["target_type"]
     )
+
+
+def _命令正規指紋相符(命令: 伺服器遮蔽命令) -> bool:
+    """由durable canonical request fields重算fingerprint，不信任stored digest。"""
+    if type(命令) is not 伺服器遮蔽命令:
+        return False
+    正規請求 = {
+        "endpoint_id": 命令.端點識別碼,
+        "invocation_id": 命令.呼叫識別碼,
+        "json_path": 命令.JSON路徑,
+        "reason": 命令.原因,
+        "target_row_id": 命令.目標列識別碼,
+        "target_type": 命令.目標類型,
+    }
+    return 命令.請求指紋 == 計算正規JSON雜湊(正規請求)

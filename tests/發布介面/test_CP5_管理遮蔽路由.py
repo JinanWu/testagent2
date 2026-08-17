@@ -453,6 +453,38 @@ def test_A20_04_not_found與兩種conflict只由治理sealed_outcome映射(tmp_p
     assert target.status_code == 409 and target.json() == {"detail": {"code": "redaction_conflict"}}
 
 
+@pytest.mark.parametrize(("欄位", "值"), [
+    ("request_fingerprint", "b" * 64),
+    ("endpoint_id", "foreign-endpoint"),
+])
+def test_A20_04_corrupt_durable_command_graph不得取得409_provenance(tmp_path, 欄位, 值):
+    client, _, _, path = _建立客戶端(tmp_path)
+    with client:
+        csrf = _登入(client)
+        first = _post(client, csrf, key="graph-key-one")
+        assert first.status_code == 200
+        with sqlite3.connect(path) as db:
+            db.execute(f"UPDATE redaction_idempotency_commands SET {欄位}=?", (值,))
+            before = (
+                db.execute("SELECT count(*) FROM redaction_idempotency_commands").fetchone(),
+                db.execute("SELECT count(*) FROM endpoint_redactions").fetchone(),
+                db.execute("SELECT count(*) FROM audit_events").fetchone(),
+                db.execute("SELECT result_json FROM endpoint_tool_calls WHERE id='tool-call-1'").fetchone(),
+            )
+        second = _post(client, first.headers["X-CSRF-Token"], key="graph-key-two")
+        with sqlite3.connect(path) as db:
+            after = (
+                db.execute("SELECT count(*) FROM redaction_idempotency_commands").fetchone(),
+                db.execute("SELECT count(*) FROM endpoint_redactions").fetchone(),
+                db.execute("SELECT count(*) FROM audit_events").fetchone(),
+                db.execute("SELECT result_json FROM endpoint_tool_calls WHERE id='tool-call-1'").fetchone(),
+            )
+    assert second.status_code == 500
+    assert second.json() == {"detail": {"code": "redaction_failed"}}
+    assert second.headers["X-CSRF-Token"]
+    assert after == before
+
+
 def test_A20_04_uninstalled治理固定500且保留CSRF_successor(tmp_path):
     client, _, _, _ = _建立客戶端(tmp_path, 安裝=False)
     with client:

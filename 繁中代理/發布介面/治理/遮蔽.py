@@ -360,7 +360,7 @@ def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別�
         if rows:
             if len(rows) != 1:
                 raise ValueError
-            from .遮蔽命令 import _命令欄位, _重建命令
+            from .遮蔽命令 import _命令正規指紋相符, _命令欄位, _重建命令
             mapping = 連線.execute(
                 f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE redaction_id=?",
                 (rows[0][0],),
@@ -368,7 +368,8 @@ def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別�
             if len(mapping) != 1:
                 raise ValueError
             命令 = _重建命令(mapping[0])
-            if (命令.呼叫識別碼 != 呼叫識別碼 or 命令.目標類型 != 目標類型
+            if (not _命令正規指紋相符(命令) or 命令.端點識別碼 != rows[0][23]
+                    or 命令.呼叫識別碼 != 呼叫識別碼 or 命令.目標類型 != 目標類型
                     or 命令.目標列識別碼 != 目標列識別碼 or 命令.JSON路徑 != JSON路徑
                     or not _相同重試(rows[0], 命令.遮蔽識別碼, 命令.稽核事件識別碼,
                         命令.原因, 命令.管理員識別碼, 命令.請求識別碼,
