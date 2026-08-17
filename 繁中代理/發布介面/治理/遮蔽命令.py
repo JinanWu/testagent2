@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import sqlite3
@@ -12,7 +13,7 @@ from ..嚴格JSON import 計算正規JSON雜湊
 from ..資料庫結構契約 import 驗證資料庫結構
 from .遮蔽 import 驗證遮蔽公開欄位
 
-_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_控制流程例外 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
 _安全識別碼 = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _固定錯誤 = "遮蔽命令無法建立"
 _固定衝突 = "遮蔽命令冪等衝突"
@@ -28,6 +29,10 @@ class 遮蔽命令錯誤(RuntimeError):
 
 class 遮蔽命令冪等衝突(RuntimeError):
     """同一 admin principal 與 idempotency key 已綁定不同 canonical request。"""
+
+
+class 遮蔽命令目標不存在(RuntimeError):
+    """endpoint/invocation/target ownership lookup不成立的固定provenance。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +107,7 @@ class SQLite遮蔽命令服務:
         例外：同 key 不同 request 拋固定冪等衝突；其他普通失敗固定關閉失敗。
         副作用：首次 request 只加入一筆 mapping；不 begin、commit、rollback 或讀取 payload。
         """
+        可信冪等衝突 = 可信不存在 = None
         try:
             if (not isinstance(連線, sqlite3.Connection) or not 連線.in_transaction
                     or 連線.execute("PRAGMA foreign_keys").fetchone() != (1,)):
@@ -140,10 +146,16 @@ class SQLite遮蔽命令服務:
                     raise ValueError
                 命令 = _重建命令(既有[0])
                 if not _是相同請求(命令, 請求指紋, 正規請求):
-                    raise 遮蔽命令冪等衝突(_固定衝突) from None
+                    可信冪等衝突 = 遮蔽命令冪等衝突(_固定衝突)
+                    raise 可信冪等衝突 from None
                 return 命令
 
-            _驗證目標(連線, 端點識別碼, 呼叫識別碼, 目標類型, 目標列識別碼)
+            try:
+                _驗證目標(連線, 端點識別碼, 呼叫識別碼, 目標類型, 目標列識別碼)
+            except 遮蔽命令目標不存在 as 捕捉不存在:
+                可信不存在 = 捕捉不存在
+                捕捉不存在 = None
+                raise 可信不存在 from None
             遮蔽識別碼 = self._遮蔽識別碼工廠()
             稽核事件識別碼 = self._稽核事件識別碼工廠()
             請求識別碼 = self._請求識別碼工廠()
@@ -184,8 +196,10 @@ class SQLite遮蔽命令服務:
             if 已寫入 != [值]:
                 raise sqlite3.DatabaseError
             return _重建命令(值)
-        except 遮蔽命令冪等衝突:
-            raise
+        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 捕捉語意:
+            if 捕捉語意 is 可信冪等衝突 or 捕捉語意 is 可信不存在:
+                raise
+            raise 遮蔽命令錯誤(_固定錯誤) from None
         except _控制流程例外:
             raise
         except BaseException:
@@ -211,17 +225,17 @@ def _驗證目標(
         "SELECT id,endpoint_id FROM endpoint_invocations WHERE id=?",
         (呼叫識別碼,),
     ).fetchall() != [(呼叫識別碼, 端點識別碼)]:
-        raise ValueError
+        raise 遮蔽命令目標不存在("遮蔽目標不存在") from None
     if 目標類型 in ("invocation_input", "metadata", "output", "error"):
         if 目標列識別碼 != 呼叫識別碼:
-            raise ValueError
+            raise 遮蔽命令目標不存在("遮蔽目標不存在") from None
         return
     表格 = "run_events" if 目標類型 == "run_event" else "endpoint_tool_calls"
     if 連線.execute(
         f"SELECT id,invocation_id FROM {表格} WHERE id=?",
         (目標列識別碼,),
     ).fetchall() != [(目標列識別碼, 呼叫識別碼)]:
-        raise ValueError
+        raise 遮蔽命令目標不存在("遮蔽目標不存在") from None
 
 
 def _重建命令(列: object) -> 伺服器遮蔽命令:

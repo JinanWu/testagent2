@@ -1,5 +1,6 @@
 """GOV G04 R51/R82 不可逆、原子 payload 墓碑測試。"""
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -10,8 +11,12 @@ import pytest
 
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
-from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務, 不可逆遮蔽錯誤
-from 繁中代理.發布介面.治理.遮蔽命令 import SQLite遮蔽命令服務
+from 繁中代理.發布介面.治理.遮蔽 import (
+    SQLite不可逆遮蔽服務,
+    不可逆遮蔽錯誤,
+    遮蔽目標衝突,
+)
+from 繁中代理.發布介面.治理.遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令目標不存在
 from 繁中代理.發布介面.治理.查詢投影 import SQLite呼叫查詢投影, 查詢投影錯誤
 from 繁中代理.發布介面.治理.稽核 import SQLite稽核服務
 from 繁中代理.發布介面.治理.查詢投影 import 管理員原始資料稽核閘門
@@ -127,6 +132,63 @@ def test_server_command_adapter驅動八種target且四個artifact同時可見(�
     assert "RAW_G04" not in _查詢(
         資料庫, f"SELECT {欄位} FROM {表格} WHERE id=?", (列ID,)
     )[0][0]
+
+
+def test_A20不同命令遮蔽同target_path保留專用衝突且第二筆mapping回滾(資料庫):
+    """HTTP 409 provenance只來自transaction owner，不把其他ordinary failure誤分類。"""
+    服務 = SQLite不可逆遮蔽服務(str(資料庫))
+
+    def 命令服務(後綴):
+        return SQLite遮蔽命令服務(
+            遮蔽識別碼工廠=lambda: f"red-{後綴}",
+            稽核事件識別碼工廠=lambda: f"audit-{後綴}",
+            請求識別碼工廠=lambda: f"request-{後綴}",
+            時鐘=lambda: 234.5,
+        )
+
+    共同 = {
+        "管理員識別碼": "admin-command",
+        "端點識別碼": "ep",
+        "呼叫識別碼": "inv",
+        "目標類型": "tool_result",
+        "目標列識別碼": "tool-ok",
+        "JSON路徑": "/secret/value",
+        "原因": "privacy request",
+    }
+    服務.執行命令(命令服務("one"), 冪等鍵="key-one", **共同)
+
+    with pytest.raises(遮蔽目標衝突, match="^遮蔽目標已由不同命令處理$") as 捕捉:
+        服務.執行命令(命令服務("two"), 冪等鍵="key-two", **共同)
+    assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM redaction_idempotency_commands") == [(1,)]
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM endpoint_redactions") == [(1,)]
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM audit_events") == [(1,)]
+
+
+@pytest.mark.parametrize(("端點", "呼叫", "類型", "列ID"), [
+    ("foreign-endpoint", "inv", "invocation_input", "inv"),
+    ("ep", "missing-invocation", "invocation_input", "missing-invocation"),
+    ("ep", "inv", "tool_result", "missing-tool"),
+])
+def test_A20_missing_foreign_target保留專用not_found且mapping零mutation(
+    資料庫, 端點, 呼叫, 類型, 列ID,
+):
+    命令 = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=lambda: "red-not-found",
+        稽核事件識別碼工廠=lambda: "audit-not-found",
+        請求識別碼工廠=lambda: "request-not-found",
+        時鐘=lambda: 234.5,
+    )
+    with pytest.raises(遮蔽命令目標不存在, match="^遮蔽目標不存在$") as 捕捉:
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+            命令, 管理員識別碼="admin-command", 冪等鍵="key-not-found",
+            端點識別碼=端點, 呼叫識別碼=呼叫, 目標類型=類型,
+            目標列識別碼=列ID, JSON路徑="/secret/value", 原因="privacy request",
+        )
+    assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM redaction_idempotency_commands") == [(0,)]
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM endpoint_redactions") == [(0,)]
+    assert _查詢(資料庫, "SELECT COUNT(*) FROM audit_events") == [(0,)]
 
 
 @pytest.mark.parametrize("位置,值", [(1,"red-2"),(2,"audit-2"),(3,"admin-2"),(4,"request-2"),
@@ -347,8 +409,8 @@ def test_並行相同請求只建立一份audit與墓碑(資料庫):
     assert _查詢(資料庫, "SELECT count(*) FROM endpoint_redactions") == [(1,)]
 
 
-@pytest.mark.parametrize("控制型別", [KeyboardInterrupt, SystemExit, GeneratorExit])
-def test_KISG保持exact_identity與args(monkeypatch, 資料庫, 控制型別):
+@pytest.mark.parametrize("控制型別", [asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit])
+def test_cancellation與KISG保持exact_identity與args(monkeypatch, 資料庫, 控制型別):
     control = 控制型別("CONTROL_G04")
     monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫", lambda _path: (_ for _ in ()).throw(control))
     with pytest.raises(控制型別) as error:

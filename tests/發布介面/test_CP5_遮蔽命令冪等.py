@@ -21,6 +21,7 @@ from 繁中代理.發布介面.治理.遮蔽 import SQLite不可逆遮蔽服務,
 from 繁中代理.發布介面.治理.遮蔽命令 import (
     SQLite遮蔽命令服務,
     遮蔽命令冪等衝突,
+    遮蔽命令目標不存在,
     遮蔽命令錯誤,
 )
 
@@ -563,3 +564,32 @@ def test_public_command_seam拒絕client_controlled_authority_identity_time與�
         assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (0,)
         連線.rollback()
     assert 原值標記.encode() not in 資料庫.read_bytes()
+
+
+@pytest.mark.parametrize("語意錯誤", [遮蔽命令冪等衝突("spoof"), 遮蔽命令目標不存在("spoof")])
+@pytest.mark.parametrize("工廠名稱", [
+    "遮蔽識別碼工廠", "稽核事件識別碼工廠", "請求識別碼工廠", "時鐘",
+])
+def test_server_factory_raise_same_semantic_exception仍正規化為命令錯誤(
+    tmp_path: Path, 語意錯誤: BaseException, 工廠名稱: str,
+) -> None:
+    資料庫 = tmp_path / f"factory-spoof-{工廠名稱}.sqlite3"
+    _建立命令資料庫(資料庫)
+
+    def spoof():
+        raise 語意錯誤
+
+    factories = {
+        "遮蔽識別碼工廠": lambda: "redaction-safe",
+        "稽核事件識別碼工廠": lambda: "audit-safe",
+        "請求識別碼工廠": lambda: "request-safe",
+        "時鐘": lambda: 123.5,
+    }
+    factories[工廠名稱] = spoof
+    with sqlite3.connect(資料庫) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        連線.execute("BEGIN IMMEDIATE")
+        with pytest.raises(遮蔽命令錯誤, match="^遮蔽命令無法建立$"):
+            SQLite遮蔽命令服務(**factories).取得或建立(連線, **_命令參數())
+        assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (0,)
+        連線.rollback()

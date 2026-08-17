@@ -149,6 +149,25 @@ def test_恢復遺失csrf會輪替且single_use可並行只贏一次(tmp_path):
     assert service.輪替(issued.工作階段權杖, winner.CSRF權杖).CSRF權杖 != winner.CSRF權杖
 
 
+def test_read_only身份驗證不接觸CSRF或session_state(tmp_path):
+    """Authority-first mutation可先驗principal，且不輪替CSRF、不更新last_seen。"""
+    path, alice, _ = _建立資料庫(tmp_path)
+    service = 網頁工作階段服務(path, 時鐘=lambda: 1000.0)
+    issued = service.發行(網頁使用者(alice["id"], "alice", "admin"))
+    with sqlite3.connect(path) as connection:
+        before = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (issued.識別碼,),
+        ).fetchone()
+    assert service.驗證身份(issued.工作階段權杖) == issued.使用者
+    with sqlite3.connect(path) as connection:
+        after = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (issued.識別碼,),
+        ).fetchone()
+    assert after == before
+
+
 def test_expiry_boundary與disabled使用者永久失效(tmp_path):
     """now >= expiry 無效；disabled owner 被撤銷後不能因重新啟用復活。"""
     path, alice, _ = _建立資料庫(tmp_path)

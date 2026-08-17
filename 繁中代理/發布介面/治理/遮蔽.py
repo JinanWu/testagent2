@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -20,6 +21,7 @@ from .稽核資料庫 import (
 from .稽核結構 import _LEDGER
 
 if TYPE_CHECKING:
+    from .管理遮蔽治理 import 管理遮蔽收據
     from .遮蔽命令 import 伺服器遮蔽命令
 
 _固定錯誤 = "呼叫資料無法遮蔽"
@@ -67,6 +69,10 @@ class 不可逆遮蔽錯誤(RuntimeError):
     """遮蔽請求無法安全且原子提交時的固定公開錯誤。"""
 
 
+class 遮蔽目標衝突(RuntimeError):
+    """不同server command已處理同一target/path時的固定provenance。"""
+
+
 class SQLite不可逆遮蔽服務:
     """原子提交 canonical audit、payload 墓碑與 append-only 遮蔽帳本。"""
 
@@ -109,7 +115,7 @@ class SQLite不可逆遮蔽服務:
             )
             連線.commit()
             已提交 = True
-        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
             _清理控制鏈(捕捉控制)
             主要控制 = 捕捉控制
             捕捉控制 = None
@@ -150,9 +156,13 @@ class SQLite不可逆遮蔽服務:
         目標列識別碼: str,
         JSON路徑: str,
         原因: str,
-    ) -> dict[str, Any]:
+    ) -> 管理遮蔽收據:
         """同一交易建立／回放 server command，並原子提交 audit、墓碑與 ledger。"""
-        from .遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令冪等衝突
+        from .遮蔽命令 import (
+            SQLite遮蔽命令服務,
+            遮蔽命令冪等衝突,
+            遮蔽命令目標不存在,
+        )
 
         if type(命令服務) is not SQLite遮蔽命令服務:
             raise 不可逆遮蔽錯誤(_固定錯誤) from None
@@ -160,7 +170,7 @@ class SQLite不可逆遮蔽服務:
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
         資料庫識別 = None
         已開始 = 已提交 = 一般失敗 = 提交待確認 = False
-        主要控制 = 保留衝突 = None
+        主要控制 = 保留衝突 = 可信目標衝突 = None
         回滾控制盒: list[BaseException] = []
         關閉控制盒: list[BaseException] = []
         捕捉路徑 = self._path
@@ -202,32 +212,43 @@ class SQLite不可逆遮蔽服務:
             ).fetchall()
             if 端點列 != [(命令.端點識別碼,)]:
                 raise ValueError
-            結果 = _在交易中遮蔽(
-                連線,
-                命令.遮蔽識別碼,
-                命令.稽核事件識別碼,
-                命令.管理員識別碼,
-                命令.請求識別碼,
-                命令.呼叫識別碼,
-                命令.目標類型,
-                命令.目標列識別碼,
-                命令.JSON路徑,
-                命令.原因,
-                命令.首次建立時間,
-            )
+            try:
+                結果 = _在交易中遮蔽(
+                    連線,
+                    命令.遮蔽識別碼,
+                    命令.稽核事件識別碼,
+                    命令.管理員識別碼,
+                    命令.請求識別碼,
+                    命令.呼叫識別碼,
+                    命令.目標類型,
+                    命令.目標列識別碼,
+                    命令.JSON路徑,
+                    命令.原因,
+                    命令.首次建立時間,
+                )
+            except 遮蔽目標衝突 as 捕捉目標衝突:
+                可信目標衝突 = 捕捉目標衝突
+                捕捉目標衝突 = None
+                raise 可信目標衝突 from None
             try:
                 連線.commit()
-            except (KeyboardInterrupt, SystemExit, GeneratorExit):
+            except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit):
                 raise
             except BaseException:
                 if 連線.in_transaction:
                     raise
                 提交待確認 = True
             已提交 = True
-        except 遮蔽命令冪等衝突 as 捕捉衝突:
+        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 捕捉衝突:
             保留衝突 = 捕捉衝突
             捕捉衝突 = None
-        except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+        except 遮蔽目標衝突 as 捕捉衝突:
+            if 捕捉衝突 is 可信目標衝突:
+                保留衝突 = 捕捉衝突
+                捕捉衝突 = None
+            else:
+                一般失敗 = True
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
             _清理控制鏈(捕捉控制)
             主要控制 = 捕捉控制
             捕捉控制 = None
@@ -243,6 +264,14 @@ class SQLite不可逆遮蔽服務:
                 命令 is None
                 or 資料庫識別 is None
                 or not _驗證已提交命令圖(self._path, 資料庫識別, 命令, 結果)
+            )
+        if not 一般失敗 and 已提交 and type(結果) is dict and 命令 is not None:
+            from .管理遮蔽治理 import 管理遮蔽收據
+            結果 = 管理遮蔽收據(
+                結果["redaction_id"], 命令.呼叫識別碼, 結果["target_type"],
+                結果["target_row_id"], 結果["json_path"], 結果["original_sha256"],
+                結果["reason"], 結果["actor_id"], 結果["audit_event_id"],
+                結果["is_tombstone"], 結果["redacted_at"],
             )
         self = 連線 = 游標 = payload = 原始文字 = 新文字 = 摘要 = 既有 = 命令 = None
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = 捕捉路徑 = None
@@ -262,7 +291,8 @@ class SQLite不可逆遮蔽服務:
         if 保留衝突 is not None:
             衝突盒 = [保留衝突]; 保留衝突 = 結果 = None
             raise 衝突盒.pop() from None
-        if 一般失敗 or not 已提交 or type(結果) is not dict:
+        from .管理遮蔽治理 import 管理遮蔽收據
+        if 一般失敗 or not 已提交 or type(結果) is not 管理遮蔽收據:
             結果 = None
             raise 不可逆遮蔽錯誤(_固定錯誤) from None
         return 結果
@@ -301,7 +331,7 @@ def _在交易中遮蔽(
                 既有[0], 遮蔽識別碼, 稽核事件識別碼, 原因, 操作者識別碼,
                 請求識別碼, 呼叫識別碼, 發生時間,
             ):
-                raise ValueError
+                raise 遮蔽目標衝突("遮蔽目標已由不同命令處理") from None
             表格, 欄位, 子列 = _目標[目標類型]
             範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
             參數 = (目標列識別碼, 呼叫識別碼) if 子列 else (呼叫識別碼,)
@@ -446,7 +476,7 @@ def _驗證已提交命令圖(
         payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
         _確認墓碑(payload, 命令.JSON路徑, 命令.遮蔽識別碼, 命令.首次建立時間)
         符合 = _結果(既有[0], 命令.目標類型, 命令.目標列識別碼) == 預期結果
-    except (KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
         _清理控制鏈(捕捉控制)
         控制 = 捕捉控制
         捕捉控制 = None

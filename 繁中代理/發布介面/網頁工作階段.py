@@ -258,6 +258,13 @@ class 網頁工作階段服務:
             return self._處理(工作階段權杖, CSRF餅乾, "restore")
         finally:
             self = 工作階段權杖 = CSRF餅乾 = None
+    def 驗證身份(self, 工作階段權杖: str) -> 網頁使用者:
+        """只驗證目前session principal；不讀寫CSRF、不更新session state。"""
+        try:
+            return self._處理(工作階段權杖, None, "validate").使用者
+        finally:
+            self = None
+            工作階段權杖 = ""
     def 輪替(self, 工作階段權杖: str, CSRF權杖: str) -> 網頁工作階段結果:
         """原子消耗目前 CSRF 並回傳 successor。"""
         try:
@@ -274,13 +281,15 @@ class 網頁工作階段服務:
         self,
         工作階段權杖: str,
         CSRF權杖: str | None,
-        動作: Literal["restore", "rotate", "revoke"],
+        動作: Literal["validate", "restore", "rotate", "revoke"],
     ) -> 網頁工作階段結果:
         """共用 session/owner/expiry gate 與 single-writer transition。"""
         try:
             return self._處理核心(工作階段權杖, CSRF權杖, 動作)
         finally:
-            self = 工作階段權杖 = CSRF權杖 = 動作 = None
+            self = CSRF權杖 = None
+            工作階段權杖 = ""
+            動作 = "validate"
 
     def _處理核心(self, 工作階段權杖, CSRF權杖, 動作):
         """完成 commit/cleanup 並清除所有 authority-bearing intermediate locals。"""
@@ -300,7 +309,7 @@ class 網頁工作階段服務:
                 CSRF雜湊 = self._雜湊(CSRF權杖) if CSRF權杖 is not None else None
                 現在時間 = self._時間()
                 連線 = self._連線()
-                連線.execute("BEGIN IMMEDIATE")
+                連線.execute("BEGIN" if 動作 == "validate" else "BEGIN IMMEDIATE")
                 已開始 = True
                 資料列 = 連線.execute(
                     "SELECT s.id,s.user_id,s.csrf_token_hash,s.expires_at,s.last_seen_at,"
@@ -310,10 +319,11 @@ class 網頁工作階段服務:
                 if 資料列 is None or 現在時間 >= float(資料列["expires_at"]):
                     拒絕碼 = "unauthorized"
                 elif type(資料列["disabled"]) is not int or 資料列["disabled"] != 0:
-                    連線.execute(
-                        "UPDATE web_sessions SET revoked_at=CASE WHEN last_seen_at>? THEN last_seen_at ELSE ? END WHERE id=?",
-                        (現在時間, 現在時間, 資料列["id"]),
-                    )
+                    if 動作 != "validate":
+                        連線.execute(
+                            "UPDATE web_sessions SET revoked_at=CASE WHEN last_seen_at>? THEN last_seen_at ELSE ? END WHERE id=?",
+                            (現在時間, 現在時間, 資料列["id"]),
+                        )
                     拒絕碼 = "unauthorized"
                 else:
                     角色清單 = json.loads(資料列["roles_json"])
@@ -321,8 +331,12 @@ class 網頁工作階段服務:
                         raise ValueError
                     使用者 = 網頁使用者(str(資料列["user_id"]), str(資料列["username"]), "admin" if "admin" in 角色清單 else "member")
                     相符 = CSRF雜湊 is not None and secrets.compare_digest(bytes(資料列["csrf_token_hash"]), CSRF雜湊)
-                    if 動作 != "restore" and not 相符:
+                    if 動作 not in ("validate", "restore") and not 相符:
                         拒絕碼 = "csrf_invalid"
+                    elif 動作 == "validate":
+                        結果 = 網頁工作階段結果(
+                            str(資料列["id"]), 使用者, 到期時間=float(資料列["expires_at"])
+                        )
                     else:
                         需輪替 = 動作 == "rotate" or (動作 == "restore" and not 相符)
                         if 需輪替:
