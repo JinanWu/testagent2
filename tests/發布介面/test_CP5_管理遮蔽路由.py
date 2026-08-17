@@ -78,6 +78,10 @@ def _建立資料庫(path: Path) -> None:
             "result_json,created_at) VALUES('tool-call-1','invocation-1',1,'tool','{}','success',"
             "'{\"result\":{\"secret\":\"RAW_A20_ROUTE\"}}',0)"
         )
+        db.execute(
+            "INSERT INTO endpoint_tool_calls(id,invocation_id,sequence_number,tool_name,arguments_json,outcome,"
+            "error_json,created_at) VALUES('tool-call-2','invocation-1',2,'tool','{}','error','{}',0)"
+        )
 
 
 def _建立客戶端(
@@ -230,6 +234,12 @@ def test_A20_04超長Content_Length固定400且零治理mutation(tmp_path):
 @pytest.mark.parametrize("額外標頭", [
     [(b"content-length", b"1")],
     [(b"content-length", b"ACTUAL"), (b"transfer-encoding", b"chunked")],
+    [(b"transfer-encoding", b"chunked")],
+    [(b"transfer-encoding", b"chunked"), (b"transfer-encoding", b"chunked")],
+    [(b"transfer-encoding", b"chunked"), (b"transfer-encoding", b"gzip")],
+    [(b"transfer-encoding", b"chunked, chunked")],
+    [(b"TrAnSfEr-EnCoDiNg", b"CHUNKED")],
+    [(b"transfer-encoding", b"")],
 ])
 def test_A20_04_declared_streamed_length不符或TE加CL固定400且零mutation(tmp_path, 額外標頭):
     _, router, _, path = _建立客戶端(tmp_path)
@@ -282,21 +292,43 @@ def test_A20_04_existing_target但JSON_pointer不存在固定422且整筆回滾(
         assert db.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
 
 
+@pytest.mark.parametrize(("target_type", "target_row_id"), [
+    ("metadata", "invocation-1"), ("output", "invocation-1"),
+    ("error", "invocation-1"), ("tool_error", "tool-call-1"),
+    ("tool_result", "tool-call-2"),
+])
+def test_A20_04_fresh_nullable五類是422且factory前零mapping(tmp_path, target_type, target_row_id):
+    client, _, _, path = _建立客戶端(tmp_path)
+    with client:
+        csrf = _登入(client)
+        response = _post(client, csrf, body={
+            "target_type": target_type, "target_row_id": target_row_id,
+            "json_path": "", "reason": "approved privacy request",
+        })
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"code": "redaction_validation_failed"}}
+    assert response.headers["X-CSRF-Token"]
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT count(*) FROM redaction_idempotency_commands").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+        assert db.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+
+
 def test_A20_04_auth與CSRF_runtime_codes精確可達(monkeypatch, tmp_path):
     client, _, _, _ = _建立客戶端(tmp_path)
     with client:
         missing = _post(client, "x" * 32)
         csrf = _登入(client)
         invalid = _post(client, "x" * 32)
-        original = 網頁工作階段服務.驗證身份
+        original = 網頁工作階段服務.授權管理操作
 
-        def unavailable(self, token):
-            del self, token
+        def unavailable(self, token, csrf):
+            del self, token, csrf
             raise 網頁認證不可用("auth_unavailable")
 
-        monkeypatch.setattr(網頁工作階段服務, "驗證身份", unavailable)
+        monkeypatch.setattr(網頁工作階段服務, "授權管理操作", unavailable)
         unavailable_response = _post(client, csrf)
-        monkeypatch.setattr(網頁工作階段服務, "驗證身份", original)
+        monkeypatch.setattr(網頁工作階段服務, "授權管理操作", original)
     assert missing.status_code == 401
     assert missing.json() == {"detail": {"code": "unauthorized"}}
     assert invalid.status_code == 403
@@ -305,22 +337,52 @@ def test_A20_04_auth與CSRF_runtime_codes精確可達(monkeypatch, tmp_path):
     assert unavailable_response.json() == {"detail": {"code": "auth_unavailable"}}
 
 
-def test_A20_04_principal_drift消耗後固定500且保留successor(monkeypatch, tmp_path):
+def test_A20_04_atomic_authority不再呼叫validate_rotate分離seams(monkeypatch, tmp_path):
     client, _, _, _ = _建立客戶端(tmp_path)
-    original = 網頁工作階段服務.輪替
-
-    def drift(self, token, csrf):
-        result = original(self, token, csrf)
-        return replace(result, 使用者=網頁使用者(result.使用者.識別碼, "changed", "admin"))
-
-    monkeypatch.setattr(網頁工作階段服務, "輪替", drift)
+    def forbidden(*_a, **_k):
+        raise AssertionError("atomic authority不得呼叫舊validate/rotate split")
+    monkeypatch.setattr(網頁工作階段服務, "驗證身份", forbidden)
+    monkeypatch.setattr(網頁工作階段服務, "輪替", forbidden)
     with client:
         csrf = _登入(client)
         response = _post(client, csrf)
-    assert response.status_code == 500
-    assert response.json() == {"detail": {"code": "redaction_failed"}}
+    assert response.status_code == 200
     assert response.headers["X-CSRF-Token"]
     assert "published_web_csrf=" in response.headers["set-cookie"]
+
+
+@pytest.mark.parametrize("cookies", [
+    [(b"cookie", b"published_web_session=A"), (b"cookie", b"published_web_session=B")],
+    [(b"cookie", b"published_web_session=A; published_web_session=B")],
+])
+def test_A20_04_duplicate_session_cookie在principal選擇前401且不消耗csrf(tmp_path, cookies):
+    client, _, authority, _ = _建立客戶端(tmp_path)
+    with client:
+        csrf = _登入(client)
+        session = client.cookies.get("published_web_session")
+        assert session
+        auth_path = tmp_path / "auth.sqlite3"
+        with sqlite3.connect(auth_path) as db:
+            before = db.execute(
+                "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions "
+                "WHERE session_token_hash=?",
+                (網頁工作階段服務._雜湊(session),),
+            ).fetchone()
+        request = Request({
+            "type": "http", "method": "POST", "path": 路徑, "query_string": b"",
+            "headers": [*cookies, (b"x-csrf-token", csrf.encode("ascii"))],
+        })
+        with pytest.raises(HTTPException) as captured:
+            authority.授權相依項(request, Response())
+        with sqlite3.connect(auth_path) as db:
+            after = db.execute(
+                "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions "
+                "WHERE session_token_hash=?",
+                (網頁工作階段服務._雜湊(session),),
+            ).fetchone()
+    assert captured.value.status_code == 401
+    assert captured.value.detail == {"code": "unauthorized"}
+    assert after == before
 
 
 @pytest.mark.parametrize("field", [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sqlite3
@@ -138,6 +139,74 @@ def _服務(*, 前綴: str = "stable", 時間: float = 123.5) -> SQLite遮蔽命
         請求識別碼工廠=lambda: f"request-{前綴}",
         時鐘=lambda: 時間,
     )
+
+
+@pytest.mark.parametrize("失敗欄位", ["redaction", "audit", "request", "clock"])
+def test_fresh_preflight清除payload後factory_frames不可觀察原文且失敗零圖(tmp_path, 失敗欄位):
+    """正式factory extension point不得由production caller locals取得selected payload。"""
+    資料庫 = tmp_path / f"factory-frame-{失敗欄位}.sqlite3"
+    _建立命令資料庫(資料庫)
+    marker = "RAW_A20_02"
+    觀測 = {"frames": [], "violations": []}
+
+    def 含marker(值, 已見=None):
+        if 已見 is None:
+            已見 = set()
+        if id(值) in 已見:
+            return False
+        已見.add(id(值))
+        if type(值) is str:
+            return marker in 值
+        if type(值) is bytes:
+            return marker.encode() in 值
+        if type(值) in (tuple, list, set, frozenset):
+            return any(含marker(項目, 已見) for 項目 in 值)
+        if type(值) is dict:
+            return any(含marker(鍵, 已見) or 含marker(項目, 已見) for 鍵, 項目 in 值.items())
+        for 名稱 in getattr(type(值), "__slots__", ()):
+            if hasattr(值, 名稱) and 含marker(getattr(值, 名稱), 已見):
+                return True
+        return False
+
+    def 失敗factory():
+        current = inspect.currentframe()
+        assert current is not None
+        frame = current.f_back
+        production_frames = []
+        while frame is not None:
+            if "/繁中代理/" in frame.f_code.co_filename:
+                production_frames.append(frame.f_code.co_name)
+                for 值 in tuple(frame.f_locals.values()):
+                    if 含marker(值, set()):
+                        觀測["violations"].append(frame.f_code.co_name)
+            frame = frame.f_back
+        觀測["frames"] = production_frames
+        raise RuntimeError("factory failed")
+
+    factories = {
+        "遮蔽識別碼工廠": lambda: "redaction-safe",
+        "稽核事件識別碼工廠": lambda: "audit-safe",
+        "請求識別碼工廠": lambda: "request-safe",
+        "時鐘": lambda: 123.5,
+    }
+    key = {
+        "redaction": "遮蔽識別碼工廠", "audit": "稽核事件識別碼工廠",
+        "request": "請求識別碼工廠", "clock": "時鐘",
+    }[失敗欄位]
+    factories[key] = 失敗factory
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+            SQLite遮蔽命令服務(**factories), **_命令參數(),
+        )
+    assert "建立" in 觀測["frames"] and "執行命令" in 觀測["frames"]
+    assert 觀測["violations"] == []
+    with sqlite3.connect(資料庫) as 連線:
+        assert 連線.execute("SELECT count(*) FROM redaction_idempotency_commands").fetchone() == (0,)
+        assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
+        assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+        assert marker in 連線.execute(
+            "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'",
+        ).fetchone()[0]
 
 
 def test_server_command與mapping_audit_payload_ledger共用單一commit_point(tmp_path: Path) -> None:

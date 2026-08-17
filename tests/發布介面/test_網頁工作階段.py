@@ -15,6 +15,7 @@ from 繁中代理.發布介面.應用程式 import 建立應用程式, 建立網
 from 繁中代理.發布介面.設定 import 網頁安全設定
 from 繁中代理.發布介面.網頁工作階段 import (
     網頁CSRF無效,
+    網頁管理權限不足,
     網頁使用者,
     網頁未授權,
     網頁工作階段服務,
@@ -165,6 +166,46 @@ def test_read_only身份驗證不接觸CSRF或session_state(tmp_path):
         after = connection.execute(
             "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
             (issued.識別碼,),
+        ).fetchone()
+    assert after == before
+
+
+def test_管理操作role_first原子撤銷disabled且member完全不改session(tmp_path):
+    path, alice, _ = _建立資料庫(tmp_path)
+    service = 網頁工作階段服務(path, 時鐘=lambda: 1001.0)
+    issued = service.發行(網頁使用者(alice["id"], "alice", "admin"))
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE users SET disabled=1 WHERE id=?", (alice["id"],))
+        before = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (issued.識別碼,),
+        ).fetchone()
+    with pytest.raises(網頁未授權):
+        service.授權管理操作(issued.工作階段權杖, issued.CSRF權杖)
+    with sqlite3.connect(path) as connection:
+        after = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (issued.識別碼,),
+        ).fetchone()
+        connection.execute("UPDATE users SET disabled=0 WHERE id=?", (alice["id"],))
+    assert after[:2] == before[:2] and after[2] == 1001.0
+    with pytest.raises(網頁未授權):
+        service.授權管理操作(issued.工作階段權杖, issued.CSRF權杖)
+
+    with sqlite3.connect(path) as connection:
+        connection.execute("UPDATE users SET roles_json='[]' WHERE id=?", (alice["id"],))
+    member = service.發行(網頁使用者(alice["id"], "alice", "member"))
+    with sqlite3.connect(path) as connection:
+        before = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (member.識別碼,),
+        ).fetchone()
+    with pytest.raises(網頁管理權限不足):
+        service.授權管理操作(member.工作階段權杖, "wrong-csrf")
+    with sqlite3.connect(path) as connection:
+        after = connection.execute(
+            "SELECT csrf_token_hash,last_seen_at,revoked_at FROM web_sessions WHERE id=?",
+            (member.識別碼,),
         ).fetchone()
     assert after == before
 

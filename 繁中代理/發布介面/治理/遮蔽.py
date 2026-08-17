@@ -77,6 +77,10 @@ class 遮蔽路徑無效(RuntimeError):
     """transaction owner確認JSON Pointer無法解析至既有值。"""
 
 
+class 遮蔽目標內容無效(RuntimeError):
+    """fresh request選到schema允許為NULL、但目前不存在的payload。"""
+
+
 class SQLite不可逆遮蔽服務:
     """原子提交 canonical audit、payload 墓碑與 append-only 遮蔽帳本。"""
 
@@ -170,11 +174,11 @@ class SQLite不可逆遮蔽服務:
 
         if type(命令服務) is not SQLite遮蔽命令服務:
             raise 不可逆遮蔽錯誤(_固定錯誤) from None
-        連線 = 游標 = payload = 原始文字 = 新文字 = 摘要 = 結果 = 既有 = 命令 = None
+        連線 = 游標 = payload = 原始文字 = 新文字 = 摘要 = 結果 = 既有 = 命令 = pending = None
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
         資料庫識別 = None
         已開始 = 已提交 = 一般失敗 = 提交待確認 = False
-        主要控制 = 保留衝突 = 可信目標衝突 = 可信路徑無效 = None
+        主要控制 = 保留衝突 = 可信目標衝突 = 可信路徑無效 = 可信內容無效 = None
         回滾控制盒: list[BaseException] = []
         關閉控制盒: list[BaseException] = []
         捕捉路徑 = self._path
@@ -186,8 +190,8 @@ class SQLite不可逆遮蔽服務:
             捕捉路徑 = None
             _驗證schema(連線)
             _驗證遮蔽schema(連線)
-            命令 = 命令服務.取得或建立(
-                連線,
+            pending = SQLite遮蔽命令服務.準備(
+                命令服務, 連線,
                 管理員識別碼=管理員識別碼,
                 冪等鍵=冪等鍵,
                 端點識別碼=端點識別碼,
@@ -197,6 +201,24 @@ class SQLite不可逆遮蔽服務:
                 JSON路徑=JSON路徑,
                 原因=原因,
             )
+            if pending.既有命令 is not None:
+                命令 = pending.既有命令
+            else:
+                try:
+                    _預檢新鮮目標(
+                        連線, pending.呼叫識別碼, pending.目標類型,
+                        pending.目標列識別碼, pending.JSON路徑,
+                    )
+                except 遮蔽目標內容無效 as 捕捉內容無效:
+                    可信內容無效 = 捕捉內容無效; 捕捉內容無效 = None
+                    raise 可信內容無效 from None
+                except 遮蔽路徑無效 as 捕捉路徑無效:
+                    可信路徑無效 = 捕捉路徑無效; 捕捉路徑無效 = None
+                    raise 可信路徑無效 from None
+                except 遮蔽目標衝突 as 捕捉目標衝突:
+                    可信目標衝突 = 捕捉目標衝突; 捕捉目標衝突 = None
+                    raise 可信目標衝突 from None
+                命令 = SQLite遮蔽命令服務.建立(命令服務, 連線, pending)
             _驗證請求(
                 True,
                 命令.遮蔽識別碼,
@@ -262,6 +284,12 @@ class SQLite不可逆遮蔽服務:
                 捕捉路徑無效 = None
             else:
                 一般失敗 = True
+        except 遮蔽目標內容無效 as 捕捉內容無效:
+            if 捕捉內容無效 is 可信內容無效:
+                保留衝突 = 捕捉內容無效
+                捕捉內容無效 = None
+            else:
+                一般失敗 = True
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
             _清理控制鏈(捕捉控制)
             主要控制 = 捕捉控制
@@ -287,7 +315,7 @@ class SQLite不可逆遮蔽服務:
                 結果["reason"], 結果["actor_id"], 結果["audit_event_id"],
                 結果["is_tombstone"], 結果["redacted_at"],
             )
-        self = 連線 = 游標 = payload = 原始文字 = 新文字 = 摘要 = 既有 = 命令 = None
+        self = 連線 = 游標 = payload = 原始文字 = 新文字 = 摘要 = 既有 = 命令 = pending = None
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = 捕捉路徑 = None
         管理員識別碼 = 冪等鍵 = 端點識別碼 = 呼叫識別碼 = ""
         目標類型 = 目標列識別碼 = JSON路徑 = 原因 = ""
@@ -310,6 +338,57 @@ class SQLite不可逆遮蔽服務:
             結果 = None
             raise 不可逆遮蔽錯誤(_固定錯誤) from None
         return 結果
+
+
+def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑) -> None:
+    """不配置identity且不回傳material，只sealed分類fresh payload/pointer/conflict。"""
+    rows = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = 容器 = 鍵 = mapping = 命令 = None
+    try:
+        rows = 連線.execute(
+            "SELECT r.id,r.json_path,r.original_sha256,r.reason,r.actor_id,r.audit_event_id,"
+            "r.is_tombstone,r.redacted_at,r.actor_type,r.invocation_id,a.event_id,"
+            "a.occurred_at,a.action,a.outcome,a.actor_type,a.actor_id,a.resource_type,"
+            "a.resource_id,a.request_id,a.endpoint_id,a.invocation_id,a.metadata_json,"
+            "a.created_at,i.endpoint_id FROM endpoint_redactions r JOIN audit_events a "
+            "ON a.id=r.audit_event_id JOIN endpoint_invocations i ON i.id=r.invocation_id "
+            "WHERE r.target_type=? AND r.target_row_id=? AND r.json_path=?",
+            (目標類型, 目標列識別碼, JSON路徑),
+        ).fetchall()
+        表格, 欄位, 子列 = _目標[目標類型]
+        範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
+        參數 = (目標列識別碼, 呼叫識別碼) if 子列 else (呼叫識別碼,)
+        if rows:
+            if len(rows) != 1:
+                raise ValueError
+            from .遮蔽命令 import _命令欄位, _重建命令
+            mapping = 連線.execute(
+                f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE redaction_id=?",
+                (rows[0][0],),
+            ).fetchall()
+            if len(mapping) != 1:
+                raise ValueError
+            命令 = _重建命令(mapping[0])
+            if (命令.呼叫識別碼 != 呼叫識別碼 or 命令.目標類型 != 目標類型
+                    or 命令.目標列識別碼 != 目標列識別碼 or 命令.JSON路徑 != JSON路徑
+                    or not _相同重試(rows[0], 命令.遮蔽識別碼, 命令.稽核事件識別碼,
+                        命令.原因, 命令.管理員識別碼, 命令.請求識別碼,
+                        命令.呼叫識別碼, 命令.首次建立時間)):
+                raise ValueError
+            payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
+            _確認墓碑(payload, JSON路徑, 命令.遮蔽識別碼, 命令.首次建立時間)
+            raise 遮蔽目標衝突("遮蔽目標已由不同命令處理") from None
+        payload, 原始文字 = _讀取payload(
+            連線, 表格, 欄位, 範圍, 參數,
+            允許空缺=目標類型 in ("metadata", "output", "error", "tool_result", "tool_error"),
+        )
+        if JSON路徑:
+            try:
+                容器, 鍵 = _尋找JSON位置(payload, JSON路徑)
+                _ = 容器[鍵]
+            except (KeyError, IndexError, TypeError, ValueError):
+                raise 遮蔽路徑無效("遮蔽路徑不存在") from None
+    finally:
+        rows = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = 容器 = 鍵 = mapping = 命令 = None
 
 
 def _在交易中遮蔽(
@@ -651,11 +730,13 @@ def _建立正規JSON(值: Any) -> str:
 
 
 def _讀取payload(連線: sqlite3.Connection, 表格: str, 欄位: str,
-               範圍: str, 參數: tuple[str, ...]) -> tuple[Any, str]:
+               範圍: str, 參數: tuple[str, ...], *, 允許空缺: bool = False) -> tuple[Any, str]:
     """先在SQLite內檢查型別與位元組長度，再實體化payload。"""
     中繼列 = 連線.execute(
         f"SELECT typeof({欄位}),length(CAST({欄位} AS BLOB)) FROM {表格} WHERE {範圍}", 參數,
     ).fetchall()
+    if len(中繼列) == 1 and 中繼列[0][0] == "null" and 允許空缺:
+        raise 遮蔽目標內容無效("遮蔽目標內容不存在") from None
     if (len(中繼列) != 1 or 中繼列[0][0] != "text" or type(中繼列[0][1]) is not int
             or not 0 <= 中繼列[0][1] <= _最大JSON位元組):
         raise ValueError

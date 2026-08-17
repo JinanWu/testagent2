@@ -14,6 +14,7 @@ from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理.遮蔽 import (
     SQLite不可逆遮蔽服務,
     不可逆遮蔽錯誤,
+    遮蔽目標內容無效,
     遮蔽目標衝突,
 )
 from 繁中代理.發布介面.治理.遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令目標不存在
@@ -132,6 +133,39 @@ def test_server_command_adapter驅動八種target且四個artifact同時可見(�
     assert "RAW_G04" not in _查詢(
         資料庫, f"SELECT {欄位} FROM {表格} WHERE id=?", (列ID,)
     )[0][0]
+
+
+@pytest.mark.parametrize("類型", ["metadata", "output", "error", "tool_result", "tool_error"])
+def test_nullable_target在任何server_factory前422_provenance且四圖全零(資料庫, 類型):
+    表格, 欄位, 列ID = 目標[類型]
+    列ID = {"tool_result": "tool-error", "tool_error": "tool-ok"}.get(類型, 列ID)
+    with sqlite3.connect(資料庫) as 連線:
+        連線.execute(f"UPDATE {表格} SET {欄位}=NULL WHERE id=?", (列ID,))
+    次數 = {"redaction": 0, "audit": 0, "request": 0, "clock": 0}
+
+    def factory(名稱, 值):
+        def call():
+            次數[名稱] += 1
+            return 值
+        return call
+
+    命令服務 = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=factory("redaction", "red-null"),
+        稽核事件識別碼工廠=factory("audit", "audit-null"),
+        請求識別碼工廠=factory("request", "request-null"),
+        時鐘=factory("clock", 234.5),
+    )
+    with pytest.raises(遮蔽目標內容無效, match="^遮蔽目標內容不存在$"):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+            命令服務, 管理員識別碼="admin-command", 冪等鍵=f"null-{類型}",
+            端點識別碼="ep", 呼叫識別碼="inv", 目標類型=類型,
+            目標列識別碼=列ID, JSON路徑="", 原因="privacy request",
+        )
+    assert 次數 == {"redaction": 0, "audit": 0, "request": 0, "clock": 0}
+    assert _查詢(資料庫, "SELECT count(*) FROM redaction_idempotency_commands") == [(0,)]
+    assert _查詢(資料庫, "SELECT count(*) FROM audit_events") == [(0,)]
+    assert _查詢(資料庫, "SELECT count(*) FROM endpoint_redactions") == [(0,)]
+    assert _查詢(資料庫, f"SELECT {欄位} FROM {表格} WHERE id=?", (列ID,)) == [(None,)]
 
 
 def test_A20不同命令遮蔽同target_path保留專用衝突且第二筆mapping回滾(資料庫):

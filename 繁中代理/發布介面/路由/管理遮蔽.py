@@ -239,7 +239,7 @@ def _讀取原始標頭(請求: Request, 回應: Response) -> tuple[str, int | N
     keys = _原始標頭值(請求, b"idempotency-key")
     if len(content_types) != 1 or content_types[0] != b"application/json":
         _拋出固定錯誤(400, "invalid_request", 回應)
-    if len(content_lengths) > 1 or len(keys) != 1 or (content_lengths and transfer_encodings):
+    if len(content_lengths) > 1 or len(keys) != 1 or transfer_encodings:
         _拋出固定錯誤(400, "invalid_request", 回應)
     宣告長度 = None
     if content_lengths:

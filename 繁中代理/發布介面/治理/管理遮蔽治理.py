@@ -18,12 +18,13 @@ from ..設定 import (
 )
 from ..網頁工作階段 import (
     網頁CSRF無效,
+    網頁管理權限不足,
     網頁使用者,
     網頁未授權,
     網頁工作階段服務,
     網頁認證不可用,
 )
-from .遮蔽 import SQLite不可逆遮蔽服務, 遮蔽目標衝突, 遮蔽路徑無效
+from .遮蔽 import SQLite不可逆遮蔽服務, 遮蔽目標內容無效, 遮蔽目標衝突, 遮蔽路徑無效
 from .遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令冪等衝突, 遮蔽命令目標不存在
 
 _控制流程 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
@@ -203,6 +204,8 @@ class 管理遮蔽治理權限:
                 return 管理遮蔽目標衝突()
             except 遮蔽路徑無效:
                 return 管理遮蔽驗證失敗()
+            except 遮蔽目標內容無效:
+                return 管理遮蔽驗證失敗()
             except BaseException:
                 return 管理遮蔽內部失敗()
             if type(收據) is not 管理遮蔽收據:
@@ -213,39 +216,25 @@ class 管理遮蔽治理權限:
                 self._租用 -= 1
 
     def _授權(self, 請求: Request, 回應: Response) -> 管理遮蔽授權:
-        """canonical restore → admin → single-use CSRF → full principal equality。"""
+        """raw-cookie唯一性後，以一次role-first transaction取得admin與successor。"""
         工作權杖 = _讀取cookie(請求, 網頁工作階段Cookie名稱)
         csrf標頭 = _讀取header(請求, 網頁CSRFHeader名稱)
         if 工作權杖 is None:
             raise HTTPException(401, {"code": "unauthorized"}) from None
         try:
-            恢復 = self._工作階段.驗證身份(工作權杖)
+            輪替 = self._工作階段.授權管理操作(工作權杖, csrf標頭)
         except _控制流程:
             raise
         except 網頁未授權:
             raise HTTPException(401, {"code": "unauthorized"}) from None
         except 網頁認證不可用:
             raise HTTPException(503, {"code": "auth_unavailable"}) from None
-        if 恢復.角色 != "admin":
+        except 網頁管理權限不足:
             raise HTTPException(403, {"code": "admin_required"}) from None
-        try:
-            輪替 = self._工作階段.輪替(工作權杖, csrf標頭)  # type: ignore[arg-type]
-        except _控制流程:
-            raise
-        except 網頁未授權:
-            raise HTTPException(401, {"code": "unauthorized"}) from None
         except 網頁CSRF無效:
             raise HTTPException(403, {"code": "csrf_invalid"}) from None
-        except 網頁認證不可用:
-            raise HTTPException(503, {"code": "auth_unavailable"}) from None
         _設定successor(回應, 輪替, self._設定)
-        左 = 網頁使用者(恢復.識別碼, 恢復.使用者名稱, 恢復.角色)
-        右 = 網頁使用者(輪替.使用者.識別碼, 輪替.使用者.使用者名稱, 輪替.使用者.角色)
-        if 左 != 右:
-            raise HTTPException(
-                500, {"code": "redaction_failed"}, headers=_successor標頭(回應)
-            ) from None
-        return 管理遮蔽授權(左)
+        return 管理遮蔽授權(輪替.使用者)
 
 
 def 是管理遮蔽CSRF相依項(呼叫: object, 權限: object) -> bool:
@@ -260,9 +249,18 @@ def _讀取權杖(值: object) -> str | None:
 
 
 def _讀取cookie(請求: Request, 名稱: str) -> str | None:
+    """只接受raw Cookie fields中exact一個published session occurrence。"""
+    出現: list[str] = []
     try:
-        return _讀取權杖(請求.cookies.get(名稱))
-    except (AttributeError, TypeError, ValueError):
+        for 鍵, 值 in 請求.scope.get("headers", ()):
+            if 鍵.lower() != b"cookie":
+                continue
+            for 片段 in 值.decode("latin-1").split(";"):
+                左, 分隔, 右 = 片段.strip().partition("=")
+                if 分隔 and 左 == 名稱:
+                    出現.append(右)
+        return _讀取權杖(出現[0]) if len(出現) == 1 else None
+    except (AttributeError, TypeError, ValueError, UnicodeError):
         return None
 
 

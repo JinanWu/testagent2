@@ -54,6 +54,21 @@ class 伺服器遮蔽命令:
     首次建立時間: float
 
 
+@dataclass(frozen=True, slots=True)
+class 待配置遮蔽命令:
+    """prepare階段sealed request；不含payload、hash、server IDs或time。"""
+    管理員識別碼: str
+    冪等鍵: str
+    請求指紋: str
+    端點識別碼: str
+    呼叫識別碼: str
+    目標類型: str
+    目標列識別碼: str
+    JSON路徑: str
+    原因: str
+    既有命令: 伺服器遮蔽命令 | None = None
+
+
 class SQLite遮蔽命令服務:
     """在 caller transaction 取得或建立 stable server-owned 遮蔽命令。"""
 
@@ -107,99 +122,98 @@ class SQLite遮蔽命令服務:
         例外：同 key 不同 request 拋固定冪等衝突；其他普通失敗固定關閉失敗。
         副作用：首次 request 只加入一筆 mapping；不 begin、commit、rollback 或讀取 payload。
         """
-        可信冪等衝突 = 可信不存在 = None
+        待配置 = SQLite遮蔽命令服務.準備(
+            self,
+            連線,
+            管理員識別碼=管理員識別碼,
+            冪等鍵=冪等鍵,
+            端點識別碼=端點識別碼,
+            呼叫識別碼=呼叫識別碼,
+            目標類型=目標類型,
+            目標列識別碼=目標列識別碼,
+            JSON路徑=JSON路徑,
+            原因=原因,
+        )
+        if 待配置.既有命令 is not None:
+            return 待配置.既有命令
+        return SQLite遮蔽命令服務.建立(self, 連線, 待配置)
+
+    def 準備(
+        self, 連線: sqlite3.Connection, *, 管理員識別碼: str, 冪等鍵: str,
+        端點識別碼: str, 呼叫識別碼: str, 目標類型: str,
+        目標列識別碼: str, JSON路徑: str, 原因: str,
+    ) -> 待配置遮蔽命令:
+        """固定request並先判same-key衝突與ownership；fresh不配置或寫入。"""
+        可信衝突 = 可信不存在 = None
         try:
             if (not isinstance(連線, sqlite3.Connection) or not 連線.in_transaction
                     or 連線.execute("PRAGMA foreign_keys").fetchone() != (1,)):
                 raise ValueError
-            _驗證識別碼(管理員識別碼)
-            _驗證識別碼(冪等鍵)
-            _驗證識別碼(端點識別碼)
-            _驗證識別碼(呼叫識別碼)
-            _驗證識別碼(目標列識別碼)
-            驗證遮蔽公開欄位(目標類型, JSON路徑, 原因)
+            for 值 in (管理員識別碼, 冪等鍵, 端點識別碼, 呼叫識別碼, 目標列識別碼):
+                _驗證識別碼(值)
             正規原因 = 原因.strip()
+            驗證遮蔽公開欄位(目標類型, JSON路徑, 正規原因)
             if not 正規原因 or len(正規原因.encode("utf-8")) > 256:
                 raise ValueError
-            驗證遮蔽公開欄位(目標類型, JSON路徑, 正規原因)
-            正規請求 = {
-                "endpoint_id": 端點識別碼,
-                "invocation_id": 呼叫識別碼,
-                "json_path": JSON路徑,
-                "reason": 正規原因,
-                "target_row_id": 目標列識別碼,
-                "target_type": 目標類型,
-            }
-            請求指紋 = 計算正規JSON雜湊(正規請求)
-            連線.execute(
-                "UPDATE redaction_idempotency_commands "
-                "SET principal_id=principal_id WHERE 0"
-            )
+            正規請求 = {"endpoint_id": 端點識別碼, "invocation_id": 呼叫識別碼,
+                    "json_path": JSON路徑, "reason": 正規原因,
+                    "target_row_id": 目標列識別碼, "target_type": 目標類型}
+            指紋 = 計算正規JSON雜湊(正規請求)
+            連線.execute("UPDATE redaction_idempotency_commands SET principal_id=principal_id WHERE 0")
             驗證資料庫結構(連線)
-            既有 = 連線.execute(
-                f"SELECT {_命令欄位} FROM redaction_idempotency_commands "
-                "WHERE principal_id=? AND idempotency_key=?",
+            rows = 連線.execute(
+                f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE principal_id=? AND idempotency_key=?",
                 (管理員識別碼, 冪等鍵),
             ).fetchall()
-            if 既有:
-                if len(既有) != 1:
+            if rows:
+                if len(rows) != 1:
                     raise ValueError
-                命令 = _重建命令(既有[0])
-                if not _是相同請求(命令, 請求指紋, 正規請求):
-                    可信冪等衝突 = 遮蔽命令冪等衝突(_固定衝突)
-                    raise 可信冪等衝突 from None
-                return 命令
-
+                命令 = _重建命令(rows[0])
+                if not _是相同請求(命令, 指紋, 正規請求):
+                    可信衝突 = 遮蔽命令冪等衝突(_固定衝突)
+                    raise 可信衝突 from None
+                return 待配置遮蔽命令(管理員識別碼, 冪等鍵, 指紋, 端點識別碼,
+                    呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑, 正規原因, 命令)
             try:
                 _驗證目標(連線, 端點識別碼, 呼叫識別碼, 目標類型, 目標列識別碼)
-            except 遮蔽命令目標不存在 as 捕捉不存在:
-                可信不存在 = 捕捉不存在
-                捕捉不存在 = None
+            except 遮蔽命令目標不存在 as 錯誤:
+                可信不存在 = 錯誤; 錯誤 = None
                 raise 可信不存在 from None
-            遮蔽識別碼 = self._遮蔽識別碼工廠()
-            稽核事件識別碼 = self._稽核事件識別碼工廠()
-            請求識別碼 = self._請求識別碼工廠()
-            首次建立時間 = self._時鐘()
-            for 識別碼 in (遮蔽識別碼, 稽核事件識別碼, 請求識別碼):
-                _驗證識別碼(識別碼)
-            if (type(首次建立時間) not in (int, float)
-                    or not math.isfinite(首次建立時間)
-                    or not 0 <= 首次建立時間 <= 253_402_300_799):
-                raise ValueError
-            值 = (
-                管理員識別碼,
-                冪等鍵,
-                請求指紋,
-                遮蔽識別碼,
-                稽核事件識別碼,
-                請求識別碼,
-                端點識別碼,
-                呼叫識別碼,
-                目標類型,
-                目標列識別碼,
-                JSON路徑,
-                正規原因,
-                float(首次建立時間),
-            )
-            游標 = 連線.execute(
-                f"INSERT INTO redaction_idempotency_commands({_命令欄位}) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                值,
-            )
-            if 游標.rowcount != 1:
-                raise sqlite3.DatabaseError
-            已寫入 = 連線.execute(
-                f"SELECT {_命令欄位} FROM redaction_idempotency_commands "
-                "WHERE principal_id=? AND idempotency_key=?",
-                (管理員識別碼, 冪等鍵),
-            ).fetchall()
-            if 已寫入 != [值]:
-                raise sqlite3.DatabaseError
-            return _重建命令(值)
-        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 捕捉語意:
-            if 捕捉語意 is 可信冪等衝突 or 捕捉語意 is 可信不存在:
+            return 待配置遮蔽命令(管理員識別碼, 冪等鍵, 指紋, 端點識別碼,
+                呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑, 正規原因)
+        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 錯誤:
+            if 錯誤 is 可信衝突 or 錯誤 is 可信不存在:
                 raise
             raise 遮蔽命令錯誤(_固定錯誤) from None
+        except _控制流程例外:
+            raise
+        except BaseException:
+            raise 遮蔽命令錯誤(_固定錯誤) from None
+
+    def 建立(self, 連線: sqlite3.Connection, pending: 待配置遮蔽命令) -> 伺服器遮蔽命令:
+        """payload preflight完成後才配置IDs/time並寫入exact mapping。"""
+        try:
+            if type(pending) is not 待配置遮蔽命令 or pending.既有命令 is not None or not 連線.in_transaction:
+                raise ValueError
+            ids = (self._遮蔽識別碼工廠(), self._稽核事件識別碼工廠(), self._請求識別碼工廠())
+            時間 = self._時鐘()
+            for 值 in ids:
+                _驗證識別碼(值)
+            if type(時間) not in (int, float) or not math.isfinite(時間) or not 0 <= 時間 <= 253_402_300_799:
+                raise ValueError
+            值 = (pending.管理員識別碼, pending.冪等鍵, pending.請求指紋,
+                ids[0], ids[1], ids[2], pending.端點識別碼, pending.呼叫識別碼,
+                pending.目標類型, pending.目標列識別碼, pending.JSON路徑, pending.原因, float(時間))
+            if 連線.execute(
+                f"INSERT INTO redaction_idempotency_commands({_命令欄位}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", 值,
+            ).rowcount != 1:
+                raise sqlite3.DatabaseError
+            if 連線.execute(
+                f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE principal_id=? AND idempotency_key=?",
+                (pending.管理員識別碼, pending.冪等鍵),
+            ).fetchall() != [值]:
+                raise sqlite3.DatabaseError
+            return _重建命令(值)
         except _控制流程例外:
             raise
         except BaseException:
