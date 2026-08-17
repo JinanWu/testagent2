@@ -26,6 +26,7 @@ from .基本工具 import (
 from .工具 import 回報工具未啟用, 工具定義, 工具登錄器
 from .工具集.技能管理 import 管理技能
 from .工具集.管理部_bigquery import 管理部文件搜尋
+from .工具集.網路搜尋 import 網頁擷取, 網路搜尋
 from .使用者 import 使用者上下文
 
 
@@ -86,6 +87,9 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用�
         "session_search": 搜尋工作階段工具,
         "memory": 記憶工具,
         "administrative_search": 管理部文件搜尋,
+        "web_search": 網路搜尋,
+        "web_extract": 網頁擷取,
+        "todo": 待辦清單,
     }
     資產目錄 = Path(__file__).resolve().parents[1] / "assets"
     核心結構路徑 = 資產目錄 / "hermes_core_tool_schemas.json"
