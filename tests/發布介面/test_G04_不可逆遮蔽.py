@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import inspect
 import json
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,7 @@ from contextlib import closing
 import pytest
 
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
+from 繁中代理.發布介面.嚴格JSON import 計算正規JSON雜湊
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理.遮蔽 import (
     SQLite不可逆遮蔽服務,
@@ -242,6 +244,73 @@ def test_A20不同key同target前必須驗證完整durable_command_graph否則�
     assert after == before
 
 
+@pytest.mark.parametrize("corruption", ("C1-fingerprint", "C2-endpoint", "C3-endpoint-fingerprint"))
+@pytest.mark.parametrize("relationship", ("same-exact", "same-different", "different-key"))
+def test_A20_integrated完整graph先於三種request_relationship分類(
+    資料庫, corruption, relationship,
+):
+    """Admission core 3×3：可偵測保存腐敗在任何關係下都固定internal。"""
+    service = SQLite不可逆遮蔽服務(str(資料庫))
+    common = {
+        "管理員識別碼": "admin-command", "端點識別碼": "ep", "呼叫識別碼": "inv",
+        "目標類型": "tool_result", "目標列識別碼": "tool-ok",
+        "JSON路徑": "/secret/value", "原因": "privacy request",
+    }
+    service.執行命令(
+        SQLite遮蔽命令服務(
+            遮蔽識別碼工廠=lambda: "red-core", 稽核事件識別碼工廠=lambda: "audit-core",
+            請求識別碼工廠=lambda: "request-core", 時鐘=lambda: 234.5,
+        ), 冪等鍵="key-core", **common,
+    )
+    with sqlite3.connect(資料庫) as db:
+        db.execute("INSERT INTO service_accounts(id,created_at) VALUES('sa-other',0)")
+        db.execute(
+            "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at) "
+            "VALUES('ep-other','owner','sa-other','other','active',0,0)"
+        )
+        if corruption == "C1-fingerprint":
+            db.execute("UPDATE redaction_idempotency_commands SET request_fingerprint=?", ("b" * 64,))
+        elif corruption == "C2-endpoint":
+            db.execute("UPDATE redaction_idempotency_commands SET endpoint_id='ep-other'")
+        else:
+            canonical = {
+                "endpoint_id": "ep-other", "invocation_id": "inv", "json_path": "/secret/value",
+                "reason": "privacy request", "target_row_id": "tool-ok", "target_type": "tool_result",
+            }
+            db.execute(
+                "UPDATE redaction_idempotency_commands SET endpoint_id='ep-other',request_fingerprint=?",
+                (計算正規JSON雜湊(canonical),),
+            )
+    before = (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    )
+    calls = []
+    def forbidden():
+        calls.append(1)
+        raise AssertionError("existing graph不得配置factory")
+    incoming = dict(common)
+    if relationship == "same-different":
+        incoming["原因"] = "different privacy request"
+    key = "key-other" if relationship == "different-key" else "key-core"
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        service.執行命令(
+            SQLite遮蔽命令服務(
+                遮蔽識別碼工廠=forbidden, 稽核事件識別碼工廠=forbidden,
+                請求識別碼工廠=forbidden, 時鐘=forbidden,
+            ), 冪等鍵=key, **incoming,
+        )
+    assert calls == []
+    assert (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    ) == before
+
+
 @pytest.mark.parametrize(("端點", "呼叫", "類型", "列ID"), [
     ("foreign-endpoint", "inv", "invocation_input", "inv"),
     ("ep", "missing-invocation", "invocation_input", "missing-invocation"),
@@ -392,6 +461,146 @@ def _暫停防護並竄改(資料庫, trigger, sql, params=()):
         連線.execute(trigger_sql)
 
 
+完整graph腐敗類別 = (
+    *(f"mapping:{field}" for field in (
+        "redaction_id", "audit_event_id", "request_id", "endpoint_id", "invocation_id",
+        "target_type", "target_row_id", "json_path", "reason", "principal_id", "first_seen_at",
+    )),
+    *(f"ledger:{field}" for field in (
+        "id", "invocation_id", "target_type", "target_row_id", "json_path", "reason",
+        "actor_type", "actor_id", "audit_event_id", "is_tombstone", "redacted_at",
+    )),
+    *(f"audit:{field}" for field in (
+        "event_id", "occurred_at", "action", "outcome", "actor_type", "actor_id",
+        "resource_type", "resource_id", "request_id", "endpoint_id", "invocation_id",
+        "metadata_json", "created_at",
+    )),
+    "payload:redaction_id", "payload:redacted_at", "payload:shape",
+)
+
+
+def _竄改完整graph類別(資料庫, descriptor):
+    family, field = descriptor.split(":", 1)
+    if family == "mapping":
+        canonical = {
+            "endpoint_id": "ep", "invocation_id": "inv", "json_path": "/secret/value",
+            "reason": "privacy request", "target_row_id": "tool-ok", "target_type": "tool_result",
+        }
+        values = {
+            "redaction_id": "red-forged", "audit_event_id": "audit-forged",
+            "request_id": "request-forged", "endpoint_id": "ep-forged",
+            "invocation_id": "inv-forged", "target_type": "tool_arguments",
+            "target_row_id": "tool-error", "json_path": "/secret",
+            "reason": "forged privacy request", "principal_id": "admin-forged",
+            "first_seen_at": 999.0,
+        }
+        with sqlite3.connect(資料庫) as db:
+            if field in canonical:
+                canonical[field] = values[field]
+                db.execute(
+                    f"UPDATE redaction_idempotency_commands SET {field}=?,request_fingerprint=?",
+                    (values[field], 計算正規JSON雜湊(canonical)),
+                )
+            else:
+                db.execute(f"UPDATE redaction_idempotency_commands SET {field}=?", (values[field],))
+        return
+    if family == "ledger":
+        values = {
+            "id": "red-forged", "invocation_id": "inv-forged", "target_type": "tool_arguments",
+            "target_row_id": "tool-error", "json_path": "/secret", "reason": "forged privacy request",
+            "actor_type": "user", "actor_id": "admin-forged", "audit_event_id": "audit-forged",
+            "is_tombstone": 0, "redacted_at": 999.0,
+        }
+        _暫停防護並竄改(
+            資料庫, "endpoint_redactions_no_update",
+            f"UPDATE endpoint_redactions SET {field}=?", (values[field],),
+        )
+        return
+    if family == "audit":
+        values = {
+            "event_id": "audit-forged", "occurred_at": 999.0, "action": "audit.forged",
+            "outcome": "failed", "actor_type": "admin", "actor_id": "admin-forged",
+            "resource_type": "endpoint.forged", "resource_id": "red-forged",
+            "request_id": "request-forged", "endpoint_id": "ep-forged",
+            "invocation_id": "inv-forged", "metadata_json": "{}", "created_at": 999.0,
+        }
+        _暫停防護並竄改(
+            資料庫, "audit_events_no_update",
+            f"UPDATE audit_events SET {field}=?", (values[field],),
+        )
+        return
+    tombstone = {
+        "redaction_id": "red-semantic", "redacted_at": 234.5,
+    }
+    if field == "redaction_id":
+        tombstone["redaction_id"] = "red-forged"
+        value = {"keep": 1, "secret": {"value": {"$tombstone": tombstone}}}
+    elif field == "redacted_at":
+        tombstone["redacted_at"] = 999.0
+        value = {"keep": 1, "secret": {"value": {"$tombstone": tombstone}}}
+    else:
+        value = {"keep": 1, "secret": {"value": {"restored": "CONTROLLED"}}}
+    _暫停防護並竄改(
+        資料庫, "redacted_tool_call_no_update",
+        "UPDATE endpoint_tool_calls SET result_json=? WHERE id='tool-ok'",
+        (json.dumps(value, sort_keys=True, separators=(",", ":")),),
+    )
+
+
+@pytest.mark.parametrize("descriptor", 完整graph腐敗類別)
+@pytest.mark.parametrize("relationship", ("same-exact", "same-different", "different-key"))
+def test_A20完整semantic_graph_38類別交叉三種request關係固定internal(
+    資料庫, descriptor, relationship,
+):
+    """38×3=114列，所有可偵測冗餘binding都只由同一transaction validator裁決。"""
+    service = SQLite不可逆遮蔽服務(str(資料庫))
+    common = {
+        "管理員識別碼": "admin-semantic", "端點識別碼": "ep", "呼叫識別碼": "inv",
+        "目標類型": "tool_result", "目標列識別碼": "tool-ok",
+        "JSON路徑": "/secret/value", "原因": "privacy request",
+    }
+    service.執行命令(
+        SQLite遮蔽命令服務(
+            遮蔽識別碼工廠=lambda: "red-semantic",
+            稽核事件識別碼工廠=lambda: "audit-semantic",
+            請求識別碼工廠=lambda: "request-semantic", 時鐘=lambda: 234.5,
+        ), 冪等鍵="key-semantic", **common,
+    )
+    _竄改完整graph類別(資料庫, descriptor)
+    before = (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    )
+    calls = []
+    def forbidden():
+        calls.append(1)
+        raise AssertionError("corrupt existing graph不得配置factory")
+    incoming = dict(common)
+    if relationship == "same-different":
+        incoming["原因"] = "different privacy request"
+    key = "key-other" if relationship == "different-key" else "key-semantic"
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        service.執行命令(
+            SQLite遮蔽命令服務(
+                遮蔽識別碼工廠=forbidden, 稽核事件識別碼工廠=forbidden,
+                請求識別碼工廠=forbidden, 時鐘=forbidden,
+            ), 冪等鍵=key, **incoming,
+        )
+    assert calls == []
+    assert (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    ) == before
+    assert _查詢(
+        資料庫, "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name IN "
+        "('endpoint_redactions_no_update','audit_events_no_update','redacted_tool_call_no_update')"
+    ) == [(3,)]
+
+
 def test_恢復exact觸發器後raw已還原仍使投影與稽核閘門固定失敗(資料庫):
     SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
     _暫停防護並竄改(資料庫, "redacted_invocation_payload_no_update",
@@ -494,6 +703,115 @@ def test_cancellation與KISG保持exact_identity與args(monkeypatch, 資料庫, 
         SQLite不可逆遮蔽服務(str(資料庫)).redact(*_參數("invocation_input", ""))
     assert error.value is control and error.value.args == ("CONTROL_G04",)
     assert error.value.__cause__ is error.value.__context__ is None
+
+
+@pytest.mark.parametrize(
+    "錯誤型別", [RuntimeError, asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit],
+)
+def test_existing_graph_validator讀取墓碑後失敗不讓production_frames保留raw且控制同一物件(
+    monkeypatch, 資料庫, 錯誤型別,
+):
+    """Observer在validator已materialize payload後檢查frames，避免只測fresh factory邊界。"""
+    marker = "SIBLING_MARKER_A20_04"
+    with sqlite3.connect(資料庫) as connection:
+        changed = connection.execute(
+            "UPDATE endpoint_tool_calls SET result_json=? WHERE id='tool-ok'",
+            (json.dumps({"secret": {"value": "RAW_G04"}, "sibling": marker}),),
+        )
+        assert changed.rowcount == 1
+    service = SQLite不可逆遮蔽服務(str(資料庫))
+    command = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=lambda: "red-frame", 稽核事件識別碼工廠=lambda: "audit-frame",
+        請求識別碼工廠=lambda: "request-frame", 時鐘=lambda: 234.5,
+    )
+    params = {
+        "管理員識別碼": "admin-frame", "冪等鍵": "key-frame", "端點識別碼": "ep",
+        "呼叫識別碼": "inv", "目標類型": "tool_result", "目標列識別碼": "tool-ok",
+        "JSON路徑": "/secret/value", "原因": "privacy request",
+    }
+    service.執行命令(command, **params)
+    before = (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    )
+    assert marker in before[3][0][0]
+    injected = 錯誤型別("CONTROLLED_VALIDATOR_FAILURE")
+    observed = {"frames": [], "violations": []}
+
+    def contains_marker(value, seen):
+        if id(value) in seen:
+            return False
+        seen.add(id(value))
+        if type(value) is str:
+            return marker in value
+        if type(value) in (tuple, list, set, frozenset):
+            return any(contains_marker(item, seen) for item in value)
+        if type(value) is dict:
+            return any(contains_marker(key, seen) or contains_marker(item, seen)
+                       for key, item in value.items())
+        for name in getattr(type(value), "__slots__", ()):
+            if hasattr(value, name) and contains_marker(getattr(value, name), seen):
+                return True
+        closure = getattr(value, "__closure__", None)
+        if type(closure) is tuple:
+            for cell in closure:
+                try:
+                    cell_value = cell.cell_contents
+                except ValueError:
+                    continue
+                if contains_marker(cell_value, seen):
+                    return True
+        return False
+
+    def inspect_propagated(error):
+        frames = []
+        traceback = error.__traceback__
+        while traceback is not None:
+            frame = traceback.tb_frame
+            if "/繁中代理/" in frame.f_code.co_filename:
+                frames.append(frame.f_code.co_name)
+                for value in tuple(frame.f_locals.values()):
+                    assert not contains_marker(value, set())
+            traceback = traceback.tb_next
+        for linked in (error.__cause__, error.__context__):
+            if linked is not None:
+                assert not contains_marker(linked, set())
+        return frames
+
+    def observe_then_fail(*_args):
+        frame = inspect.currentframe()
+        assert frame is not None
+        frame = frame.f_back
+        while frame is not None:
+            if "/繁中代理/" in frame.f_code.co_filename:
+                observed["frames"].append(frame.f_code.co_name)
+                for value in tuple(frame.f_locals.values()):
+                    if contains_marker(value, set()):
+                        observed["violations"].append(frame.f_code.co_name)
+            frame = frame.f_back
+        raise injected
+
+    monkeypatch.setattr(遮蔽模組, "_確認墓碑", observe_then_fail)
+    if 錯誤型別 is RuntimeError:
+        with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$") as caught:
+            service.執行命令(command, **params)
+    else:
+        with pytest.raises(錯誤型別) as caught:
+            service.執行命令(command, **params)
+        assert caught.value is injected
+    propagated_frames = inspect_propagated(caught.value)
+    assert "執行命令" in propagated_frames
+    assert "_驗證完整既有命令圖" in observed["frames"]
+    assert "執行命令" in observed["frames"]
+    assert observed["violations"] == []
+    assert (
+        _查詢(資料庫, "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"),
+        _查詢(資料庫, "SELECT * FROM audit_events ORDER BY rowid"),
+        _查詢(資料庫, "SELECT * FROM endpoint_redactions ORDER BY id"),
+        _查詢(資料庫, "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-ok'"),
+    ) == before
 
 
 class StrSubclass(str):

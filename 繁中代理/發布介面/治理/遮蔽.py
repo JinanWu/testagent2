@@ -168,6 +168,9 @@ class SQLite不可逆遮蔽服務:
         """同一交易建立／回放 server command，並原子提交 audit、墓碑與 ledger。"""
         from .遮蔽命令 import (
             SQLite遮蔽命令服務,
+            待建立遮蔽命令,
+            待驗證既有遮蔽命令,
+            _保存命令符合incoming,
             遮蔽命令冪等衝突,
             遮蔽命令目標不存在,
         )
@@ -178,7 +181,8 @@ class SQLite不可逆遮蔽服務:
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
         資料庫識別 = None
         已開始 = 已提交 = 一般失敗 = 提交待確認 = False
-        主要控制 = 保留衝突 = 可信目標衝突 = 可信路徑無效 = 可信內容無效 = None
+        回滾一般失敗 = 關閉一般失敗 = False
+        主要控制 = 保留衝突 = 可信冪等衝突 = 可信目標衝突 = 可信路徑無效 = 可信內容無效 = None
         回滾控制盒: list[BaseException] = []
         關閉控制盒: list[BaseException] = []
         捕捉路徑 = self._path
@@ -201,13 +205,18 @@ class SQLite不可逆遮蔽服務:
                 JSON路徑=JSON路徑,
                 原因=原因,
             )
-            if pending.既有命令 is not None:
-                命令 = pending.既有命令
-            else:
+            if type(pending) is 待驗證既有遮蔽命令:
+                命令 = pending.保存命令.命令
+                結果 = _驗證完整既有命令圖(連線, pending.保存命令)
+                if not _保存命令符合incoming(pending.保存命令, pending.正規請求):
+                    可信冪等衝突 = 遮蔽命令冪等衝突("遮蔽命令冪等衝突")
+                    raise 可信冪等衝突 from None
+            elif type(pending) is 待建立遮蔽命令:
+                request = pending.正規請求
                 try:
                     _預檢新鮮目標(
-                        連線, pending.呼叫識別碼, pending.目標類型,
-                        pending.目標列識別碼, pending.JSON路徑,
+                        連線, request.呼叫識別碼, request.目標類型,
+                        request.目標列識別碼, request.JSON路徑,
                     )
                 except 遮蔽目標內容無效 as 捕捉內容無效:
                     可信內容無效 = 捕捉內容無效; 捕捉內容無效 = None
@@ -219,6 +228,8 @@ class SQLite不可逆遮蔽服務:
                     可信目標衝突 = 捕捉目標衝突; 捕捉目標衝突 = None
                     raise 可信目標衝突 from None
                 命令 = SQLite遮蔽命令服務.建立(命令服務, 連線, pending)
+            else:
+                raise ValueError
             _驗證請求(
                 True,
                 命令.遮蔽識別碼,
@@ -238,28 +249,29 @@ class SQLite不可逆遮蔽服務:
             ).fetchall()
             if 端點列 != [(命令.端點識別碼,)]:
                 raise ValueError
-            try:
-                結果 = _在交易中遮蔽(
-                    連線,
-                    命令.遮蔽識別碼,
-                    命令.稽核事件識別碼,
-                    命令.管理員識別碼,
-                    命令.請求識別碼,
-                    命令.呼叫識別碼,
-                    命令.目標類型,
-                    命令.目標列識別碼,
-                    命令.JSON路徑,
-                    命令.原因,
-                    命令.首次建立時間,
-                )
-            except 遮蔽目標衝突 as 捕捉目標衝突:
-                可信目標衝突 = 捕捉目標衝突
-                捕捉目標衝突 = None
-                raise 可信目標衝突 from None
-            except 遮蔽路徑無效 as 捕捉路徑無效:
-                可信路徑無效 = 捕捉路徑無效
-                捕捉路徑無效 = None
-                raise 可信路徑無效 from None
+            if type(pending) is 待建立遮蔽命令:
+                try:
+                    結果 = _在交易中遮蔽(
+                        連線,
+                        命令.遮蔽識別碼,
+                        命令.稽核事件識別碼,
+                        命令.管理員識別碼,
+                        命令.請求識別碼,
+                        命令.呼叫識別碼,
+                        命令.目標類型,
+                        命令.目標列識別碼,
+                        命令.JSON路徑,
+                        命令.原因,
+                        命令.首次建立時間,
+                    )
+                except 遮蔽目標衝突 as 捕捉目標衝突:
+                    可信目標衝突 = 捕捉目標衝突
+                    捕捉目標衝突 = None
+                    raise 可信目標衝突 from None
+                except 遮蔽路徑無效 as 捕捉路徑無效:
+                    可信路徑無效 = 捕捉路徑無效
+                    捕捉路徑無效 = None
+                    raise 可信路徑無效 from None
             try:
                 連線.commit()
             except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -269,7 +281,13 @@ class SQLite不可逆遮蔽服務:
                     raise
                 提交待確認 = True
             已提交 = True
-        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 捕捉衝突:
+        except 遮蔽命令冪等衝突 as 捕捉衝突:
+            if 捕捉衝突 is 可信冪等衝突:
+                保留衝突 = 捕捉衝突
+                捕捉衝突 = None
+            else:
+                一般失敗 = True
+        except 遮蔽命令目標不存在 as 捕捉衝突:
             保留衝突 = 捕捉衝突
             捕捉衝突 = None
         except 遮蔽目標衝突 as 捕捉衝突:
@@ -297,10 +315,13 @@ class SQLite不可逆遮蔽服務:
         except BaseException:
             一般失敗 = True
         if 連線 is not None and 已開始 and not 已提交:
-            回滾控制盒 = _清理連線操作(連線, "rollback")
+            回滾控制盒, 回滾一般失敗 = _清理遮蔽交易連線(連線, "rollback")
         if 連線 is not None:
-            關閉控制盒 = _清理連線操作(連線, "close")
+            關閉控制盒, 關閉一般失敗 = _清理遮蔽交易連線(連線, "close")
             連線 = None
+        if not 已提交 and (回滾一般失敗 or 關閉一般失敗):
+            一般失敗 = True
+            保留衝突 = None
         if 提交待確認 and not 關閉控制盒:
             一般失敗 = (
                 命令 is None
@@ -340,9 +361,100 @@ class SQLite不可逆遮蔽服務:
         return 結果
 
 
+def _清理遮蔽交易連線(
+    連線: sqlite3.Connection, 操作: str,
+) -> tuple[list[BaseException], bool]:
+    """區分control與ordinary cleanup；未提交conflict不能吞掉ordinary失敗。"""
+    控制盒: list[BaseException] = []
+    一般失敗 = False
+    try:
+        getattr(連線, 操作)()
+    except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 控制:
+        _清理控制鏈(控制)
+        BaseException.__setattr__(控制, "__traceback__", None)
+        控制盒.append(控制)
+        控制 = None
+    except BaseException:
+        一般失敗 = True
+    連線 = 操作 = None  # type: ignore[assignment]
+    return 控制盒, 一般失敗
+
+
+def _驗證完整既有命令圖(連線: sqlite3.Connection, 保存命令: object) -> dict[str, Any]:
+    """在transaction owner的同一snapshot驗證mapping→invocation→audit→ledger→tombstone。"""
+    from .遮蔽命令 import (
+        已驗證保存遮蔽命令, _命令正規指紋相符, _命令欄位,
+    )
+
+    mapping = redactions = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = None
+    容器 = 鍵 = 墓碑值 = None
+    try:
+        if type(保存命令) is not 已驗證保存遮蔽命令:
+            raise ValueError
+        命令 = 保存命令.命令
+        expected = (
+            命令.管理員識別碼, 命令.冪等鍵, 命令.請求指紋, 命令.遮蔽識別碼,
+            命令.稽核事件識別碼, 命令.請求識別碼, 命令.端點識別碼,
+            命令.呼叫識別碼, 命令.目標類型, 命令.目標列識別碼,
+            命令.JSON路徑, 命令.原因, float(命令.首次建立時間),
+        )
+        mapping = 連線.execute(
+            f"SELECT {_命令欄位} FROM redaction_idempotency_commands "
+            "WHERE principal_id=? AND idempotency_key=?",
+            (命令.管理員識別碼, 命令.冪等鍵),
+        ).fetchall()
+        by_redaction = 連線.execute(
+            f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE redaction_id=?",
+            (命令.遮蔽識別碼,),
+        ).fetchall()
+        if mapping != [expected] or by_redaction != [expected] or not _命令正規指紋相符(命令):
+            raise ValueError
+        if 連線.execute(
+            "SELECT endpoint_id FROM endpoint_invocations WHERE id=?",
+            (命令.呼叫識別碼,),
+        ).fetchall() != [(命令.端點識別碼,)]:
+            raise ValueError
+        redactions = 連線.execute(
+            "SELECT r.id,r.json_path,r.original_sha256,r.reason,r.actor_id,r.audit_event_id,"
+            "r.is_tombstone,r.redacted_at,r.actor_type,r.invocation_id,a.event_id,"
+            "a.occurred_at,a.action,a.outcome,a.actor_type,a.actor_id,a.resource_type,"
+            "a.resource_id,a.request_id,a.endpoint_id,a.invocation_id,a.metadata_json,"
+            "a.created_at,i.endpoint_id FROM endpoint_redactions r JOIN audit_events a "
+            "ON a.id=r.audit_event_id JOIN endpoint_invocations i ON i.id=r.invocation_id "
+            "WHERE r.target_type=? AND r.target_row_id=? AND r.json_path=?",
+            (命令.目標類型, 命令.目標列識別碼, 命令.JSON路徑),
+        ).fetchall()
+        if (len(redactions) != 1 or not _相同重試(
+                redactions[0], 命令.遮蔽識別碼, 命令.稽核事件識別碼, 命令.原因,
+                命令.管理員識別碼, 命令.請求識別碼, 命令.呼叫識別碼,
+                命令.首次建立時間,
+            ) or re.fullmatch(r"[0-9a-f]{64}", redactions[0][2]) is None):
+            raise ValueError
+        表格, 欄位, 子列 = _目標[命令.目標類型]
+        範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
+        參數 = ((命令.目標列識別碼, 命令.呼叫識別碼)
+              if 子列 else (命令.呼叫識別碼,))
+        payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
+        if 命令.JSON路徑 == "":
+            墓碑值 = payload
+        else:
+            容器, 鍵 = _尋找JSON位置(payload, 命令.JSON路徑)
+            墓碑值 = 容器[鍵]
+        payload = 原始文字 = 容器 = 鍵 = None
+        _確認墓碑(墓碑值, 命令.遮蔽識別碼, 命令.首次建立時間)
+        墓碑值 = None
+        return _結果(redactions[0], 命令.目標類型, 命令.目標列識別碼)
+    finally:
+        mapping = redactions = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = None
+        容器 = 鍵 = 墓碑值 = None
+        保存命令 = None
+
+
 def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑) -> None:
     """不配置identity且不回傳material，只sealed分類fresh payload/pointer/conflict。"""
-    rows = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = 容器 = 鍵 = mapping = 命令 = None
+    from .遮蔽命令 import 已驗證保存遮蔽命令, _命令欄位, _重建命令
+    rows = target_mappings = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = None
+    容器 = 鍵 = mapping = 命令 = None
     try:
         rows = 連線.execute(
             "SELECT r.id,r.json_path,r.original_sha256,r.reason,r.actor_id,r.audit_event_id,"
@@ -354,29 +466,25 @@ def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別�
             "WHERE r.target_type=? AND r.target_row_id=? AND r.json_path=?",
             (目標類型, 目標列識別碼, JSON路徑),
         ).fetchall()
+        target_mappings = 連線.execute(
+            f"SELECT {_命令欄位} FROM redaction_idempotency_commands "
+            "WHERE target_type=? AND target_row_id=? AND json_path=?",
+            (目標類型, 目標列識別碼, JSON路徑),
+        ).fetchall()
         表格, 欄位, 子列 = _目標[目標類型]
         範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
         參數 = (目標列識別碼, 呼叫識別碼) if 子列 else (呼叫識別碼,)
-        if rows:
-            if len(rows) != 1:
+        if rows or target_mappings:
+            if len(rows) > 1 or len(target_mappings) > 1:
                 raise ValueError
-            from .遮蔽命令 import _命令正規指紋相符, _命令欄位, _重建命令
-            mapping = 連線.execute(
+            mapping = target_mappings if target_mappings else 連線.execute(
                 f"SELECT {_命令欄位} FROM redaction_idempotency_commands WHERE redaction_id=?",
                 (rows[0][0],),
             ).fetchall()
             if len(mapping) != 1:
                 raise ValueError
             命令 = _重建命令(mapping[0])
-            if (not _命令正規指紋相符(命令) or 命令.端點識別碼 != rows[0][23]
-                    or 命令.呼叫識別碼 != 呼叫識別碼 or 命令.目標類型 != 目標類型
-                    or 命令.目標列識別碼 != 目標列識別碼 or 命令.JSON路徑 != JSON路徑
-                    or not _相同重試(rows[0], 命令.遮蔽識別碼, 命令.稽核事件識別碼,
-                        命令.原因, 命令.管理員識別碼, 命令.請求識別碼,
-                        命令.呼叫識別碼, 命令.首次建立時間)):
-                raise ValueError
-            payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
-            _確認墓碑(payload, JSON路徑, 命令.遮蔽識別碼, 命令.首次建立時間)
+            _驗證完整既有命令圖(連線, 已驗證保存遮蔽命令(命令))
             raise 遮蔽目標衝突("遮蔽目標已由不同命令處理") from None
         payload, 原始文字 = _讀取payload(
             連線, 表格, 欄位, 範圍, 參數,
@@ -389,7 +497,8 @@ def _預檢新鮮目標(連線, 呼叫識別碼, 目標類型, 目標列識別�
             except (KeyError, IndexError, TypeError, ValueError):
                 raise 遮蔽路徑無效("遮蔽路徑不存在") from None
     finally:
-        rows = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = 容器 = 鍵 = mapping = 命令 = None
+        rows = target_mappings = payload = 原始文字 = 表格 = 欄位 = 範圍 = 參數 = None
+        容器 = 鍵 = mapping = 命令 = None
 
 
 def _在交易中遮蔽(
@@ -408,7 +517,7 @@ def _在交易中遮蔽(
     """在 caller-owned transaction 套用唯一 G04 audit/payload/ledger implementation；不提交。"""
     游標 = payload = 原始文字 = 新文字 = 摘要 = 結果 = 既有 = None
     事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
-    摘要來源 = 容器 = 鍵 = 舊值 = 更新 = 稽核序號 = 子列 = None
+    摘要來源 = 容器 = 鍵 = 舊值 = 墓碑值 = 更新 = 稽核序號 = 子列 = None
     try:
         既有 = 連線.execute(
             "SELECT r.id,r.json_path,r.original_sha256,r.reason,r.actor_id,r.audit_event_id,"
@@ -430,7 +539,14 @@ def _在交易中遮蔽(
             範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
             參數 = (目標列識別碼, 呼叫識別碼) if 子列 else (呼叫識別碼,)
             payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
-            _確認墓碑(payload, JSON路徑, 遮蔽識別碼, 發生時間)
+            if JSON路徑 == "":
+                墓碑值 = payload
+            else:
+                容器, 鍵 = _尋找JSON位置(payload, JSON路徑)
+                墓碑值 = 容器[鍵]
+            payload = 原始文字 = 容器 = 鍵 = None
+            _確認墓碑(墓碑值, 遮蔽識別碼, 發生時間)
+            墓碑值 = None
             結果 = _結果(既有[0], 目標類型, 目標列識別碼)
         else:
             表格, 欄位, 子列 = _目標[目標類型]
@@ -515,7 +631,7 @@ def _在交易中遮蔽(
     finally:
         游標 = payload = 原始文字 = 新文字 = 摘要 = 既有 = None
         事件 = 稽核列 = 表格 = 欄位 = 範圍 = 參數 = 墓碑 = 端點列 = None
-        摘要來源 = 容器 = 鍵 = 舊值 = 更新 = 稽核序號 = 子列 = None
+        摘要來源 = 容器 = 鍵 = 舊值 = 墓碑值 = 更新 = 稽核序號 = 子列 = None
 
 
 def _驗證已提交命令圖(
@@ -524,8 +640,10 @@ def _驗證已提交命令圖(
     命令: 伺服器遮蔽命令,
     預期結果: object,
 ) -> bool:
-    """COMMIT acknowledgement 遺失後，以 fresh connection 驗證 exact durable graph。"""
-    連線 = payload = 原始文字 = 既有 = mapping = 表格 = 欄位 = 範圍 = 參數 = None
+    """COMMIT acknowledgement遺失後以fresh same-pin connection重用完整validator。"""
+    from .遮蔽命令 import 已驗證保存遮蔽命令
+
+    連線 = None
     控制 = None
     關閉控制盒: list[BaseException] = []
     符合 = False
@@ -536,43 +654,9 @@ def _驗證已提交命令圖(
             raise ValueError
         _驗證schema(連線)
         _驗證遮蔽schema(連線)
-        mapping = 連線.execute(
-            "SELECT principal_id,idempotency_key,request_fingerprint,redaction_id,audit_event_id,"
-            "request_id,endpoint_id,invocation_id,target_type,target_row_id,json_path,reason,"
-            "first_seen_at FROM redaction_idempotency_commands "
-            "WHERE principal_id=? AND idempotency_key=?",
-            (命令.管理員識別碼, 命令.冪等鍵),
-        ).fetchall()
-        if mapping != [(
-            命令.管理員識別碼, 命令.冪等鍵, 命令.請求指紋, 命令.遮蔽識別碼,
-            命令.稽核事件識別碼, 命令.請求識別碼, 命令.端點識別碼,
-            命令.呼叫識別碼, 命令.目標類型, 命令.目標列識別碼,
-            命令.JSON路徑, 命令.原因, float(命令.首次建立時間),
-        )]:
-            raise ValueError
-        既有 = 連線.execute(
-            "SELECT r.id,r.json_path,r.original_sha256,r.reason,r.actor_id,r.audit_event_id,"
-            "r.is_tombstone,r.redacted_at,r.actor_type,r.invocation_id,a.event_id,"
-            "a.occurred_at,a.action,a.outcome,a.actor_type,a.actor_id,a.resource_type,"
-            "a.resource_id,a.request_id,a.endpoint_id,a.invocation_id,a.metadata_json,"
-            "a.created_at,i.endpoint_id FROM endpoint_redactions r JOIN audit_events a "
-            "ON a.id=r.audit_event_id JOIN endpoint_invocations i ON i.id=r.invocation_id "
-            "WHERE r.target_type=? AND r.target_row_id=? AND r.json_path=?",
-            (命令.目標類型, 命令.目標列識別碼, 命令.JSON路徑),
-        ).fetchall()
-        if len(既有) != 1 or not _相同重試(
-            既有[0], 命令.遮蔽識別碼, 命令.稽核事件識別碼, 命令.原因,
-            命令.管理員識別碼, 命令.請求識別碼, 命令.呼叫識別碼,
-            命令.首次建立時間,
-        ):
-            raise ValueError
-        表格, 欄位, 子列 = _目標[命令.目標類型]
-        範圍 = "id=? AND invocation_id=?" if 子列 else "id=?"
-        參數 = ((命令.目標列識別碼, 命令.呼叫識別碼)
-              if 子列 else (命令.呼叫識別碼,))
-        payload, 原始文字 = _讀取payload(連線, 表格, 欄位, 範圍, 參數)
-        _確認墓碑(payload, 命令.JSON路徑, 命令.遮蔽識別碼, 命令.首次建立時間)
-        符合 = _結果(既有[0], 命令.目標類型, 命令.目標列識別碼) == 預期結果
+        符合 = _驗證完整既有命令圖(
+            連線, 已驗證保存遮蔽命令(命令),
+        ) == 預期結果
     except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit) as 捕捉控制:
         _清理控制鏈(捕捉控制)
         控制 = 捕捉控制
@@ -581,7 +665,7 @@ def _驗證已提交命令圖(
         符合 = False
     if 連線 is not None:
         關閉控制盒 = _清理連線操作(連線, "close")
-    連線 = payload = 原始文字 = 既有 = mapping = 表格 = 欄位 = 範圍 = 參數 = None
+    連線 = None
     del 預期資料庫識別
     del 命令
     預期結果 = None
@@ -747,11 +831,8 @@ def _讀取payload(連線: sqlite3.Connection, 表格: str, 欄位: str,
     return _解析JSON(列[0][0]), 列[0][0]
 
 
-def _確認墓碑(payload: Any, 路徑: str, 遮蔽ID: str, 時間: int | float) -> None:
-    """確認既有payload仍保存指定不可逆墓碑。"""
-    值 = payload if 路徑 == "" else _尋找JSON位置(payload, 路徑)[0][
-        _尋找JSON位置(payload, 路徑)[1]
-    ]
+def _確認墓碑(值: Any, 遮蔽ID: str, 時間: int | float) -> None:
+    """只接收已選定墓碑值，避免helper邊界持有完整payload。"""
     if 值 != {"$tombstone": {"redaction_id": 遮蔽ID, "redacted_at": float(時間)}}:
         raise ValueError
 

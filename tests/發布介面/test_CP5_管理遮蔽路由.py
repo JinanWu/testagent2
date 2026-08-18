@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
+from 繁中代理.發布介面.嚴格JSON import 計算正規JSON雜湊
 from 繁中代理.發布介面.治理.管理遮蔽治理 import (
     管理遮蔽授權,
     管理遮蔽收據,
@@ -483,6 +484,109 @@ def test_A20_04_corrupt_durable_command_graph不得取得409_provenance(tmp_path
     assert second.json() == {"detail": {"code": "redaction_failed"}}
     assert second.headers["X-CSRF-Token"]
     assert after == before
+
+
+def _完整graph快照(path):
+    with sqlite3.connect(path) as db:
+        return (
+            db.execute(
+                "SELECT * FROM redaction_idempotency_commands ORDER BY principal_id,idempotency_key"
+            ).fetchall(),
+            db.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall(),
+            db.execute("SELECT * FROM endpoint_redactions ORDER BY id").fetchall(),
+            db.execute(
+                "SELECT result_json FROM endpoint_tool_calls WHERE id='tool-call-1'"
+            ).fetchall(),
+        )
+
+
+def _竄改HTTP完整graph(path, corruption):
+    with sqlite3.connect(path) as db:
+        if corruption in {"C2-endpoint", "C3-endpoint-fingerprint"}:
+            db.execute("INSERT INTO service_accounts(id,created_at) VALUES('service-other',0)")
+            db.execute(
+                "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at) "
+                "VALUES('endpoint-other','owner-1','service-other','other','active',0,0)"
+            )
+        if corruption == "C1-fingerprint":
+            db.execute(
+                "UPDATE redaction_idempotency_commands SET request_fingerprint=?",
+                ("b" * 64,),
+            )
+        elif corruption == "C2-endpoint":
+            db.execute(
+                "UPDATE redaction_idempotency_commands SET endpoint_id='endpoint-other'"
+            )
+        elif corruption == "C3-endpoint-fingerprint":
+            canonical = {
+                "endpoint_id": "endpoint-other",
+                "invocation_id": "invocation-1",
+                "json_path": "/result/secret",
+                "reason": "approved privacy request",
+                "target_row_id": "tool-call-1",
+                "target_type": "tool_result",
+            }
+            db.execute(
+                "UPDATE redaction_idempotency_commands SET endpoint_id='endpoint-other',request_fingerprint=?",
+                (計算正規JSON雜湊(canonical),),
+            )
+        else:
+            trigger_sql = db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+            ).fetchone()[0]
+            try:
+                db.execute("DROP TRIGGER audit_events_no_update")
+                cursor = db.execute(
+                    "UPDATE audit_events SET metadata_json='{}' WHERE action='audit.payload.redact'"
+                )
+                assert cursor.rowcount == 1
+                db.execute(trigger_sql)
+            finally:
+                if db.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+                ).fetchone() is None:
+                    db.execute(trigger_sql)
+            assert db.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+            ).fetchone() == (trigger_sql,)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("C1-fingerprint", "C2-endpoint", "C3-endpoint-fingerprint", "audit-metadata"),
+)
+@pytest.mark.parametrize("relationship", ("same-exact", "same-different", "different-key"))
+def test_A20_04_HTTP三種關係遇四類完整graph腐敗固定500且successor可用(
+    tmp_path, corruption, relationship,
+):
+    """4×3 HTTP sentinels：腐敗graph不能取得200/409，且不得鎖死session。"""
+    client, _, _, path = _建立客戶端(tmp_path)
+    with client:
+        csrf = _登入(client)
+        first = _post(client, csrf, key="graph-key-one")
+        assert first.status_code == 200
+        _竄改HTTP完整graph(path, corruption)
+        before = _完整graph快照(path)
+        body = 本文 if relationship != "same-different" else {
+            **本文, "reason": "different approved reason",
+        }
+        key = "graph-key-two" if relationship == "different-key" else "graph-key-one"
+        second = _post(
+            client, first.headers["X-CSRF-Token"], key=key, body=body,
+        )
+        assert second.status_code == 500
+        assert second.json() == {"detail": {"code": "redaction_failed"}}
+        assert "RAW_A20_ROUTE" not in second.text
+        successor = second.headers["X-CSRF-Token"]
+        assert successor
+        assert "published_web_csrf=" in second.headers["set-cookie"]
+        assert _完整graph快照(path) == before
+        benign = _post(
+            client, successor, key="benign-no-mutation", body={**本文, "json_path": "/missing"},
+        )
+        assert benign.status_code == 422
+        assert benign.json() == {"detail": {"code": "redaction_validation_failed"}}
+        assert _完整graph快照(path) == before
 
 
 def test_A20_04_uninstalled治理固定500且保留CSRF_successor(tmp_path):

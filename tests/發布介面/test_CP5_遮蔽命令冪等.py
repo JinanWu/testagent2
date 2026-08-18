@@ -15,6 +15,7 @@ import pytest
 
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫, 載入發布介面遷移
 from 繁中代理.發布介面.資料庫結構契約 import 遷移帳本
+from 繁中代理.發布介面.嚴格JSON import 計算正規JSON雜湊
 from 繁中代理.發布介面.治理 import 遮蔽 as 遮蔽模組
 from 繁中代理.發布介面.治理 import 稽核資料庫 as 稽核資料庫模組
 from 繁中代理.發布介面.治理.保存期限 import SQLite保存清除服務
@@ -22,6 +23,8 @@ from 繁中代理.發布介面.治理.遮蔽 import (
     SQLite不可逆遮蔽服務,
     不可逆遮蔽錯誤,
     遮蔽路徑無效,
+    遮蔽目標內容無效,
+    遮蔽目標衝突,
 )
 from 繁中代理.發布介面.治理.遮蔽命令 import (
     SQLite遮蔽命令服務,
@@ -250,6 +253,154 @@ def test_server_command與mapping_audit_payload_ledger共用單一commit_point(t
         assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (1,)
 
 
+@pytest.mark.parametrize("relationship", ("same-exact", "same-different", "different-key", "corrupt"))
+def test_transaction_owner重啟後四種既有graph分類不重配且不改圖(tmp_path: Path, relationship: str) -> None:
+    資料庫 = tmp_path / f"restart-{relationship}.sqlite3"
+    _建立命令資料庫(資料庫)
+    first = SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    if relationship == "corrupt":
+        with sqlite3.connect(資料庫) as 連線:
+            連線.execute("INSERT INTO service_accounts(id,created_at) VALUES('service-other',1)")
+            連線.execute(
+                "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at) "
+                "VALUES('endpoint-other','owner-main','service-other','other','active',1,1)"
+            )
+            canonical = {
+                "endpoint_id": "endpoint-other", "invocation_id": "invocation-main",
+                "json_path": "/private", "reason": "approved privacy request",
+                "target_row_id": "invocation-main", "target_type": "invocation_input",
+            }
+            連線.execute(
+                "UPDATE redaction_idempotency_commands SET endpoint_id='endpoint-other',request_fingerprint=?",
+                (計算正規JSON雜湊(canonical),),
+            )
+    with sqlite3.connect(資料庫) as 連線:
+        before = (
+            連線.execute(f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key").fetchall(),
+            連線.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall(),
+            連線.execute("SELECT * FROM endpoint_redactions ORDER BY id").fetchall(),
+            連線.execute("SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'").fetchall(),
+        )
+    calls = []
+    def forbidden():
+        calls.append(1)
+        raise AssertionError("restart existing graph不得重配")
+    command = SQLite遮蔽命令服務(
+        遮蔽識別碼工廠=forbidden, 稽核事件識別碼工廠=forbidden,
+        請求識別碼工廠=forbidden, 時鐘=forbidden,
+    )
+    service = SQLite不可逆遮蔽服務(str(資料庫))
+    if relationship == "same-exact":
+        assert service.執行命令(command, **_命令參數()) == first
+    elif relationship == "same-different":
+        with pytest.raises(遮蔽命令冪等衝突):
+            service.執行命令(command, **_命令參數(原因="different request"))
+    elif relationship == "different-key":
+        with pytest.raises(遮蔽模組.遮蔽目標衝突):
+            service.執行命令(command, **_命令參數(冪等鍵="key-other"))
+    else:
+        with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+            service.執行命令(command, **_命令參數())
+    assert calls == []
+    with sqlite3.connect(資料庫) as 連線:
+        after = (
+            連線.execute(f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key").fetchall(),
+            連線.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall(),
+            連線.execute("SELECT * FROM endpoint_redactions ORDER BY id").fetchall(),
+            連線.execute("SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'").fetchall(),
+        )
+    assert after == before
+
+
+@pytest.mark.parametrize("corruption", ("compound-endpoint", "audit-metadata"))
+def test_commit已完成但fresh_reconciliation前graph腐敗不得發布receipt(
+    monkeypatch, tmp_path: Path, corruption: str,
+) -> None:
+    資料庫 = tmp_path / f"commit-corrupt-{corruption}.sqlite3"
+    _建立命令資料庫(資料庫)
+    original_connect = sqlite3.connect
+    post_tamper = []
+
+    class 提交後竄改連線(sqlite3.Connection):
+        def commit(self) -> None:
+            super().commit()
+            with original_connect(資料庫) as other:
+                if corruption == "compound-endpoint":
+                    other.execute("INSERT INTO service_accounts(id,created_at) VALUES('service-other',1)")
+                    other.execute(
+                        "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at) "
+                        "VALUES('endpoint-other','owner-main','service-other','other','active',1,1)"
+                    )
+                    canonical = {
+                        "endpoint_id": "endpoint-other", "invocation_id": "invocation-main",
+                        "json_path": "/private", "reason": "approved privacy request",
+                        "target_row_id": "invocation-main", "target_type": "invocation_input",
+                    }
+                    other.execute(
+                        "UPDATE redaction_idempotency_commands SET endpoint_id='endpoint-other',request_fingerprint=?",
+                        (計算正規JSON雜湊(canonical),),
+                    )
+                else:
+                    trigger_sql = other.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+                    ).fetchone()[0]
+                    try:
+                        other.execute("DROP TRIGGER audit_events_no_update")
+                        cursor = other.execute(
+                            "UPDATE audit_events SET metadata_json='{}' WHERE action='audit.payload.redact'"
+                        )
+                        assert cursor.rowcount == 1
+                        other.execute(trigger_sql)
+                    finally:
+                        if other.execute(
+                            "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+                        ).fetchone() is None:
+                            other.execute(trigger_sql)
+                post_tamper.append((
+                    other.execute(
+                        f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key"
+                    ).fetchall(),
+                    other.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall(),
+                    other.execute("SELECT * FROM endpoint_redactions ORDER BY id").fetchall(),
+                    other.execute(
+                        "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+                    ).fetchall(),
+                    other.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+                    ).fetchall(),
+                ))
+            raise sqlite3.OperationalError("synthetic acknowledgement loss after corruption")
+
+    def 開啟(路徑: str):
+        file = os.stat(路徑)
+        connection = original_connect(
+            f"file:{路徑}?mode=rw", uri=True, isolation_level=None, timeout=30,
+            factory=提交後竄改連線,
+        )
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection, (file.st_dev, file.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    with original_connect(資料庫) as 連線:
+        after = (
+            連線.execute(
+                f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key"
+            ).fetchall(),
+            連線.execute("SELECT * FROM audit_events ORDER BY rowid").fetchall(),
+            連線.execute("SELECT * FROM endpoint_redactions ORDER BY id").fetchall(),
+            連線.execute(
+                "SELECT input_json FROM endpoint_invocations WHERE id='invocation-main'"
+            ).fetchall(),
+            連線.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='audit_events_no_update'"
+            ).fetchall(),
+        )
+    assert len(post_tamper) == 1
+    assert after == post_tamper[0]
+
+
 def test_commit已durable但acknowledgement遺失仍回傳權威receipt且不重做(monkeypatch, tmp_path: Path) -> None:
     """COMMIT 已完成時以 durable graph 為真；普通 acknowledgement error 不可謊報 rollback。"""
     資料庫 = tmp_path / "commit-ack-loss.sqlite3"
@@ -389,6 +540,106 @@ def test_任一transaction階段失敗都完整rollback且raw不變(monkeypatch,
         assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (0,)
         assert 連線.execute("SELECT count(*) FROM audit_events").fetchone() == (0,)
         assert 連線.execute("SELECT count(*) FROM endpoint_redactions").fetchone() == (0,)
+
+
+@pytest.mark.parametrize("primary", ("idempotency", "target"))
+@pytest.mark.parametrize("cleanup", ("rollback", "close"))
+def test_可信conflict遇ordinary_cleanup失敗不得發布409(
+    monkeypatch, tmp_path: Path, primary: str, cleanup: str,
+) -> None:
+    資料庫 = tmp_path / f"cleanup-{primary}-{cleanup}.sqlite3"
+    _建立命令資料庫(資料庫)
+    SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    original_connect = sqlite3.connect
+
+    class 清理失敗連線(sqlite3.Connection):
+        def rollback(self) -> None:
+            super().rollback()
+            if cleanup == "rollback":
+                raise RuntimeError("ordinary rollback failure")
+
+        def close(self) -> None:
+            super().close()
+            if cleanup == "close":
+                raise RuntimeError("ordinary close failure")
+
+    def 開啟(路徑: str):
+        file = os.stat(路徑)
+        connection = original_connect(
+            f"file:{路徑}?mode=rw", uri=True, isolation_level=None, timeout=30,
+            factory=清理失敗連線,
+        )
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection, (file.st_dev, file.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    params = _命令參數(
+        **({"原因": "different request"} if primary == "idempotency" else {"冪等鍵": "key-other"})
+    )
+    with pytest.raises(不可逆遮蔽錯誤, match="^呼叫資料無法遮蔽$"):
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(前綴="forbidden"), **params)
+
+
+@pytest.mark.parametrize("cleanup", ("rollback", "close"))
+def test_conflict_cleanup控制流程保持exact_identity(
+    monkeypatch, tmp_path: Path, cleanup: str,
+) -> None:
+    資料庫 = tmp_path / f"cleanup-control-{cleanup}.sqlite3"
+    _建立命令資料庫(資料庫)
+    SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    original_connect = sqlite3.connect
+    control = KeyboardInterrupt(f"CONTROL_{cleanup}")
+
+    class 清理控制連線(sqlite3.Connection):
+        def rollback(self) -> None:
+            super().rollback()
+            if cleanup == "rollback":
+                raise control
+
+        def close(self) -> None:
+            super().close()
+            if cleanup == "close":
+                raise control
+
+    def 開啟(路徑: str):
+        file = os.stat(路徑)
+        connection = original_connect(
+            f"file:{路徑}?mode=rw", uri=True, isolation_level=None, timeout=30,
+            factory=清理控制連線,
+        )
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection, (file.st_dev, file.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        SQLite不可逆遮蔽服務(str(資料庫)).執行命令(
+            _服務(前綴="forbidden"), **_命令參數(原因="different request"),
+        )
+    assert caught.value is control
+
+
+def test_已提交成功遇ordinary_close失敗仍回權威receipt(monkeypatch, tmp_path: Path) -> None:
+    資料庫 = tmp_path / "durable-success-close.sqlite3"
+    _建立命令資料庫(資料庫)
+    original_connect = sqlite3.connect
+
+    class 關閉失敗連線(sqlite3.Connection):
+        def close(self) -> None:
+            super().close()
+            raise RuntimeError("ordinary close failure after durable commit")
+
+    def 開啟(路徑: str):
+        file = os.stat(路徑)
+        connection = original_connect(
+            f"file:{路徑}?mode=rw", uri=True, isolation_level=None, timeout=30,
+            factory=關閉失敗連線,
+        )
+        connection.execute("PRAGMA foreign_keys=ON")
+        return connection, (file.st_dev, file.st_ino)
+
+    monkeypatch.setattr(遮蔽模組, "_開啟既有資料庫與釘選", 開啟)
+    receipt = SQLite不可逆遮蔽服務(str(資料庫)).執行命令(_服務(), **_命令參數())
+    assert receipt["redaction_id"] == "redaction-stable"
 
 
 def test_integrated_same_key_different_body保留固定conflict且零新增mutation(tmp_path: Path) -> None:
@@ -643,6 +894,8 @@ def test_public_command_seam拒絕client_controlled_authority_identity_time與�
     遮蔽命令冪等衝突("spoof"),
     遮蔽命令目標不存在("spoof"),
     遮蔽路徑無效("spoof"),
+    遮蔽目標衝突("spoof"),
+    遮蔽目標內容無效("spoof"),
 ])
 @pytest.mark.parametrize("工廠名稱", [
     "遮蔽識別碼工廠", "稽核事件識別碼工廠", "請求識別碼工廠", "時鐘",
@@ -669,4 +922,49 @@ def test_server_factory_raise_same_semantic_exception仍正規化為命令錯誤
         with pytest.raises(遮蔽命令錯誤, match="^遮蔽命令無法建立$"):
             SQLite遮蔽命令服務(**factories).取得或建立(連線, **_命令參數())
         assert 連線.execute(f"SELECT count(*) FROM {命令資料表}").fetchone() == (0,)
+        連線.rollback()
+
+
+@pytest.mark.parametrize("corruption", ("C1-fingerprint", "C2-endpoint", "C3-endpoint-fingerprint"))
+@pytest.mark.parametrize("relationship", ("same-request", "different-request"))
+def test_legacy取得或建立先拒絕same_key保存命令腐敗再比較incoming(
+    tmp_path: Path, corruption: str, relationship: str,
+) -> None:
+    """Mapping-only owner的6列：保存完整性失敗不得被誤授legacy conflict。"""
+    資料庫 = tmp_path / f"legacy-corrupt-{corruption}-{relationship}.sqlite3"
+    _建立命令資料庫(資料庫)
+    with sqlite3.connect(資料庫) as 連線:
+        連線.execute("PRAGMA foreign_keys=ON")
+        連線.execute("BEGIN IMMEDIATE")
+        _服務().取得或建立(連線, **_命令參數())
+        alternate = "endpoint-alternate"
+        連線.execute("INSERT INTO service_accounts(id,created_at) VALUES('service-alternate',1)")
+        連線.execute(
+            "INSERT INTO published_endpoints(id,owner_user_id,service_account_id,slug,status,created_at,updated_at) "
+            "VALUES(?, 'owner-main', 'service-alternate', 'alternate', 'active', 1, 1)",
+            (alternate,),
+        )
+        if corruption == "C1-fingerprint":
+            連線.execute("UPDATE redaction_idempotency_commands SET request_fingerprint=?", ("b" * 64,))
+        elif corruption == "C2-endpoint":
+            連線.execute("UPDATE redaction_idempotency_commands SET endpoint_id=?", (alternate,))
+        else:
+            canonical = {
+                "endpoint_id": alternate, "invocation_id": "invocation-main", "json_path": "/private",
+                "reason": "approved privacy request", "target_row_id": "invocation-main",
+                "target_type": "invocation_input",
+            }
+            連線.execute(
+                "UPDATE redaction_idempotency_commands SET endpoint_id=?,request_fingerprint=?",
+                (alternate, 計算正規JSON雜湊(canonical)),
+            )
+        before = 連線.execute(f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key").fetchall()
+        incoming = _命令參數(
+            **({"原因": "different approved reason"} if relationship == "different-request" else {})
+        )
+        with pytest.raises(遮蔽命令錯誤, match="^遮蔽命令無法建立$") as caught:
+            _服務(前綴="forbidden").取得或建立(連線, **incoming)
+        assert type(caught.value) is 遮蔽命令錯誤
+        assert "endpoint-alternate" not in str(caught.value)
+        assert 連線.execute(f"SELECT * FROM {命令資料表} ORDER BY principal_id,idempotency_key").fetchall() == before
         連線.rollback()

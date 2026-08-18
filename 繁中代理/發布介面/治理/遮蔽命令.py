@@ -55,18 +55,32 @@ class 伺服器遮蔽命令:
 
 
 @dataclass(frozen=True, slots=True)
-class 待配置遮蔽命令:
-    """prepare階段sealed request；不含payload、hash、server IDs或time。"""
-    管理員識別碼: str
-    冪等鍵: str
-    請求指紋: str
+class 正規遮蔽請求:
     端點識別碼: str
     呼叫識別碼: str
     目標類型: str
     目標列識別碼: str
     JSON路徑: str
     原因: str
-    既有命令: 伺服器遮蔽命令 | None = None
+    請求指紋: str
+
+
+@dataclass(frozen=True, slots=True)
+class 已驗證保存遮蔽命令:
+    命令: 伺服器遮蔽命令
+
+
+@dataclass(frozen=True, slots=True)
+class 待建立遮蔽命令:
+    管理員識別碼: str
+    冪等鍵: str
+    正規請求: 正規遮蔽請求
+
+
+@dataclass(frozen=True, slots=True)
+class 待驗證既有遮蔽命令:
+    保存命令: 已驗證保存遮蔽命令
+    正規請求: 正規遮蔽請求
 
 
 class SQLite遮蔽命令服務:
@@ -134,17 +148,21 @@ class SQLite遮蔽命令服務:
             JSON路徑=JSON路徑,
             原因=原因,
         )
-        if 待配置.既有命令 is not None:
-            return 待配置.既有命令
+        if type(待配置) is 待驗證既有遮蔽命令:
+            if not _保存命令符合incoming(待配置.保存命令, 待配置.正規請求):
+                raise 遮蔽命令冪等衝突(_固定衝突) from None
+            return 待配置.保存命令.命令
+        if type(待配置) is not 待建立遮蔽命令:
+            raise 遮蔽命令錯誤(_固定錯誤) from None
         return SQLite遮蔽命令服務.建立(self, 連線, 待配置)
 
     def 準備(
         self, 連線: sqlite3.Connection, *, 管理員識別碼: str, 冪等鍵: str,
         端點識別碼: str, 呼叫識別碼: str, 目標類型: str,
         目標列識別碼: str, JSON路徑: str, 原因: str,
-    ) -> 待配置遮蔽命令:
-        """固定request並先判same-key衝突與ownership；fresh不配置或寫入。"""
-        可信衝突 = 可信不存在 = None
+    ) -> 待建立遮蔽命令 | 待驗證既有遮蔽命令:
+        """固定request；existing只驗保存自洽，不授予integrated conflict。"""
+        可信不存在 = None
         try:
             if (not isinstance(連線, sqlite3.Connection) or not 連線.in_transaction
                     or 連線.execute("PRAGMA foreign_keys").fetchone() != (1,)):
@@ -159,6 +177,10 @@ class SQLite遮蔽命令服務:
                     "json_path": JSON路徑, "reason": 正規原因,
                     "target_row_id": 目標列識別碼, "target_type": 目標類型}
             指紋 = 計算正規JSON雜湊(正規請求)
+            正規 = 正規遮蔽請求(
+                端點識別碼, 呼叫識別碼, 目標類型, 目標列識別碼,
+                JSON路徑, 正規原因, 指紋,
+            )
             連線.execute("UPDATE redaction_idempotency_commands SET principal_id=principal_id WHERE 0")
             驗證資料庫結構(連線)
             rows = 連線.execute(
@@ -169,20 +191,21 @@ class SQLite遮蔽命令服務:
                 if len(rows) != 1:
                     raise ValueError
                 命令 = _重建命令(rows[0])
-                if not _是相同請求(命令, 指紋, 正規請求):
-                    可信衝突 = 遮蔽命令冪等衝突(_固定衝突)
-                    raise 可信衝突 from None
-                return 待配置遮蔽命令(管理員識別碼, 冪等鍵, 指紋, 端點識別碼,
-                    呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑, 正規原因, 命令)
+                if not _命令正規指紋相符(命令):
+                    raise ValueError
+                _驗證目標(
+                    連線, 命令.端點識別碼, 命令.呼叫識別碼,
+                    命令.目標類型, 命令.目標列識別碼,
+                )
+                return 待驗證既有遮蔽命令(已驗證保存遮蔽命令(命令), 正規)
             try:
                 _驗證目標(連線, 端點識別碼, 呼叫識別碼, 目標類型, 目標列識別碼)
             except 遮蔽命令目標不存在 as 錯誤:
                 可信不存在 = 錯誤; 錯誤 = None
                 raise 可信不存在 from None
-            return 待配置遮蔽命令(管理員識別碼, 冪等鍵, 指紋, 端點識別碼,
-                呼叫識別碼, 目標類型, 目標列識別碼, JSON路徑, 正規原因)
-        except (遮蔽命令冪等衝突, 遮蔽命令目標不存在) as 錯誤:
-            if 錯誤 is 可信衝突 or 錯誤 is 可信不存在:
+            return 待建立遮蔽命令(管理員識別碼, 冪等鍵, 正規)
+        except 遮蔽命令目標不存在 as 錯誤:
+            if 錯誤 is 可信不存在:
                 raise
             raise 遮蔽命令錯誤(_固定錯誤) from None
         except _控制流程例外:
@@ -190,10 +213,10 @@ class SQLite遮蔽命令服務:
         except BaseException:
             raise 遮蔽命令錯誤(_固定錯誤) from None
 
-    def 建立(self, 連線: sqlite3.Connection, pending: 待配置遮蔽命令) -> 伺服器遮蔽命令:
+    def 建立(self, 連線: sqlite3.Connection, pending: 待建立遮蔽命令) -> 伺服器遮蔽命令:
         """payload preflight完成後才配置IDs/time並寫入exact mapping。"""
         try:
-            if type(pending) is not 待配置遮蔽命令 or pending.既有命令 is not None or not 連線.in_transaction:
+            if type(pending) is not 待建立遮蔽命令 or not 連線.in_transaction:
                 raise ValueError
             ids = (self._遮蔽識別碼工廠(), self._稽核事件識別碼工廠(), self._請求識別碼工廠())
             時間 = self._時鐘()
@@ -201,9 +224,10 @@ class SQLite遮蔽命令服務:
                 _驗證識別碼(值)
             if type(時間) not in (int, float) or not math.isfinite(時間) or not 0 <= 時間 <= 253_402_300_799:
                 raise ValueError
-            值 = (pending.管理員識別碼, pending.冪等鍵, pending.請求指紋,
-                ids[0], ids[1], ids[2], pending.端點識別碼, pending.呼叫識別碼,
-                pending.目標類型, pending.目標列識別碼, pending.JSON路徑, pending.原因, float(時間))
+            request = pending.正規請求
+            值 = (pending.管理員識別碼, pending.冪等鍵, request.請求指紋,
+                ids[0], ids[1], ids[2], request.端點識別碼, request.呼叫識別碼,
+                request.目標類型, request.目標列識別碼, request.JSON路徑, request.原因, float(時間))
             if 連線.execute(
                 f"INSERT INTO redaction_idempotency_commands({_命令欄位}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)", 值,
             ).rowcount != 1:
@@ -283,17 +307,19 @@ def _重建命令(列: object) -> 伺服器遮蔽命令:
     )
 
 
-def _是相同請求(命令: 伺服器遮蔽命令, 指紋: str, 請求: dict[str, str]) -> bool:
-    """同時比較 digest 與 durable canonical fields，避免只信任 hash equality。"""
+def _保存命令符合incoming(保存: 已驗證保存遮蔽命令, 請求: 正規遮蔽請求) -> bool:
+    """只比較已sealed保存命令與incoming；不負責保存完整性。"""
+    if type(保存) is not 已驗證保存遮蔽命令 or type(請求) is not 正規遮蔽請求:
+        raise ValueError
+    命令 = 保存.命令
     return (
-        _命令正規指紋相符(命令)
-        and 命令.請求指紋 == 指紋
-        and 命令.端點識別碼 == 請求["endpoint_id"]
-        and 命令.呼叫識別碼 == 請求["invocation_id"]
-        and 命令.JSON路徑 == 請求["json_path"]
-        and 命令.原因 == 請求["reason"]
-        and 命令.目標列識別碼 == 請求["target_row_id"]
-        and 命令.目標類型 == 請求["target_type"]
+        命令.請求指紋 == 請求.請求指紋
+        and 命令.端點識別碼 == 請求.端點識別碼
+        and 命令.呼叫識別碼 == 請求.呼叫識別碼
+        and 命令.JSON路徑 == 請求.JSON路徑
+        and 命令.原因 == 請求.原因
+        and 命令.目標列識別碼 == 請求.目標列識別碼
+        and 命令.目標類型 == 請求.目標類型
     )
 
 
