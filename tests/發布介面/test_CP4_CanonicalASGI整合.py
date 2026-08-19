@@ -30,7 +30,8 @@ _預期路由清單 = {
     "/api/published-endpoints/{endpoint_id}/metrics": ("get",),
     "/api/published-endpoints/{endpoint_id}/diagnostics": ("get",),
     "/api/published-endpoints/draft": ("post",),
-    "/api/published-endpoints": ("post",),
+    "/api/published-endpoints": ("get", "post"),
+    "/api/published-endpoints/{endpoint_id}": ("get",),
     "/api/published-endpoints/{endpoint_id}/versions": ("post",),
     "/api/sessions": ("get",),
     "/api/sessions/{session_id}": ("get",),
@@ -157,6 +158,12 @@ def test_root_factory真session_CSRF與Gemini邊界可建立Draft而非planner_u
             "/api/auth/login", json={"username": "alice", "password": "correct horse"},
         )
         assert 登入.status_code == 200, 登入.text
+        Owner列表 = 客戶端.get(
+            "/api/published-endpoints",
+            headers={"x-user-id": "attacker", "x-admin": "true"},
+        )
+        assert Owner列表.status_code == 200
+        assert Owner列表.json() == {"items": [], "next_cursor": None}
         回應 = 客戶端.post(
             "/api/published-endpoints/draft",
             headers={"X-CSRF-Token": 登入.json()["csrf_token"]},
