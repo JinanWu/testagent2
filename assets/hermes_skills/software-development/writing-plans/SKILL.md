@@ -64,10 +64,6 @@ Every step is one action:
 
 ## Plan Document Structure
 
-### Multi-repo data pipeline plans
-
-When planning work that spans ETL, warehouse tables, backend APIs, and frontend rendering, use `references/multi-repo-data-pipeline-plans.md` and include the full propagation chain. Explicitly document repo paths, branches, dirty worktrees, warehouse DDL/backfill strategy, snapshot regeneration requirements, backend response shape, frontend type/rendering impact, and end-to-end validation. Preserve stable IDs/deep-link keys separately from new display names.
-
 ### Header (Required)
 
 Every plan MUST start with:
@@ -135,16 +131,6 @@ git commit -m "feat: add specific feature"
 
 ## Writing Process
 
-### Step 0: Translate the user's intent into a backlog shape
-
-When the user asks to break a reminder/task into smaller work items:
-- Convert the item into a short list of 5-8 atomic story-sized tasks.
-- Keep each task independently testable or verifiable.
-- If the user mentions a step should be async/batched/non-blocking, annotate that explicitly in the task title and notes.
-- Prefer writing the decomposition into the reminder body or plan body as numbered items with small scope, not as a prose paragraph.
-- If prioritization is involved, separate high-importance items from low-importance items before further decomposition.
-- See `references/reminder-backlog-conventions.md` for the reminder-specific version of this workflow.
-
 ### Step 1: Understand Requirements
 
 Read and understand:
@@ -170,13 +156,6 @@ search_files("*.py", target="files", path="tests/")
 # Read key files
 read_file("src/app.py")
 ```
-
-When the user provides a task-specific folder/repo and asks for a modification proposal before coding:
-- Read the repo inventory plus README/docs, entrypoint, dependency/deploy files, and existing tests before proposing changes.
-- Check git branch/status/remotes without modifying files; report the active branch and whether the worktree is clean.
-- Frame the proposal as backwards-compatible by default: preserve existing response fields and add new fields rather than changing semantics that downstream ETL/API consumers may already depend on.
-- Include exact files to add/modify, proposed schema/field names, feature flags/env vars, fallback behavior, tests, and the decisions that need user confirmation before implementation.
-- For LLM-backed classification/scoring features, separate definition work from implementation: specify prompt/version, structured JSON schema, validation/clamping, confidence/fallback behavior, evaluation set needs, and how old/new outputs can run in parallel for comparison.
 
 ### Step 3: Design Approach
 

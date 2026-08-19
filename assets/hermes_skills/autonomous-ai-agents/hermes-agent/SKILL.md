@@ -29,8 +29,6 @@ People use Hermes for software development, research, system administration, dat
 
 **This skill helps you work with Hermes Agent effectively** — setting it up, configuring features, spawning additional agent instances, troubleshooting issues, finding the right commands and settings, and understanding how the system works when you need to extend or contribute to it.
 
-**Third-party skill installation notes:** see `references/third-party-skills.md` for a verified pattern for locating and installing external skill packages (including how to find the real `skills/<name>/SKILL.md` path when the homepage only shows an install script).
-
 **Docs:** https://hermes-agent.nousresearch.com/docs/
 
 ## Quick Start
@@ -154,10 +152,6 @@ hermes gateway setup        Configure platforms
 Supported platforms: Telegram, Discord, Slack, WhatsApp, Signal, Email, SMS, Matrix, Mattermost, Home Assistant, DingTalk, Feishu, WeCom, BlueBubbles (iMessage), Weixin (WeChat), API Server, Webhooks. Open WebUI connects via the API Server adapter.
 
 Platform docs: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/
-Discord setup/runtime notes: references/discord-gateway.md
-Discord session routing notes: references/discord-session-routing.md
-
-Discord quick rule: `discord:` in `config.yaml` is for runtime options; `platforms.discord.enabled: true` is what makes Discord count as an enabled gateway platform. See `references/discord-mention-routing.md` for the common "connected but silent" mention-gating case and `references/discord-session-routing.md` for `/new`, `/resume`, and `/sethome` behavior.
 
 ### Sessions
 
@@ -373,16 +367,6 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 ### Providers
 
 20+ providers supported. Set via `hermes model` or `hermes setup`.
-
-- Hermes does not ship a native Cursor IDE model provider. If a user asks about Cursor, distinguish between Cursor context files (supported) and Cursor as a model source (not built-in). See `references/cursor-compatibility.md`.
-
-### Choosing models for cost-sensitive Hermes use
-
-When a user asks whether to use the smartest model for all Hermes sessions, do not optimize only for raw `benchmark_score / token_price`. For agentic work, include tool-use precision, irrelevant context, failed reruns, verification effort, and side-effect risk. General intelligence benchmarks correlate with tool skill but do not prove it; prefer tool-use/agent evidence such as BFCL, ToolBench, τ-bench, AgentBench, and WildToolBench when available. Practical routing heuristic: cheap/default model for low-risk clear tasks, mid-tier model for multi-tool coding/debugging/research, frontier model for ambiguous high-risk work, production incidents, architecture decisions, and final review. See `references/model-routing-tool-use.md` for the research notes and answer pattern.
-
-#### Model cost/performance routing
-
-When the user asks whether to use the strongest model all the time or switch models to control budget, do not answer from intuition alone. Fetch current provider pricing and benchmark data, normalize to a stated token-mix assumption, calculate benchmark-per-dollar, then recommend a routing policy. See `references/model-cost-performance-routing.md` for the repeatable workflow and an example GPT-5.5 / GPT-5.4 / GPT-5.4-mini comparison.
 
 | Provider | Auth | Key env var |
 |----------|------|-------------|
@@ -628,17 +612,11 @@ terminal(command="tmux new-session -d -s resumed 'hermes --resume 20260225_14305
 
 ---
 
-### Durable & Background Systems
-
-#### Context compression
-
-Hermes uses two separate compression layers: gateway session hygiene (roughly 85% of context, pre-agent safety net) and the in-loop `ContextCompressor` (default threshold ~50% of context, configurable). Runtime summarization is driven by `auxiliary.compression.*` settings and uses an auxiliary LLM call (`task="compression"`) rather than a fixed hardcoded model. Auto mode prefers the main provider/model first, then falls back through supported auxiliary providers. See `references/context-compression.md` for the current architecture and config notes.
+## Durable & Background Systems
 
 Four systems run alongside the main conversation loop. Quick reference
 here; full developer notes live in `AGENTS.md`, user-facing docs under
 `website/docs/user-guide/features/`.
-
-For recurring content pipelines (for example, a daily/weekly AI newsletter), see `references/ai-newsletter-pipeline.md` for the recommended collect → store → draft → review flow.
 
 ### Delegation (`delegate_task`)
 
@@ -680,7 +658,7 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
 ### Curator (skill lifecycle)
 
 Background maintenance for agent-created skills. Tracks usage, marks
-idle skills stale, archives stale skills, keeps a pre-run tar.gz backup
+idle skills stale, archives stale ones, keeps a pre-run tar.gz backup
 so nothing is lost.
 
 - **CLI:** `hermes curator <verb>` — `status`, `run`, `pause`, `resume`,
@@ -693,10 +671,6 @@ so nothing is lost.
 - **Telemetry:** sidecar at `~/.hermes/skills/.usage.json` holds
   per-skill `use_count`, `view_count`, `patch_count`,
   `last_activity_at`, `state`, `pinned`.
-- **Frequency ranking:** use `hermes curator status` or
-  `references/skill-usage-ranking.md` to identify high-frequency skills.
-  Normalize path-prefixed aliases before interpreting counts, or the same
-  concept can appear split across multiple names.
 
 Config: `curator.*` (`enabled`, `interval_hours`, `min_idle_hours`,
 `stale_after_days`, `archive_after_days`, `backup.*`).
@@ -706,19 +680,25 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curato
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
 Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK` so the
-schema footprint is zero outside worker processes.
+see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+orchestrator profiles can opt into the broader `kanban` toolset. Normal
+sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `kanban_show`, `kanban_complete`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`.
+- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  outside a dispatcher-spawned task also get `kanban_list` and
+  `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after ~5 consecutive spawn failures.
+  Auto-blocks a task after `failure_limit` consecutive spawn failures
+  (default 2; configurable via `kanban.failure_limit` or per-task
+  `max_retries`).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
@@ -817,9 +797,7 @@ and logs — avoids shell-escaping backslashes in bash.
 
 ---
 
-### Troubleshooting
-
-See `references/provider-timeout-triage.md` for a concise probe-and-interpret checklist for long provider stalls, retries, and `APIConnectionError` patterns.
+## Troubleshooting
 
 ### Voice not working
 1. Check `stt.enabled: true` in config.yaml
@@ -835,9 +813,7 @@ See `references/provider-timeout-triage.md` for a concise probe-and-interpret ch
 1. `hermes doctor` — check config and dependencies
 2. `hermes login` — re-authenticate OAuth providers
 3. Check `.env` has the right API key
-4. If you see repeated `No response from provider for 90s` / `APIConnectionError` on a provider that otherwise works, treat it as a stalled backend or network path issue rather than an auth problem; confirm with logs before rotating credentials.
-5. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
-6. When a single primary provider is configured, add a fallback provider for auxiliary tasks (compression, session search, summaries) so `auto` has an alternate path when the primary is unhealthy.
+4. **Copilot 403**: `gh auth login` tokens do NOT work for Copilot API. You must use the Copilot-specific OAuth device code flow via `hermes model` → GitHub Copilot.
 
 ### Changes not taking effect
 - **Tools/skills:** `/reset` starts a new session with updated toolset
@@ -862,8 +838,6 @@ Common gateway problems:
 
 ### Platform-specific issues
 - **Discord bot silent**: Must enable **Message Content Intent** in Bot → Privileged Gateway Intents.
-- **Discord bot connected but not replying in guild channels**: check mention gating first. By default, ordinary server messages may be ignored unless the bot is @mentioned; use `DISCORD_REQUIRE_MENTION=false` for open chat or `DISCORD_FREE_RESPONSE_CHANNELS` for channel-level exceptions.
-- **Discord gateway on a laptop**: sleep/standby usually pauses or drops the connection; wake may reconnect if the process is still alive. Shutdown always stops it, so treat always-on Discord usage as a service/host problem rather than a CLI feature.
 - **Slack bot only works in DMs**: Must subscribe to `message.channels` event. Without it, the bot ignores public channels.
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
 

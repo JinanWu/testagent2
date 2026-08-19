@@ -62,13 +62,6 @@ If the user needs marker capabilities but the system lacks ~5GB free disk:
 pip install pymupdf pymupdf4llm
 ```
 
-If you only need quick text extraction from a text-based PDF, a minimal fallback is `pypdf`:
-- install: `pip install pypdf`
-- extract: loop over `PdfReader(path).pages` and call `extract_text()`
-- search: inspect page text and page numbers for the target term before summarizing
-
-See `references/pdf-extraction-fallbacks.md` for a compact fallback recipe.
-
 **Via helper script**:
 ```bash
 python scripts/extract_pymupdf.py document.pdf              # Plain text

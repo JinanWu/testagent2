@@ -17,8 +17,6 @@ Search and retrieve academic papers from arXiv via their free REST API. No API k
 
 ## Quick Reference
 
-- For newsletter/briefing use cases, see `references/newsletter-screening.md`.
-- For topic-scoping / literature synthesis, see `references/research-synthesis-workflow.md`.
 | Action | Command |
 |--------|---------|
 | Search papers | `curl "https://export.arxiv.org/api/query?search_query=all:QUERY&max_results=5"` |
@@ -158,7 +156,6 @@ web_extract(urls=["https://arxiv.org/pdf/2402.03300"])
 ```
 
 For local PDF processing, see the `ocr-and-documents` skill.
-For deep paper-read / 导读 requests, see `references/paper-reading-guide.md`.
 
 ## Common Categories
 

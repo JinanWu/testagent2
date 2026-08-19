@@ -33,47 +33,10 @@ Use `memo` to manage Apple Notes directly from the terminal. Notes sync across a
 ## When NOT to Use
 
 - Obsidian vault management → use the `obsidian` skill
-- Apple Freeform / whiteboards → use the `apple-freeform` skill
 - Bear Notes → separate app (not supported here)
 - Quick agent-only notes → use the `memory` tool instead
 
 ## Quick Reference
-
-### Fallback: create a note via AppleScript when `memo` is unavailable
-
-If `memo` is not installed but the user needs the note saved now, use AppleScript directly against Notes.app instead of stopping at setup. A reliable pattern is:
-
-1. Write the note body to a temporary or backup Markdown file first.
-2. Create a small `.applescript` file that reads the Markdown as UTF-8, converts newlines to `<br>`, then creates a Notes note.
-3. Run `osascript /path/to/script.applescript` and verify by reading the note title back.
-
-Example AppleScript:
-
-```applescript
-set mdPath to POSIX file "/Users/<user>/Downloads/note.md"
-set noteText to read mdPath as «class utf8»
-set AppleScript's text item delimiters to "
-"
-set parts to text items of noteText
-set AppleScript's text item delimiters to "<br>"
-set noteBody to parts as text
-set AppleScript's text item delimiters to ""
-
-tell application "Notes"
-    activate
-    set targetFolder to folder "Notes"
-    set newNote to make new note at targetFolder with properties {name:"Note Title", body:noteBody}
-    return id of newNote
-end tell
-```
-
-Verify:
-
-```bash
-osascript -e 'tell application "Notes" to get name of note id "NOTE_ID_FROM_CREATE"'
-```
-
-Keep this as a fallback, not the preferred path: `memo` remains better for search/list/edit workflows.
 
 ### View Notes
 
