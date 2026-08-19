@@ -3,10 +3,13 @@ import json
 
 import pytest
 
+from 繁中代理.模型供應商 import GeminiADC供應商
 from 繁中代理.發布介面.協定 import 授權工具, 授權技能, 規劃權限快照
+from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
+from 繁中代理.發布介面.生產Published管理 import GeminiADC結構化產生器
 from 繁中代理.發布介面.規劃.綱要 import 規劃服務
 from 繁中代理.發布介面.規劃.規劃器供應商 import 決定性假規劃器, Gemini規劃器
-from 繁中代理.發布介面.規劃.規劃器契約 import 規劃器不可用, 規劃器輸出無效
+from 繁中代理.發布介面.規劃.規劃器契約 import 規劃器不可用, 規劃器輸入, 規劃器輸出無效
 from 繁中代理.發布介面.規劃.規劃器服務 import 伺服器端草稿規劃服務
 
 雜湊 = "a" * 64
@@ -76,3 +79,54 @@ def test_CP4_PLANNER_04_Gemini普通錯誤固定且不洩漏診斷():
     assert str(捕捉.value) == "規劃器暫時不可用"
     assert 捕捉.value.__cause__ is None
     assert "SECRET" not in repr(捕捉.value)
+
+
+def test_CP4_PLANNER_05_Production_Gemini轉接器固定結構化參數並回傳文字(monkeypatch):
+    呼叫 = []
+
+    def 假產生發布回應(self, **參數):
+        呼叫.append(參數)
+        return 模型回應快照('{"endpoint_name":"ok"}', "stop", {}, [])
+
+    monkeypatch.setattr(GeminiADC供應商, "產生發布回應", 假產生發布回應)
+    供應商 = GeminiADC供應商("gemini-2.5-flash-lite", "project-id", "global")
+
+    結果 = GeminiADC結構化產生器(供應商).產生JSON(
+        系統指令="system",
+        使用者內容="user",
+    )
+
+    assert 結果 == '{"endpoint_name":"ok"}'
+    assert len(呼叫) == 1
+    assert 呼叫[0]["model"] == "gemini-2.5-flash-lite"
+    assert 呼叫[0]["temperature"] == 0.0
+    assert 呼叫[0]["structured_output"] is True
+    assert 呼叫[0]["schema_retry_count"] == 1
+    assert 呼叫[0]["tools"] == []
+    assert 呼叫[0]["messages"] == [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "user"},
+    ]
+    assert 呼叫[0]["response_schema"]["additionalProperties"] is False
+    回應結構綱要 = 呼叫[0]["response_schema"]["properties"]["response_schema"]
+    assert 回應結構綱要["required"] == ["type"]
+    assert 回應結構綱要["properties"]["type"] == {"type": "string", "const": "object"}
+
+
+def test_CP4_PLANNER_06_Gemini提示固定text與structured回應結構契約():
+    class 記錄產生器:
+        def __init__(self):
+            self.系統指令 = None
+
+        def 產生JSON(self, *, 系統指令, 使用者內容):
+            self.系統指令 = 系統指令
+            return "{}"
+
+    產生器 = 記錄產生器()
+    Gemini規劃器(產生器).產生(規劃器輸入("需求", "text", (), ()))
+
+    assert isinstance(產生器.系統指令, str)
+    assert "response_mode 為 text" in 產生器.系統指令
+    assert '"answer"' in 產生器.系統指令
+    assert "response_mode 為 structured" in 產生器.系統指令
+    assert 'response_schema.type 必須是 "object"' in 產生器.系統指令
