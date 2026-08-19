@@ -295,10 +295,14 @@ def test_A18_canonical_OpenAPI只有兩條Admin_GET且無export(tmp_path):
     環境 = _建立canonical環境(tmp_path)
     with TestClient(環境.建立應用(), raise_server_exceptions=False) as 客戶端:
         paths = 客戶端.get("/openapi.json").json()["paths"]
-    admin = {路徑: 定義 for 路徑, 定義 in paths.items() if 路徑.startswith("/api/admin/")}
+    admin = {
+        路徑: 定義 for 路徑, 定義 in paths.items()
+        if 路徑.startswith("/api/admin/") and tuple(定義) == ("get",)
+    }
     assert set(admin) == {
         "/api/admin/endpoints/{endpoint_id}/invocations",
         "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}",
     }
     assert all(tuple(定義) == ("get",) for 定義 in admin.values())
+    assert tuple(paths["/api/admin/published-endpoints/{endpoint_id}/invocations/{invocation_id}/redactions"]) == ("post",)
     assert not any(禁止 in str(admin).lower() for 禁止 in ("export", "download", "raw_search"))

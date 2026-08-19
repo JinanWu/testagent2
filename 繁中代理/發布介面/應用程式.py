@@ -516,6 +516,7 @@ def _驗證網頁安全composition(路由器清單, 設定) -> 網頁安全設�
         raise ValueError(路由設定錯誤訊息)
     if not 有認證路由:
         return None
+    from .治理.管理遮蔽治理 import 是管理遮蔽CSRF相依項
     from .路由.網頁認證 import 是模組CSRF相依項, 讀取網頁認證路由器TTL
     if 有認證路由:
         認證路由器 = next(
@@ -533,7 +534,7 @@ def _驗證網頁安全composition(路由器清單, 設定) -> 網頁安全設�
         待查 = [路由.dependant]
         while 待查:
             節點 = 待查.pop()
-            if 是模組CSRF相依項(節點.call):
+            if 是模組CSRF相依項(節點.call) or 是管理遮蔽CSRF相依項(節點.call):
                 計數 += 1
             待查.extend(節點.dependencies)
         if 路由.path == "/api/auth/login" and 路由.methods == {"POST"}:

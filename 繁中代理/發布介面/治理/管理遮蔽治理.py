@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass
 from threading import Condition, RLock
 from typing import Literal
+from weakref import WeakSet
 
 from fastapi import HTTPException, Request, Response
 
@@ -28,6 +29,7 @@ from .遮蔽 import SQLite不可逆遮蔽服務, 遮蔽目標內容無效, 遮�
 from .遮蔽命令 import SQLite遮蔽命令服務, 遮蔽命令冪等衝突, 遮蔽命令目標不存在
 
 _控制流程 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
+_管理遮蔽相依項集合: WeakSet = WeakSet()
 _權杖字元 = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _目標類型 = Literal[
     "invocation_input", "metadata", "output", "error", "run_event",
@@ -175,6 +177,7 @@ class 管理遮蔽治理權限:
             return self._授權(請求, 回應)
 
         self._授權相依 = authority_first
+        _管理遮蔽相依項集合.add(authority_first)
 
     @property
     def 授權相依項(self):
@@ -410,8 +413,13 @@ class _密封管理遮蔽安裝能力:
 _管理遮蔽安裝能力 = _密封管理遮蔽安裝能力()
 
 
-def 是管理遮蔽CSRF相依項(呼叫: object, 權限: object) -> bool:
+def 是管理遮蔽CSRF相依項(呼叫: object, 權限: object | None = None) -> bool:
     """以exact authority與dependency identity證明唯一module-owned CSRF gate。"""
+    if 權限 is None:
+        try:
+            return 呼叫 in _管理遮蔽相依項集合
+        except TypeError:
+            return False
     return type(權限) is 管理遮蔽治理權限 and 呼叫 is 權限.授權相依項
 
 
