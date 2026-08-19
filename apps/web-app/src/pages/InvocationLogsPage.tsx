@@ -8,8 +8,10 @@ import {
   type AdminInvocationDetail as InvocationDetailData,
   type InvocationListFilters,
   type InvocationListItem,
+  type RedactionRequest,
 } from '../api/logs'
 import { useSession } from '../app/SessionProvider'
+import { createRedactionOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
 import AdminInvocationDetail from '../features/logs/AdminInvocationDetail'
 
 const FORBIDDEN_MESSAGE = '只有管理者可查看完整呼叫紀錄。'
@@ -19,7 +21,7 @@ export interface InvocationLogsPageProps {
 }
 
 export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps) {
-  const { user, logout } = useSession()
+  const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
   const [endpointId, setEndpointId] = useState('')
   const [fromAt, setFromAt] = useState('')
   const [toAt, setToAt] = useState('')
@@ -33,8 +35,12 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
   const [pending, setPending] = useState(false)
   const [detailPending, setDetailPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [redactionPending, setRedactionPending] = useState(false)
+  const [redactionCompleted, setRedactionCompleted] = useState(false)
   const epoch = useRef(0)
   const controllers = useRef(new Set<AbortController>())
+  const protectedOwner = useRef<ProtectedStateOwner | null>(null)
+  const redactionLocked = useRef(false)
 
   const clearSensitiveState = useCallback(() => {
     setDetail(null)
@@ -48,6 +54,9 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
     controllers.current.clear()
     clearSensitiveState()
     setPending(false)
+    setRedactionPending(false)
+    setRedactionCompleted(false)
+    redactionLocked.current = false
     if (clearList) {
       setItems([])
       setNextCursor(null)
@@ -56,6 +65,15 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
   }, [clearSensitiveState])
 
   useEffect(() => () => { invalidate(true) }, [invalidate])
+
+  useEffect(() => {
+    const registration = registerProtectedStateOwner(() => invalidate(true))
+    protectedOwner.current = registration.owner
+    return () => {
+      protectedOwner.current = null
+      registration.unregister()
+    }
+  }, [invalidate, registerProtectedStateOwner])
 
   useEffect(() => {
     if (user?.role !== 'admin') invalidate(true)
@@ -123,6 +141,43 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
     }
   }
 
+  async function redactSelected(request: RedactionRequest): Promise<void> {
+    const owner = protectedOwner.current
+    const item = selected
+    if (!owner || !item || redactionLocked.current) throw new DOMException('要求已取消', 'AbortError')
+    redactionLocked.current = true
+    epoch.current += 1
+    for (const active of controllers.current) active.abort()
+    controllers.current.clear()
+    setDetail(null)
+    setDetailPending(false)
+    setRedactionPending(true)
+    setRedactionCompleted(false)
+    setError(null)
+    const controller = new AbortController()
+    controllers.current.add(controller)
+    try {
+      await runAuthorized({
+        owner,
+        operation: createRedactionOperation(
+          item.endpointId, item.invocationId, request, globalThis.crypto.randomUUID(),
+        ),
+        signal: controller.signal,
+      })
+      if (controller.signal.aborted || protectedOwner.current !== owner) return
+      controllers.current.delete(controller)
+      await openDetail(item)
+      if (protectedOwner.current === owner) setRedactionCompleted(true)
+    } catch (caught) {
+      if (!controller.signal.aborted) setError(LOGS_ERROR_MESSAGE)
+      throw caught
+    } finally {
+      controllers.current.delete(controller)
+      redactionLocked.current = false
+      setRedactionPending(false)
+    }
+  }
+
   if (user?.role !== 'admin') {
     return <main className="app-shell"><p role="alert">{FORBIDDEN_MESSAGE}</p></main>
   }
@@ -165,6 +220,7 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
           <button type="submit" disabled={pending || !endpointId.trim()}>{pending ? '載入中…' : '查詢'}</button>
         </form>
         {error && <p role="alert">{error}</p>}
+        {redactionCompleted && <p role="status">不可逆遮蔽已完成。</p>}
         {!pending && items.length === 0 && !error && <p>尚無呼叫紀錄。</p>}
         <ul aria-label="呼叫紀錄">
           {items.map((item) => (
@@ -180,7 +236,8 @@ export default function InvocationLogsPage({ onClose }: InvocationLogsPageProps)
           void loadList(endpointId.trim(), { ...activeFilters, cursor: nextCursor }, true)
         }}>載入下一頁</button>}
         {detailPending && <p role="status">正在載入詳情…</p>}
-        {detail && selected && <AdminInvocationDetail detail={detail} hasRedaction={selected.hasRedaction} />}
+        {detail && selected && <AdminInvocationDetail detail={detail} hasRedaction={selected.hasRedaction}
+          redactionPending={redactionPending} onRedact={redactSelected} />}
       </section>
     </main>
   )

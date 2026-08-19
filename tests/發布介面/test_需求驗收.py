@@ -29,6 +29,7 @@ from test_CP4_規劃草稿E2E import (
 # ---------------------------------------------------------------------------
 
 _預期路由清單 = {
+    "/api/admin/published-endpoints/{endpoint_id}/invocations/{invocation_id}/redactions": ("post",),
     "/api/admin/endpoints/{endpoint_id}/invocations": ("get",),
     "/api/admin/endpoints/{endpoint_id}/invocations/{invocation_id}": ("get",),
     "/api/auth/login": ("post",),

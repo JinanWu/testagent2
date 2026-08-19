@@ -12,11 +12,11 @@ from .稽核結構 import _FOREIGN_KEYS, _INDEXES, _LEDGER, _OBJECT_SQL, _TABLE_
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
-def _開啟既有資料庫(路徑: str) -> sqlite3.Connection:
-    """釘住 regular non-symlink inode；成功前發生任何錯誤都 exact-once close。"""
+def _開啟既有資料庫與釘選(路徑: str) -> tuple[sqlite3.Connection, tuple[int, int]]:
+    """開啟既有資料庫，並回傳本次安全 open 已驗證的 frozen inode identity。"""
     連線 = 游標 = None
     開啟前 = 解析路徑 = 資料庫URI = 資料庫列 = 開啟路徑 = None
-    開啟後 = 實際檔案 = 釘選識別 = 外鍵狀態 = None
+    開啟後 = 實際檔案 = 釘選識別 = 結果識別 = 外鍵狀態 = None
     控制 = None
     關閉控制盒: list[BaseException] = []
     失敗 = False
@@ -41,6 +41,7 @@ def _開啟既有資料庫(路徑: str) -> sqlite3.Connection:
         釘選識別 = (開啟前.st_dev, 開啟前.st_ino)
         if 釘選識別 != (開啟後.st_dev, 開啟後.st_ino) or 釘選識別 != (實際檔案.st_dev, 實際檔案.st_ino):
             raise ValueError
+        結果識別 = 釘選識別
         連線.execute("PRAGMA foreign_keys=ON")
         游標 = 連線.execute("PRAGMA foreign_keys")
         外鍵狀態 = 游標.fetchone()
@@ -66,8 +67,15 @@ def _開啟既有資料庫(路徑: str) -> sqlite3.Connection:
         _重拋控制(控制盒.pop())
     if 關閉控制盒:
         _重拋控制(關閉控制盒.pop())
-    if 失敗 or 連線 is None:
+    if 失敗 or 連線 is None or type(結果識別) is not tuple or len(結果識別) != 2:
         raise ValueError("invalid audit database") from None
+    return 連線, 結果識別
+
+
+def _開啟既有資料庫(路徑: str) -> sqlite3.Connection:
+    """相容既有 caller，只回傳已由三點 inode identity 驗證的 SQLite connection。"""
+    連線, _釘選識別 = _開啟既有資料庫與釘選(路徑)
+    _釘選識別 = None
     return 連線
 
 

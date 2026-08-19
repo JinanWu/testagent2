@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { act, create, type ReactTestRenderer } from 'react-test-renderer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SessionProvider, useSession, type SessionContextValue } from '../app/SessionProvider'
+import { createSendChatOperation } from '../app/sessionAuthority'
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -269,5 +270,41 @@ describe('SessionProvider operation ordering', () => {
     })
     expect(loginSignal.aborted).toBe(true)
     expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  it('erases mounted protected state before logout I/O and aborts the losing mutation preflight', async () => {
+    const mutationPreflight = deferred<Response>()
+    let mutationSignal!: AbortSignal
+    fetchMock
+      .mockResolvedValueOnce(sessionResponse('first'))
+      .mockImplementationOnce((_input, init) => {
+        mutationSignal = init!.signal as AbortSignal
+        rejectWhenAborted(mutationPreflight, mutationSignal)
+        return mutationPreflight.promise
+      })
+      .mockResolvedValueOnce(sessionResponse('first'))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+    await act(async () => {
+      renderer = create(<SessionProvider><Capture /></SessionProvider>)
+    })
+    const erase = vi.fn()
+    const registration = current.registerProtectedStateOwner(erase)
+    const mutation = current.runAuthorized({
+      owner: registration.owner,
+      operation: createSendChatOperation('secret draft', null),
+    })
+    const mutationResult = mutation.catch((error: unknown) => error)
+    await Promise.resolve()
+
+    let logoutPromise!: Promise<void>
+    await act(async () => {
+      logoutPromise = current.logout()
+      expect(erase).toHaveBeenCalledOnce()
+      expect(mutationSignal.aborted).toBe(true)
+      await logoutPromise
+    })
+    await expect(mutationResult).resolves.toMatchObject({ name: 'AbortError' })
+    expect(fetchMock.mock.calls.some(([route]) => route === '/api/chat')).toBe(false)
+    registration.unregister()
   })
 })

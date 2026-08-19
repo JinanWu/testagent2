@@ -2,19 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Condition, RLock
 import secrets
+import time
+import uuid
 
 from starlette.concurrency import run_in_threadpool
 
 from .治理.查詢投影 import SQLite呼叫查詢投影, 管理員原始資料稽核閘門
 from .治理.稽核 import SQLite稽核服務
+from .治理.管理遮蔽治理 import 管理遮蔽治理權限, _管理遮蔽安裝能力
+from .治理.遮蔽 import SQLite不可逆遮蔽服務
+from .治理.遮蔽命令 import SQLite遮蔽命令服務
 from .治理.管理查詢契約 import 管理員呼叫游標編解碼器, 管理員拒絕稽核收據權威
 from .路由.管理稽核 import 建立管理稽核路由器
 
-_控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+_控制流程例外 = (asyncio.CancelledError, KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
 class 延遲管理稽核服務:
@@ -243,4 +249,89 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
             elif 清理普通錯誤 is None: 清理普通錯誤 = 錯誤
         if isinstance(啟動錯誤, _控制流程例外): raise
         if 清理控制流程錯誤 is not None: raise 清理控制流程錯誤
+        raise
+
+
+class 管理遮蔽組合資源:
+    """使A20 authority成為Published composition最外層shutdown owner。"""
+
+    def __init__(self, 主資源, 權限, 嘗試, 世代) -> None:
+        self._主資源, self._權限, self._嘗試, self._世代 = 主資源, 權限, 嘗試, 世代
+        self._已關閉 = False
+
+    def __getattr__(self, 名稱: str):
+        return getattr(self._主資源, 名稱)
+
+    async def 關閉(self) -> None:
+        if self._已關閉:
+            return
+        self._已關閉 = True
+        控制流程錯誤 = 普通錯誤 = None
+        try:
+            await run_in_threadpool(self._權限.解除, self._世代)
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外): 控制流程錯誤 = 錯誤
+            else: 普通錯誤 = 錯誤
+        try:
+            await run_in_threadpool(
+                _管理遮蔽安裝能力.依安裝嘗試撤銷並等待,
+                self._權限, self._嘗試,
+            )
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通錯誤 is None: 普通錯誤 = 錯誤
+        try:
+            await self._主資源.關閉()
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通錯誤 is None: 普通錯誤 = 錯誤
+        self._權限 = self._嘗試 = self._世代 = None
+        if 控制流程錯誤 is not None: raise 控制流程錯誤
+        if 普通錯誤 is not None: raise 普通錯誤
+
+
+async def 安裝管理遮蔽資源(主資源, 權限: 管理遮蔽治理權限, 資料庫路徑: Path):
+    """在同一Published DB安裝A20 services，失敗時完整收斂並關閉內層資源。"""
+    if type(權限) is not 管理遮蔽治理權限 or type(資料庫路徑) is not type(Path()):
+        raise ValueError("管理遮蔽生產組裝無效") from None
+    嘗試 = _管理遮蔽安裝能力.建立安裝嘗試(權限)
+    try:
+        服務 = SQLite不可逆遮蔽服務(str(資料庫路徑))
+        命令 = SQLite遮蔽命令服務(
+            遮蔽識別碼工廠=lambda: f"redaction-{uuid.uuid4().hex}",
+            稽核事件識別碼工廠=lambda: f"audit-{uuid.uuid4().hex}",
+            請求識別碼工廠=lambda: f"request-{uuid.uuid4().hex}",
+            時鐘=time.time,
+        )
+        _管理遮蔽安裝能力.準備安裝(權限, 嘗試, 服務, 命令)
+        世代 = _管理遮蔽安裝能力.發布已準備安裝(權限, 嘗試)
+        原始同步清理 = getattr(主資源, "_執行關閉同步", None)
+        if callable(原始同步清理):
+            def 清除含管理遮蔽() -> None:
+                """先撤銷A20 authority，再執行既有Published同步清理。"""
+                控制流程錯誤 = 普通錯誤 = None
+                for 清理 in (
+                    lambda: 權限.解除(世代),
+                    lambda: _管理遮蔽安裝能力.依安裝嘗試撤銷並等待(權限, 嘗試),
+                    原始同步清理,
+                ):
+                    try:
+                        清理()
+                    except BaseException as 錯誤:
+                        if isinstance(錯誤, _控制流程例外):
+                            if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+                        elif 普通錯誤 is None: 普通錯誤 = 錯誤
+                if 控制流程錯誤 is not None: raise 控制流程錯誤
+                if 普通錯誤 is not None: raise 普通錯誤
+
+            主資源._執行關閉同步 = 清除含管理遮蔽
+            return 主資源
+        return 管理遮蔽組合資源(主資源, 權限, 嘗試, 世代)
+    except BaseException:
+        try:
+            await run_in_threadpool(_管理遮蔽安裝能力.依安裝嘗試撤銷並等待, 權限, 嘗試)
+        finally:
+            await 主資源.關閉()
         raise

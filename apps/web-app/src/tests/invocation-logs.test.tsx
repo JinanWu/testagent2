@@ -88,7 +88,10 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       target_type: 'metadata',
       target_row_id: invocationId,
       json_path: '/secret',
+      original_sha256: 'b'.repeat(64),
       reason: 'privacy',
+      actor: { type: 'admin', id: 'admin-1' },
+      audit_event_id: `audit-${invocationId}`,
       is_tombstone: true,
       redacted_at: 9,
     }],
@@ -198,6 +201,14 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
   })
 
+  it('接受production長ID的exact canonical tombstone且仍綁定遮蔽紀錄', () => {
+    const body = detail('invocation-1')
+    const redactionId = `redaction-${'a'.repeat(32)}`
+    body.metadata = { secret: { $tombstone: { redaction_id: redactionId, redacted_at: 9 } } }
+    body.redactions[0].id = redactionId
+    expect(parseInvocationDetail(body).redactions[0].id).toBe(redactionId)
+  })
+
   it('在JSON.parse前拒絕超出safe integer的wire literal且不靜默改值', async () => {
     const wire = JSON.stringify(detail('invocation-1')).replace(
       '"metadata_size_bytes":2', '"metadata_size_bytes":9007199254740993',
@@ -267,7 +278,9 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     escaped.redactions[0] = { ...escaped.redactions[0], json_path: '/a~1b~0c' }
     const inputRedaction = {
       id: 'redaction-input', target_type: 'invocation_input', target_row_id: 'invocation-1',
-      json_path: '', reason: 'privacy', is_tombstone: true, redacted_at: 10,
+      json_path: '', original_sha256: 'c'.repeat(64), reason: 'privacy',
+      actor: { type: 'admin', id: 'admin-1' }, audit_event_id: 'audit-input',
+      is_tombstone: true, redacted_at: 10,
     }
     escaped.input = {
       $tombstone: { redaction_id: 'redaction-input', redacted_at: 10 },

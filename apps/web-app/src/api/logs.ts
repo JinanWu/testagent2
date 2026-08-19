@@ -29,6 +29,8 @@ const MAX_SENSITIVE_PATH_BYTES = 8192
 const MAX_SAFE_TIME = 253_402_300_799
 const MAX_LIST_RESPONSE_BYTES = 256 * 1024
 const MAX_DETAIL_RESPONSE_BYTES = 7 * 1024 * 1024
+const MAX_REDACTION_RESPONSE_BYTES = 16 * 1024
+const MAX_REDACTION_ERROR_BYTES = 1024
 const MAX_EMPTY_STREAM_READS = 4096
 const FORBIDDEN_KEYS = new Set([
   'authorization', 'proxyauthorization', 'cookie', 'setcookie', 'apikey', 'credentialsecret',
@@ -110,9 +112,30 @@ export interface InvocationRedaction {
   targetType: string
   targetRowId: string
   jsonPath: string
+  originalSha256: string
   reason: string
+  actor: { type: 'admin'; id: string }
+  auditEventId: string
   isTombstone: true
   redactedAt: number
+}
+
+export interface RedactionRequest {
+  targetType: string
+  targetRowId: string
+  jsonPath: string
+  reason: string
+}
+
+export interface RedactionReceipt extends InvocationRedaction {
+  invocationId: string
+}
+
+export class RedactionMutationError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super('目前無法完成不可逆遮蔽，請稍後再試。')
+    this.name = 'RedactionMutationError'
+  }
 }
 
 export type InvocationSensitiveHitTarget =
@@ -257,6 +280,18 @@ function canonicalRedactionReason(value: unknown): value is string {
     !REDACTION_BLANK.test(value) && !REDACTION_SECRET.test(value)
 }
 
+export function normalizeRedactionReason(value: string): string {
+  if (typeof value !== 'string' || !scalarString(value)) throw new ApiFormatError()
+  const normalized = value.replace(
+    /^[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+|[\u0009-\u000d\u001c-\u001f\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+$/gu,
+    '',
+  )
+  if (!canonicalRedactionReason(normalized) || new TextEncoder().encode(normalized).byteLength > 256) {
+    throw new ApiFormatError()
+  }
+  return normalized
+}
+
 function scalarString(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const unit = value.charCodeAt(index)
@@ -330,6 +365,11 @@ function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
     }
     const object = exactObject(current.value, Object.keys(current.value as object))
     if (object === null) throw new ApiFormatError()
+    if (scanSecrets && Object.keys(object).length === 1 && '$tombstone' in object) {
+      const tombstone = exactObject(object.$tombstone, ['redaction_id', 'redacted_at'])
+      if (tombstone !== null && identifier(tombstone.redaction_id) &&
+          finiteNonNegative(tombstone.redacted_at)) continue
+    }
     for (const [key, child] of Object.entries(object)) {
       const marker = normalized(key)
       if (scanSecrets && (FORBIDDEN_KEYS.has(marker) ||
@@ -463,17 +503,23 @@ export function parseInvocationDetail(value: unknown): AdminInvocationDetail {
   const redactionIds = new Set<string>()
   const redactions = (safe.redactions as JsonValue[]).map((raw): InvocationRedaction => {
     const redaction = exactObject(raw, [
-      'id', 'target_type', 'target_row_id', 'json_path', 'reason', 'is_tombstone', 'redacted_at',
+      'id', 'target_type', 'target_row_id', 'json_path', 'original_sha256', 'reason',
+      'actor', 'audit_event_id', 'is_tombstone', 'redacted_at',
     ])
+    const actor = redaction === null ? null : exactObject(redaction.actor, ['type', 'id'])
     if (redaction === null || !identifier(redaction.id) || redactionIds.has(redaction.id) ||
         typeof redaction.target_type !== 'string' || !REDACTION_TARGET.has(redaction.target_type) ||
         !identifier(redaction.target_row_id) || !canonicalRedactionPath(redaction.json_path) ||
-        !canonicalRedactionReason(redaction.reason) ||
+        typeof redaction.original_sha256 !== 'string' || !SHA256.test(redaction.original_sha256) ||
+        !canonicalRedactionReason(redaction.reason) || actor === null || actor.type !== 'admin' ||
+        !identifier(actor.id) || !identifier(redaction.audit_event_id) ||
         redaction.is_tombstone !== true || !finiteNonNegative(redaction.redacted_at)) throw new ApiFormatError()
     redactionIds.add(redaction.id)
     return {
       id: redaction.id, targetType: redaction.target_type, targetRowId: redaction.target_row_id,
-      jsonPath: redaction.json_path, reason: redaction.reason,
+      jsonPath: redaction.json_path, originalSha256: redaction.original_sha256,
+      reason: redaction.reason, actor: { type: 'admin', id: actor.id },
+      auditEventId: redaction.audit_event_id,
       isTombstone: true, redactedAt: redaction.redacted_at,
     }
   })
@@ -707,5 +753,70 @@ export async function getInvocationDetail(
     return parseInvocationDetail(await logsRequest(route, MAX_DETAIL_RESPONSE_BYTES, signal))
   } catch (error) {
     return mapError(error)
+  }
+}
+
+function parseRedactionReceipt(value: unknown): RedactionReceipt {
+  const receipt = exactObject(value, [
+    'redaction_id', 'invocation_id', 'target_type', 'target_row_id', 'json_path',
+    'original_sha256', 'reason', 'actor', 'audit_event_id', 'is_tombstone', 'redacted_at',
+  ])
+  const actor = receipt === null ? null : exactObject(receipt.actor, ['type', 'id'])
+  if (receipt === null || actor === null || !identifier(receipt.redaction_id) ||
+      !identifier(receipt.invocation_id) || typeof receipt.target_type !== 'string' ||
+      !REDACTION_TARGET.has(receipt.target_type) || !identifier(receipt.target_row_id) ||
+      !canonicalRedactionPath(receipt.json_path) || typeof receipt.original_sha256 !== 'string' ||
+      !SHA256.test(receipt.original_sha256) || !canonicalRedactionReason(receipt.reason) ||
+      actor.type !== 'admin' || !identifier(actor.id) || !identifier(receipt.audit_event_id) ||
+      receipt.is_tombstone !== true || !finiteNonNegative(receipt.redacted_at)) throw new ApiFormatError()
+  return {
+    id: receipt.redaction_id, invocationId: receipt.invocation_id,
+    targetType: receipt.target_type, targetRowId: receipt.target_row_id,
+    jsonPath: receipt.json_path, originalSha256: receipt.original_sha256,
+    reason: receipt.reason, actor: { type: 'admin', id: actor.id },
+    auditEventId: receipt.audit_event_id, isTombstone: true, redactedAt: receipt.redacted_at,
+  }
+}
+
+const REDACTION_ERRORS = new Map<number, ReadonlySet<string>>([
+  [400, new Set(['invalid_request'])], [401, new Set(['unauthorized'])],
+  [403, new Set(['admin_required', 'csrf_invalid'])], [404, new Set(['invocation_not_found'])],
+  [409, new Set(['idempotency_conflict', 'redaction_conflict'])],
+  [422, new Set(['redaction_validation_failed'])], [500, new Set(['redaction_failed'])],
+  [503, new Set(['auth_unavailable'])],
+])
+
+export async function redactInvocation(
+  endpointId: string, invocationId: string, request: Readonly<RedactionRequest>,
+  idempotencyKey: string, csrfToken: string, signal?: AbortSignal,
+): Promise<RedactionReceipt> {
+  try {
+    if (!identifier(endpointId) || !identifier(invocationId) || !identifier(idempotencyKey) ||
+        !boundedString(csrfToken, 512) || typeof request.targetType !== 'string' ||
+        !REDACTION_TARGET.has(request.targetType) || !identifier(request.targetRowId) ||
+        !canonicalRedactionPath(request.jsonPath)) throw new ApiFormatError()
+    const reason = normalizeRedactionReason(request.reason)
+    const body = JSON.stringify({ target_type: request.targetType, target_row_id: request.targetRowId,
+      json_path: request.jsonPath, reason })
+    if (new TextEncoder().encode(body).byteLength > 16_384) throw new ApiFormatError()
+    const route = `/api/admin/published-endpoints/${encodedId(endpointId)}/invocations/${encodedId(invocationId)}/redactions`
+    const response = await fetch(route, {
+      method: 'POST', credentials: 'include',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken, 'Idempotency-Key': idempotencyKey },
+      body, ...(signal === undefined ? {} : { signal }),
+    })
+    if (response.status === 200 && response.headers.get('content-type') === 'application/json') {
+      return parseRedactionReceipt(await readBoundedJson(response, MAX_REDACTION_RESPONSE_BYTES, signal))
+    }
+    const allowed = REDACTION_ERRORS.get(response.status)
+    const outer = exactObject(await readBoundedJson(response, MAX_REDACTION_ERROR_BYTES, signal), ['detail'])
+    const detail = outer === null ? null : exactObject(outer.detail, ['code'])
+    if (detail === null || typeof detail.code !== 'string' || !allowed?.has(detail.code)) throw new ApiFormatError()
+    throw new RedactionMutationError(response.status, detail.code)
+  } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw abortError()
+    if (error instanceof RedactionMutationError || error instanceof ApiFormatError) throw error
+    throw new RedactionMutationError(0, 'transport_failure')
   }
 }

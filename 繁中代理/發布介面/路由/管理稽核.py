@@ -91,6 +91,9 @@ _遮蔽墓碑回應 = Annotated[
     Literal[True], BeforeValidator(_驗證遮蔽墓碑),
     WithJsonSchema({"type": "boolean", "const": True}),
 ]
+_遮蔽SHA256回應 = Annotated[
+    str, Field(pattern=r"^[0-9a-f]{64}$", min_length=64, max_length=64),
+]
 _列表識別碼回應 = Annotated[
     str, Field(min_length=1, max_length=128, pattern=_識別碼格式),
 ]
@@ -217,6 +220,10 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
     重試來源識別碼=(str | None, Field(alias="retry_of_tool_call_id")),
     建立時間=(float, Field(alias="created_at")),
 )
+管理員遮蔽操作者回應 = create_model(
+    "AdminRedactionActor", __config__=ConfigDict(extra="forbid", strict=True),
+    **{"type": (Literal["admin"], ...), "id": (_遮蔽識別碼回應, ...)},
+)
 管理員遮蔽回應 = create_model(
     "AdminRedaction", __config__=ConfigDict(extra="forbid", strict=True),
     **{名稱: 定義 for 名稱, 定義 in {
@@ -225,7 +232,9 @@ def _訊息錯誤文件(訊息: str) -> dict[str, object]:
                                 "tool_arguments", "tool_result", "tool_error"], ...),
         "target_row_id": (_遮蔽識別碼回應, ...),
         "json_path": (_遮蔽路徑回應, ...),
-        "reason": (_遮蔽原因回應, ...),
+        "original_sha256": (_遮蔽SHA256回應, ...), "reason": (_遮蔽原因回應, ...),
+        "actor": (管理員遮蔽操作者回應, ...),
+        "audit_event_id": (_遮蔽識別碼回應, ...),
         "is_tombstone": (_遮蔽墓碑回應, ...), "redacted_at": (_遮蔽時間回應, ...),
     }.items()},
 )
