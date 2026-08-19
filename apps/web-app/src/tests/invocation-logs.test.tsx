@@ -88,7 +88,10 @@ function detail(invocationId: string, marker: string | null = RAW_NEW) {
       target_type: 'metadata',
       target_row_id: invocationId,
       json_path: '/secret',
+      original_sha256: 'b'.repeat(64),
       reason: 'privacy',
+      actor: { type: 'admin', id: 'admin-1' },
+      audit_event_id: `audit-${invocationId}`,
       is_tombstone: true,
       redacted_at: 9,
     }],
@@ -267,7 +270,9 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     escaped.redactions[0] = { ...escaped.redactions[0], json_path: '/a~1b~0c' }
     const inputRedaction = {
       id: 'redaction-input', target_type: 'invocation_input', target_row_id: 'invocation-1',
-      json_path: '', reason: 'privacy', is_tombstone: true, redacted_at: 10,
+      json_path: '', original_sha256: 'c'.repeat(64), reason: 'privacy',
+      actor: { type: 'admin', id: 'admin-1' }, audit_event_id: 'audit-input',
+      is_tombstone: true, redacted_at: 10,
     }
     escaped.input = {
       $tombstone: { redaction_id: 'redaction-input', redacted_at: 10 },

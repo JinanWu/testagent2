@@ -1,4 +1,5 @@
 import { sendChat, type ChatReply } from '../api/chat'
+import { redactInvocation, type RedactionReceipt, type RedactionRequest } from '../api/logs'
 
 const protectedOperationBrand: unique symbol = Symbol('protected-operation')
 const protectedStateOwnerBrand: unique symbol = Symbol('protected-state-owner')
@@ -23,7 +24,15 @@ type SendChatManifest = Readonly<{
   sessionId: string | null
 }>
 
-type ProtectedManifest = SendChatManifest
+type RedactionManifest = Readonly<{
+  kind: 'redact-invocation'
+  endpointId: string
+  invocationId: string
+  request: Readonly<RedactionRequest>
+  idempotencyKey: string
+}>
+
+type ProtectedManifest = SendChatManifest | RedactionManifest
 
 const manifests = new WeakMap<object, ProtectedManifest>()
 const consumed = new WeakSet<object>()
@@ -51,6 +60,17 @@ export function createSendChatOperation(message: string, sessionId: string | nul
   return token<ChatReply>({ kind: 'send-chat', message: trimmed, sessionId })
 }
 
+export function createRedactionOperation(
+  endpointId: string, invocationId: string, request: Readonly<RedactionRequest>, idempotencyKey: string,
+): ProtectedOperation<RedactionReceipt> {
+  if (!boundedText(endpointId, 128) || !boundedText(invocationId, 128) ||
+      !boundedText(idempotencyKey, 128)) throw abortError()
+  return token<RedactionReceipt>({
+    kind: 'redact-invocation', endpointId, invocationId, idempotencyKey,
+    request: Object.freeze({ ...request }),
+  })
+}
+
 export function consumeProtectedOperation<T>(operation: ProtectedOperation<T>): ProtectedManifest {
   const candidate = operation as object
   const manifest = manifests.get(candidate)
@@ -69,5 +89,10 @@ export async function dispatchProtectedOperation<T>(
   switch (manifest.kind) {
     case 'send-chat':
       return await sendChat(manifest.message, manifest.sessionId, csrfToken, signal) as T
+    case 'redact-invocation':
+      return await redactInvocation(
+        manifest.endpointId, manifest.invocationId, manifest.request,
+        manifest.idempotencyKey, csrfToken, signal,
+      ) as T
   }
 }
