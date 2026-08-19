@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -60,24 +61,32 @@ def 讀取檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
 
 
 def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
-    """搜尋檔名或檔案內容。"""
+    """搜尋檔名或檔案內容。
+
+    `path` 可以是目錄或單一檔案。指到檔案時只搜那一個檔案——`rglob` 對檔案路徑
+    不會產出任何項目，若直接沿用會靜靜回 0 筆，讓呼叫端誤以為檔案裡沒有目標而
+    改用更沒效率的方式（例如盲目 read_file）去找。
+    """
     根目錄 = 解析工具路徑(參數.get("path", "."), 參數.get("_runtime_workdir"), 預設=".")
     確認路徑允許(根目錄, 參數)
     樣式 = str(參數.get("pattern", "*"))
     目標 = str(參數.get("target", "content"))
     限制 = int(參數.get("limit", 50) or 50)
+    指定單一檔案 = 根目錄.is_file()
     結果清單: list[Any] = []
     if 目標 == "files":
-        for 路徑 in 根目錄.rglob(樣式):
-            if 路徑.is_file():
+        候選清單 = [根目錄] if 指定單一檔案 else 根目錄.rglob(樣式)
+        for 路徑 in 候選清單:
+            if 路徑.is_file() and (not 指定單一檔案 or fnmatch(路徑.name, 樣式)):
                 確認路徑允許(路徑, 參數)
                 結果清單.append(str(路徑))
                 if len(結果清單) >= 限制:
                     break
         return {"matches": 結果清單, "total_count": len(結果清單)}
     正規式 = re.compile(樣式)
-    for 路徑 in 根目錄.rglob("*"):
-        if not 路徑.is_file() or 路徑.name.startswith("."):
+    for 路徑 in ([根目錄] if 指定單一檔案 else 根目錄.rglob("*")):
+        # 明確指名的檔案不套用隱藏檔過濾，否則搜 .env 之類會無聲落空。
+        if not 路徑.is_file() or (not 指定單一檔案 and 路徑.name.startswith(".")):
             continue
         try:
             確認路徑允許(路徑, 參數)
@@ -94,20 +103,30 @@ def 搜尋檔案(參數: dict[str, Any]) -> dict[str, Any]:
 
 
 def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
-    """執行短時間非互動 shell 指令。"""
+    """執行短時間非互動 shell 指令。
+
+    逾時會轉成 `工具逾時` signal，讓契約層回報 `tool_timeout` 而非籠統的執行失
+    敗。兩者若混為一談，呼叫端只會看到「工具執行失敗」，無從得知該加大 timeout
+    重試，實測會導致它反覆換寫法重跑同一個指令、白白耗盡迭代次數。
+    """
+    from .發布介面.執行期.工具結果 import 工具逾時
+
     指令 = str(參數.get("command", ""))
     工作目錄 = str(解析工具路徑(參數.get("workdir") or ".", 參數.get("_runtime_workdir"), 預設="."))
     確認路徑允許(Path(工作目錄), 參數)
     逾時秒數 = int(參數.get("timeout", 60) or 60)
-    完成程序 = subprocess.run(
-        指令,
-        shell=True,
-        cwd=工作目錄,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        timeout=逾時秒數,
-    )
+    try:
+        完成程序 = subprocess.run(
+            指令,
+            shell=True,
+            cwd=工作目錄,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=逾時秒數,
+        )
+    except subprocess.TimeoutExpired:
+        raise 工具逾時(f"指令超過 {逾時秒數} 秒未結束") from None
     return {"output": 完成程序.stdout[-12000:], "exit_code": 完成程序.returncode}
 
 
