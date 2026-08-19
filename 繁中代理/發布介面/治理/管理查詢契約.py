@@ -490,6 +490,14 @@ def _驗證raw無禁止secret(值: object) -> None:
             continue
         if type(項) is not dict:
             continue
+        if set(項) == {"$tombstone"}:
+            墓碑 = cast(dict[object, object], 項).get("$tombstone")
+            if (type(墓碑) is not dict
+                    or set(墓碑) != {"redaction_id", "redacted_at"}
+                    or not _是識別碼(墓碑.get("redaction_id"))
+                    or not _是有限時間(墓碑.get("redacted_at"))):
+                raise ValueError
+            continue
         if id(項) in 已見容器:
             raise ValueError
         已見容器.add(id(項))

@@ -1714,6 +1714,12 @@ def test_A18完整詳情redaction_ledger與canonical_tombstone必須雙向精確
         "run_events": [], "tool_calls": [], "redactions": [遮蔽], "sensitive_hits": [],
     }
     assert 建立管理員呼叫完整詳情(基本).建立JSON()["metadata"] == {"private": 墓碑}
+    長ID = "redaction-" + "a" * 32
+    長墓碑 = {"$tombstone": {"redaction_id": 長ID, "redacted_at": 3.0}}
+    長遮蔽 = {**遮蔽, "id": 長ID}
+    assert 建立管理員呼叫完整詳情({
+        **基本, "metadata": {"private": 長墓碑}, "redactions": [長遮蔽],
+    }).建立JSON()["metadata"] == {"private": 長墓碑}
     for 破壞 in (
         {"redactions": []},
         {"metadata": {"private": None}},

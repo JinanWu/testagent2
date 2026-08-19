@@ -10,6 +10,7 @@
     "browser:smoke": "npm run build && npm run browser:typecheck && node browser/run-smoke.mjs",
     "browser:owner-smoke": "npm run build && npm run browser:typecheck && node browser/run-a19-smoke.mjs",
     "browser:sensitive-smoke": "npm run build && npm run browser:typecheck && node browser/run-a21-smoke.mjs",
+    "browser:redaction-smoke": "npm run build && npm run browser:typecheck && node browser/run-a20-smoke.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },

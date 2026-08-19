@@ -365,6 +365,11 @@ function cloneSafeJson(value: unknown, scanSecrets = true): JsonValue {
     }
     const object = exactObject(current.value, Object.keys(current.value as object))
     if (object === null) throw new ApiFormatError()
+    if (scanSecrets && Object.keys(object).length === 1 && '$tombstone' in object) {
+      const tombstone = exactObject(object.$tombstone, ['redaction_id', 'redacted_at'])
+      if (tombstone !== null && identifier(tombstone.redaction_id) &&
+          finiteNonNegative(tombstone.redacted_at)) continue
+    }
     for (const [key, child] of Object.entries(object)) {
       const marker = normalized(key)
       if (scanSecrets && (FORBIDDEN_KEYS.has(marker) ||

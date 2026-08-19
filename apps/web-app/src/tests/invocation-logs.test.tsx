@@ -201,6 +201,14 @@ describe('A18 Admin logs production decoder與API boundary', () => {
     expect(parsed.input).toEqual({ cookie_policy: 'accepted', authorization_state: 'disabled' })
   })
 
+  it('接受production長ID的exact canonical tombstone且仍綁定遮蔽紀錄', () => {
+    const body = detail('invocation-1')
+    const redactionId = `redaction-${'a'.repeat(32)}`
+    body.metadata = { secret: { $tombstone: { redaction_id: redactionId, redacted_at: 9 } } }
+    body.redactions[0].id = redactionId
+    expect(parseInvocationDetail(body).redactions[0].id).toBe(redactionId)
+  })
+
   it('在JSON.parse前拒絕超出safe integer的wire literal且不靜默改值', async () => {
     const wire = JSON.stringify(detail('invocation-1')).replace(
       '"metadata_size_bytes":2', '"metadata_size_bytes":9007199254740993',
