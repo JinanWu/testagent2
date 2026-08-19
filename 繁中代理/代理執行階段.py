@@ -168,6 +168,7 @@ class 代理執行階段:
         source: str = "cli",
         model_config: dict[str, Any] | None = None,
         事件回呼: Any | None = None,
+        詢問回呼: Any | None = None,
         記憶管理器: Any | None = None,
         上下文引擎: Any | None = None,
     ) -> None:
@@ -191,6 +192,9 @@ class 代理執行階段:
             壓縮模式: 可選 compression provider 模式；None 時 auto 重用主模式或環境值。
             壓縮模型: 可選 compression 模型名稱；None 時 auto 重用主模型或環境值。
             user_id: 使用者識別碼，CLI/Gateway 可用於 session 篩選與審計。
+            詢問回呼: 平台注入的 `clarify` 詢問策略，決定怎麼問使用者、等多久。
+                None 表示沒有互動通道（一次性 prompt、API），clarify 會直接回
+                「沒人可問」指引，不會空等。只在未自帶工具登錄器時生效。
             source: 來源平台，例如 cli、api、telegram 或 discord。
             model_config: 模型設定快照，會寫入 sessions.model_config。
 
@@ -210,7 +214,8 @@ class 代理執行階段:
         self.source = source
         self.model_config = model_config or {"mode": 模型模式}
         self.工作目錄 = str(Path(工作目錄).expanduser().resolve())
-        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄, self.使用者上下文物件)
+        self.詢問回呼 = 詢問回呼
+        self.工具登錄器物件 = 工具登錄器物件 or 建立預設工具登錄器(self.工作目錄, self.使用者上下文物件, 詢問回呼)
         self.最大迭代次數 = 最大迭代次數
         self.事件回呼 = 事件回呼
         self.記憶管理器 = 記憶管理器
