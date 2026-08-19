@@ -456,7 +456,13 @@ describe('CP3 真實對話工作流程', () => {
     expect(renderer.root.findByProps({ id: 'chat-title' })).toBeDefined()
     const submit = renderer.root.findByProps({ type: 'submit' })
     expect(submit.props.children).toBe('傳送')
-    expect(submit.props.disabled).toBe(false)
+    expect(submit.props.disabled).toBe(true)
+    expect(renderer.root.findByType('textarea').props.value).toBe('')
+
+    await act(async () => renderer.root.findByType('textarea').props.onChange({
+      currentTarget: { value: 'fresh request' },
+    }))
+    expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(false)
 
     fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({
       session_id: 'root', reply: { role: 'assistant', content: '恢復後回覆' },

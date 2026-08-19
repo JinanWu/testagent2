@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
-import { AUTH_ERROR_MESSAGE, getSession } from '../api/auth'
-import { CHAT_ERROR_MESSAGE, sendChat } from '../api/chat'
+import { AUTH_ERROR_MESSAGE } from '../api/auth'
+import { CHAT_ERROR_MESSAGE } from '../api/chat'
 import { getSessionDetail, listSessions, type SessionSummary, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
+import { createSendChatOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
 export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => void }) {
-  const { user, logout, replaceSession } = useSession()
+  const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
@@ -20,6 +21,7 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
   const detailPendingRef = useRef(false)
   const epoch = useRef(0)
   const controllers = useRef(new Set<AbortController>())
+  const [protectedOwner, setProtectedOwner] = useState<ProtectedStateOwner | null>(null)
 
   const invalidate = useCallback(() => {
     epoch.current += 1
@@ -31,6 +33,25 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
     setPending(false)
     return epoch.current
   }, [])
+
+  const eraseProtectedState = useCallback(() => {
+    invalidate()
+    draftRef.current = ''
+    setDraft('')
+    setMessages([])
+    setSessions([])
+    setSessionId(null)
+    setError(null)
+  }, [invalidate])
+
+  useEffect(() => {
+    const registration = registerProtectedStateOwner(eraseProtectedState)
+    setProtectedOwner(registration.owner)
+    return () => {
+      setProtectedOwner(null)
+      registration.unregister()
+    }
+  }, [eraseProtectedState, registerProtectedStateOwner])
 
   const refreshSessions = useCallback(async (requestEpoch: number) => {
     const controller = new AbortController()
@@ -46,10 +67,11 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
   }, [])
 
   useEffect(() => {
+    if (protectedOwner === null) return
     const requestEpoch = invalidate()
     void refreshSessions(requestEpoch)
     return () => { invalidate() }
-  }, [user?.id, invalidate, refreshSessions])
+  }, [user?.id, protectedOwner, invalidate, refreshSessions])
 
   function newConversation() {
     invalidate()
@@ -90,21 +112,18 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
     event.preventDefault()
     const text = draftRef.current.trim()
     const requestEpoch = epoch.current
-    if (!text || submitOwnerEpochRef.current !== null || pending || detailPendingRef.current) return
+    if (!text || protectedOwner === null || submitOwnerEpochRef.current !== null || pending || detailPendingRef.current) return
     submitOwnerEpochRef.current = requestEpoch
     const controller = new AbortController()
     controllers.current.add(controller)
     setPending(true)
     setError(null)
     try {
-      const auth = await getSession(controller.signal)
-      if (epoch.current !== requestEpoch || controller.signal.aborted) return
-      if (!auth) {
-        replaceSession(null)
-        return
-      }
-      replaceSession(auth)
-      const result = await sendChat(text, sessionId, auth.csrfToken, controller.signal)
+      const result = await runAuthorized({
+        owner: protectedOwner,
+        operation: createSendChatOperation(text, sessionId),
+        signal: controller.signal,
+      })
       if (epoch.current !== requestEpoch || controller.signal.aborted) return
       setSessionId(result.sessionId)
       setMessages((current) => [...current, { role: 'user', content: text }, result.reply])
@@ -129,7 +148,6 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
         <h1 id="chat-title">開始對話</h1>
         <p>已登入為 {user?.username}。系統會自動選擇適合的執行方式。</p>
         <button type="button" onClick={() => {
-          invalidate()
           void logout().catch(() => { setError(AUTH_ERROR_MESSAGE) })
         }}>登出</button>
         {user?.role === 'admin' && onOpenAdminLogs && (
