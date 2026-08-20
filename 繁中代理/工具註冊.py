@@ -24,6 +24,7 @@ from .基本工具 import (
     讀取檔案內容,
 )
 from .工具 import 回報工具未啟用, 工具定義, 工具登錄器
+from .工具集.BigQuery查詢 import BigQuery查詢工具
 from .工具集.技能管理 import 管理技能
 from .工具集.待辦清單 import 待辦清單
 from .工具集.釐清詢問 import 建立釐清處理器, 詢問回呼型別
@@ -95,6 +96,7 @@ def 建立預設工具登錄器(
         "session_search": 搜尋工作階段工具,
         "memory": 記憶工具,
         "administrative_search": 管理部文件搜尋,
+        "bigquery_query": BigQuery查詢工具,
         "web_search": 網路搜尋,
         "web_extract": 網頁擷取,
         "todo": 待辦清單,
