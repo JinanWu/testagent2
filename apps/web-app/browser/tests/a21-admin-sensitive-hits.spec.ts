@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { expect, test, type Page, type Response } from '@playwright/test'
 
 function requiredEnvironment(name: string): string {
@@ -34,7 +34,8 @@ function databaseCommand(code: string, ...arguments_: string[]): string {
   const root = requiredEnvironment('A21_BROWSER_ROOT')
   const environment: NodeJS.ProcessEnv = { ...process.env, PYTHONNOUSERSITE: '1' }
   for (const name of ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE']) delete environment[name]
-  return execFileSync(python, ['-c', code, join(root, 'published.sqlite3'), ...arguments_], {
+  const authority = `import sys;sys.path.insert(0,${JSON.stringify(resolve('../..'))});`
+  return execFileSync(python, ['-c', authority + code, join(root, 'published.sqlite3'), ...arguments_], {
     encoding: 'utf8', env: environment,
   }).trim()
 }
