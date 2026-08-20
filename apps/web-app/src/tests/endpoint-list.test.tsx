@@ -121,6 +121,7 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
       signal: expect.any(AbortSignal),
     })
     expect(button(renderer!, '建立端點')).toBeDefined()
+    expect(renderer!.root.findAllByProps({ id: 'endpoint-scope' })).toHaveLength(0)
     expect(text(renderer!)).not.toMatch(/upload|edit|delete|invoke preview|mock/i)
   })
 
@@ -137,11 +138,92 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
       expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
     expect(fetchMock.mock.calls.map(([route]) => String(route)).join(' ')).not.toContain('scope=all')
 
+    fetchMock.mockResolvedValueOnce(jsonResponse(page([endpoint('endpoint-global', 'global-safe')])))
+    await act(async () => renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({
+      currentTarget: { value: 'all' },
+    }))
+    await flush()
+    expect(text(renderer!)).toContain('global-safe')
+    expect(fetchMock).toHaveBeenCalledWith('/api/published-endpoints?scope=all&limit=20',
+      expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
+
     fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }))
     await act(async () => button(renderer!, '返回對話').props.onClick())
     await flush()
     expect(button(renderer!, '端點管理')).toBeDefined()
     expect(button(renderer!, '完整呼叫紀錄')).toBeDefined()
+  })
+
+  it('Admin all pending時同user降權會abort all並先收斂owner，late all不可回寫', async () => {
+    pathname = ENDPOINTS_ROUTE
+    const allPage = deferred<Response>()
+    let allSignal!: AbortSignal
+    const sameUserSession = (role: 'admin' | 'member') => ({
+      user: { id: 'same-user', username: role, role }, csrf_token: 'csrf-safe-value',
+    })
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(sameUserSession('admin')))
+      .mockResolvedValueOnce(jsonResponse(page([endpoint('owner-1', 'owner-before')])))
+      .mockImplementationOnce((_route, init) => {
+        allSignal = init!.signal as AbortSignal
+        return allPage.promise
+      })
+      .mockResolvedValueOnce(jsonResponse(sameUserSession('member')))
+      .mockResolvedValueOnce(jsonResponse(page([endpoint('owner-2', 'owner-after')])))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    await act(async () => renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({
+      currentTarget: { value: 'all' },
+    }))
+    await flush()
+    await act(async () => { button(renderer!, '登出').props.onClick(); await flush() })
+    await flush()
+
+    expect(allSignal.aborted).toBe(true)
+    expect(renderer!.root.findAllByProps({ id: 'endpoint-scope' })).toHaveLength(0)
+    expect(text(renderer!)).toContain('owner-after')
+    expect(fetchMock.mock.calls.filter(([route]) => String(route).includes('scope=all'))).toHaveLength(1)
+
+    await act(async () => {
+      allPage.resolve(jsonResponse(page([endpoint('global-late', 'GLOBAL_LATE_MARKER')])))
+      await allPage.promise
+    })
+    expect(text(renderer!)).not.toContain('GLOBAL_LATE_MARKER')
+  })
+
+  it('scope onChange在passive effects前同步abort舊pagination並清除舊cursor', async () => {
+    pathname = ENDPOINTS_ROUTE
+    const oldOwnerPage = deferred<Response>()
+    let oldOwnerSignal!: AbortSignal
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session('admin')))
+      .mockResolvedValueOnce(jsonResponse(page([endpoint('owner-1', 'owner-first')], 'OWNER_CURSOR')))
+      .mockImplementationOnce((_route, init) => {
+        oldOwnerSignal = init!.signal as AbortSignal
+        return oldOwnerPage.promise
+      })
+      .mockResolvedValueOnce(jsonResponse(page([endpoint('global-1', 'global-current')])))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+    await act(async () => { void button(renderer!, '載入更多').props.onClick() })
+
+    await act(async () => {
+      renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({ currentTarget: { value: 'all' } })
+      expect(oldOwnerSignal.aborted).toBe(true)
+    })
+    await flush()
+    expect(text(renderer!)).toContain('global-current')
+    expect(text(renderer!)).not.toContain('owner-first')
+    expect(fetchMock).toHaveBeenCalledWith('/api/published-endpoints?scope=all&limit=20',
+      expect.objectContaining({ signal: expect.any(AbortSignal) }))
+
+    await act(async () => {
+      oldOwnerPage.resolve(jsonResponse(page([endpoint('owner-late', 'OWNER_LATE_MARKER')], 'STALE_CURSOR')))
+      await oldOwnerPage.promise
+    })
+    expect(text(renderer!)).not.toContain('OWNER_LATE_MARKER')
+    expect(button(renderer!, '載入更多')).toBeUndefined()
   })
 
   it('unknown role fails closed without flashing any protected page and offers only fixed denial/logout', async () => {

@@ -4,6 +4,7 @@ import { listOwnerEndpoints, type OwnerEndpointItem } from '../api/endpoints'
 import { useSession } from '../app/SessionProvider'
 
 export const ENDPOINT_LIST_ERROR_MESSAGE = '目前無法載入端點，請稍後再試。'
+type EndpointScope = 'owner' | 'all'
 
 export interface EndpointListPageProps {
   onClose(): void
@@ -35,6 +36,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [scope, setScope] = useState<EndpointScope>('owner')
   const generation = useRef(0)
   const controllers = useRef(new Set<AbortController>())
   const mounted = useRef(false)
@@ -65,7 +67,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
     setLoading(true)
     try {
       const result = await listOwnerEndpoints(
-        { scope: 'owner', limit: 20 },
+        { scope, limit: 20 },
         { signal: controller.signal },
       )
       if (!mounted.current || controller.signal.aborted || generation.current !== requestGeneration) return
@@ -79,10 +81,17 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
       controllers.current.delete(controller)
       if (mounted.current && generation.current === requestGeneration) setLoading(false)
     }
-  }, [invalidate])
+  }, [scope, invalidate])
 
   useEffect(() => {
     mounted.current = true
+    if (user?.role !== 'admin' && scope !== 'owner') {
+      setScope('owner')
+      return () => {
+        mounted.current = false
+        invalidate(false)
+      }
+    }
     const registration = registerProtectedStateOwner(() => { invalidate(true) })
     void loadFirstPage()
     return () => {
@@ -90,7 +99,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
       registration.unregister()
       invalidate(false)
     }
-  }, [user?.id, invalidate, loadFirstPage, registerProtectedStateOwner])
+  }, [user?.id, user?.role, scope, invalidate, loadFirstPage, registerProtectedStateOwner])
 
   async function loadMore() {
     if (nextCursor === null || loadingMoreRef.current) return
@@ -103,7 +112,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
     setLoadingMore(true)
     try {
       const result = await listOwnerEndpoints(
-        { scope: 'owner', limit: 20, cursor },
+        { scope, limit: 20, cursor },
         { signal: controller.signal },
       )
       if (!mounted.current || controller.signal.aborted || generation.current !== requestGeneration) return
@@ -122,6 +131,12 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
     }
   }
 
+  function changeScope(value: string) {
+    if ((value !== 'owner' && value !== 'all') || value === scope) return
+    invalidate(true)
+    setScope(value)
+  }
+
   return (
     <main className="app-shell">
       <section className="welcome-card endpoint-detail" aria-labelledby="endpoint-list-title">
@@ -133,6 +148,14 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
         </nav>
         <p className="eyebrow">TestAgent2</p>
         <h1 id="endpoint-list-title">端點管理</h1>
+        {user?.role === 'admin' && <>
+          <label htmlFor="endpoint-scope">清單範圍</label>
+          <select id="endpoint-scope" value={scope}
+            onChange={(event) => changeScope(event.currentTarget.value)}>
+            <option value="owner">我的端點</option>
+            <option value="all">所有端點</option>
+          </select>
+        </>}
         <button type="button" onClick={onCreateEndpoint}>建立端點</button>
         {loading ? <p role="status" aria-live="polite">正在載入端點…</p> : error ? <p role="alert">{error}</p> : items.length === 0 ? (
           <p>目前沒有端點。</p>
