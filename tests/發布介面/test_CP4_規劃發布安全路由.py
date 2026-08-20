@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi import HTTPException
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
@@ -81,6 +81,41 @@ def _草稿本文():
 
 def _發布本文():
     return {"draft_id": "draft-safe", "slug": "safe-api", "configuration_confirmation": {"system_prompt": "safe"}}
+
+
+@pytest.mark.parametrize("path,body,expected_status", [
+    ("/api/published-endpoints/draft", _草稿本文(), 503),
+    ("/api/published-endpoints", _發布本文(), 500),
+    ("/api/published-endpoints/endpoint-1/versions", {"configuration": {}}, 500),
+])
+def test_management_handler錯誤仍交付已消耗CSRF的successor(path, body, expected_status):
+    class 失敗草稿:
+        def 建立草稿(self, *_args, **_kwargs):
+            raise RuntimeError
+
+    class 失敗管理:
+        def 原子發布(self, **_kwargs):
+            raise RuntimeError
+        def 原子建立並切換版本(self, **_kwargs):
+            raise RuntimeError
+
+    def session():
+        return 網頁使用者("owner-1", "alice", "admin")
+
+    def csrf(response: Response):
+        response.headers["X-CSRF-Token"] = "successor"
+        response.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("owner-1", "alice", "admin")
+
+    app = FastAPI(redirect_slashes=False)
+    app.include_router(建立安全規劃發布路由器(
+        失敗草稿(), 失敗管理(), session, csrf, 時鐘=lambda: 100.0,
+    ))
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.post(path, json=body)
+    assert response.status_code == expected_status
+    assert response.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in response.headers["set-cookie"]
 
 
 def _含標記(值, 標記, 已訪):

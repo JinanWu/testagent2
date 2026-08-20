@@ -84,6 +84,52 @@ _版本本文綱要 = {
 }
 
 
+def _固定錯誤文件(*, 代碼: tuple[str, ...] = (), 訊息: tuple[str, ...] = ()) -> dict[str, Any]:
+    """建立可同時描述dependency code與route-owned message的exact response schema。"""
+    形狀們 = []
+    if 代碼:
+        形狀們.append({
+            "type": "object", "additionalProperties": False, "required": ["code"],
+            "properties": {"code": {"type": "string", "enum": list(代碼)}},
+        })
+    if 訊息:
+        形狀們.append({"type": "string", "enum": list(訊息)})
+    detail = 形狀們[0] if len(形狀們) == 1 else {"anyOf": 形狀們}
+    return {"content": {"application/json": {"schema": {
+        "type": "object", "additionalProperties": False, "required": ["detail"],
+        "properties": {"detail": detail},
+    }}}}
+
+
+def _含框架驗證錯誤文件(固定文件: dict[str, Any]) -> dict[str, Any]:
+    """合併handler固定錯誤與FastAPI path/query validation body。"""
+    固定綱要 = 固定文件["content"]["application/json"]["schema"]
+    return {"content": {"application/json": {"schema": {
+        "anyOf": [固定綱要, {"$ref": "#/components/schemas/HTTPValidationError"}],
+    }}}}
+
+
+_草稿錯誤文件: dict[int | str, dict[str, Any]] = {
+    403: _固定錯誤文件(代碼=("planning_not_authorized", "csrf_invalid")),
+    422: _固定錯誤文件(代碼=("invalid_request",)),
+    500: _固定錯誤文件(代碼=("identity_contract_invalid",)),
+    502: _固定錯誤文件(代碼=("planner_output_invalid",)),
+    503: _固定錯誤文件(代碼=("planner_unavailable", "auth_unavailable")),
+}
+_發布錯誤文件: dict[int | str, dict[str, Any]] = {
+    403: _固定錯誤文件(代碼=("csrf_invalid",), 訊息=("沒有發布端點管理權限",)),
+    404: _固定錯誤文件(訊息=("找不到發布草稿",)),
+    409: _固定錯誤文件(訊息=("發布端點狀態衝突", "發布端點已由其他操作更新")),
+    422: _固定錯誤文件(代碼=("invalid_request",), 訊息=("管理操作輸入無效",)),
+    500: _固定錯誤文件(代碼=("identity_contract_invalid",), 訊息=("發布管理服務失敗",)),
+}
+_版本錯誤文件: dict[int | str, dict[str, Any]] = {
+    **_發布錯誤文件,
+    404: _固定錯誤文件(訊息=("找不到發布端點",)),
+    422: _含框架驗證錯誤文件(_發布錯誤文件[422]),
+}
+
+
 def OpenAPI本文符合專案契約(綱要: dict[str, Any], 本文: Any) -> bool:
     """同時執行標準 JSON Schema 與專案 UTF-8 位元組擴充。
 
@@ -429,6 +475,7 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
 
     @路由器.post(
         "/draft", status_code=201, response_model=安全草稿建立結果,
+        responses=_草稿錯誤文件,
         openapi_extra=_草稿本文綱要,
     )
     async def 建立伺服器草稿(
@@ -448,9 +495,9 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
         本文失效由解析器映射為 HTTP 422，控制流例外原樣傳遞。
         副作用：消耗請求本文、讀取工作階段與 CSRF 相依結果、讀取時鐘，並呼叫服務持久化草稿。
         """
-        本文 = await _解析安全草稿本文(請求)
-        使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
         try:
+            本文 = await _解析安全草稿本文(請求)
+            使用者識別碼 = _重建網頁身份(使用者, _csrf使用者)
             草稿 = await run_in_threadpool(
                 服務.建立草稿, 使用者識別碼, 本文.原始需求文字,
                 tuple(本文.選擇技能), 本文.回應模式, 現在=時鐘(),
@@ -465,13 +512,15 @@ def 建立安全草稿路由器(服務: 安全草稿服務, 目前工作階段�
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except 授權選擇錯誤:
-            raise HTTPException(status_code=403, detail={"code": "planning_not_authorized"}) from None
+            raise _建立CSRF接續錯誤(回應, 403, "planning_not_authorized") from None
         except 規劃器輸出無效:
-            raise HTTPException(status_code=502, detail={"code": "planner_output_invalid"}) from None
+            raise _建立CSRF接續錯誤(回應, 502, "planner_output_invalid") from None
         except 規劃器不可用:
-            raise HTTPException(status_code=503, detail={"code": "planner_unavailable"}) from None
+            raise _建立CSRF接續錯誤(回應, 503, "planner_unavailable") from None
+        except HTTPException as 錯誤:
+            raise _傳遞HTTP例外CSRF接續(回應, 錯誤) from None
         except BaseException:
-            raise HTTPException(status_code=503, detail={"code": "planner_unavailable"}) from None
+            raise _建立CSRF接續錯誤(回應, 503, "planner_unavailable") from None
 
     建立伺服器草稿.__doc__ = None
     草稿路由 = 路由器.routes[-1]
@@ -502,7 +551,7 @@ def 建立安全草稿端點建立路由器(
 
     @路由器.post(
         "", status_code=201, response_model=端點發布結果,
-        responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+        responses=_發布錯誤文件,
         openapi_extra=_發布本文綱要,
     )
     async def 發布端點(
@@ -528,6 +577,8 @@ def 建立安全草稿端點建立路由器(
                 _安全發布端點, 發布服務, 本文, 使用者識別碼,
             )
             return _傳遞CSRF接續(回應, 結果回應)
+        except HTTPException as 錯誤:
+            raise _傳遞HTTP例外CSRF接續(回應, 錯誤) from None
         finally:
             請求 = 使用者 = _csrf使用者 = 回應 = None
             本文 = 使用者識別碼 = 結果回應 = None
@@ -557,7 +608,7 @@ def 建立安全規劃發布路由器(
     @路由器.post(
         "/{endpoint_id}/versions", status_code=201,
         response_model=版本建立結果,
-        responses={403: {}, 404: {}, 409: {}, 422: {}, 500: {}},
+        responses=_版本錯誤文件,
         openapi_extra=_版本本文綱要,
     )
     async def 建立不可變版本(
@@ -586,6 +637,8 @@ def 建立安全規劃發布路由器(
                 _安全建立版本, 發布服務, 本文, 端點識別碼, 使用者識別碼,
             )
             return _傳遞CSRF接續(回應, 結果回應)
+        except HTTPException as 錯誤:
+            raise _傳遞HTTP例外CSRF接續(回應, 錯誤) from None
         finally:
             請求 = 端點識別碼 = 使用者 = _csrf使用者 = 回應 = None
             本文 = 使用者識別碼 = 結果回應 = None
@@ -724,6 +777,29 @@ def _傳遞CSRF接續(來源: Response | None, 目標: JSONResponse) -> JSONResp
         if 鍵.lower() == b"set-cookie":
             目標.headers.append(鍵.decode("latin-1"), 值.decode("latin-1"))
     return 目標
+
+
+def _建立CSRF接續錯誤(來源: Response | None, 狀態碼: int, 代碼: str) -> HTTPException:
+    """建立固定detail.code錯誤並附上已消耗CSRF的successor。"""
+    return _傳遞HTTP例外CSRF接續(
+        來源, HTTPException(status_code=狀態碼, detail={"code": 代碼}),
+    )
+
+
+def _傳遞HTTP例外CSRF接續(來源: Response | None, 錯誤: HTTPException) -> HTTPException:
+    """重建handler內可信HTTPException並附上successor headers。"""
+    headers = dict(錯誤.headers or {})
+    if 來源 is not None:
+        接續 = 來源.headers.get(網頁CSRFHeader名稱)
+        if 接續 is not None:
+            headers[網頁CSRFHeader名稱] = 接續
+        for 鍵, 值 in 來源.headers.raw:
+            if 鍵.lower() == b"set-cookie":
+                headers["Set-Cookie"] = 值.decode("latin-1")
+    return HTTPException(
+        status_code=錯誤.status_code, detail=錯誤.detail,
+        headers=headers or None,
+    )
 
 
 async def _解析管理本文(請求: Request, 模型: type[_嚴格請求]) -> _嚴格請求:

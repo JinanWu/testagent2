@@ -16,6 +16,7 @@ from pydantic import (
 )
 from starlette.concurrency import run_in_threadpool
 
+from ..OpenAPI相依權限 import _登錄Canonical相依封裝
 from ..治理.管理查詢契約 import (
     ADMIN_INVOCATION_DETAIL_PATH,
     ADMIN_INVOCATION_ERROR_CONTRACT,
@@ -337,6 +338,7 @@ def 建立管理稽核路由器(
             _拋出固定錯誤(500)
 
     setattr(取得安全工作階段, "__canonical_dependency__", 目前工作階段相依)
+    _登錄Canonical相依封裝(取得安全工作階段, 目前工作階段相依)
     路由器 = APIRouter(prefix="/api/admin")
     列表路徑 = ADMIN_INVOCATION_LIST_PATH.removeprefix("/api/admin")
     詳情路徑 = ADMIN_INVOCATION_DETAIL_PATH.removeprefix("/api/admin")

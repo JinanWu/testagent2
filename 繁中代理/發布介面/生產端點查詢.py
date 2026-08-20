@@ -15,6 +15,7 @@ from threading import Condition, RLock
 from fastapi import Depends
 
 from ..使用者 import 使用者上下文
+from .OpenAPI相依權限 import _登錄Canonical相依封裝
 from .網頁工作階段 import 網頁使用者
 from .路由.端點查詢 import (
     端點列表回應,
@@ -274,6 +275,7 @@ def 建立端點管理身份相依(目前工作階段相依):
             raise RuntimeError("Published端點查詢服務不可用") from None
 
     setattr(取得身份, "__canonical_dependency__", 目前工作階段相依)
+    _登錄Canonical相依封裝(取得身份, 目前工作階段相依)
     return 取得身份
 
 

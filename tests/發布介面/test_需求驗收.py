@@ -153,6 +153,12 @@ _預期草稿201回應 = {
             },
         },
     },
+    "headers": {
+        "X-CSRF-Token": {
+            "description": "Successor single-use CSRF token when rotated",
+            "schema": {"type": "string", "minLength": 32, "maxLength": 512},
+        },
+    },
 }
 
 
@@ -195,9 +201,9 @@ def test_snapshot_gate_草稿請求契約完全相符(規格: dict):
 
 
 def test_snapshot_gate_草稿回應契約完全相符(規格: dict):
-    """201 response/media type 與所有 nested schema 必須逐欄 exact 相符。"""
+    """201本文與runtime可達錯誤status分母必須逐欄exact相符。"""
     操作 = 規格["paths"][_草稿路徑]["post"]
-    assert set(操作["responses"]) == {"201"}
+    assert set(操作["responses"]) == {"201", "401", "403", "422", "500", "502", "503"}
     assert _解析參照(規格, 操作["responses"]["201"]) == _預期草稿201回應
 
 

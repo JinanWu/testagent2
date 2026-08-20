@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import Field
@@ -16,6 +16,27 @@ _文字最大長度 = 256
 _狀態集合 = frozenset({"active", "disabled", "archived"})
 _無效服務訊息 = "管理查詢服務回傳無效"
 _游標錯誤訊息 = "端點查詢游標無效"
+
+
+def _訊息錯誤文件(*訊息: str, 包含框架驗證: bool = False) -> dict[str, Any]:
+    固定 = {
+        "type": "object", "additionalProperties": False, "required": ["detail"],
+        "properties": {"detail": {"type": "string", "enum": list(訊息)}},
+    }
+    schema = {"anyOf": [固定, {"$ref": "#/components/schemas/HTTPValidationError"}]} if 包含框架驗證 else 固定
+    return {"content": {"application/json": {"schema": schema}}}
+
+
+_列表錯誤文件: dict[int | str, dict[str, Any]] = {
+    403: _訊息錯誤文件("只有管理者可查詢全部發布端點"),
+    422: _訊息錯誤文件(_游標錯誤訊息, "查詢參數不符合契約", 包含框架驗證=True),
+    500: _訊息錯誤文件(_無效服務訊息),
+}
+_詳情錯誤文件: dict[int | str, dict[str, Any]] = {
+    404: _訊息錯誤文件("找不到發布端點"),
+    422: _訊息錯誤文件("查詢參數不符合契約", 包含框架驗證=True),
+    500: _訊息錯誤文件(_無效服務訊息),
+}
 
 
 class 端點查詢游標錯誤(ValueError):
@@ -79,7 +100,7 @@ def 建立端點查詢路由器(
     """建立 M01 路由；身份只由整合層注入，不讀取身份 header。"""
     路由器 = APIRouter(prefix="/api/published-endpoints")
 
-    @路由器.get("", response_model=端點列表回應)
+    @路由器.get("", response_model=端點列表回應, responses=_列表錯誤文件)
     def 列出發布端點(
         請求: Request,
         範圍: Annotated[Literal["owner", "all"], Query(alias="scope")] = "owner",
@@ -105,7 +126,7 @@ def 建立端點查詢路由器(
         except Exception:
             raise HTTPException(status_code=500, detail=_無效服務訊息) from None
 
-    @路由器.get("/{endpoint_id}", response_model=端點安全詳情)
+    @路由器.get("/{endpoint_id}", response_model=端點安全詳情, responses=_詳情錯誤文件)
     def 讀取發布端點(
         端點識別碼: Annotated[str, Path(alias="endpoint_id", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")],
         請求: Request,

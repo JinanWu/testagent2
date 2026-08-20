@@ -18,6 +18,7 @@ from fastapi import APIRouter, FastAPI, routing as FastAPI路由
 from fastapi.routing import APIRoute
 
 from .生產SPA import 拒絕ProductionSPA未知方法Middleware
+from .管理OpenAPI import 套用ManagementOpenAPI
 from .相依項 import 發布介面相依項, 發布介面資源
 from .路由政策 import _框架形狀, 建立安全路由器, 擷取路由器政策, 驗證政策, 驗證最終政策
 from .設定 import (
@@ -571,12 +572,20 @@ def _建立應用程式(
         lifespan=建立生命週期(安全相依項),
     )
     if 安全設定 is not None:
-        from .路由.網頁認證 import 目前工作階段HTTP錯誤, _錯誤
+        from fastapi.exception_handlers import request_validation_exception_handler
+        from fastapi.exceptions import RequestValidationError
+        from .路由.網頁認證 import 目前工作階段HTTP錯誤, _錯誤, 傳遞請求CSRF接續
         @應用程式.exception_handler(目前工作階段HTTP錯誤)
         async def 處理目前工作階段錯誤(請求, 錯誤):
             """固定映射 current-session failure 並以 exact scope 清兩個 cookies。"""
             del 請求
             return _錯誤(錯誤.status_code, 錯誤.detail["code"], 安全設定)
+
+        @應用程式.exception_handler(RequestValidationError)
+        async def 處理已消耗CSRF的請求驗證錯誤(請求, 錯誤):
+            """保留FastAPI 422本文，並交付已由canonical dependency輪替的successor。"""
+            回應 = await request_validation_exception_handler(請求, 錯誤)
+            return 傳遞請求CSRF接續(請求, 回應)
 
     @應用程式.get("/healthz", status_code=200, operation_id=_健康狀態操作識別碼)
     def 取得健康狀態() -> dict[str, str]:
@@ -625,6 +634,7 @@ def _建立應用程式(
     _重播路由描述(安全相依項.路由器清單, 路由描述, 預期操作描述)
     _驗證應用路由(應用程式, 預期操作描述, 取得健康狀態)
     驗證最終政策(應用程式.routes, 政策清單)
+    套用ManagementOpenAPI(應用程式)
     if 內層Middleware類別 is not None:
         應用程式.add_middleware(內層Middleware類別)
     if 安全設定 is not None:

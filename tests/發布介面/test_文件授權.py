@@ -12,8 +12,9 @@ import time
 from pathlib import Path
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
+from jsonschema import Draft202012Validator
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.發布介面.端點文件 import 端點文件投影, 渲染端點文件
@@ -387,6 +388,70 @@ def test_HTTP_owner與admin共用canonical_session且零CSRF_foreign_missing固�
         denied_app, _ = _HTTP應用(denied)
         with TestClient(denied_app) as client:
             assert client.get("/api/published-endpoints/foreign/docs").status_code == 404
+
+
+def test_HTTP_owner文件轉貼session_recovery_successor_header():
+    service = _HTTP服務()
+    app = FastAPI()
+
+    def recovery_session(_request: Request, response: Response):
+        response.headers["X-CSRF-Token"] = "successor-token"
+        return 網頁使用者("owner-a", "owner", "member")
+
+    management, public = 建立端點文件路由器(service, recovery_session)
+    app.include_router(management)
+    app.include_router(public)
+    with TestClient(app) as client:
+        response = client.get("/api/published-endpoints/endpoint-public/docs")
+    assert response.status_code == 200
+    assert response.headers["X-CSRF-Token"] == "successor-token"
+
+
+def test_HTTP文件final_release拒絕非canonical_renderer_bytes():
+    service = _HTTP服務()
+    service.management_result = b"null\n"
+    service.key_result = b"null\n"
+    app, _ = _HTTP應用(service)
+    bearer = "Bearer pk_" + "A" * 43
+    with TestClient(app) as client:
+        management = client.get("/api/published-endpoints/endpoint-public/docs")
+        public = client.get("/v1/endpoints/demo-agent/docs", headers={"Authorization": bearer})
+    assert management.status_code == 500
+    assert management.json() == {"detail": {"code": "docs_unavailable"}}
+    assert public.status_code == 500
+    assert public.json() == {"detail": {"code": "docs_unavailable"}}
+
+
+def test_HTTP_owner文件OpenAPI拒絕只有頂層八鍵的非canonical形狀():
+    service = _HTTP服務()
+    app, _ = _HTTP應用(service)
+    schema = app.openapi()["paths"]["/api/published-endpoints/{endpoint_id}/docs"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    invalid = {
+        "endpoint": {}, "invoke_url": {}, "authentication": {}, "request_schema": {},
+        "response_schema": {}, "rate_limit": {}, "examples": {}, "errors": {},
+    }
+    Draft202012Validator(schema).validate(json.loads(service.management_result))
+    assert list(Draft202012Validator(schema).iter_errors(invalid))
+
+
+@pytest.mark.parametrize("欄位", ["session_id", "metadata"])
+def test_HTTP_owner文件OpenAPI拒絕非canonical固定request子綱要(欄位):
+    service = _HTTP服務()
+    app, _ = _HTTP應用(service)
+    schema = app.openapi()["paths"]["/api/published-endpoints/{endpoint_id}/docs"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    document = json.loads(service.management_result)
+    document["request_schema"]["properties"][欄位] = {}
+    assert list(Draft202012Validator(schema).iter_errors(document))
+
+
+@pytest.mark.parametrize("欄位", ["curl", "python"])
+def test_HTTP_owner文件OpenAPI拒絕非canonical固定example(欄位):
+    service = _HTTP服務()
+    app, _ = _HTTP應用(service)
+    schema = app.openapi()["paths"]["/api/published-endpoints/{endpoint_id}/docs"]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
+    document = json.loads(service.management_result)
+    document["examples"][欄位] = "not-canonical"
+    assert list(Draft202012Validator(schema).iter_errors(document))
 
 
 def test_HTTP_key只接受單一Bearer_header_query_cookie替代皆固定401():
