@@ -120,7 +120,8 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
       method: 'GET', credentials: 'include', headers: { Accept: 'application/json' },
       signal: expect.any(AbortSignal),
     })
-    expect(text(renderer!)).not.toMatch(/建立端點|builder|mock/i)
+    expect(button(renderer!, '建立端點')).toBeDefined()
+    expect(text(renderer!)).not.toMatch(/upload|edit|delete|invoke preview|mock/i)
   })
 
   it('Admin sees both entries and direct endpoint list still defaults to owner scope', async () => {

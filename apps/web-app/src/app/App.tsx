@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import ChatPage from '../pages/ChatPage'
+import EndpointBuilderPage from '../pages/EndpointBuilderPage'
 import EndpointDetailPage from '../pages/EndpointDetailPage'
 import EndpointListPage from '../pages/EndpointListPage'
 import InvocationLogsPage from '../pages/InvocationLogsPage'
@@ -49,11 +50,21 @@ function RouteShell() {
     }
   }
 
+  function openEndpointBuilder() {
+    const target = { kind: 'endpoint-new' } as const
+    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) setRoute(target)
+  }
+
+  function openEndpointVersionBuilder(endpointId: string) {
+    const target = { kind: 'endpoint-version-new', endpointId } as const
+    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) setRoute(target)
+  }
+
   // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
   useEffect(() => {
     if (status !== 'authenticated' || (user?.role !== 'member' && user?.role !== 'admin') ||
         route === DEFAULT_APP_ROUTE || route === ENDPOINTS_ROUTE ||
-        (typeof route === 'object' && route?.kind === 'endpoint-detail') ||
+        (route !== null && typeof route === 'object' && ['endpoint-detail', 'endpoint-new', 'endpoint-version-new'].includes(route.kind)) ||
         (route === ADMIN_LOGS_ROUTE && user?.role === 'admin')) {
       return
     }
@@ -87,13 +98,19 @@ function RouteShell() {
     return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
   }
   if (route === ENDPOINTS_ROUTE) {
-    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} />
+    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} onCreateEndpoint={openEndpointBuilder} />
   }
   if (route === ADMIN_LOGS_ROUTE && user.role === 'admin') {
     return <InvocationLogsPage onClose={openDefaultRoute} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-detail') {
-    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} />
+    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} onCreateVersion={openEndpointVersionBuilder} />
+  }
+  if (typeof route === 'object' && route?.kind === 'endpoint-new') {
+    return <EndpointBuilderPage key={`new:${user.id}`} mode="new" onClose={openEndpoints} />
+  }
+  if (typeof route === 'object' && route?.kind === 'endpoint-version-new') {
+    return <EndpointBuilderPage key={`version:${route.endpointId}:${user.id}`} mode="version" endpointId={route.endpointId} onClose={openEndpoints} />
   }
   return (
     <main className="app-shell">

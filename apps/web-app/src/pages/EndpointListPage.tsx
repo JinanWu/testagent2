@@ -8,6 +8,7 @@ export const ENDPOINT_LIST_ERROR_MESSAGE = '目前無法載入端點，請稍後
 export interface EndpointListPageProps {
   onClose(): void
   onOpenEndpoint(endpointId: string): void
+  onCreateEndpoint(): void
 }
 
 function mergeEndpointItems(
@@ -27,7 +28,7 @@ function mergeEndpointItems(
   return merged
 }
 
-export default function EndpointListPage({ onClose, onOpenEndpoint }: EndpointListPageProps) {
+export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndpoint }: EndpointListPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [items, setItems] = useState<OwnerEndpointItem[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -132,6 +133,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint }: EndpointLi
         </nav>
         <p className="eyebrow">TestAgent2</p>
         <h1 id="endpoint-list-title">端點管理</h1>
+        <button type="button" onClick={onCreateEndpoint}>建立端點</button>
         {loading ? <p role="status" aria-live="polite">正在載入端點…</p> : error ? <p role="alert">{error}</p> : items.length === 0 ? (
           <p>目前沒有端點。</p>
         ) : (
