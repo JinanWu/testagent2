@@ -1,8 +1,11 @@
 import { sendChat, type ChatReply } from '../api/chat'
 import {
+  createCredential,
   createDraft,
   createEndpointVersion,
   publishEndpoint,
+  revokeCredential,
+  type CredentialCreateReceipt,
   type DraftReceipt,
   type PublishReceipt,
   type VersionReceipt,
@@ -44,7 +47,21 @@ type PublishEndpointManifest = Readonly<{
 type CreateVersionManifest = Readonly<{
   kind: 'create-endpoint-version'; endpointId: string; configuration: EndpointConfigurationConfirmation
 }>
-type ProtectedManifest = SendChatManifest | RedactionManifest | CreateDraftManifest | PublishEndpointManifest | CreateVersionManifest
+export interface CredentialCreateInput {
+  readonly name: string
+  readonly purpose: string
+  readonly expiresAt: number
+  readonly ipAllowlist: readonly string[]
+  readonly rateLimitRequests: number
+}
+type CreateCredentialManifest = Readonly<{
+  kind: 'create-credential'; endpointId: string; input: CredentialCreateInput
+}>
+type RevokeCredentialManifest = Readonly<{
+  kind: 'revoke-credential'; endpointId: string; credentialId: string
+}>
+type ProtectedManifest = SendChatManifest | RedactionManifest | CreateDraftManifest | PublishEndpointManifest |
+  CreateVersionManifest | CreateCredentialManifest | RevokeCredentialManifest
 
 const manifests = new WeakMap<object, ProtectedManifest>()
 const consumed = new WeakSet<object>()
@@ -146,6 +163,26 @@ export function createEndpointVersionOperation(
   return token<VersionReceipt>({ kind: 'create-endpoint-version', endpointId, configuration: exactConfiguration(confirmation) })
 }
 
+export function createCredentialOperation(
+  endpointId: string, input: CredentialCreateInput,
+): ProtectedOperation<CredentialCreateReceipt> {
+  const expected = ['name', 'purpose', 'expiresAt', 'ipAllowlist', 'rateLimitRequests']
+  if (!boundedText(endpointId, 128) || input === null || typeof input !== 'object' || Array.isArray(input) ||
+      Object.getPrototypeOf(input) !== Object.prototype || Reflect.ownKeys(input).length !== expected.length ||
+      !expected.every((key) => Object.prototype.hasOwnProperty.call(input, key))) throw abortError()
+  return token<CredentialCreateReceipt>({
+    kind: 'create-credential', endpointId,
+    input: Object.freeze(detachedJson(input) as CredentialCreateInput),
+  })
+}
+
+export function createRevokeCredentialOperation(
+  endpointId: string, credentialId: string,
+): ProtectedOperation<void> {
+  if (!boundedText(endpointId, 128) || !boundedText(credentialId, 128)) throw abortError()
+  return token<void>({ kind: 'revoke-credential', endpointId, credentialId })
+}
+
 export function consumeProtectedOperation<T>(operation: ProtectedOperation<T>): ProtectedManifest {
   const candidate = operation as object
   const manifest = manifests.get(candidate)
@@ -183,5 +220,15 @@ export async function dispatchProtectedOperation<T>(
       return await createEndpointVersion(
         manifest.endpointId, { configuration: manifest.configuration }, csrfToken, { signal },
       ) as T
+    case 'create-credential':
+      return await createCredential(manifest.endpointId, {
+        name: manifest.input.name,
+        purpose: manifest.input.purpose,
+        expiresAt: manifest.input.expiresAt,
+        ipAllowlist: [...manifest.input.ipAllowlist],
+        rateLimitRequests: manifest.input.rateLimitRequests,
+      }, csrfToken, { signal }) as T
+    case 'revoke-credential':
+      return await revokeCredential(manifest.endpointId, manifest.credentialId, csrfToken, { signal }) as T
   }
 }

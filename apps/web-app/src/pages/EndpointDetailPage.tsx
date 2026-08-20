@@ -3,6 +3,8 @@ import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { ApiResponseError } from '../api/client'
 import { getOwnerEndpoint, type OwnerEndpointDetail } from '../api/endpoints'
 import { useSession } from '../app/SessionProvider'
+import CredentialManager from '../features/endpoints/CredentialManager'
+import EndpointDocs from '../features/endpoints/EndpointDocs'
 import OwnerDiagnostics from '../features/logs/OwnerDiagnostics'
 
 export const ENDPOINT_NOT_FOUND_MESSAGE = '找不到端點或無權存取。'
@@ -20,12 +22,21 @@ type DetailState =
   | { kind: 'not-found' }
   | { kind: 'error' }
 
+type DetailTab = 'overview' | 'credentials' | 'docs' | 'diagnostics'
+const DETAIL_TABS: ReadonlyArray<Readonly<{ id: DetailTab; label: string }>> = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'credentials', label: 'Credentials' },
+  { id: 'docs', label: 'Docs' },
+  { id: 'diagnostics', label: 'Diagnostics' },
+]
+
 export default function EndpointDetailPage({ endpointId, onClose, onCreateVersion }: EndpointDetailPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [state, setState] = useState<DetailState>({ kind: 'loading' })
   const [logoutError, setLogoutError] = useState(false)
   const [logoutPending, setLogoutPending] = useState(false)
   const [requestRevision, setRequestRevision] = useState(0)
+  const [activeTab, setActiveTab] = useState<DetailTab>('overview')
   const mounted = useRef(false)
   const epoch = useRef(0)
   const controller = useRef<AbortController | null>(null)
@@ -47,6 +58,7 @@ export default function EndpointDetailPage({ endpointId, onClose, onCreateVersio
     const requestController = new AbortController()
     controller.current = requestController
     setState({ kind: 'loading' })
+    setActiveTab('overview')
     void getOwnerEndpoint(endpointId, { signal: requestController.signal }).then(
       (detail) => {
         if (mounted.current && !requestController.signal.aborted && epoch.current === requestEpoch) {
@@ -96,13 +108,27 @@ export default function EndpointDetailPage({ endpointId, onClose, onCreateVersio
         {state.kind === 'error' && <p role="alert">{ENDPOINT_DETAIL_ERROR_MESSAGE}</p>}
         {state.kind === 'ready' && (
           <>
-            <dl aria-label="端點基本資料">
-              <dt>Slug</dt><dd>{state.detail.slug}</dd>
-              <dt>狀態</dt><dd>{state.detail.status}</dd>
-              <dt>目前版本</dt><dd>{state.detail.currentVersionNumber === null ? '尚未發布' : `版本 ${state.detail.currentVersionNumber}`}</dd>
-            </dl>
-            <button type="button" onClick={() => onCreateVersion(state.detail.endpointId)}>建立新版本</button>
-            <OwnerDiagnostics endpointId={state.detail.endpointId} />
+            <div role="tablist" aria-label="端點資料分頁">
+              {DETAIL_TABS.map((tab) => <button key={tab.id} type="button" role="tab"
+                aria-selected={activeTab === tab.id} onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}
+            </div>
+            {activeTab === 'overview' && <section role="tabpanel" aria-label="Overview">
+              <dl aria-label="端點基本資料">
+                <dt>Slug</dt><dd>{state.detail.slug}</dd>
+                <dt>狀態</dt><dd>{state.detail.status}</dd>
+                <dt>目前版本</dt><dd>{state.detail.currentVersionNumber === null ? '尚未發布' : `版本 ${state.detail.currentVersionNumber}`}</dd>
+              </dl>
+              <button type="button" onClick={() => onCreateVersion(state.detail.endpointId)}>建立新版本</button>
+            </section>}
+            {activeTab === 'credentials' && <div role="tabpanel" aria-label="Credentials">
+              <CredentialManager endpointId={state.detail.endpointId} />
+            </div>}
+            {activeTab === 'docs' && <div role="tabpanel" aria-label="Docs">
+              <EndpointDocs endpointId={state.detail.endpointId} />
+            </div>}
+            {activeTab === 'diagnostics' && <div role="tabpanel" aria-label="Diagnostics">
+              <OwnerDiagnostics endpointId={state.detail.endpointId} />
+            </div>}
           </>
         )}
       </section>
