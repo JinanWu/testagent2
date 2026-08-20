@@ -278,7 +278,7 @@ export function parseCredentialCreateReceipt(value: unknown): CredentialCreateRe
 }
 
 const DOCS_INVOKE_URL = '${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke'
-const DOCS_CURL = "curl -X POST '${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke' -H 'Authorization: Bearer ***' -H 'Content-Type: application/json' --data '{\"input\":{},\"session_id\":\"${SESSION_ID}\",\"metadata\":{\"endpoint_id\":\"${ENDPOINT_ID}\"}}'"
+const DOCS_CURL = "curl -X POST '${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke' -H 'Authorization: Bearer ${API_KEY}' -H 'Content-Type: application/json' --data '{\"input\":{},\"session_id\":\"${SESSION_ID}\",\"metadata\":{\"endpoint_id\":\"${ENDPOINT_ID}\"}}'"
 const DOCS_PYTHON = "import json\nimport urllib.request\nurl = '${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke'\npayload = {'input': {}, 'session_id': '${SESSION_ID}', 'metadata': {'endpoint_id': '${ENDPOINT_ID}'}}\nrequest = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), headers={'Authorization': 'Bearer ${API_KEY}', 'Content-Type': 'application/json'}, method='POST')\nwith urllib.request.urlopen(request) as response:\n    print(response.read().decode('utf-8'))"
 const DOCS_ERRORS = [
   ['endpoint_not_found', 404, '找不到 endpoint slug。'], ['invalid_api_key', 401, 'API key 無效。'],
