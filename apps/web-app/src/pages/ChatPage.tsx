@@ -7,7 +7,13 @@ import { createSendChatOperation, type ProtectedStateOwner } from '../app/sessio
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
-export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => void }) {
+export default function ChatPage({
+  onOpenEndpoints,
+  onOpenAdminLogs,
+}: {
+  onOpenEndpoints?: () => void
+  onOpenAdminLogs?: () => void
+}) {
   const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
@@ -150,6 +156,7 @@ export default function ChatPage({ onOpenAdminLogs }: { onOpenAdminLogs?: () => 
         <button type="button" onClick={() => {
           void logout().catch(() => { setError(AUTH_ERROR_MESSAGE) })
         }}>登出</button>
+        {onOpenEndpoints && <button type="button" onClick={onOpenEndpoints}>端點管理</button>}
         {user?.role === 'admin' && onOpenAdminLogs && (
           <button type="button" onClick={onOpenAdminLogs}>完整呼叫紀錄</button>
         )}

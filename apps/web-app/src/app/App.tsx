@@ -1,19 +1,21 @@
 import { useEffect, useState } from 'react'
 import ChatPage from '../pages/ChatPage'
-import InvocationLogsPage from '../pages/InvocationLogsPage'
 import EndpointDetailPage from '../pages/EndpointDetailPage'
+import EndpointListPage from '../pages/EndpointListPage'
+import InvocationLogsPage from '../pages/InvocationLogsPage'
 import LoginPage from '../pages/LoginPage'
 import { SessionProvider, useSession } from './SessionProvider'
 import {
   ADMIN_LOGS_ROUTE,
   DEFAULT_APP_ROUTE,
+  ENDPOINTS_ROUTE,
   currentAppRoute,
   replaceAppRoute,
   type AppRoute,
 } from './routes'
 
 function RouteShell() {
-  const { status, user } = useSession()
+  const { status, user, logout } = useSession()
   const [route, setRoute] = useState<AppRoute | null>(currentAppRoute)
 
   useEffect(() => {
@@ -28,15 +30,29 @@ function RouteShell() {
     }
   }
 
+  function openEndpoints() {
+    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(ENDPOINTS_ROUTE)) {
+      setRoute(ENDPOINTS_ROUTE)
+    }
+  }
+
   function openAdminLogs() {
     if (user?.role === 'admin' && replaceAppRoute(ADMIN_LOGS_ROUTE)) {
       setRoute(ADMIN_LOGS_ROUTE)
     }
   }
 
+  function openEndpointDetail(endpointId: string) {
+    const target = { kind: 'endpoint-detail', endpointId } as const
+    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) {
+      setRoute(target)
+    }
+  }
+
   // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
   useEffect(() => {
-    if (status !== 'authenticated' || route === DEFAULT_APP_ROUTE ||
+    if (status !== 'authenticated' || (user?.role !== 'member' && user?.role !== 'admin') ||
+        route === DEFAULT_APP_ROUTE || route === ENDPOINTS_ROUTE ||
         (typeof route === 'object' && route?.kind === 'endpoint-detail') ||
         (route === ADMIN_LOGS_ROUTE && user?.role === 'admin')) {
       return
@@ -56,10 +72,24 @@ function RouteShell() {
   if (status === 'anonymous') {
     return <LoginPage onAuthenticated={openDefaultRoute} />
   }
-  if (route === DEFAULT_APP_ROUTE) {
-    return <ChatPage onOpenAdminLogs={openAdminLogs} />
+  if (user?.role !== 'member' && user?.role !== 'admin') {
+    return (
+      <main className="app-shell">
+        <section className="welcome-card" aria-labelledby="role-error-title">
+          <h1 id="role-error-title">無法使用此介面</h1>
+          <p role="alert">目前帳號沒有可用的介面權限。</p>
+          <button type="button" onClick={() => { void logout().catch(() => {}) }}>登出</button>
+        </section>
+      </main>
+    )
   }
-  if (route === ADMIN_LOGS_ROUTE && user?.role === 'admin') {
+  if (route === DEFAULT_APP_ROUTE) {
+    return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
+  }
+  if (route === ENDPOINTS_ROUTE) {
+    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} />
+  }
+  if (route === ADMIN_LOGS_ROUTE && user.role === 'admin') {
     return <InvocationLogsPage onClose={openDefaultRoute} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-detail') {

@@ -1,7 +1,8 @@
 export const DEFAULT_APP_ROUTE = '/' as const
+export const ENDPOINTS_ROUTE = '/endpoints' as const
 export const ADMIN_LOGS_ROUTE = '/admin/invocations' as const
 
-export const APP_ROUTES = Object.freeze([DEFAULT_APP_ROUTE, ADMIN_LOGS_ROUTE] as const)
+export const APP_ROUTES = Object.freeze([DEFAULT_APP_ROUTE, ENDPOINTS_ROUTE, ADMIN_LOGS_ROUTE] as const)
 export interface EndpointDetailRoute { kind: 'endpoint-detail'; endpointId: string }
 export type AppRoute = (typeof APP_ROUTES)[number] | EndpointDetailRoute
 const ENDPOINT_ID = /^[A-Za-z0-9_-]{1,128}$/
