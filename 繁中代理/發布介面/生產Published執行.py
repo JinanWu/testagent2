@@ -71,6 +71,8 @@ from .生產端點查詢 import (
     安裝端點查詢資源,
 )
 from .路由.端點查詢 import 建立端點查詢路由器
+from .路由.文件 import 建立端點文件路由器
+from .生產端點文件 import 延遲端點文件服務, 安裝端點文件資源
 from .路由.規劃發布 import (
     建立安全規劃發布路由器, 建立安全草稿端點建立路由器, 建立安全草稿路由器,
 )
@@ -600,6 +602,7 @@ class 生產Published執行建構器:
         self._管理稽核代理, self._管理稽核游標 = 建立管理稽核權限()
         self._Owner觀測代理 = 延遲Owner觀測服務()
         self._端點查詢代理 = 延遲端點管理查詢服務()
+        self._端點文件代理 = 延遲端點文件服務()
 
     def 取得草稿規劃代理(self) -> 延遲草稿規劃服務:
         """取得本 builder 在 app construction 建立的 per-app Lazy Draft Proxy。
@@ -662,6 +665,7 @@ class 生產Published執行建構器:
             路由器清單 += (建立憑證管理路由器(
                 self._憑證管理代理, 目前工作階段相依, CSRF相依,
             ),)
+        路由器清單 += 建立端點文件路由器(self._端點文件代理, 目前工作階段相依)
         路由器清單 += (建立管理稽核路由(self._管理稽核代理, self._管理稽核游標, 目前工作階段相依),)
         if 管理遮蔽權限 is not None:
             路由器清單 += (建立管理遮蔽路由器(管理遮蔽權限),)
@@ -684,6 +688,9 @@ class 生產Published執行建構器:
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
                 self._發布管理代理, self._憑證管理代理,
             ), self._管理稽核代理, self._設定.發布資料庫路徑)
+            主資源 = await 安裝端點文件資源(
+                主資源, self._端點文件代理, self._設定.發布資料庫路徑,
+            )
             if self._設定.Owner觀測游標金鑰 is not None:
                 主資源 = await 安裝Owner觀測資源(
                     主資源, self._Owner觀測代理, self._設定.發布資料庫路徑,

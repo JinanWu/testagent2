@@ -37,12 +37,14 @@ _預期路由清單 = {
     "/api/auth/me": ("get",),
     "/api/auth/session": ("get",),
     "/api/chat": ("post",),
+    "/api/published-endpoints/{endpoint_id}/docs": ("get",),
     "/api/published-endpoints/draft": ("post",),
     "/api/sessions": ("get",),
     "/api/sessions/{session_id}": ("get",),
     "/api/skills": ("get",),
     "/api/skills/{skill_id}": ("get",),
     "/healthz": ("get",),
+    "/v1/endpoints/{slug}/docs": ("get",),
     "/v1/endpoints/{slug}/invoke": ("post",),
 }
 

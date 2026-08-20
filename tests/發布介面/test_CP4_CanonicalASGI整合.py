@@ -29,6 +29,7 @@ _預期路由清單 = {
     "/api/published-endpoints/{endpoint_id}/credentials/{credential_id}/revoke": ("post",),
     "/api/published-endpoints/{endpoint_id}/metrics": ("get",),
     "/api/published-endpoints/{endpoint_id}/diagnostics": ("get",),
+    "/api/published-endpoints/{endpoint_id}/docs": ("get",),
     "/api/published-endpoints/draft": ("post",),
     "/api/published-endpoints": ("get", "post"),
     "/api/published-endpoints/{endpoint_id}": ("get",),
@@ -39,6 +40,7 @@ _預期路由清單 = {
     "/api/skills/{skill_id}": ("get",),
     "/healthz": ("get",),
     "/v1/endpoints/{slug}/invoke": ("post",),
+    "/v1/endpoints/{slug}/docs": ("get",),
 }
 
 
