@@ -30,6 +30,7 @@ from .工具集.待辦清單 import 待辦清單
 from .工具集.釐清詢問 import 建立釐清處理器, 詢問回呼型別
 from .工具集.管理部_bigquery import 管理部文件搜尋
 from .工具集.網路搜尋 import 網頁擷取, 網路搜尋
+from .工具集.網頁渲染 import 網頁渲染
 from .使用者 import 使用者上下文
 
 
@@ -99,6 +100,7 @@ def 建立預設工具登錄器(
         "bigquery_query": BigQuery查詢工具,
         "web_search": 網路搜尋,
         "web_extract": 網頁擷取,
+        "web_render": 網頁渲染,
         "todo": 待辦清單,
         "clarify": 建立釐清處理器(詢問回呼),
     }

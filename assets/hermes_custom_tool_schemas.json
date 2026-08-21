@@ -14,7 +14,11 @@
           },
           "search_mode": {
             "type": "string",
-            "enum": ["hybrid", "semantic", "keyword"],
+            "enum": [
+              "hybrid",
+              "semantic",
+              "keyword"
+            ],
             "description": "Retrieval mode. Use hybrid by default. Use keyword only for explicit exact-field or exact-text searches. Use semantic only when explicitly requested or for debugging.",
             "default": "hybrid"
           },
@@ -67,7 +71,9 @@
             "additionalProperties": false
           }
         },
-        "required": ["query"]
+        "required": [
+          "query"
+        ]
       }
     }
   },
@@ -82,7 +88,12 @@
         "properties": {
           "action": {
             "type": "string",
-            "enum": ["list_datasets", "list_tables", "describe_table", "query"],
+            "enum": [
+              "list_datasets",
+              "list_tables",
+              "describe_table",
+              "query"
+            ],
             "description": "list_datasets: show which datasets are queryable. list_tables: list tables in a dataset. describe_table: list a table's column names and types. query: run a read-only SELECT."
           },
           "project": {
@@ -111,7 +122,53 @@
             "minimum": 1
           }
         },
-        "required": ["action"]
+        "required": [
+          "action"
+        ]
+      }
+    }
+  },
+  {
+    "name": "web_render",
+    "toolset": "web",
+    "schema": {
+      "name": "web_render",
+      "description": "Render a web page in a real headless browser and return its visible text plus every image and link that actually exists on the rendered page. Use this instead of web_extract when the page is built by JavaScript (product listings, infinite-scroll feeds, SPA dashboards) or when you need image URLs with alt text and link URLs with anchor text as raw material for structured extraction. Rendering is far more expensive than web_extract, so prefer web_extract for static articles and documentation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "urls": {
+            "type": "array",
+            "description": "Pages to render. Rendering is expensive; request only the pages you actually need.",
+            "items": {
+              "type": "string",
+              "description": "An http or https URL."
+            },
+            "minItems": 1,
+            "maxItems": 3
+          },
+          "wait_until": {
+            "type": "string",
+            "enum": [
+              "load",
+              "domcontentloaded",
+              "networkidle"
+            ],
+            "description": "When to consider navigation finished. Use load by default. Use networkidle for pages that fetch their content after first paint, such as infinite-scroll listings; it is slower and can time out on pages with polling or live chat widgets. Use domcontentloaded only when you just need markup that is present in the initial HTML.",
+            "default": "load"
+          },
+          "max_chars": {
+            "type": "integer",
+            "description": "Maximum characters of page text to return per URL. Raise this only when a page is genuinely long and you need the tail.",
+            "minimum": 1,
+            "maximum": 100000,
+            "default": 20000
+          }
+        },
+        "required": [
+          "urls"
+        ],
+        "additionalProperties": false
       }
     }
   }
