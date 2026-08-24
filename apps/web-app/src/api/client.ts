@@ -18,23 +18,67 @@ const MAX_SESSION_DETAIL_RESPONSE_BYTES = 97 * 1024 * 1024
 const MAX_EMPTY_STREAM_READS = 4096
 const MAX_REQUEST_BYTES = 1024
 const MAX_CHAT_REQUEST_BYTES = 100 * 1024
+const MAX_MANAGEMENT_REQUEST_BYTES = 32 * 1024
+const MAX_MANAGEMENT_RESPONSE_BYTES = 1024 * 1024
+const MAX_CREDENTIAL_LIST_RESPONSE_BYTES = 48 * 1024 * 1024
+const MAX_DOCS_RESPONSE_BYTES = 256 * 1024
 const JSON_CONTENT_TYPE = 'application/json'
+const CSRF_SUCCESSOR = /^[A-Za-z0-9_-]{32,512}$/
 const ROUTES = new Set<string>(Object.values(API_ROUTES))
 const SESSION_DETAIL_ROUTE = /^\/api\/sessions\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
 const RESOURCE_DETAIL_ROUTE = /^\/api\/(?:sessions|skills)\/(?:[A-Za-z0-9_.!~*'()-]|%[0-9A-F]{2}){1,384}$/
 const OWNER_OBSERVABILITY_ROUTE = /^\/api\/published-endpoints\/[A-Za-z0-9_-]{1,128}\/(?:metrics\?window_seconds=[1-9]\d{0,6}|diagnostics\?window_seconds=[1-9]\d{0,6}&limit=[1-9]\d{0,2}(?:&cursor=[A-Za-z0-9_.!~*'()%-]{1,3072})?)$/
+const MANAGEMENT_ID = '[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}'
+const MANAGEMENT_ROOT_ROUTE = '/api/published-endpoints'
+const MANAGEMENT_LIST_ROUTE = /^\/api\/published-endpoints\?scope=(?:owner|all)&limit=(?:[1-9]|[1-9]\d|100)(?:&cursor=[A-Za-z0-9_-]{1,512})?$/
+const OWNER_MANAGEMENT_DETAIL_ROUTE = /^\/api\/published-endpoints\/[A-Za-z0-9_-]{1,128}$/
+const MANAGEMENT_DETAIL_ROUTE = new RegExp(`^/api/published-endpoints/${MANAGEMENT_ID}$`)
+const MANAGEMENT_DRAFT_ROUTE = '/api/published-endpoints/draft'
+const MANAGEMENT_VERSION_ROUTE = new RegExp(`^/api/published-endpoints/${MANAGEMENT_ID}/versions$`)
+const MANAGEMENT_CREDENTIAL_ROUTE = new RegExp(`^/api/published-endpoints/${MANAGEMENT_ID}/credentials$`)
+const MANAGEMENT_REVOKE_ROUTE = new RegExp(`^/api/published-endpoints/${MANAGEMENT_ID}/credentials/${MANAGEMENT_ID}/revoke$`)
+const MANAGEMENT_DOCS_ROUTE = new RegExp(`^/api/published-endpoints/${MANAGEMENT_ID}/docs$`)
+
+function isManagementRoute(route: string): boolean {
+  return route === MANAGEMENT_ROOT_ROUTE || route === MANAGEMENT_DRAFT_ROUTE || MANAGEMENT_LIST_ROUTE.test(route) ||
+    MANAGEMENT_DETAIL_ROUTE.test(route) || MANAGEMENT_VERSION_ROUTE.test(route) ||
+    MANAGEMENT_CREDENTIAL_ROUTE.test(route) || MANAGEMENT_REVOKE_ROUTE.test(route) || MANAGEMENT_DOCS_ROUTE.test(route)
+}
 
 function isAllowedRoute(route: string): boolean {
   return ROUTES.has(route) ||
     /^\/api\/sessions\?limit=(?:[1-9]|[1-4]\d|50)$/.test(route) ||
-    RESOURCE_DETAIL_ROUTE.test(route) || OWNER_OBSERVABILITY_ROUTE.test(route)
+    RESOURCE_DETAIL_ROUTE.test(route) || OWNER_OBSERVABILITY_ROUTE.test(route) || isManagementRoute(route)
 }
 
-function responseLimit(route: string): number {
+function isAllowedMethod(route: string, method: 'GET' | 'POST'): boolean {
+  if (!isManagementRoute(route)) return true
+  if (route === MANAGEMENT_ROOT_ROUTE || route === MANAGEMENT_DRAFT_ROUTE || MANAGEMENT_VERSION_ROUTE.test(route) || MANAGEMENT_REVOKE_ROUTE.test(route)) {
+    return method === 'POST'
+  }
+  if (MANAGEMENT_LIST_ROUTE.test(route) || OWNER_MANAGEMENT_DETAIL_ROUTE.test(route) || MANAGEMENT_DOCS_ROUTE.test(route)) {
+    return method === 'GET'
+  }
+  return MANAGEMENT_CREDENTIAL_ROUTE.test(route)
+}
+
+function isAllowedManagementRequest(route: string, method: 'GET' | 'POST', body: string | undefined, csrfToken: string | undefined): boolean {
+  if (!isManagementRoute(route)) return true
+  if (method === 'GET') return body === undefined && csrfToken === undefined
+  const revoke = MANAGEMENT_REVOKE_ROUTE.test(route)
+  return (revoke ? body === undefined : body !== undefined) && typeof csrfToken === 'string' &&
+    csrfToken.length > 0 && csrfToken.length <= 4096 &&
+    !Array.from(csrfToken).some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)
+}
+
+function responseLimit(route: string, method: 'GET' | 'POST'): number {
   if (SESSION_DETAIL_ROUTE.test(route)) {
     return MAX_SESSION_DETAIL_RESPONSE_BYTES
   }
   if (OWNER_OBSERVABILITY_ROUTE.test(route)) return MAX_LARGE_RESPONSE_BYTES
+  if (MANAGEMENT_DOCS_ROUTE.test(route)) return MAX_DOCS_RESPONSE_BYTES
+  if (method === 'GET' && MANAGEMENT_CREDENTIAL_ROUTE.test(route)) return MAX_CREDENTIAL_LIST_RESPONSE_BYTES
+  if (isManagementRoute(route)) return MAX_MANAGEMENT_RESPONSE_BYTES
   return route === API_ROUTES.chat || route.startsWith('/api/sessions') || route.startsWith('/api/skills')
     ? MAX_LARGE_RESPONSE_BYTES : MAX_RESPONSE_BYTES
 }
@@ -179,6 +223,7 @@ export interface ApiRequestOptions {
   csrfToken?: string
   signal?: AbortSignal
   expectedStatus?: number
+  onCsrfSuccessor?: (token: string) => void
 }
 
 export async function apiRequest(
@@ -187,8 +232,11 @@ export async function apiRequest(
 ): Promise<unknown> {
   throwIfAborted(options.signal)
   const method = options.method ?? 'GET'
-  const requestLimit = route === API_ROUTES.chat ? MAX_CHAT_REQUEST_BYTES : MAX_REQUEST_BYTES
-  if (!isAllowedRoute(route) || (options.body !== undefined && byteLength(options.body) > requestLimit)) {
+  const requestLimit = route === API_ROUTES.chat ? MAX_CHAT_REQUEST_BYTES
+    : isManagementRoute(route) ? MAX_MANAGEMENT_REQUEST_BYTES : MAX_REQUEST_BYTES
+  if (!isAllowedRoute(route) || !isAllowedMethod(route, method) ||
+      !isAllowedManagementRequest(route, method, options.body, options.csrfToken) ||
+      (options.body !== undefined && byteLength(options.body) > requestLimit)) {
     throw new ApiFormatError()
   }
   const headers: Record<string, string> = { Accept: JSON_CONTENT_TYPE }
@@ -219,6 +267,11 @@ export async function apiRequest(
   }
 
   throwIfAborted(options.signal)
+  const successor = response.headers.get('X-CSRF-Token')
+  if (successor !== null) {
+    if (!CSRF_SUCCESSOR.test(successor)) throw new ApiFormatError()
+    options.onCsrfSuccessor?.(successor)
+  }
   const expectedStatus = options.expectedStatus
   if (!response.ok || (expectedStatus !== undefined && response.status !== expectedStatus)) {
     throw new ApiResponseError(response.status)
@@ -233,7 +286,7 @@ export async function apiRequest(
   }
 
   throwIfAborted(options.signal)
-  const text = await readBoundedResponse(response, responseLimit(route), options.signal)
+  const text = await readBoundedResponse(response, responseLimit(route, method), options.signal)
   throwIfAborted(options.signal)
   if (text.length === 0) {
     throw new ApiFormatError()
@@ -252,6 +305,7 @@ export async function apiRequest(
 
 export function parseSafeJson(text: string): unknown {
   if (typeof text !== 'string' || text.length === 0) throw new ApiFormatError()
+  rejectDuplicateObjectKeys(text)
   let inString = false
   let escaped = false
   for (let index = 0; index < text.length; index += 1) {
@@ -282,6 +336,46 @@ export function parseSafeJson(text: string): unknown {
   }
 }
 
+function rejectDuplicateObjectKeys(text: string): void {
+  const stack: Array<{ kind: 'object'; keys: Set<string>; expectingKey: boolean } | { kind: 'array' }> = []
+  let inString = false
+  let escaped = false
+  let stringStart = -1
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (character === '\\') escaped = true
+      else if (character === '"') {
+        inString = false
+        const context = stack.at(-1)
+        if (context?.kind === 'object' && context.expectingKey) {
+          let key: unknown
+          try { key = JSON.parse(text.slice(stringStart, index + 1)) }
+          catch { throw new ApiFormatError() }
+          if (typeof key !== 'string' || context.keys.has(key)) throw new ApiFormatError()
+          context.keys.add(key)
+          context.expectingKey = false
+        }
+      }
+      continue
+    }
+    if (character === '"') {
+      inString = true
+      stringStart = index
+    } else if (character === '{') {
+      stack.push({ kind: 'object', keys: new Set<string>(), expectingKey: true })
+    } else if (character === '[') {
+      stack.push({ kind: 'array' })
+    } else if (character === '}' || character === ']') {
+      stack.pop()
+    } else if (character === ',') {
+      const context = stack.at(-1)
+      if (context?.kind === 'object') context.expectingKey = true
+    }
+  }
+}
+
 export function exactObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   try {
     if (typeof value !== 'object' || value === null || Object.getPrototypeOf(value) !== Object.prototype) return null
@@ -292,7 +386,9 @@ export function exactObject(value: unknown, keys: readonly string[]): Record<str
       const descriptor = descriptors[key]
       if (!descriptor || !('value' in descriptor) || !descriptor.enumerable ||
           !descriptor.configurable || !descriptor.writable) return null
-      result[key] = descriptor.value
+      Object.defineProperty(result, key, {
+        value: descriptor.value, enumerable: true, configurable: true, writable: true,
+      })
     }
     return result
   } catch {

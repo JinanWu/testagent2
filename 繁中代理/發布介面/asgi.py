@@ -22,16 +22,19 @@ from typing import cast
 from fastapi import FastAPI
 
 from ..模型供應商 import GeminiADC供應商
+from ..使用者 import 使用者庫
 from .嚴格JSON import 解析嚴格JSON
 from .憑證.加密 import AESGCM憑證封套
 from .生產Web代理 import 生產Web代理建構器
 from .生產Published執行 import Published生產設定, 生產Controller建構器
+from .生產Published管理 import GeminiADC結構化產生器, Planner生產設定
 from .生產SPA import (
     ProductionSPA設定,
     建立ProductionSPA相依項,
     拒絕ProductionSPA未知方法Middleware,
 )
-from .生產技能工具 import 安裝生產技能工具
+from .生產技能工具 import 安裝生產技能工具, 技能工具發布名稱
+from .規劃.規劃器供應商 import Gemini規劃器
 from .生產組裝 import 建立生產應用程式, 建立生產相依項
 from .應用程式 import 建立網頁應用程式
 from .相依項 import 發布介面相依項
@@ -266,13 +269,26 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         Web環境[供應器環境名稱] = "gemini-adc"
         Web設定 = 解析環境生產設定(Web環境)
 
+        Gemini權威: GeminiADC供應商 | None = None
+
+        def 建立Gemini權威() -> GeminiADC供應商:
+            """startup lazy 建立並重用本 app 唯一 Gemini ADC production authority。"""
+            nonlocal Gemini權威
+            if Gemini權威 is None:
+                Gemini權威 = GeminiADC供應商(
+                    Web設定.模型名稱,
+                    cast(str, Web設定.Gemini專案識別碼),
+                    cast(str, Web設定.Gemini位置),
+                )
+            return Gemini權威
+
         def 建立模型註冊表() -> dict[str, object]:
             """lifespan startup 建立唯一 application-owned Gemini ADC authority。"""
-            return {"gemini-adc": GeminiADC供應商(
-                Web設定.模型名稱,
-                cast(str, Web設定.Gemini專案識別碼),
-                cast(str, Web設定.Gemini位置),
-            )}
+            return {"gemini-adc": 建立Gemini權威()}
+
+        def 建立Planner() -> Gemini規劃器:
+            """於 startup 將同一 Gemini ADC authority 轉接成無狀態 production Planner。"""
+            return Gemini規劃器(GeminiADC結構化產生器(建立Gemini權威()))
 
         def 建立憑證封套() -> AESGCM憑證封套:
             """於lifespan startup由canonical deployment keyring建立opaque AES-GCM封套。
@@ -289,6 +305,9 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
 
         Published設定 = Published生產設定(
             Published路徑, 根路徑, 安裝生產技能工具, 建立模型註冊表,
+            Planner設定=Planner生產設定(
+                技能工具發布名稱, lambda 路徑: 使用者庫(路徑), 建立Planner,
+            ),
             憑證封套工廠=建立憑證封套,
             Owner觀測游標金鑰=Owner游標金鑰,
         )

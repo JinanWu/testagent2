@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import secrets
 import time
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any, NoReturn, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, Response
 from fastapi.responses import JSONResponse
@@ -168,7 +168,8 @@ def 建立憑證管理路由器(
         請求: Request,
         端點識別碼: Annotated[str, Path(alias="endpoint_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),
-    ) -> JSONResponse:
+        回應: Response = cast(Response, None),
+    ) -> Response:
         """列出權威 session owner 的 safe credential summaries。
 
         描述：列出權威 session owner 的 safe credential summaries。
@@ -176,8 +177,8 @@ def 建立憑證管理路由器(
         返回值：狀態碼200且本文只含安全憑證摘要列表的JSON回應。
 
         """
-        端點識別碼 = _驗證識別碼(端點識別碼)
-        _拒絕查詢參數(請求)
+        端點識別碼 = _驗證識別碼(端點識別碼, 回應)
+        _拒絕查詢參數(請求, 回應)
         使用者識別碼, _ = _重建身份(使用者)
         try:
             結果 = await run_in_threadpool(
@@ -186,13 +187,15 @@ def 建立憑證管理路由器(
             )
             if type(結果) is not 憑證列表結果:
                 raise ValueError
-            return JSONResponse(status_code=200, content=序列化憑證列表(結果))
+            return _傳遞CSRF接續(
+                回應, JSONResponse(status_code=200, content=序列化憑證列表(結果)),
+            )
         except _控制例外:
             raise
         except 找不到端點憑證錯誤:
-            _拋出HTTP錯誤(404, "credential_not_found")
+            _拋出HTTP錯誤(404, "credential_not_found", 回應)
         except BaseException:
-            _拋出HTTP錯誤(500, "credential_management_failed")
+            _拋出HTTP錯誤(500, "credential_management_failed", 回應)
 
     @路由器.post(
         "/{endpoint_id}/credentials", status_code=201,

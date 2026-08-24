@@ -54,7 +54,7 @@ def _建立資料庫(路徑: Path) -> None:
     參數：``路徑`` 是 pytest 暫存目錄內尚未存在的 SQLite 檔案路徑。
     返回值：無；遷移版本或冪等性不符時由斷言失敗。
     """
-    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 16))
+    assert 初始化發布介面資料庫(路徑) == tuple(range(1, 17))
     assert 初始化發布介面資料庫(路徑) == ()
 
 
@@ -163,11 +163,11 @@ def test_0015_manifest_fresh_apply_twice與唯一authority(tmp_path: Path) -> No
     返回值：無；契約由斷言表示。
     """
     assert 遷移路徑.is_file()
-    assert [(項目.版本, 項目.名稱) for 項目 in 載入發布介面遷移()][-1] == (
+    assert [(項目.版本, 項目.名稱) for 項目 in 載入發布介面遷移()][14] == (
         15,
         遷移路徑.name,
     )
-    assert 遷移帳本[-1] == (15, 遷移路徑.name)
+    assert 遷移帳本[14] == (15, 遷移路徑.name)
     db = tmp_path / "fresh.sqlite3"
     _建立資料庫(db)
     with sqlite3.connect(db) as 連線:

@@ -26,8 +26,8 @@ _建立連線 = sqlite3.connect
 _最大候選 = 1000
 _最大相依 = 10000
 _清除固定錯誤 = "五年保存資料無法清除"
-_完整結構數 = 77
-_完整結構雜湊 = "eb3206e3ea93349aa8ccbebe7a0debd96513296e7cf972163df42770454fd02d"
+_完整結構數 = 78
+_完整結構雜湊 = "60b25af8198d37ede8cf4aee43b3710285242eafaa87d586d44096d5f02eac6a"
 _單一結構SQL最大位元組 = 65536
 _完整結構SQL總最大位元組 = 1048576
 _完整結構物件 = tuple(
@@ -55,7 +55,8 @@ _完整結構物件 = tuple(
             "endpoint_tool_calls", "invocation_sensitive_hits", "published_api_schema_migrations",
             "published_draft_consumptions",
             "published_endpoint_version_metadata", "published_endpoint_versions", "published_endpoints",
-            "published_session_turn_pairs", "published_skill_bundles", "rate_limit_counters", "run_events",
+            "published_session_turn_pairs", "published_skill_bundles", "rate_limit_counters",
+            "redaction_idempotency_commands", "run_events",
             "service_accounts", "web_sessions",
         )),
         ("trigger", (

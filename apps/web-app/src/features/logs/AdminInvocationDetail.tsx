@@ -1,4 +1,5 @@
-import type { AdminInvocationDetail, JsonValue } from '../../api/logs'
+import { useState, type FormEvent } from 'react'
+import type { AdminInvocationDetail, JsonValue, RedactionRequest } from '../../api/logs'
 
 function isCanonicalTombstone(value: JsonValue): boolean {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
@@ -43,9 +44,22 @@ function RawField({ label, value }: { label: string; value: JsonValue }) {
 export interface AdminInvocationDetailProps {
   detail: AdminInvocationDetail
   hasRedaction: boolean
+  redactionPending: boolean
+  onRedact(request: RedactionRequest): Promise<void>
 }
 
-export default function AdminInvocationDetail({ detail, hasRedaction }: AdminInvocationDetailProps) {
+export default function AdminInvocationDetail({
+  detail, hasRedaction, redactionPending, onRedact,
+}: AdminInvocationDetailProps) {
+  const [targetType, setTargetType] = useState('metadata')
+  const [targetRowId, setTargetRowId] = useState(detail.invocation.id)
+  const [jsonPath, setJsonPath] = useState('')
+  const [reason, setReason] = useState('')
+  const [confirmation, setConfirmation] = useState<RedactionRequest | null>(null)
+  function prepareRedaction(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    setConfirmation({ targetType, targetRowId, jsonPath, reason })
+  }
   const containsRedaction = hasRedaction || detail.redactions.length > 0
   const targetLabels: Record<string, string> = {
     invocation_input: '輸入', metadata: 'Metadata', output: '輸出', error: '錯誤',
@@ -103,6 +117,36 @@ export default function AdminInvocationDetail({ detail, hasRedaction }: AdminInv
             </li>
           ))}</ul>
         )}
+      </section>
+      <section aria-label="不可逆遮蔽">
+        <h3>不可逆遮蔽</h3>
+        <p>此操作會永久以tombstone取代指定內容，無法還原。</p>
+        <form aria-label="建立不可逆遮蔽" onSubmit={prepareRedaction}>
+          <label htmlFor="redaction-target-type">目標類型</label>
+          <select id="redaction-target-type" value={targetType}
+            onChange={(event) => setTargetType(event.currentTarget.value)}>
+            {Object.entries(targetLabels).map(([value, label]) =>
+              <option key={value} value={value}>{label}</option>)}
+          </select>
+          <label htmlFor="redaction-target-row">目標資料列識別碼</label>
+          <input id="redaction-target-row" required maxLength={128} value={targetRowId}
+            onChange={(event) => setTargetRowId(event.currentTarget.value)} />
+          <label htmlFor="redaction-json-path">JSON Pointer（空白代表整份文件）</label>
+          <input id="redaction-json-path" maxLength={4096} value={jsonPath}
+            onChange={(event) => setJsonPath(event.currentTarget.value)} />
+          <label htmlFor="redaction-reason">遮蔽原因</label>
+          <textarea id="redaction-reason" required maxLength={256} value={reason}
+            onChange={(event) => setReason(event.currentTarget.value)} />
+          <button type="submit" disabled={redactionPending}>準備不可逆遮蔽</button>
+        </form>
+        {confirmation && <div role="dialog" aria-modal="true" aria-labelledby="redaction-confirm-title">
+          <h4 id="redaction-confirm-title">確認永久遮蔽</h4>
+          <p>確認後無法復原。請再次核對目標與JSON Pointer。</p>
+          <button type="button" disabled={redactionPending} onClick={() => setConfirmation(null)}>取消</button>
+          <button type="button" disabled={redactionPending} onClick={() => {
+            void onRedact(confirmation).then(() => setConfirmation(null), () => undefined)
+          }}>{redactionPending ? '永久遮蔽中…' : '確認永久遮蔽'}</button>
+        </div>}
       </section>
       <section aria-label="敏感資料命中">
         <h3>敏感資料命中</h3>

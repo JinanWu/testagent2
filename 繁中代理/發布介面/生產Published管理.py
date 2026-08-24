@@ -19,6 +19,7 @@ from typing import Callable
 
 from starlette.concurrency import run_in_threadpool
 
+from 繁中代理.模型供應商 import GeminiADC供應商
 from 繁中代理.使用者 import 使用者庫
 
 from .執行期.工具發布庫 import 工具發布庫
@@ -37,6 +38,81 @@ _發布服務不可用 = "發布管理服務不可用"
 _設定錯誤 = "Planner生產設定無效"
 _本機Path型別 = type(Path())
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+_Planner回應綱要 = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "endpoint_name", "suggested_slug", "behavior_summary", "selected_skills",
+        "recommended_tools", "tool_capabilities", "system_prompt", "input_schema",
+        "response_schema", "human_docs", "rate_limit", "warnings",
+    ],
+    "properties": {
+        "endpoint_name": {"type": "string"},
+        "suggested_slug": {"type": "string"},
+        "behavior_summary": {"type": "string"},
+        "selected_skills": {"type": "array", "items": {"type": "string"}},
+        "recommended_tools": {"type": "array", "items": {"type": "string"}},
+        "tool_capabilities": {"type": "object", "additionalProperties": {"type": "string"}},
+        "system_prompt": {"type": "string"},
+        "input_schema": {"anyOf": [{"type": "object"}, {"type": "null"}]},
+        "response_schema": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"type": "string", "const": "object"}},
+            "additionalProperties": True,
+        },
+        "human_docs": {"type": "string"},
+        "rate_limit": {
+            "type": "object", "additionalProperties": False,
+            "required": ["endpoint_per_minute", "credential_per_minute"],
+            "properties": {
+                "endpoint_per_minute": {"type": "integer"},
+                "credential_per_minute": {"type": "integer"},
+            },
+        },
+        "warnings": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+
+@dataclass(frozen=True, slots=True)
+class GeminiADC結構化產生器:
+    """將 application-owned Gemini ADC authority 收斂成 Planner 的最小產生介面。
+
+    建構只保存既有 provider；真正 ADC、Vertex 與網路 I/O 只發生在 ``產生JSON``。
+    """
+
+    供應商: GeminiADC供應商
+
+    def __post_init__(self) -> None:
+        """拒絕非 production Gemini ADC adapter，且不讀取任何外部狀態。"""
+        if type(object.__getattribute__(self, "供應商")) is not GeminiADC供應商:
+            raise ValueError(_設定錯誤) from None
+
+    def 產生JSON(self, *, 系統指令: str, 使用者內容: str) -> str:
+        """以固定 production planning 參數要求 Vertex Gemini 回傳 JSON DTO。"""
+        if type(系統指令) is not str or not 系統指令 or type(使用者內容) is not str or not 使用者內容:
+            raise ValueError(_設定錯誤) from None
+        供應商 = object.__getattribute__(self, "供應商")
+        回應 = 供應商.產生發布回應(
+            model=供應商.模型名稱,
+            temperature=0.0,
+            max_tokens=4096,
+            timeout_seconds=60.0,
+            structured_output=True,
+            schema_retry_count=1,
+            messages=[
+                {"role": "system", "content": 系統指令},
+                {"role": "user", "content": 使用者內容},
+            ],
+            tools=[],
+            response_schema=_Planner回應綱要,
+        )
+        文字 = getattr(回應, "text", None)
+        if type(文字) is not str:
+            raise ValueError(_設定錯誤) from None
+        return 文字
 
 
 class 草稿規劃服務不可用(RuntimeError):
@@ -559,6 +635,7 @@ def 建立生產Planner資源(
 
 __all__ = (
     "Planner生產設定",
+    "GeminiADC結構化產生器",
     "延遲草稿規劃服務",
     "延遲發布管理服務",
     "草稿規劃服務不可用",

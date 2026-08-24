@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Callable, Protocol
+from weakref import WeakKeyDictionary
 
 from fastapi import FastAPI
 
@@ -19,6 +20,18 @@ from .路由.網頁認證 import (
 
 目前工作階段相依型別 = Callable[..., 網頁使用者]
 CSRF相依型別 = Callable[..., 網頁使用者]
+_工作階段權限中繼資料: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def _取得生產工作階段權限(目前工作階段相依):
+    """依module-owned weak identity取回同app session service與security config。"""
+    try:
+        服務, 設定 = _工作階段權限中繼資料[目前工作階段相依]
+    except (KeyError, TypeError):
+        raise ValueError("生產組裝無效") from None
+    if type(服務) is not 網頁工作階段服務:
+        raise ValueError("生產組裝無效") from None
+    return 服務, 設定
 
 
 class 生產相依項建構器(Protocol):
@@ -82,6 +95,7 @@ def 建立生產相依項(
     )
     目前工作階段相依 = 建立目前工作階段相依項(工作階段服務, 網頁設定)
     CSRF相依 = 建立CSRF相依項(工作階段服務, 網頁設定)
+    _工作階段權限中繼資料[目前工作階段相依] = (工作階段服務, 網頁設定)
     認證路由器 = 建立網頁認證路由器(
         工作階段服務,
         建立SQLite帳密驗證器(設定.資料庫路徑),

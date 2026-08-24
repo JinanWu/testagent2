@@ -24,6 +24,8 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
   const generation = useRef(0)
   const initialControllers = useRef<AbortController[]>([])
   const pageController = useRef<AbortController | null>(null)
+  const pageOwner = useRef<number | null>(null)
+  const pageSequence = useRef(0)
 
   const invalidate = useCallback(() => {
     generation.current += 1
@@ -31,6 +33,7 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
     initialControllers.current = []
     pageController.current?.abort()
     pageController.current = null
+    pageOwner.current = null
     setMetrics(null); setItems([]); setNextCursor(null); setError(null); setPaging(false)
     return generation.current
   }, [])
@@ -58,14 +61,17 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
   }, [endpointId, windowSeconds, invalidate])
 
   async function loadMore() {
-    if (nextCursor === null || paging || loading) return
+    if (nextCursor === null || paging || loading || pageOwner.current !== null) return
     const current = generation.current
+    const owner = ++pageSequence.current
+    pageOwner.current = owner
     const controller = new AbortController()
     pageController.current?.abort(); pageController.current = controller
     setPaging(true); setError(null)
     try {
       const page = await getOwnerDiagnostics(endpointId, { windowSeconds, limit: 50, cursor: nextCursor }, controller.signal)
-      if (generation.current !== current || controller.signal.aborted || pageController.current !== controller) return
+      if (generation.current !== current || controller.signal.aborted || pageController.current !== controller ||
+          pageOwner.current !== owner) return
       setItems((existing) => {
         const identifiers = new Set(existing.map((item) => item.invocationId))
         if (page.items.some((item) => identifiers.has(item.invocationId))) {
@@ -77,8 +83,8 @@ export default function OwnerDiagnostics({ endpointId }: OwnerDiagnosticsProps) 
     } catch {
       if (generation.current === current && !controller.signal.aborted) setError(OWNER_OBSERVABILITY_ERROR_MESSAGE)
     } finally {
-      if (generation.current === current && pageController.current === controller) {
-        pageController.current = null; setPaging(false)
+      if (generation.current === current && pageController.current === controller && pageOwner.current === owner) {
+        pageController.current = null; pageOwner.current = null; setPaging(false)
       }
     }
   }

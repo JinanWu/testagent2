@@ -288,6 +288,26 @@ def test_mutation錯誤仍交付已輪替的CSRF接續() -> None:
     assert 服務.呼叫 == []
 
 
+def test_credential列表轉貼session_recovery_successor() -> None:
+    服務 = _管理服務()
+
+    def session(回應: Response):
+        回應.headers["X-CSRF-Token"] = "successor"
+        回應.headers.append("set-cookie", "csrf_token=successor; Path=/; SameSite=strict")
+        return 網頁使用者("owner-1", "alice", "member")
+
+    csrf = lambda: 網頁使用者("owner-1", "alice", "member")
+    應用 = FastAPI(redirect_slashes=False)
+    應用.include_router(建立憑證管理路由器(
+        服務, session, csrf, 時鐘=lambda: 100.0, 請求識別碼工廠=lambda: "request-1",
+    ))
+    with TestClient(應用, raise_server_exceptions=False) as 客戶端:
+        回應 = 客戶端.get("/api/published-endpoints/endpoint-1/credentials")
+    assert 回應.status_code == 200
+    assert 回應.headers["X-CSRF-Token"] == "successor"
+    assert "csrf_token=successor" in 回應.headers["set-cookie"]
+
+
 def test_revoke逐段讀取真實本文且任何位元組都在副作用前拒絕() -> None:
     """缺少或偽造 Content-Length 皆不能繞過 byte-exact empty request 契約。"""
     客戶端, _, 服務, *_ = _建立客戶端()

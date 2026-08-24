@@ -869,8 +869,8 @@ def test_A18管理員安全列表錯誤scope與projection原始碼均失敗關�
     assert "SELECT *" not in inspect.getsource(查詢投影).upper()
 
 
-def test_A18管理員detail欄位allowlist與canonical墓碑不洩漏原文(呼叫資料庫):
-    """#20 DTO未凍結；detail只凍結payload內canonical tombstone。"""
+def test_A20管理員detail以唯一admin_actor契約回傳完整receipt且不洩漏原文(呼叫資料庫):
+    """Admin receipt含不可逆證據與唯一actor DTO，永不含original value或request ID。"""
     SQLite不可逆遮蔽服務(str(呼叫資料庫)).遮蔽(
         True, "red-1", "audit-red-1", "admin-1", "req-red-1", "inv-1",
         "invocation_input", "inv-1", "/raw_input", "privacy", 12.0,
@@ -889,11 +889,21 @@ def test_A18管理員detail欄位allowlist與canonical墓碑不洩漏原文(呼�
     }
     assert 結果["redactions"] == [{
         "id": "red-1", "target_type": "invocation_input", "target_row_id": "inv-1",
-        "json_path": "/raw_input", "reason": "privacy",
+        "json_path": "/raw_input",
+        "original_sha256": "19716dc9ccf7ba0e6069176d223878f12dd4b28deb0b904aa2fe88436cd7345f",
+        "reason": "privacy", "actor": {"type": "admin", "id": "admin-1"},
+        "audit_event_id": "audit-red-1",
         "is_tombstone": True, "redacted_at": 12.0,
     }]
-    for 禁止 in ("INPUT_SECRET", "original_sha256", "admin-1", "audit-red-1", "req-red-1"):
+    for 禁止 in ("INPUT_SECRET", "req-red-1"):
         assert 禁止 not in repr(結果)
+    擁有者結果 = 服務.查詢擁有者安全詳情("owner-1", "ep-1", "inv-1").建立JSON()
+    assert set(擁有者結果) == {
+        "invocation", "endpoint_version_id", "status", "error_code", "schema_path",
+        "latency_ms", "usage", "tool_names",
+    }
+    for 禁止 in ("redactions", "INPUT_SECRET", "original_sha256", "admin-1", "audit-red-1"):
+        assert 禁止 not in repr(擁有者結果)
 
 
 def test_A18管理員detail允許九筆redaction並受共同4096子列上限治理(呼叫資料庫):

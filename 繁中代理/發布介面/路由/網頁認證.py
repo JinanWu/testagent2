@@ -35,8 +35,10 @@ from ..網頁工作階段 import (
 )
 帳密驗證器 = Callable[[str, str], 網頁使用者]
 _TOKEN字元 = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+_目前工作階段相依項清單: weakref.WeakSet = weakref.WeakSet()
 _CSRF相依項清單: weakref.WeakSet = weakref.WeakSet()
 _認證路由器TTL: dict[int, tuple[weakref.ReferenceType, int]] = {}
+_CSRF接續狀態名稱 = "_testagent2_published_csrf_successor_headers"
 _COOKIE參數 = lambda 名稱, 必要: {
     "name": 名稱, "in": "cookie", "required": 必要,
     "schema": {"type": "string", "minLength": 32, "maxLength": 512},
@@ -210,7 +212,13 @@ def 建立目前工作階段相依項(服務: 網頁工作階段服務, 設定: 
             _設定cookie(回應, 網頁CSRFCookie名稱, 結果.CSRF權杖 or "", 結果, 設定)
         return 結果.使用者
 
+    _目前工作階段相依項清單.add(取得目前工作階段)
     return 取得目前工作階段
+
+
+def 是模組目前工作階段相依項(呼叫: object) -> bool:
+    """只承認本模組factory實際建立且仍由route持有的current-session identity。"""
+    return 呼叫 in _目前工作階段相依項清單
 
 
 def 讀取網頁認證路由器TTL(路由器: APIRouter) -> int | None:
@@ -259,6 +267,14 @@ def 建立CSRF相依項(服務: 網頁工作階段服務, 設定: 網頁安全�
             raise HTTPException(503, {"code": "auth_unavailable"}) from None
         回應.headers[網頁CSRFHeader名稱] = 結果.CSRF權杖 or ""
         _設定cookie(回應, 網頁CSRFCookie名稱, 結果.CSRF權杖 or "", 結果, 設定)
+        setattr(
+            請求.state, _CSRF接續狀態名稱,
+            tuple(
+                (鍵.decode("latin-1"), 值.decode("latin-1"))
+                for 鍵, 值 in 回應.headers.raw
+                if 鍵.lower() in {網頁CSRFHeader名稱.lower().encode("ascii"), b"set-cookie"}
+            ),
+        )
         return 結果.使用者
     _CSRF相依項清單.add(驗證並輪替)
     return 驗證並輪替
@@ -267,6 +283,25 @@ def 建立CSRF相依項(服務: 網頁工作階段服務, 設定: 網頁安全�
 def 是模組CSRF相依項(呼叫: object) -> bool:
     """只承認本模組實際建立且仍由路由持有的 dependency identity。"""
     return 呼叫 in _CSRF相依項清單
+
+
+def 傳遞請求CSRF接續(請求: Request, 回應: Response) -> Response:
+    """把dependency已產生但被framework validation截斷的successor轉貼到最終回應。"""
+    headers = getattr(請求.state, _CSRF接續狀態名稱, ())
+    if type(headers) is not tuple:
+        return 回應
+    for 項目 in headers:
+        if type(項目) is not tuple or len(項目) != 2:
+            continue
+        名稱, 值 = 項目
+        if type(名稱) is not str or type(值) is not str:
+            continue
+        小寫名稱 = 名稱.lower()
+        if 小寫名稱 == 網頁CSRFHeader名稱.lower():
+            回應.headers[網頁CSRFHeader名稱] = 值
+        elif 小寫名稱 == "set-cookie":
+            回應.headers.append("Set-Cookie", 值)
+    return 回應
 
 
 def _登出CSRF標記() -> None:

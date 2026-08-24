@@ -11,6 +11,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
+from ..OpenAPI相依權限 import _登錄Canonical相依封裝
 from ..治理.觀測契約 import (
     安全錯誤排行,
     定價版本成本,
@@ -160,6 +161,7 @@ def 建立Owner觀測路由器(服務: 端點觀測查詢服務, 目前工作階
             raise HTTPException(500, "端點觀測不可取得") from None
 
     setattr(取得安全工作階段, "__canonical_dependency__", 目前工作階段相依)
+    _登錄Canonical相依封裝(取得安全工作階段, 目前工作階段相依)
     路由器 = APIRouter(prefix="/api/published-endpoints")
     錯誤文件 = {
         401: _錯誤文件("需要登入"), 404: _錯誤文件("找不到發布端點"),

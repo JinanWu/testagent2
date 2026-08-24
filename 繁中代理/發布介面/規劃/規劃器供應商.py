@@ -95,7 +95,13 @@ class Gemini規劃器:
         })
         try:
             結果 = self.產生器.產生JSON(
-                系統指令="你是 Published API Draft Planner。只輸出指定 exact JSON DTO；不得推薦 authorized_tools 以外的工具。",
+                系統指令=(
+                    "你是 Published API Draft Planner。只輸出指定 exact JSON DTO；不得推薦 "
+                    "authorized_tools 以外的工具。response_mode 為 text 時，response_schema 必須"
+                    "精確等於 {\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},"
+                    "\"required\":[\"answer\"],\"additionalProperties\":false}；response_mode 為 "
+                    "structured 時，response_schema.type 必須是 \"object\" 且必須是有效 JSON Schema。"
+                ),
                 使用者內容=內容,
             )
             if type(結果) is not str:
