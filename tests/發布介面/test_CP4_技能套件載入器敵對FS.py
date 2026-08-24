@@ -21,8 +21,13 @@ from 繁中代理.發布介面.技能套件.載入器 import (
 
 @pytest.fixture
 def 本機根() -> Path:
-    """使用 /Users/wujinan 下的非 symlink 暫存根並強制清除唯讀樹。"""
-    根 = Path(tempfile.mkdtemp(prefix="loader-hostile-", dir="/Users/wujinan"))
+    """使用家目錄下的非 symlink 暫存根並強制清除唯讀樹。
+
+    刻意不用 `tempfile` 預設位置：macOS 的 /tmp 是指向 /private/tmp 的 symlink，
+    而本測試要驗證的正是 loader 對 symlink 的敵對關閉行為，暫存根本身必須是實體
+    路徑。家目錄以 `Path.home()` 取得，不寫死特定使用者。
+    """
+    根 = Path(tempfile.mkdtemp(prefix="loader-hostile-", dir=Path.home()))
     yield 根
     for 目前, 目錄們, _ in os.walk(根, followlinks=False):
         try:
@@ -138,6 +143,21 @@ def test_manifest拒絕duplicate_JSON_key與非UTF8排序(本機根: Path, 種�
     _載入(本機根, 新定位)
 
 
+def _改名保留模式(來源: Path, 目的: Path) -> None:
+    """改名並還原原始權限模式。
+
+    macOS 上改名一個目錄需要該目錄自身可寫（核心要更新它的 `..`），改名檔案則不
+    需要；而本測試刻意把套件樹設為唯讀，因此目錄必須先放寬才能搬動。搬完一定要
+    還原原始模式：loader 同時會驗證權限模式，若留下放寬後的模式，測試會因為模式
+    漂移而通過，而不是因為它該驗的 symlink 拒絕行為。
+    """
+    原始模式 = 來源.stat().st_mode & 0o777
+    if 來源.is_dir():
+        os.chmod(來源, 0o755)
+    來源.rename(目的)
+    os.chmod(目的, 原始模式)
+
+
 @pytest.mark.parametrize("種類", [
     "root_symlink", "bundle_symlink", "intermediate_symlink", "file_symlink",
 ])
@@ -146,14 +166,17 @@ def test_發布根套件中間目錄與檔案symlink皆拒絕(本機根: Path, �
     定位, 套件根 = _建立(本機根)
     發布根 = 本機根 / "published"
     if 種類 == "root_symlink":
-        發布根.rename(本機根 / "real-published"); os.symlink(本機根 / "real-published", 發布根)
+        _改名保留模式(發布根, 本機根 / "real-published")
+        os.symlink(本機根 / "real-published", 發布根)
     elif 種類 == "bundle_symlink":
         os.chmod(發布根, 0o755)
-        套件根.rename(發布根 / "real-bundle"); os.symlink("real-bundle", 套件根)
+        _改名保留模式(套件根, 發布根 / "real-bundle")
+        os.symlink("real-bundle", 套件根)
     else:
         目標 = 套件根 / "alpha" / ("nested" if 種類 == "intermediate_symlink" else "SKILL.md")
         os.chmod(套件根 / "alpha", 0o755)
-        目標.rename(目標.with_name("real")); os.symlink("real", 目標)
+        _改名保留模式(目標, 目標.with_name("real"))
+        os.symlink("real", 目標)
     _載入(本機根, 定位)
 
 

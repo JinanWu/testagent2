@@ -24,16 +24,6 @@ Analyze repositories for lines of code, language breakdown, file counts, and cod
 - User asks about codebase size or composition
 - User wants code-vs-comment ratios
 - General "how big is this repo" questions
-- User provides several related repos and wants the architecture reconstructed across them
-- User asks what happens after a message, request, or event enters a large codebase and wants an end-to-end source-grounded lifecycle explanation
-
-For source-grounded message/request lifecycle tracing, see `references/message-lifecycle-tracing.md`.
-
-For multi-repo architecture walks, see `references/multi-repo-inspection.md`.
-
-For dashboard/tree data-contract inspections where a producer job, backend adapter, and frontend drill UI must agree, trace all three layers before reporting the effective hierarchy. A concrete passenger-survey example is captured in `references/passenger-survey-dashboard-tree-contract.md`.
-
-For passenger-survey sentiment / mood-index changes, preserve the existing downstream contract unless a schema migration is explicitly requested: trace `Sentiment_Label` / `Sentiment_Score` from the ML API through BigQuery Stage 3, backend `_guest_score()`, and frontend metrics before proposing fields. See `references/passenger-survey-sentiment-contract.md` for the legacy adapter pattern that encodes an internal 0-100 `mood_index` into the old Positive/Negative score contract.
 
 ## Prerequisites
 

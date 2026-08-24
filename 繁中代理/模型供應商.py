@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import math
 import os
@@ -21,6 +22,9 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
+
+# Gemini 3 系列 function call 附帶的 thought signature 在 tool_calls dict 內的欄位名。
+思考簽章欄位 = "thought_signature"
 
 
 @dataclass
@@ -105,6 +109,39 @@ class 假模型供應商:
                 完成原因="tool_calls",
             )
         return 模型回應(文字="假模型回覆：我可以運作。")
+
+
+def 編碼思考簽章(簽章: Any) -> str | None:
+    """把 provider 回傳的 thought signature 轉成可放進 JSON 的字串。
+
+    Gemini 3 系列在回傳 function call 時會附帶一段不透明的 thought signature，
+    下一輪把對話送回去時必須原樣帶上，否則 Vertex 會以
+    `function call ... is missing a thought_signature` 拒絕整個請求。簽章是
+    bytes，而 tool_calls 是以 JSON 保存的，故一律 base64 編碼後再存。
+    Gemini 2.5 系列不產生簽章，此時回傳 None、行為與過去完全相同。
+
+    參數：
+        簽章: provider part 上的 thought_signature，通常是 bytes。
+    返回值：base64 字串；沒有簽章或型別非預期時回傳 None。
+    """
+    if not isinstance(簽章, (bytes, bytearray)):
+        return None
+    return base64.b64encode(bytes(簽章)).decode("ascii")
+
+
+def 解碼思考簽章(簽章文字: Any) -> bytes | None:
+    """把保存的 base64 簽章還原成送回 provider 所需的 bytes。
+
+    參數：
+        簽章文字: 先前由 `編碼思考簽章` 產生的字串。
+    返回值：bytes；缺少或無法解碼時回傳 None，讓請求退回無簽章行為。
+    """
+    if not isinstance(簽章文字, str) or not 簽章文字:
+        return None
+    try:
+        return base64.b64decode(簽章文字, validate=True)
+    except (ValueError, TypeError):
+        return None
 
 
 def 正規化Gemini模型名稱(模型名稱: str) -> str:
@@ -366,7 +403,11 @@ class GeminiADC供應商:
                             except Exception:
                                 參數 = {}
                             函數呼叫 = types.FunctionCall(name=函數.get("name", ""), args=參數)
-                            零件 = types.Part(function_call=函數呼叫)
+                            簽章 = 解碼思考簽章(工具呼叫.get(思考簽章欄位))
+                            if 簽章 is None:
+                                零件 = types.Part(function_call=函數呼叫)
+                            else:
+                                零件 = types.Part(function_call=函數呼叫, thought_signature=簽章)
                             零件清單.append(零件)
                         內容清單.append(types.Content(role="model", parts=零件清單))
                     else:
@@ -507,6 +548,9 @@ class GeminiADC供應商:
                             "id": f"call_{uuid.uuid4().hex[:8]}", "type": "function",
                             "function": {"name": 函數名稱, "arguments": json.dumps(函數參數, ensure_ascii=False)},
                         }
+                        簽章 = 編碼思考簽章(getattr(零件, "thought_signature", None))
+                        if 簽章:
+                            呼叫資料[思考簽章欄位] = 簽章
                         工具呼叫清單.append(呼叫資料)
                     文字 = getattr(零件, "text", None)
                     if 文字:

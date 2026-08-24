@@ -28,7 +28,7 @@ Load this skill whenever the user asks to:
 - match their voice in writing they're producing
 - review text for AI tells before publishing
 
-Also apply this skill to **your own** output when writing user-facing prose — release notes, PR descriptions, documentation, long-form explanations, summaries, and reflective social posts (for example LinkedIn, Threads, or personal心得文). Hermes's baseline voice already strips most of these, but a focused pass catches what slips through.
+Also apply this skill to **your own** output when writing user-facing prose — release notes, PR descriptions, documentation, long-form explanations, summaries. Hermes's baseline voice already strips most of these, but a focused pass catches what slips through.
 
 ## How to use it in Hermes
 
@@ -46,10 +46,9 @@ When given text to humanize:
 1. **Identify AI patterns** — scan for the 29 patterns listed below.
 2. **Rewrite problematic sections** — replace AI-isms with natural alternatives.
 3. **Preserve meaning** — keep the core message intact.
-4. **Maintain voice** — match the intended tone (formal, casual, technical, reflective, etc.). If a voice sample was provided, match it specifically.
+4. **Maintain voice** — match the intended tone (formal, casual, technical, etc.). If a voice sample was provided, match it specifically.
 5. **Add soul** — don't just remove bad patterns, inject actual personality. See PERSONALITY AND SOUL below.
-6. **If the user wants a social post or心得文, lead with a real reaction, keep one clear thesis, and ground the reflection in 2-3 concrete observations rather than a broad summary.**
-7. **Do a final anti-AI pass** — ask yourself: "What makes the below so obviously AI generated?" Answer briefly with any remaining tells, then revise one more time.
+6. **Do a final anti-AI pass** — ask yourself: "What makes the below so obviously AI generated?" Answer briefly with any remaining tells, then revise one more time.
 
 
 ## Voice Calibration (optional)
@@ -148,8 +147,6 @@ Avoiding AI patterns is only half the job. Sterile, voiceless writing is just as
 
 
 ### 4. Promotional and Advertisement-like Language
-
-For reflective posts, the main failure mode is not just sounding salesy; it's sounding like a polished but empty recap. Make sure the post still contains a personal stance and one specific thing that changed how the writer thinks.
 
 **Words to watch:** boasts a, vibrant, rich (figurative), profound, enhancing its, showcasing, exemplifies, commitment to, natural beauty, nestled, in the heart of, groundbreaking (figurative), renowned, breathtaking, must-visit, stunning
 

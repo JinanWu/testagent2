@@ -230,3 +230,43 @@ def test_skill_索引_會依平台停用與工具條件過濾(tmp_path):
         工具集名稱集合={"terminal"},
     )
     assert [項目["skill_name"] for 項目 in 有終端項目] == ["always", "maps"]
+
+
+def test_prompt_有todo工具時_注入待辦清單指引():
+    """確認 todo 工具存在時才注入待辦清單指引，缺席時不注入。"""
+    from 繁中代理.提示詞常數 import 待辦清單指引
+
+    有工具 = 提示詞組裝器(
+        提示詞設定(工具名稱清單=["todo", "read_file"], 工作階段識別碼="s-todo")
+    ).組裝提示詞區塊()
+    assert 待辦清單指引 in 有工具["stable"]
+
+    無工具 = 提示詞組裝器(
+        提示詞設定(工具名稱清單=["read_file"], 工作階段識別碼="s-no-todo")
+    ).組裝提示詞區塊()
+    assert 待辦清單指引 not in 無工具["stable"]
+
+
+def test_待辦清單指引要求收尾前確認未完項目():
+    """釘住指引的關鍵要求：先規劃、收尾前回頭檢查、不得因「看起來簡單」跳過。"""
+    from 繁中代理.提示詞常數 import 待辦清單指引
+
+    小寫 = 待辦清單指引.lower()
+    assert 待辦清單指引.startswith("# Task list (todo)")
+    assert "call todo before you start working" in 小寫
+    assert "before you end your turn" in 小寫
+    assert "only one item may be in_progress" in 小寫
+    # 模型曾以「這個任務相對簡單」為由跳過清單，指引必須明文堵住這個藉口。
+    assert "seems simple" in 小寫
+    assert "is not a substitute" in 小寫
+
+
+def test_待辦清單指引自成獨立區塊():
+    """確認指引不會被空格黏進工具指引長段落，否則可見度會被稀釋。"""
+    from 繁中代理.提示詞常數 import 待辦清單指引
+
+    區塊 = 提示詞組裝器(提示詞設定(
+        工具名稱清單=["memory", "skill_manage", "todo"], 工作階段識別碼="s-block",
+    )).組裝提示詞區塊()
+
+    assert f"\n\n{待辦清單指引}" in 區塊["stable"], "待辦指引應自成段落，不可接在其他指引後面"

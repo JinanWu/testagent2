@@ -24,8 +24,13 @@ from .基本工具 import (
     讀取檔案內容,
 )
 from .工具 import 回報工具未啟用, 工具定義, 工具登錄器
+from .工具集.BigQuery查詢 import BigQuery查詢工具
 from .工具集.技能管理 import 管理技能
+from .工具集.待辦清單 import 待辦清單
+from .工具集.釐清詢問 import 建立釐清處理器, 詢問回呼型別
 from .工具集.管理部_bigquery import 管理部文件搜尋
+from .工具集.網路搜尋 import 網頁擷取, 網路搜尋
+from .工具集.網頁渲染 import 網頁渲染
 from .使用者 import 使用者上下文
 
 
@@ -63,12 +68,18 @@ def 登錄結構清單(
         ))
 
 
-def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用者上下文物件: 使用者上下文 | None = None) -> 工具登錄器:
+def 建立預設工具登錄器(
+    工作目錄: str | Path | None = None,
+    使用者上下文物件: 使用者上下文 | None = None,
+    詢問回呼: 詢問回呼型別 | None = None,
+) -> 工具登錄器:
     """建立含 Hermes core 與專案自訂工具的工具登錄器。
 
     參數：
         工作目錄: Runtime 工作目錄；工具相對路徑會以此為基準。
         使用者上下文物件: 目前使用者權限；會限制模型可見工具與執行權限。
+        詢問回呼: 平台注入的 `clarify` 詢問策略；None 表示沒有互動通道，clarify
+            會直接回「沒人可問」指引而不空等。
 
     返回值：
         工具登錄器。預設會載入 Hermes core tool schema，再載入
@@ -86,6 +97,12 @@ def 建立預設工具登錄器(工作目錄: str | Path | None = None, 使用�
         "session_search": 搜尋工作階段工具,
         "memory": 記憶工具,
         "administrative_search": 管理部文件搜尋,
+        "bigquery_query": BigQuery查詢工具,
+        "web_search": 網路搜尋,
+        "web_extract": 網頁擷取,
+        "web_render": 網頁渲染,
+        "todo": 待辦清單,
+        "clarify": 建立釐清處理器(詢問回呼),
     }
     資產目錄 = Path(__file__).resolve().parents[1] / "assets"
     核心結構路徑 = 資產目錄 / "hermes_core_tool_schemas.json"

@@ -71,17 +71,6 @@ Default deliverable:
 
 If the user asks for implementation in an existing repo, generate code in the repo's actual stack instead of forcing a standalone HTML artifact.
 
-For data-rich personal report pages (weekly health logs, journaling summaries, status reports):
-- Read the source notes first and preserve them verbatim where possible; do not fill gaps with assumed values.
-- Make missing measurements explicit in the artifact itself so the reader can see what was not provided.
-- Use a combined pattern of narrative summary + highlight cards + daily tables + lightweight inline charts (SVG or simple DOM/CSS) for scanability.
-- Prefer a single self-contained HTML file unless the user explicitly wants a multi-file app.
-- When the user wants both a markdown report and a visual page, write the Markdown source report first, then generate the HTML page from that report.
-- Add a concise note in the final response naming the absolute paths and whether the file was verified.
-
-Support files:
-- references/data-dense-report-pages.md — session-proven guidance for weekly health/report pages with explicit missing-data handling.
-
 ## Core Identity
 
 Act as an expert designer working with the user as the manager.
@@ -558,8 +547,6 @@ Better:
 - test key interactions
 - test light/dark or variants if present
 - test responsive breakpoints if relevant
-
-For architecture maps, dashboards, node diagrams, and other dense component canvases, do an explicit visual clipping pass after browser load: confirm rightmost and bottom nodes are not cut off, inspector panels do not cover the map, and labels remain legible. DOM/syntax checks can pass while the rendered diagram is still visually truncated. If clipping appears, rebalance coordinates, reduce node widths, or increase canvas height, then re-open and re-check before finalizing.
 
 If verification is limited by environment, say exactly what was and was not verified.
 

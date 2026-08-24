@@ -495,13 +495,20 @@ def 解析目前使用者上下文(參數: argparse.Namespace) -> 使用者上�
     return 建立預設使用者上下文(參數.workdir)
 
 
-def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作階段庫, 解析器: argparse.ArgumentParser) -> 代理執行階段:
+def 建立執行階段(
+    參數: argparse.Namespace,
+    工作階段庫物件: 工作階段庫,
+    解析器: argparse.ArgumentParser,
+    詢問回呼: Any | None = None,
+) -> 代理執行階段:
     """依 CLI 參數建立 AgentRuntime。
 
     參數：
         參數: argparse namespace。
         工作階段庫物件: 已開啟的 session store。
         解析器: 用於解析模型設定錯誤。
+        詢問回呼: `clarify` 的詢問策略。互動 REPL 會傳入自己的實作；一次性執行
+            不傳，clarify 便會回「沒人可問」指引而不空等。
 
     返回值：代理執行階段。呼叫者可重複用於同一個 REPL process。
     """
@@ -524,6 +531,7 @@ def 建立執行階段(參數: argparse.Namespace, 工作階段庫物件: 工作
         使用者上下文物件=使用者上下文物件,
         source=參數.source,
         model_config=模型設定,
+        詢問回呼=詢問回呼,
         啟用壓縮摘要=參數.compression_llm == "on",
         摘要失敗是否中止=參數.abort_on_summary_failure or 解析摘要失敗是否中止(),
         壓縮模式=參數.compression_mode,
@@ -754,7 +762,7 @@ class 互動CLI:
         self.參數 = 參數
         self.解析器 = 解析器
         self.工作階段庫物件 = 建立工作階段庫(參數.db)
-        self.執行階段 = 建立執行階段(參數, self.工作階段庫物件, 解析器)
+        self.執行階段 = 建立執行階段(參數, self.工作階段庫物件, 解析器, 詢問回呼=self.詢問使用者)
         self.目前工作階段識別碼 = 參數.session
         if 參數.resume or 參數.continue_session:
             參照 = 參數.resume or 參數.continue_session
@@ -822,6 +830,49 @@ class 互動CLI:
         self.上一個使用者訊息 = 訊息
         print(結果.最終回答)
         print(f"[session={結果.工作階段識別碼} model_calls={結果.模型呼叫次數} tool_calls={結果.工具呼叫次數} compressed={結果.是否已壓縮}]")
+
+    def 詢問使用者(self, 問題: str, 選項清單: list[str] | None = None) -> str:
+        """`clarify` 在 CLI 的詢問策略：印出問題並阻塞等待使用者輸入。
+
+        刻意**不設逾時**：使用者就坐在鍵盤前，思考或翻資料花上一兩分鐘很正常，
+        中途打斷只會讓已打的字白費。要跳過這題可按 Ctrl+C 或 Ctrl+D，模型會收
+        到「使用者略過」並自行判斷後繼續，REPL 不會因此中斷。
+
+        參數：
+            問題: 要問使用者的問題。
+            選項清單: 最多四個選項；None 表示開放式問答。
+
+        返回值：str，使用者的回答。選項模式下輸入編號會換成對應選項文字，輸入
+            其他內容則視為自由作答。使用者略過時丟出 `詢問未回應`。
+        """
+        from .工具集.釐清詢問 import 詢問未回應, 略過原因
+
+        print(f"\n❓ {問題}")
+        if 選項清單:
+            for 序號, 選項 in enumerate(選項清單, start=1):
+                print(f"  {序號}. {選項}")
+            print(f"  {len(選項清單) + 1}. 其他（自行輸入）")
+            提示 = f"請選擇 1-{len(選項清單) + 1} 或直接輸入答案> "
+        else:
+            提示 = "請回答> "
+        while True:
+            try:
+                回答 = 讀取多行輸入(input(提示)).strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n（已略過這個問題）")
+                raise 詢問未回應(略過原因) from None
+            if not 回答:
+                continue
+            if 選項清單 and 回答.isdigit():
+                序號 = int(回答)
+                if 1 <= 序號 <= len(選項清單):
+                    return 選項清單[序號 - 1]
+                if 序號 == len(選項清單) + 1:
+                    # 選了「其他」：改問自由作答，否則會把編號本身當成答案。
+                    選項清單 = None
+                    提示 = "請輸入你的答案> "
+                    continue
+            return 回答
 
     def 處理Slash命令(self, 命令: str) -> bool:
         """處理 REPL slash command。
@@ -1169,8 +1220,12 @@ def 執行單次訊息(參數: argparse.Namespace, 解析器: argparse.ArgumentP
 
     返回值：None。最終回答會輸出到 stdout。
     """
+    from .工具集.釐清詢問 import 一次性詢問策略
+
     工作階段庫物件 = 建立工作階段庫(參數.db)
-    執行階段 = 建立執行階段(參數, 工作階段庫物件, 解析器)
+    # 明確注入 oneshot 策略而非留空：這裡確定沒有使用者，clarify 應立即回「自行
+    # 判斷」而不是空等；留空會與「平台漏接互動介面」混為一談。
+    執行階段 = 建立執行階段(參數, 工作階段庫物件, 解析器, 詢問回呼=一次性詢問策略)
     訊息 = 參數.query or 參數.message
     結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼=參數.session)
     print(結果.最終回答)
