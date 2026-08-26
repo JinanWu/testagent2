@@ -176,9 +176,9 @@ def 驗證規劃器輸出(原始文字: Any, 輸入: 規劃器輸入) -> 規劃�
             _驗證文字(說明, 1, 500)
         _驗證結構(值["input_schema"], 允許空=True)
         _驗證結構(值["response_schema"], 允許空=False)
-        if 輸入.回應模式 == "text" and 值["response_schema"] != 文字回應結構:
-            raise ValueError
-        if 輸入.回應模式 == "structured" and 值["response_schema"].get("type") != "object":
+        if 輸入.回應模式 == "text":
+            值["response_schema"] = dict(文字回應結構)
+        elif 值["response_schema"].get("type") != "object":
             raise ValueError
         限流 = 值["rate_limit"]
         if type(限流) is not dict or set(限流) != {"endpoint_per_minute", "credential_per_minute"}:
