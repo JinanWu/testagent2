@@ -41,6 +41,8 @@
   --color-on-surface: #1c1b1a;
   --color-surface-variant: #e6e5e2;
   --color-on-surface-variant: #46443f;
+  /* placeholder 專用：等同舊值 on-surface-variant/60 疊在白底的結果，淺色外觀不變 */
+  --color-placeholder: #908f8c;
   --color-surface-bright: #ffffff;
   --color-surface-dim: #dedddb;
   --color-surface-tint: #565e74;
@@ -175,20 +177,22 @@
   --color-tertiary-fixed-dim: #ffb784;
   --color-on-tertiary-fixed: #301400;
   --color-on-tertiary-fixed-variant: #713700;
-  --color-background: #0b1326;
+  --color-background: #0e1526;
   --color-on-background: #dae2fd;
-  --color-surface: #0b1326;
+  --color-surface: #0e1526;
   --color-on-surface: #dae2fd;
-  --color-surface-variant: #2d3449;
+  --color-surface-variant: #323d59;
   --color-on-surface-variant: #ccc3d8;
-  --color-surface-bright: #31394d;
-  --color-surface-dim: #0b1326;
+  /* 深色 placeholder 要比 on-surface-variant/60 亮，否則糊在卡片上（對比僅 4.2:1） */
+  --color-placeholder: #9a9ab0;
+  --color-surface-bright: #3b4767;
+  --color-surface-dim: #0e1526;
   --color-surface-tint: #d2bbff;
-  --color-surface-container-lowest: #060e20;
-  --color-surface-container-low: #131b2e;
-  --color-surface-container: #171f33;
-  --color-surface-container-high: #222a3d;
-  --color-surface-container-highest: #2d3449;
+  --color-surface-container-lowest: #161f33;
+  --color-surface-container-low: #1b2439;
+  --color-surface-container: #202941;
+  --color-surface-container-high: #29334d;
+  --color-surface-container-highest: #323d59;
   --color-inverse-surface: #dae2fd;
   --color-inverse-on-surface: #283044;
   --color-outline: #958da1;
@@ -199,7 +203,7 @@
   --color-on-error-container: #ffdad6;
 
   /* 深色程式碼區塊 */
-  --color-code-surface: #171f33;
+  --color-code-surface: #1c243a;
   --color-code-on-surface: #dae2fd;
 
   --color-success: #4ade80;

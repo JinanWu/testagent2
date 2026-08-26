@@ -268,7 +268,7 @@ export default function ChatPage({
               draftRef.current = event.currentTarget.value
               setDraft(event.currentTarget.value)
             }}
-            className="w-full resize-none border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-on-surface-variant/60"
+            className="w-full resize-none border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
           />
           <div className="flex justify-end">
             {/*

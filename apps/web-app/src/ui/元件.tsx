@@ -286,7 +286,7 @@ export function 欄位({
 /** 輸入類元件共用的樣式，供頁面直接套在原生 input / textarea / select 上。 */
 export const 輸入樣式 =
   'w-full rounded border border-outline-variant bg-surface-container-lowest px-3 py-2 ' +
-  'font-body-md text-body-md text-on-surface placeholder:text-on-surface-variant/60 ' +
+  'font-body-md text-body-md text-on-surface placeholder:text-placeholder ' +
   'disabled:cursor-not-allowed disabled:bg-surface-container disabled:opacity-60'
 
 export const 等寬輸入樣式 = 輸入樣式 + ' font-code-md text-code-md'

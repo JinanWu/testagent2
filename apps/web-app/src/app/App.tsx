@@ -32,7 +32,7 @@ function RouteShell() {
   }
 
   function openEndpoints() {
-    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(ENDPOINTS_ROUTE)) {
+    if (replaceAppRoute(ENDPOINTS_ROUTE)) {
       setRoute(ENDPOINTS_ROUTE)
     }
   }
@@ -45,24 +45,24 @@ function RouteShell() {
 
   function openEndpointDetail(endpointId: string) {
     const target = { kind: 'endpoint-detail', endpointId } as const
-    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) {
+    if (replaceAppRoute(target)) {
       setRoute(target)
     }
   }
 
   function openEndpointBuilder() {
     const target = { kind: 'endpoint-new' } as const
-    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) setRoute(target)
+    if (replaceAppRoute(target)) setRoute(target)
   }
 
   function openEndpointVersionBuilder(endpointId: string) {
     const target = { kind: 'endpoint-version-new', endpointId } as const
-    if ((user?.role === 'member' || user?.role === 'admin') && replaceAppRoute(target)) setRoute(target)
+    if (replaceAppRoute(target)) setRoute(target)
   }
 
   // If login unmounts LoginPage before onAuthenticated, still redirect unknown paths.
   useEffect(() => {
-    if (status !== 'authenticated' || (user?.role !== 'member' && user?.role !== 'admin') ||
+    if (status !== 'authenticated' ||
         route === DEFAULT_APP_ROUTE || route === ENDPOINTS_ROUTE ||
         (route !== null && typeof route === 'object' && ['endpoint-detail', 'endpoint-new', 'endpoint-version-new'].includes(route.kind)) ||
         (route === ADMIN_LOGS_ROUTE && user?.role === 'admin')) {
@@ -82,17 +82,6 @@ function RouteShell() {
   }
   if (status === 'anonymous') {
     return <LoginPage onAuthenticated={openDefaultRoute} />
-  }
-  if (user?.role !== 'member' && user?.role !== 'admin') {
-    return (
-      <main className="app-shell">
-        <section className="welcome-card" aria-labelledby="role-error-title">
-          <h1 id="role-error-title">無法使用此介面</h1>
-          <p role="alert">目前帳號沒有可用的介面權限。</p>
-          <button type="button" onClick={() => { void logout().catch(() => {}) }}>登出</button>
-        </section>
-      </main>
-    )
   }
   if (route === DEFAULT_APP_ROUTE) {
     return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
