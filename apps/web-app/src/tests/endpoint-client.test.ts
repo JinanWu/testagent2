@@ -59,6 +59,14 @@ const versionReceipt = {
   endpoint_id: 'endpoint-1', version_id: 'version-2', version_number: 2,
   current_version_id: 'version-2', schema_changed: false,
 }
+const versionConfiguration = {
+  original_requirement_text: 'Create API v2',
+  system_prompt: 'new',
+  model_config_snapshot: { model: 'published-default', temperature: 0 },
+  retry_policy: { max_attempts: 1 },
+  input_schema: null,
+  response_schema: { type: 'object' },
+}
 const docsErrors = [
   ['endpoint_not_found', 404, '找不到 endpoint slug。'],
   ['invalid_api_key', 401, 'API key 無效。'],
@@ -274,12 +282,12 @@ describe('management transport and routes', () => {
     const options = { onCsrfSuccessor: (token: string) => successors.push(token) }
     await createDraft({ originalRequirementText: 'Create API', selectedSkills: ['alpha'], responseMode: 'text' }, 'csrf-1', options)
     await publishEndpoint({ draftId: 'draft-1', slug: 'safe-api', configurationConfirmation: { system_prompt: 'safe' } }, csrfTwo, options)
-    await createEndpointVersion('endpoint-1', { configuration: { system_prompt: 'new' } }, csrfThree, options)
+    await createEndpointVersion('endpoint-1', { configuration: versionConfiguration }, csrfThree, options)
     expect(successors).toEqual([csrfTwo, csrfThree, csrfFour])
     expect(fetchMock.mock.calls.map(([route, init]) => [route, init?.method, new Headers(init?.headers).get('X-CSRF-Token'), init?.body])).toEqual([
       ['/api/published-endpoints/draft', 'POST', 'csrf-1', JSON.stringify({ original_requirement_text: 'Create API', selected_skills: ['alpha'], response_mode: 'text' })],
       ['/api/published-endpoints', 'POST', csrfTwo, JSON.stringify({ draft_id: 'draft-1', slug: 'safe-api', configuration_confirmation: { system_prompt: 'safe' } })],
-      ['/api/published-endpoints/endpoint-1/versions', 'POST', csrfThree, JSON.stringify({ configuration: { system_prompt: 'new' } })],
+      ['/api/published-endpoints/endpoint-1/versions', 'POST', csrfThree, JSON.stringify({ configuration: versionConfiguration })],
     ])
   })
 

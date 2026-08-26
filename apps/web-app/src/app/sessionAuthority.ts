@@ -40,12 +40,20 @@ export interface EndpointConfigurationConfirmation extends Readonly<Record<strin
   readonly human_docs: unknown
   readonly rate_limit: unknown
 }
+export interface EndpointVersionConfiguration extends Readonly<Record<string, unknown>> {
+  readonly original_requirement_text: unknown
+  readonly system_prompt: unknown
+  readonly model_config_snapshot: unknown
+  readonly retry_policy: unknown
+  readonly input_schema: unknown
+  readonly response_schema: unknown
+}
 type CreateDraftManifest = Readonly<{ kind: 'create-endpoint-draft'; input: EndpointDraftInput }>
 type PublishEndpointManifest = Readonly<{
   kind: 'publish-endpoint'; draftId: string; slug: string; configuration: EndpointConfigurationConfirmation
 }>
 type CreateVersionManifest = Readonly<{
-  kind: 'create-endpoint-version'; endpointId: string; configuration: EndpointConfigurationConfirmation
+  kind: 'create-endpoint-version'; endpointId: string; configuration: EndpointVersionConfiguration
 }>
 export interface CredentialCreateInput {
   readonly name: string
@@ -127,6 +135,18 @@ function exactConfiguration(value: EndpointConfigurationConfirmation): EndpointC
   }
   return detachedJson(value) as EndpointConfigurationConfirmation
 }
+function exactVersionConfiguration(value: EndpointVersionConfiguration): EndpointVersionConfiguration {
+  const expected = [
+    'original_requirement_text', 'system_prompt', 'model_config_snapshot',
+    'retry_policy', 'input_schema', 'response_schema',
+  ]
+  if (value === null || typeof value !== 'object' || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype || Reflect.ownKeys(value).length !== expected.length ||
+      !expected.every((key) => Object.prototype.hasOwnProperty.call(value, key))) {
+    throw abortError()
+  }
+  return detachedJson(value) as EndpointVersionConfiguration
+}
 
 export function createSendChatOperation(message: string, sessionId: string | null): ProtectedOperation<ChatReply> {
   const trimmed = message.trim()
@@ -158,9 +178,9 @@ export function createPublishEndpointOperation(
   return token<PublishReceipt>({ kind: 'publish-endpoint', draftId, slug, configuration: exactConfiguration(confirmation) })
 }
 export function createEndpointVersionOperation(
-  endpointId: string, confirmation: EndpointConfigurationConfirmation,
+  endpointId: string, configuration: EndpointVersionConfiguration,
 ): ProtectedOperation<VersionReceipt> {
-  return token<VersionReceipt>({ kind: 'create-endpoint-version', endpointId, configuration: exactConfiguration(confirmation) })
+  return token<VersionReceipt>({ kind: 'create-endpoint-version', endpointId, configuration: exactVersionConfiguration(configuration) })
 }
 
 export function createCredentialOperation(

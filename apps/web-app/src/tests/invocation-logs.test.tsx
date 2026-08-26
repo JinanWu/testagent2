@@ -151,6 +151,14 @@ function input(renderer: ReactTestRenderer, id: string) {
   return renderer.root.findByProps({ id })
 }
 
+/*
+ * 清單列改成多層卡片後，children.join('') 不再是可用的把手。
+ * 以 data-invocation-id 取節點：版面怎麼改都不影響，斷言的仍是同一列。
+ */
+function logItem(renderer: ReactTestRenderer, invocationId: string) {
+  return renderer.root.findByProps({ 'data-invocation-id': invocationId })
+}
+
 async function submitList(renderer: ReactTestRenderer, endpoint = 'endpoint-1'): Promise<void> {
   await act(async () => input(renderer, 'logs-endpoint').props.onChange({ currentTarget: { value: endpoint } }))
   await act(async () => renderer.root.findByProps({ 'aria-label': '篩選呼叫紀錄' }).props.onSubmit({
@@ -552,15 +560,20 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await flush()
     expect(fetchMock).toHaveBeenCalledTimes(1)
 
+    // 欄位收 datetime-local，送出前才換算成 epoch 秒；API 契約仍是數字。
+    const fromLocal = '2026-01-02T03:04:05'
+    const toLocal = '2026-01-02T04:05:06'
+    const fromEpoch = Math.floor(new Date(fromLocal).getTime() / 1000)
+    const toEpoch = Math.floor(new Date(toLocal).getTime() / 1000)
     await act(async () => {
-      input(renderer!, 'logs-from-at').props.onChange({ currentTarget: { value: '1' } })
-      input(renderer!, 'logs-to-at').props.onChange({ currentTarget: { value: '2' } })
+      input(renderer!, 'logs-from-at').props.onChange({ currentTarget: { value: fromLocal } })
+      input(renderer!, 'logs-to-at').props.onChange({ currentTarget: { value: toLocal } })
     })
     await submitList(renderer!)
     expect(fetchMock).toHaveBeenNthCalledWith(2,
-      '/api/admin/endpoints/endpoint-1/invocations?from_at=1&to_at=2&limit=50',
+      `/api/admin/endpoints/endpoint-1/invocations?from_at=${fromEpoch}&to_at=${toEpoch}&limit=50`,
       expect.objectContaining({ method: 'GET', credentials: 'include' }))
-    await act(async () => button(renderer!, 'invocation-1 — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-1').props.onClick())
     const source = text(renderer!)
     expect(source).toContain('部分內容已依政策遮蔽')
     expect(source).toContain('已遮蔽')
@@ -582,7 +595,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => button(renderer!, 'invocation-1 — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-1').props.onClick())
     const source = text(renderer!)
     expect(source).toContain('敏感資料命中')
     for (const value of ['輸入', 'Metadata', '回應資料', '工具參數', '工具結果',
@@ -606,9 +619,9 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => button(renderer!, 'invocation-old — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-old').props.onClick())
     expect(text(renderer!)).toContain(RAW_OLD)
-    await act(async () => button(renderer!, 'invocation-new — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-new').props.onClick())
     expect(text(renderer!)).not.toContain(RAW_OLD)
     expect(text(renderer!)).not.toContain(RAW_NEW)
     expect(text(renderer!)).toContain(LOGS_ERROR_MESSAGE)
@@ -630,8 +643,8 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => { void button(renderer!, 'invocation-old — failed').props.onClick() })
-    await act(async () => button(renderer!, 'invocation-new — failed').props.onClick())
+    await act(async () => { void logItem(renderer!, 'invocation-old').props.onClick() })
+    await act(async () => logItem(renderer!, 'invocation-new').props.onClick())
     expect(oldSignal.aborted).toBe(true)
     await act(async () => { slow.resolve(jsonResponse(detail('invocation-old', RAW_OLD))); await slow.promise })
     expect(text(renderer!)).toContain(RAW_NEW)
@@ -652,10 +665,10 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => button(renderer!, 'invocation-old — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-old').props.onClick())
     expect(text(renderer!)).toContain(RAW_OLD)
-    await act(async () => { void button(renderer!, 'invocation-old — failed').props.onClick() })
-    await act(async () => button(renderer!, '返回對話').props.onClick())
+    await act(async () => { void logItem(renderer!, 'invocation-old').props.onClick() })
+    await act(async () => button(renderer!, '對話').props.onClick())
     expect(signal.aborted).toBe(true)
     expect(text(renderer!)).not.toContain(RAW_OLD)
     expect(pathname).toBe(DEFAULT_APP_ROUTE)
@@ -675,7 +688,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => button(renderer!, 'invocation-old — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-old').props.onClick())
     expect(text(renderer!)).toContain(RAW_OLD)
     await act(async () => { button(renderer!, '登出').props.onClick() })
     expect(text(renderer!)).not.toContain(RAW_OLD)
@@ -693,7 +706,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => button(renderer!, 'invocation-old — failed').props.onClick())
+    await act(async () => logItem(renderer!, 'invocation-old').props.onClick())
     pathname = DEFAULT_APP_ROUTE
     await act(async () => { popstate?.() })
     expect(text(renderer!)).not.toContain(RAW_OLD)
@@ -714,7 +727,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
     await submitList(renderer!)
-    await act(async () => { void button(renderer!, 'invocation-old — failed').props.onClick() })
+    await act(async () => { void logItem(renderer!, 'invocation-old').props.onClick() })
     await act(async () => { renderer!.unmount() })
     renderer = undefined
     expect(signal.aborted).toBe(true)

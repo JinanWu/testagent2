@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { ApiResponseError } from '../api/client'
 import { getOwnerEndpoint, type OwnerEndpointDetail } from '../api/endpoints'
@@ -6,6 +6,9 @@ import { useSession } from '../app/SessionProvider'
 import CredentialManager from '../features/endpoints/CredentialManager'
 import EndpointDocs from '../features/endpoints/EndpointDocs'
 import OwnerDiagnostics from '../features/logs/OwnerDiagnostics'
+import { 卡片, 資料列, 載入中, 錯誤訊息 } from '../ui/元件'
+import { 格式化時間, 狀態文字 } from '../ui/格式'
+import 應用框架 from '../ui/應用框架'
 
 export const ENDPOINT_NOT_FOUND_MESSAGE = '找不到端點或無權存取。'
 export const ENDPOINT_DETAIL_ERROR_MESSAGE = '目前無法載入端點詳情，請稍後再試。'
@@ -14,6 +17,8 @@ export interface EndpointDetailPageProps {
   endpointId: string
   onClose(): void
   onCreateVersion(endpointId: string): void
+  onOpenEndpoints?(): void
+  onOpenAdminLogs?(): void
 }
 
 type DetailState =
@@ -23,23 +28,43 @@ type DetailState =
   | { kind: 'error' }
 
 type DetailTab = 'overview' | 'credentials' | 'docs' | 'diagnostics'
+type TabIndicator = { left: number; width: number }
+/* 狀態圓點沿用端點清單的顏色語言 */
+const 狀態圓點: Record<'active' | 'disabled' | 'archived', string> = {
+  active: 'bg-success', disabled: 'bg-outline', archived: 'bg-error',
+}
+
 const DETAIL_TABS: ReadonlyArray<Readonly<{ id: DetailTab; label: string }>> = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'credentials', label: 'Credentials' },
-  { id: 'docs', label: 'Docs' },
-  { id: 'diagnostics', label: 'Diagnostics' },
+  { id: 'overview', label: '總覽' },
+  { id: 'credentials', label: '憑證' },
+  { id: 'docs', label: '文件' },
+  { id: 'diagnostics', label: '監控' },
 ]
 
-export default function EndpointDetailPage({ endpointId, onClose, onCreateVersion }: EndpointDetailPageProps) {
+export default function EndpointDetailPage({ endpointId, onClose, onCreateVersion, onOpenEndpoints, onOpenAdminLogs }: EndpointDetailPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [state, setState] = useState<DetailState>({ kind: 'loading' })
   const [logoutError, setLogoutError] = useState(false)
   const [logoutPending, setLogoutPending] = useState(false)
   const [requestRevision, setRequestRevision] = useState(0)
   const [activeTab, setActiveTab] = useState<DetailTab>('overview')
+  const [tabIndicator, setTabIndicator] = useState<TabIndicator>({ left: 0, width: 0 })
   const mounted = useRef(false)
   const epoch = useRef(0)
   const controller = useRef<AbortController | null>(null)
+  const tabRefs = useRef<Partial<Record<DetailTab, HTMLButtonElement | null>>>({})
+
+  const updateTabIndicator = useCallback(() => {
+    const currentTab = tabRefs.current[activeTab]
+    if (!currentTab) {
+      setTabIndicator({ left: 0, width: 0 })
+      return
+    }
+    setTabIndicator({
+      left: currentTab.offsetLeft,
+      width: currentTab.offsetWidth,
+    })
+  }, [activeTab])
 
   const invalidate = useCallback((clear: boolean) => {
     epoch.current += 1
@@ -79,6 +104,18 @@ export default function EndpointDetailPage({ endpointId, onClose, onCreateVersio
     }
   }, [endpointId, user?.id, requestRevision, invalidate, registerProtectedStateOwner])
 
+  useEffect(() => {
+    if (state.kind !== 'ready') return
+    updateTabIndicator()
+    const ResizeObserverCtor = globalThis.ResizeObserver
+    if (typeof ResizeObserverCtor === 'undefined') return
+    const currentTab = tabRefs.current[activeTab]
+    if (!currentTab) return
+    const observer = new ResizeObserverCtor(() => updateTabIndicator())
+    observer.observe(currentTab)
+    return () => observer.disconnect()
+  }, [activeTab, state.kind, updateTabIndicator])
+
   function handleLogout() {
     if (logoutPending) return
     setLogoutPending(true)
@@ -92,46 +129,148 @@ export default function EndpointDetailPage({ endpointId, onClose, onCreateVersio
     })
   }
 
+  function renderActivePanel(detail: OwnerEndpointDetail) {
+    if (activeTab === 'overview') {
+      return (
+        <section key="overview" role="tabpanel" aria-label="總覽" className="端點詳情面板 flex flex-col gap-md">
+          <卡片
+            標題="端點基本資料"
+            動作={
+              /* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */
+              <button
+                type="button"
+                onClick={() => onCreateVersion(detail.endpointId)}
+                className="導覽項目 導覽項目-新增 rounded-xl bg-primary-container px-4 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+              >
+                建立新版本
+              </button>
+            }
+          >
+            <dl aria-label="端點基本資料">
+              <資料列 名稱="Slug">
+                <code className="font-code-md text-code-md">{detail.slug}</code>
+              </資料列>
+              <資料列 名稱="狀態">
+                {/*
+                  圓點＋文字沿用端點清單的狀態語言（不只靠顏色）。
+                  後面併呈後端實際回傳的原始碼，除錯時需要，字級與顏色都降一階。
+                */}
+                <span className="inline-flex items-center gap-sm">
+                  <span
+                    aria-hidden={true}
+                    className={['size-1.5 shrink-0 rounded-full', 狀態圓點[detail.status]].join(' ')}
+                  />
+                  {狀態文字(detail.status)}
+                  <code className="font-code-md text-code-md text-on-surface-variant/70">
+                    {detail.status}
+                  </code>
+                </span>
+              </資料列>
+              <資料列 名稱="目前版本">
+                {detail.currentVersionNumber === null
+                  ? '尚未發布'
+                  : `版本 ${detail.currentVersionNumber}`}
+              </資料列>
+              <資料列 名稱="建立時間">{格式化時間(detail.createdAt)}</資料列>
+              <資料列 名稱="最後更新">{格式化時間(detail.updatedAt)}</資料列>
+            </dl>
+          </卡片>
+        </section>
+      )
+    }
+    if (activeTab === 'credentials') {
+      return (
+        <div key="credentials" role="tabpanel" aria-label="憑證" className="端點詳情面板">
+          <CredentialManager endpointId={detail.endpointId} />
+        </div>
+      )
+    }
+    if (activeTab === 'docs') {
+      return (
+        <div key="docs" role="tabpanel" aria-label="文件" className="端點詳情面板">
+          <EndpointDocs endpointId={detail.endpointId} />
+        </div>
+      )
+    }
+    return (
+      <div key="diagnostics" role="tabpanel" aria-label="監控" className="端點詳情面板">
+        <OwnerDiagnostics endpointId={detail.endpointId} />
+      </div>
+    )
+  }
+
   return (
-    <main className="app-shell">
-      <section className="welcome-card endpoint-detail" aria-labelledby="endpoint-title">
-        <nav aria-label="端點詳情導覽">
-          <button type="button" onClick={onClose}>返回對話</button>
-          <button type="button" disabled={logoutPending} onClick={handleLogout}>
-            {logoutPending ? '登出中…' : '登出'}
-          </button>
-        </nav>
-        {logoutError && <p role="alert">{AUTH_ERROR_MESSAGE}</p>}
-        <h1 id="endpoint-title">端點詳情</h1>
-        {state.kind === 'loading' && <p role="status" aria-live="polite">正在載入端點詳情…</p>}
-        {state.kind === 'not-found' && <p role="alert">{ENDPOINT_NOT_FOUND_MESSAGE}</p>}
-        {state.kind === 'error' && <p role="alert">{ENDPOINT_DETAIL_ERROR_MESSAGE}</p>}
+    <應用框架
+      目前分頁="端點"
+      標題={state.kind === 'ready' ? state.detail.slug : '端點詳情'}
+      副標題={state.kind === 'ready' ? '端點詳情' : undefined}
+      on開啟對話={onClose}
+      on開啟端點={onOpenEndpoints}
+      on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
+      on登出={handleLogout}
+      登出中={logoutPending}
+    >
+      <div className="mx-auto flex w-full max-w-[68rem] flex-col gap-xl py-md">
+        <h2 id="endpoint-title" className="sr-only">
+          端點詳情
+        </h2>
+        {logoutError && <錯誤訊息>{AUTH_ERROR_MESSAGE}</錯誤訊息>}
+        {state.kind === 'loading' && <載入中>正在載入端點詳情…</載入中>}
+        {state.kind === 'not-found' && <錯誤訊息>{ENDPOINT_NOT_FOUND_MESSAGE}</錯誤訊息>}
+        {state.kind === 'error' && <錯誤訊息>{ENDPOINT_DETAIL_ERROR_MESSAGE}</錯誤訊息>}
+
         {state.kind === 'ready' && (
           <>
-            <div role="tablist" aria-label="端點資料分頁">
-              {DETAIL_TABS.map((tab) => <button key={tab.id} type="button" role="tab"
-                aria-selected={activeTab === tab.id} onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}
+            <div
+              role="tablist"
+              aria-label="端點資料分頁"
+              className="端點詳情分頁 relative flex gap-xl border-b border-outline-variant"
+            >
+              {DETAIL_TABS.map((tab) => {
+                const 是目前 = activeTab === tab.id
+                return (
+                  /* 子節點維持純字串：既有測試以 children.join('') 取得分頁按鈕。 */
+                  <button
+                    key={tab.id}
+                    type="button"
+                    role="tab"
+                    aria-selected={是目前}
+                    /*
+                      ::after 的粗體幽靈副本（用來鎖住寬度、避免切換時左右位移）會被
+                      算進無障礙名稱，讓 tab 變成「憑證憑證」。用 aria-label 明確指定名稱蓋掉。
+                    */
+                    aria-label={tab.label}
+                    data-label={tab.label}
+                    ref={(node) => {
+                      tabRefs.current[tab.id] = node
+                    }}
+                    onClick={() => setActiveTab(tab.id)}
+                    className={[
+                      '端點詳情分頁按鈕 px-1 pb-3 font-body-md text-body-md font-semibold transition-colors',
+                      是目前
+                        ? 'text-on-surface'
+                        : 'text-on-surface-variant hover:text-on-surface',
+                    ].join(' ')}
+                  >
+                    {tab.label}
+                  </button>
+                )
+              })}
+              <span
+                aria-hidden={true}
+                className="端點詳情分頁指示器"
+                style={{
+                  '--tab-indicator-left': `${tabIndicator.left}px`,
+                  '--tab-indicator-width': `${tabIndicator.width}px`,
+                  opacity: tabIndicator.width > 0 ? 1 : 0,
+                } as CSSProperties}
+              />
             </div>
-            {activeTab === 'overview' && <section role="tabpanel" aria-label="Overview">
-              <dl aria-label="端點基本資料">
-                <dt>Slug</dt><dd>{state.detail.slug}</dd>
-                <dt>狀態</dt><dd>{state.detail.status}</dd>
-                <dt>目前版本</dt><dd>{state.detail.currentVersionNumber === null ? '尚未發布' : `版本 ${state.detail.currentVersionNumber}`}</dd>
-              </dl>
-              <button type="button" onClick={() => onCreateVersion(state.detail.endpointId)}>建立新版本</button>
-            </section>}
-            {activeTab === 'credentials' && <div role="tabpanel" aria-label="Credentials">
-              <CredentialManager endpointId={state.detail.endpointId} />
-            </div>}
-            {activeTab === 'docs' && <div role="tabpanel" aria-label="Docs">
-              <EndpointDocs endpointId={state.detail.endpointId} />
-            </div>}
-            {activeTab === 'diagnostics' && <div role="tabpanel" aria-label="Diagnostics">
-              <OwnerDiagnostics endpointId={state.detail.endpointId} />
-            </div>}
+
+            {renderActivePanel(state.detail)}
           </>
         )}
-      </section>
-    </main>
+      </div>
+    </應用框架>
   )
 }

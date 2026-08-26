@@ -1,93 +1,555 @@
-:root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  color: #3f342b;
-  background: #f6efe4;
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+@import "tailwindcss";
+
+/*
+ * Design tokens 來自 UI/UX 設計稿。
+ * 色票沿用 Material 3 的語意命名（surface / on-surface / container 等），
+ * 名稱刻意與設計稿一致，方便日後對稿。
+ */
+@theme {
+  /* 色票 */
+  --color-primary: #6d28d9;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #6d28d9;
+  --color-on-primary-container: #ffffff;
+  --color-primary-fixed: #dae2fd;
+  --color-primary-fixed-dim: #bec6e0;
+  --color-on-primary-fixed: #131b2e;
+  --color-on-primary-fixed-variant: #3f465c;
+  --color-inverse-primary: #bec6e0;
+
+  --color-secondary: #006591;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #39b8fd;
+  --color-on-secondary-container: #004666;
+  --color-secondary-fixed: #c9e6ff;
+  --color-secondary-fixed-dim: #89ceff;
+  --color-on-secondary-fixed: #001e2f;
+  --color-on-secondary-fixed-variant: #004c6e;
+
+  --color-tertiary: #8f4c00;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #0b1c30;
+  --color-on-tertiary-container: #75859d;
+  --color-tertiary-fixed: #d3e4fe;
+  --color-tertiary-fixed-dim: #b7c8e1;
+  --color-on-tertiary-fixed: #0b1c30;
+  --color-on-tertiary-fixed-variant: #38485d;
+
+  --color-background: #fcfcfc;
+  --color-on-background: #1c1b1a;
+  --color-surface: #fcfcfc;
+  --color-on-surface: #1c1b1a;
+  --color-surface-variant: #e6e5e2;
+  --color-on-surface-variant: #46443f;
+  --color-surface-bright: #ffffff;
+  --color-surface-dim: #dedddb;
+  --color-surface-tint: #565e74;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f7f7f6;
+  --color-surface-container: #f2f2f0;
+  --color-surface-container-high: #ecebe9;
+  --color-surface-container-highest: #e6e5e2;
+  --color-inverse-surface: #2d3133;
+  --color-inverse-on-surface: #eff1f3;
+
+  --color-outline: #79776f;
+  --color-outline-variant: #dcdbd8;
+
+  --color-error: #ba1a1a;
+  --color-on-error: #ffffff;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+
+  --color-success: #16a34a;
+
+  /* 深色程式碼區塊 */
+  --color-code-surface: #1e293b;
+  --color-code-on-surface: #e2e8f0;
+
+  /*
+   * 間距。
+   *
+   * 注意：xs / sm / md / lg / xl 這幾個名稱與 Tailwind 內建的
+   * max-w-xs、max-w-md 等尺寸 utility 撞名，且間距的優先序較高
+   * （max-w-md 會解析成 max-width: 16px）。需要限制寬度時請改用
+   * 明確值，例如 max-w-[28rem]，不要用 max-w-{xs,sm,md,lg,xl}。
+   */
+  --spacing-xs: 4px;
+  --spacing-base: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 16px;
+  --spacing-lg: 24px;
+  --spacing-xl: 32px;
+  /* 區塊之間的呼吸空間 */
+  --spacing-2xl: 48px;
+  --spacing-sidebar-width: 260px;
+
+  /* 圓角 */
+  --radius-DEFAULT: 0.125rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.75rem;
+  /* 訊息泡泡專用，比表單控制項更圓 */
+  --radius-2xl: 1rem;
+
+  /*
+   * 字型：不引用外部字型服務（後端 CSP 為 default-src 'self'，且 dist 只收
+   * hash 過的本地資源）。設計稿的 Inter / JetBrains Mono 沒有中文字符，
+   * 繁中本來就會 fallback，因此直接採系統堆疊。
+   */
+  --font-body-md: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif;
+  --font-body-lg: var(--font-body-md);
+  --font-headline-sm: var(--font-body-md);
+  --font-headline-md: var(--font-body-md);
+  --font-display-lg: var(--font-body-md);
+  --font-code-md: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
+  --font-label-sm: var(--font-code-md);
+
+  /* 字級 */
+  --text-label-sm: 13px;
+  --text-label-sm--line-height: 20px;
+  --text-label-sm--font-weight: 500;
+
+  --text-code-md: 15px;
+  --text-code-md--line-height: 24px;
+  --text-code-md--font-weight: 400;
+
+  --text-body-md: 16px;
+  --text-body-md--line-height: 26px;
+  --text-body-md--font-weight: 400;
+
+  --text-body-lg: 18px;
+  --text-body-lg--line-height: 30px;
+  --text-body-lg--font-weight: 400;
+
+  --text-headline-sm: 22px;
+  --text-headline-sm--line-height: 32px;
+  --text-headline-sm--font-weight: 600;
+
+  --text-headline-md: 28px;
+  --text-headline-md--line-height: 38px;
+  --text-headline-md--letter-spacing: -0.01em;
+  --text-headline-md--font-weight: 600;
+
+  --text-display-lg: 40px;
+  --text-display-lg--line-height: 48px;
+  --text-display-lg--letter-spacing: -0.02em;
+  --text-display-lg--font-weight: 700;
 }
 
-* {
-  box-sizing: border-box;
+
+/*
+ * 深色模式。
+ *
+ * 47 個語意 token 與上面的淺色完全同名，只換值：Tailwind v4 的 utility 會
+ * 編譯成 var(--color-x)，所以在 .dark 底下重新宣告同名變數就能整站翻面，
+ * 元件一行都不用改。
+ *
+ * 前提：上面必須是 @theme 而不是 @theme inline —— inline 會把值直接內嵌進
+ * utility，這裡的覆蓋就會失效。
+ */
+.dark {
+  --color-primary: #d2bbff;
+  --color-on-primary: #3f008e;
+  --color-primary-container: #7c3aed;
+  --color-on-primary-container: #ede0ff;
+  --color-primary-fixed: #eaddff;
+  --color-primary-fixed-dim: #d2bbff;
+  --color-on-primary-fixed: #25005a;
+  --color-on-primary-fixed-variant: #5a00c6;
+  --color-inverse-primary: #732ee4;
+  --color-secondary: #89ceff;
+  --color-on-secondary: #00344d;
+  --color-secondary-container: #00a2e6;
+  --color-on-secondary-container: #00344e;
+  --color-secondary-fixed: #c9e6ff;
+  --color-secondary-fixed-dim: #89ceff;
+  --color-on-secondary-fixed: #001e2f;
+  --color-on-secondary-fixed-variant: #004c6e;
+  --color-tertiary: #ffb784;
+  --color-on-tertiary: #4f2500;
+  --color-tertiary-container: #a15100;
+  --color-on-tertiary-container: #ffe0cd;
+  --color-tertiary-fixed: #ffdcc6;
+  --color-tertiary-fixed-dim: #ffb784;
+  --color-on-tertiary-fixed: #301400;
+  --color-on-tertiary-fixed-variant: #713700;
+  --color-background: #0b1326;
+  --color-on-background: #dae2fd;
+  --color-surface: #0b1326;
+  --color-on-surface: #dae2fd;
+  --color-surface-variant: #2d3449;
+  --color-on-surface-variant: #ccc3d8;
+  --color-surface-bright: #31394d;
+  --color-surface-dim: #0b1326;
+  --color-surface-tint: #d2bbff;
+  --color-surface-container-lowest: #060e20;
+  --color-surface-container-low: #131b2e;
+  --color-surface-container: #171f33;
+  --color-surface-container-high: #222a3d;
+  --color-surface-container-highest: #2d3449;
+  --color-inverse-surface: #dae2fd;
+  --color-inverse-on-surface: #283044;
+  --color-outline: #958da1;
+  --color-outline-variant: #4a4455;
+  --color-error: #ffb4ab;
+  --color-on-error: #690005;
+  --color-error-container: #93000a;
+  --color-on-error-container: #ffdad6;
+
+  /* 深色程式碼區塊 */
+  --color-code-surface: #171f33;
+  --color-code-on-surface: #dae2fd;
+
+  --color-success: #4ade80;
 }
 
-body {
-  margin: 0;
-  min-width: 320px;
-  min-height: 100vh;
+@layer base {
+  html {
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+    background: var(--color-background);
+    color: var(--color-on-background);
+    font-family: var(--font-body-md);
+    font-size: var(--text-body-md);
+    line-height: 26px;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  /* 設計稿的表單控制項一律自繪外框，移除瀏覽器預設樣式 */
+  input[type="text"],
+  input[type="password"],
+  input[type="number"],
+  input[type="date"],
+  textarea,
+  select {
+    appearance: none;
+    background-color: var(--color-surface-container-lowest);
+    border: 1px solid var(--color-outline-variant);
+    border-radius: var(--radius-DEFAULT);
+  }
+
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible {
+    outline: 2px solid var(--color-secondary);
+    outline-offset: -1px;
+    border-color: var(--color-secondary);
+  }
+
+  /* appearance:none 會移除原生下拉箭頭，這裡自繪一個補回去 */
+  select {
+    padding-right: 2rem;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2345464d' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 0.5rem center;
+    background-size: 1rem;
+  }
+
+  /* 下拉箭頭是硬寫在 data URI 裡的，深色底下要換成淺色描邊 */
+  .dark select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ccc3d8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  }
+
+  input[type="checkbox"] {
+    accent-color: var(--color-secondary);
+    width: 16px;
+    height: 16px;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-secondary);
+    outline-offset: 2px;
+  }
 }
 
-button,
-input,
-textarea {
-  font: inherit;
-}
+@layer components {
+  /*
+   * 導覽按鈕圖示。
+   *
+   * 這些按鈕的子節點必須維持純文字：既有測試以
+   * `findAllByType('button').find(node => node.children.join('') === 標籤)`
+   * 取得它們。把 <svg> 放進按鈕會讓 join('') 產生 "[object Object]"。
+   * 因此圖示改由偽元素以 SVG mask 繪製，不進入 DOM，可及性樹也維持乾淨。
+   */
+  .導覽項目 {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-md);
+    /* 文字節點是匿名 flex item，未設 nowrap 會在窄容器裡被壓成直排 */
+    white-space: nowrap;
+  }
 
-.app-shell {
-  display: grid;
-  min-height: 100vh;
-  place-items: center;
-  padding: 2rem;
-  background:
-    radial-gradient(circle at top left, rgb(255 251 244 / 90%), transparent 42%),
-    linear-gradient(145deg, #f8f0e3 0%, #ead8c2 100%);
-}
+  .導覽項目::before {
+    content: "";
+    display: inline-block;
+    flex-shrink: 0;
+    width: 20px;
+    height: 20px;
+    background-color: currentColor;
+    mask-repeat: no-repeat;
+    mask-position: center;
+    mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+  }
 
-.welcome-card {
-  width: min(100%, 42rem);
-  padding: clamp(2rem, 6vw, 4.5rem);
-  border: 1px solid rgb(126 88 58 / 16%);
-  border-radius: 2rem;
-  background: rgb(255 252 247 / 78%);
-  box-shadow: 0 1.5rem 4rem rgb(92 63 39 / 12%);
-  text-align: center;
-  backdrop-filter: blur(12px);
-}
+  .導覽項目-對話::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+  }
 
-.eyebrow {
-  margin: 0 0 1rem;
-  color: #a45f32;
-  font-size: 0.78rem;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
+  .導覽項目-端點::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 6 2 12l6 6M16 6l6 6-6 6'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+  }
 
-h1 {
-  margin: 0;
-  color: #49372a;
-  font-size: clamp(2rem, 6vw, 3.6rem);
-  line-height: 1.1;
-}
+  .導覽項目-稽核::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 3v18M5 8l7-5 7 5M4 21h16M6 8l-3 6a3 3 0 0 0 6 0l-3-6zM18 8l-3 6a3 3 0 0 0 6 0l-3-6z'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+  }
 
-.welcome-copy {
-  max-width: 30rem;
-  margin: 1.5rem auto 0;
-  color: #735f50;
-  font-size: 1.05rem;
-  line-height: 1.8;
-}
+  .導覽項目-登出::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+  }
 
-.endpoint-detail { width: min(100%, 64rem); text-align: left; }
-.endpoint-detail nav,
-.owner-diagnostics header {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.75rem;
-  align-items: center;
-  justify-content: space-between;
+  .導覽項目-新增,
+  .導覽項目-傳送,
+  .導覽項目-載入中 {
+    justify-content: center;
+  }
+
+
+  /*
+   * 只顯示圖示的導覽按鈕（左下角的登出）。
+   * 子節點必須維持純字串（測試以文字取節點），所以用 font-size: 0 把文字收掉：
+   * 節點還在、無障礙名稱還在，只是不佔版面。
+   */
+  .導覽項目-僅圖示 {
+    gap: 0;
+    font-size: 0;
+    justify-content: center;
+  }
+
+  .導覽項目-僅圖示::before {
+    width: 18px;
+    height: 18px;
+  }
+
+  /*
+   * 整列連結：覆蓋整個列的透明按鈕，讓整列都可點、鍵盤也能對焦。
+   * 子節點必須維持純字串（測試以列表項目的文字取節點），所以用 font-size: 0
+   * 把文字收掉——可視的標題與副標另外畫在列裡面。
+   */
+  .整列連結 {
+    position: absolute;
+    inset: 0;
+    font-size: 0;
+    border-radius: inherit;
+  }
+
+  .應用主內容 {
+    overflow-y: scroll;
+    scrollbar-gutter: stable both-edges;
+  }
+
+  .端點文件Schema卡片 {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .端點文件Schema卡片 > div:last-child {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+  }
+
+  .端點文件Schema碼 {
+    display: flex;
+    min-height: 0;
+    height: 20rem;
+    flex: 1;
+  }
+
+  .端點文件Schema碼 .程式碼區塊 {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+  }
+
+  .端點詳情分頁 {
+    --tab-indicator-left: 0px;
+    --tab-indicator-width: 0px;
+  }
+
+  .端點詳情分頁按鈕 {
+    position: relative;
+    appearance: none;
+    border: 0;
+    background: transparent;
+    text-align: left;
+  }
+
+  .端點詳情分頁按鈕::after {
+    content: attr(data-label);
+    display: block;
+    height: 0;
+    overflow: hidden;
+    visibility: hidden;
+    font-weight: 600;
+  }
+
+  .端點詳情分頁指示器 {
+    position: absolute;
+    bottom: -1px;
+    left: 0;
+    width: var(--tab-indicator-width);
+    height: 2px;
+    background: var(--color-primary);
+    transform: translateX(var(--tab-indicator-left));
+    transition:
+      transform 180ms ease,
+      width 180ms ease,
+      opacity 120ms ease;
+  }
+
+  .端點詳情面板 {
+    min-height: clamp(32rem, calc(100vh - 14rem), 52rem);
+    animation: 端點詳情面板淡入 160ms ease-out;
+  }
+
+  @keyframes 端點詳情面板淡入 {
+    from {
+      opacity: 0;
+    }
+
+    to {
+      opacity: 1;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .端點詳情分頁指示器 {
+      transition: none;
+    }
+
+    .端點詳情面板 {
+      animation: none;
+    }
+  }
+
+  .導覽項目-傳送::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+    width: 16px;
+    height: 16px;
+  }
+
+  /* 送出／載入中的轉圈：圖示是偽元素，動畫只能掛在偽元素上 */
+  .導覽項目-載入中::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-6.22-8.56'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+    width: 16px;
+    height: 16px;
+    animation: 轉圈 0.9s linear infinite;
+  }
+
+  @keyframes 轉圈 {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  /*
+   * 管理員專屬入口的 ADMIN 標記。
+   * 同樣走偽元素：這顆按鈕的子節點必須維持純字串（見上方說明）。
+   */
+  .導覽項目-稽核::after {
+    content: "ADMIN";
+    margin-left: auto;
+    flex-shrink: 0;
+    border: 1px solid color-mix(in oklab, var(--color-tertiary) 40%, transparent);
+    border-radius: var(--radius-DEFAULT);
+    padding: 0 4px;
+    color: var(--color-tertiary);
+    font-family: var(--font-label-sm);
+    font-size: 10px;
+    line-height: 16px;
+    letter-spacing: 0.05em;
+  }
+
+  /*
+   * 選中時底色換成 primary-container 的紫，tertiary 的深橘褐壓上去幾乎讀不到
+   * （淺色模式是 #8f4c00 對 #6d28d9）。改跟著 on-primary-container 走，
+   * 兩個模式都會落在同一組前景色上。
+   */
+  .導覽項目-稽核[aria-current="page"]::after {
+    border-color: color-mix(in oklab, currentColor 45%, transparent);
+    color: currentColor;
+  }
+
+  .導覽項目-新增::before {
+    --圖示: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 5v14M5 12h14'/%3E%3C/svg%3E");
+    mask-image: var(--圖示);
+    -webkit-mask-image: var(--圖示);
+    width: 16px;
+    height: 16px;
+  }
+
+  /* 深色程式碼區塊：設計稿在多處重複使用同一種呈現 */
+  .程式碼區塊 {
+    background: var(--color-code-surface);
+    color: var(--color-code-on-surface);
+    border-radius: var(--radius-lg);
+    font-family: var(--font-code-md);
+    font-size: var(--text-code-md);
+    line-height: 24px;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin: 0;
+    padding: var(--spacing-md);
+  }
+
+  .程式碼區塊::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  .程式碼區塊::-webkit-scrollbar-track {
+    background: rgb(255 255 255 / 5%);
+  }
+
+  .程式碼區塊::-webkit-scrollbar-thumb {
+    background: rgb(255 255 255 / 20%);
+    border-radius: 4px;
+  }
+
+  .程式碼區塊::-webkit-scrollbar-thumb:hover {
+    background: rgb(255 255 255 / 30%);
+  }
 }
-.owner-diagnostics { margin-top: 2rem; }
-.owner-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: 1rem;
-}
-.owner-metrics p {
-  padding: 1rem;
-  border-radius: 1rem;
-  background: rgb(255 255 255 / 60%);
-}
-.owner-metrics strong { display: block; margin-top: 0.4rem; font-size: 1.3rem; }
-.owner-metrics h3,
-.owner-metrics ul,
-.owner-metrics ol { grid-column: 1 / -1; }

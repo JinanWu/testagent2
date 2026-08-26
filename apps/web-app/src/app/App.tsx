@@ -98,19 +98,19 @@ function RouteShell() {
     return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
   }
   if (route === ENDPOINTS_ROUTE) {
-    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} onCreateEndpoint={openEndpointBuilder} />
+    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} onCreateEndpoint={openEndpointBuilder} onOpenAdminLogs={openAdminLogs} />
   }
   if (route === ADMIN_LOGS_ROUTE && user.role === 'admin') {
-    return <InvocationLogsPage onClose={openDefaultRoute} />
+    return <InvocationLogsPage onClose={openDefaultRoute} onOpenEndpoints={openEndpoints} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-detail') {
-    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} onCreateVersion={openEndpointVersionBuilder} />
+    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} onCreateVersion={openEndpointVersionBuilder} onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-new') {
-    return <EndpointBuilderPage key={`new:${user.id}`} mode="new" onClose={openEndpoints} />
+    return <EndpointBuilderPage key={`new:${user.id}`} mode="new" onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-version-new') {
-    return <EndpointBuilderPage key={`version:${route.endpointId}:${user.id}`} mode="version" endpointId={route.endpointId} onClose={openEndpoints} />
+    return <EndpointBuilderPage key={`version:${route.endpointId}:${user.id}`} mode="version" endpointId={route.endpointId} onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} />
   }
   return (
     <main className="app-shell">

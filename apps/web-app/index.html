@@ -3,8 +3,24 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f6efe4" />
+    <meta name="theme-color" content="#f7f9fb" />
     <title>TestAgent2</title>
+    <script>
+      /*
+       * 深淺模式必須在首次繪製前決定，否則會先閃一下另一個色系。
+       * 放在這裡而不是 React 元件裡：元件掛載已經太晚了。
+       */
+      (function () {
+        var 偏好 = null
+        try { 偏好 = localStorage.getItem('testagent2-theme') } catch (e) { /* 無痕模式讀不到 */ }
+        var 系統 = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+        var 主題 = 偏好 === 'dark' || 偏好 === 'light' ? 偏好 : 系統
+        document.documentElement.classList.toggle('dark', 主題 === 'dark')
+        document
+          .querySelector('meta[name="theme-color"]')
+          ?.setAttribute('content', 主題 === 'dark' ? '#0b1326' : '#f7f9fb')
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

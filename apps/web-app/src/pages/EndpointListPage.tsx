@@ -2,6 +2,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { listOwnerEndpoints, type OwnerEndpointItem } from '../api/endpoints'
 import { useSession } from '../app/SessionProvider'
+import { 載入中, 錯誤訊息, 輸入樣式 } from '../ui/元件'
+import { 格式化相對時間, 狀態文字 } from '../ui/格式'
+import 圖示 from '../ui/圖示'
+import 應用框架 from '../ui/應用框架'
 
 export const ENDPOINT_LIST_ERROR_MESSAGE = '目前無法載入端點，請稍後再試。'
 type EndpointScope = 'owner' | 'all'
@@ -10,6 +14,7 @@ export interface EndpointListPageProps {
   onClose(): void
   onOpenEndpoint(endpointId: string): void
   onCreateEndpoint(): void
+  onOpenAdminLogs?(): void
 }
 
 function mergeEndpointItems(
@@ -29,7 +34,17 @@ function mergeEndpointItems(
   return merged
 }
 
-export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndpoint }: EndpointListPageProps) {
+/*
+ * 三種狀態的視覺配置。狀態文字一定會出現在副標，圓點與底色只是輔助——
+ * 不能只靠顏色傳達狀態。
+ */
+const 狀態外觀: Record<'active' | 'disabled' | 'archived', { 圖磚: string; 圓點: string }> = {
+  active: { 圖磚: 'bg-primary-container/10 text-primary', 圓點: 'bg-success' },
+  disabled: { 圖磚: 'bg-surface-container-highest text-on-surface-variant', 圓點: 'bg-outline' },
+  archived: { 圖磚: 'bg-surface-container text-on-surface-variant/70', 圓點: 'bg-error' },
+}
+
+export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndpoint, onOpenAdminLogs }: EndpointListPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [items, setItems] = useState<OwnerEndpointItem[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -138,44 +153,140 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
   }
 
   return (
-    <main className="app-shell">
-      <section className="welcome-card endpoint-detail" aria-labelledby="endpoint-list-title">
-        <nav aria-label="端點管理導覽">
-          <button type="button" onClick={onClose}>返回對話</button>
-          <button type="button" onClick={() => {
-            void logout().catch(() => { if (mounted.current) setError(AUTH_ERROR_MESSAGE) })
-          }}>登出</button>
-        </nav>
-        <p className="eyebrow">TestAgent2</p>
-        <h1 id="endpoint-list-title">端點管理</h1>
-        {user?.role === 'admin' && <>
-          <label htmlFor="endpoint-scope">清單範圍</label>
-          <select id="endpoint-scope" value={scope}
-            onChange={(event) => changeScope(event.currentTarget.value)}>
-            <option value="owner">我的端點</option>
-            <option value="all">所有端點</option>
-          </select>
-        </>}
-        <button type="button" onClick={onCreateEndpoint}>建立端點</button>
-        {loading ? <p role="status" aria-live="polite">正在載入端點…</p> : error ? <p role="alert">{error}</p> : items.length === 0 ? (
-          <p>目前沒有端點。</p>
+    <應用框架
+      目前分頁="端點"
+      標題="端點管理"
+      副標題="管理與觀測您的 Agent 介面。"
+      on開啟對話={onClose}
+      on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
+      on登出={() => {
+        void logout().catch(() => { if (mounted.current) setError(AUTH_ERROR_MESSAGE) })
+      }}
+      工具列={
+        <>
+          {user?.role === 'admin' && (
+            <>
+              <label htmlFor="endpoint-scope" className="sr-only">
+                清單範圍
+              </label>
+              <select
+                id="endpoint-scope"
+                value={scope}
+                onChange={(event) => changeScope(event.currentTarget.value)}
+                className={`${輸入樣式} w-40 rounded-xl py-2`}
+              >
+                <option value="owner">我的端點</option>
+                <option value="all">所有端點</option>
+              </select>
+            </>
+          )}
+          {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}
+          <button
+            type="button"
+            onClick={onCreateEndpoint}
+            className="導覽項目 導覽項目-新增 rounded-xl bg-primary-container px-4 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+          >
+            建立端點
+          </button>
+        </>
+      }
+    >
+      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-xl py-md">
+        {error && <錯誤訊息>{error}</錯誤訊息>}
+
+        {loading ? (
+          <載入中>正在載入端點…</載入中>
+        ) : items.length === 0 && !error ? (
+          <div className="flex flex-col items-center gap-md rounded-xl border border-dashed border-outline-variant px-lg py-2xl text-center">
+            <span
+              aria-hidden={true}
+              className="flex size-14 items-center justify-center rounded-full bg-surface-container text-on-surface-variant"
+            >
+              <圖示 名稱="端點" 大小={26} />
+            </span>
+            <p className="font-headline-sm text-headline-sm text-on-surface">目前沒有端點。</p>
+            <p className="max-w-[26rem] font-body-md text-body-md text-on-surface-variant">
+              把一組 Agent 設定發布成對外的 HTTP API，就會出現在這裡。
+            </p>
+          </div>
         ) : (
-          <ul aria-label="端點清單">
-            {items.map((item) => (
-              <li key={item.endpointId}>
-                <button type="button" onClick={() => onOpenEndpoint(item.endpointId)}>{item.slug}</button>
-                <span> {item.status}</span>
-              </li>
-            ))}
+          /*
+            無框線列表：不畫卡片也不畫表頭，靠留白分組，游標移過去整列變淺灰。
+            兩欄排列讓 80 個端點的捲動距離只有單欄表格的一半。
+          */
+          <ul aria-label="端點清單" className="grid gap-x-xl gap-y-xs lg:grid-cols-2">
+            {items.map((item) => {
+              const 外觀 = 狀態外觀[item.status]
+              return (
+                <li
+                  key={item.endpointId}
+                  className="group relative rounded-xl transition-colors hover:bg-surface-container"
+                >
+                  <div className="pointer-events-none flex items-center gap-md p-md">
+                    <span
+                      aria-hidden={true}
+                      className={['flex size-10 shrink-0 items-center justify-center rounded-xl', 外觀.圖磚].join(' ')}
+                    >
+                      <圖示 名稱="端點" 大小={20} />
+                    </span>
+
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
+                        {item.slug}
+                      </p>
+                      <p className="flex items-center gap-sm truncate font-body-md text-body-md text-on-surface-variant">
+                        <span className="flex items-center gap-1.5">
+                          <span aria-hidden={true} className={['size-1.5 shrink-0 rounded-full', 外觀.圓點].join(' ')} />
+                          {狀態文字(item.status)}
+                        </span>
+                        <span aria-hidden={true}>·</span>
+                        <span className="font-code-md text-code-md">
+                          {item.currentVersionNumber === null ? '尚未發布' : `v${item.currentVersionNumber}`}
+                        </span>
+                        <span aria-hidden={true}>·</span>
+                        <span className="truncate">{格式化相對時間(item.updatedAt)}</span>
+                      </p>
+                    </div>
+
+                    <span
+                      aria-hidden={true}
+                      className="shrink-0 text-on-surface-variant/50 transition-colors group-hover:text-on-surface-variant"
+                    >
+                      <圖示 名稱="前往" 大小={18} />
+                    </span>
+                  </div>
+
+                  {/*
+                    子節點維持純字串：既有測試以 button.children.join('') 比對 slug 取得此按鈕。
+                    按鈕覆蓋整列（.整列連結 以 font-size: 0 收掉文字），可視內容畫在上面那層。
+                  */}
+                  <button
+                    type="button"
+                    onClick={() => onOpenEndpoint(item.endpointId)}
+                    className="整列連結"
+                  >
+                    {item.slug}
+                  </button>
+                </li>
+              )
+            })}
           </ul>
         )}
-        {error && items.length > 0 && <p role="alert">{error}</p>}
+
         {nextCursor !== null && (
-          <button type="button" disabled={loadingMore} onClick={() => { void loadMore() }}>
-            {loadingMore ? '載入中…' : '載入更多'}
-          </button>
+          <div className="flex justify-center">
+            {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}
+            <button
+              type="button"
+              disabled={loadingMore}
+              onClick={() => { void loadMore() }}
+              className="rounded-xl border border-outline-variant px-6 py-2 font-body-md text-body-md font-semibold text-on-surface transition-colors hover:bg-surface-container-highest disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {loadingMore ? '載入中…' : '載入更多'}
+            </button>
+          </div>
         )}
-      </section>
-    </main>
+      </div>
+    </應用框架>
   )
 }

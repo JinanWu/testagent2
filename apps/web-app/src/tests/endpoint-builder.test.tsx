@@ -35,6 +35,20 @@ function button(renderer: ReactTestRenderer, label: string) {
   return renderer.root.findAllByType('button').find((node) => node.children.join('') === label)!
 }
 function input(renderer: ReactTestRenderer, id: string) { return renderer.root.findByProps({ id }) }
+/*
+ * 「查看」按鈕的可見文字不再包含技能名稱（名稱太長會撐爆卡片），
+ * 完整名稱改放 aria-label，因此以 aria-label 取節點。斷言本身不變。
+ */
+function 查看按鈕(renderer: ReactTestRenderer, name: string) {
+  return renderer.root.findByProps({ 'aria-label': `查看 ${name}` })
+}
+function skillCard(renderer: ReactTestRenderer, name: string) {
+  return renderer.root.findAllByType('li').find((node) =>
+    typeof node.props.className === 'string' &&
+    node.props.className.includes('cursor-pointer') &&
+    node.findAllByType('label').some((label) => label.children.flat().join('').includes(name)),
+  )!
+}
 
 async function prepareDraft(renderer: ReactTestRenderer, fetchMock: ReturnType<typeof vi.fn>) {
   await act(async () => { input(renderer, 'skill-alpha').props.onChange({ target: { checked: true } }) })
@@ -92,7 +106,7 @@ describe('A22-03 draft-driven endpoint Builder', () => {
     await flush()
     const labels = renderer!.root.findAllByType('label').map((node) => node.children.flat().join(''))
     expect(labels.findIndex((label) => label.includes('Alpha'))).toBeLessThan(labels.findIndex((label) => label.includes('Zeta')))
-    await act(async () => { button(renderer!, '查看 Alpha').props.onClick(); await flush() })
+    await act(async () => { 查看按鈕(renderer!, 'Alpha').props.onClick(); await flush() })
     expect(text(renderer!)).toContain('AUTHORITATIVE_SKILL_CONTENT')
     expect(fetchMock).toHaveBeenLastCalledWith('/api/skills/alpha', expect.objectContaining({ signal: expect.any(AbortSignal) }))
   })
@@ -121,6 +135,49 @@ describe('A22-03 draft-driven endpoint Builder', () => {
     expect(input(renderer!, 'endpoint-response-mode').props.disabled).toBe(true)
     expect(input(renderer!, 'skill-alpha').props.disabled).toBe(true)
     expect(button(renderer!, '建立 Draft').props.disabled).toBe(true)
+  })
+
+  it('selects a skill when clicking the card body outside the checkbox', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session()))
+      .mockResolvedValueOnce(jsonResponse(skills))
+      .mockResolvedValueOnce(jsonResponse(session()))
+      .mockResolvedValueOnce(jsonResponse(draft, 201))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    await act(async () => { input(renderer!, 'endpoint-requirement').props.onChange({ target: { value: 'Build a safe API' } }) })
+    await act(async () => {
+      skillCard(renderer!, 'Alpha').props.onClick({ target: { closest: () => null } })
+    })
+    await act(async () => { button(renderer!, '建立 Draft').props.onClick(); await flush() })
+    await flush()
+
+    const draftCall = fetchMock.mock.calls.find(([route]) => route === '/api/published-endpoints/draft')!
+    expect(JSON.parse(String(draftCall[1]?.body)).selected_skills).toEqual(['alpha'])
+  })
+
+  it('clears stale validation errors after navigating back or editing', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session()))
+      .mockResolvedValueOnce(jsonResponse(skills))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    await act(async () => { input(renderer!, 'endpoint-requirement').props.onChange({ target: { value: 'Build a safe API' } }) })
+    await act(async () => { button(renderer!, '下一步：選擇 Skills').props.onClick() })
+    await act(async () => { button(renderer!, '建立 Draft').props.onClick(); await flush() })
+    expect(text(renderer!)).toContain('請至少選擇 1 個 Skill。')
+
+    await act(async () => { button(renderer!, '上一步').props.onClick() })
+    expect(text(renderer!)).not.toContain('請至少選擇 1 個 Skill。')
+    await act(async () => { button(renderer!, '下一步：選擇 Skills').props.onClick() })
+    expect(text(renderer!)).not.toContain('請至少選擇 1 個 Skill。')
+
+    await act(async () => { button(renderer!, '建立 Draft').props.onClick(); await flush() })
+    expect(text(renderer!)).toContain('請至少選擇 1 個 Skill。')
+    await act(async () => { input(renderer!, 'skill-alpha').props.onChange({ target: { checked: true } }) })
+    expect(text(renderer!)).not.toContain('請至少選擇 1 個 Skill。')
   })
 
   it('publishes exact detached five-key confirmation and shows the initial key only in current success state', async () => {
@@ -206,7 +263,17 @@ describe('A22-03 draft-driven endpoint Builder', () => {
     await flush()
     await prepareDraft(renderer!, fetchMock)
     await act(async () => { void button(renderer!, '建立版本').props.onClick() })
-    expect(fetchMock.mock.calls.some(([route]) => route === '/api/published-endpoints/endpoint-1/versions')).toBe(true)
+    const versionCall = fetchMock.mock.calls.find(([route]) => route === '/api/published-endpoints/endpoint-1/versions')!
+    expect(JSON.parse(String(versionCall[1]?.body))).toEqual({
+      configuration: {
+        original_requirement_text: 'Build a safe API',
+        system_prompt: 'SERVER_SYSTEM',
+        model_config_snapshot: { model: 'published-default', temperature: 0 },
+        retry_policy: { max_attempts: 1 },
+        input_schema: preview.input_schema,
+        response_schema: preview.response_schema,
+      },
+    })
 
     pathname = '/'
     await act(async () => { popstate?.() }); await flush()

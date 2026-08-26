@@ -127,10 +127,10 @@ describe('A22-03 Owner safe endpoint detail', () => {
     expect(rendered).toContain('safe-api')
     expect(rendered).toContain('active')
     expect(rendered).toContain('版本 2')
-    expect(rendered).toContain('Overview')
-    expect(rendered).toContain('Credentials')
-    expect(rendered).toContain('Docs')
-    expect(rendered).toContain('Diagnostics')
+    expect(rendered).toContain('總覽')
+    expect(rendered).toContain('憑證')
+    expect(rendered).toContain('文件')
+    expect(rendered).toContain('監控')
     expect(rendered).not.toContain('端點觀測')
     expect(fetchMock).toHaveBeenNthCalledWith(2, '/api/published-endpoints/endpoint-1',
       expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
@@ -154,9 +154,10 @@ describe('A22-03 Owner safe endpoint detail', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
 
-    await act(async () => button(renderer!, 'Credentials').props.onClick())
+    await act(async () => button(renderer!, '憑證').props.onClick())
     await flush()
     expect(text(renderer!)).toContain('Production key')
+    await act(async () => button(renderer!, '建立新憑證').props.onClick())
 
     const change = async (id: string, value: string) => act(async () => {
       renderer!.root.findByProps({ id }).props.onChange({ currentTarget: { value } })
@@ -180,7 +181,7 @@ describe('A22-03 Owner safe endpoint detail', () => {
       ip_allowlist: ['198.51.100.2'], rate_limit_requests: 30,
     })
     expect(button(renderer!, '撤銷').props.disabled).toBe(true)
-    expect(button(renderer!, '建立 credential').props.disabled).toBe(true)
+    expect(button(renderer!, '建立新憑證').props.disabled).toBe(true)
 
     await act(async () => button(renderer!, '已保存並清除').props.onClick())
     expect(text(renderer!)).not.toContain(initialApiKey)
@@ -189,11 +190,11 @@ describe('A22-03 Owner safe endpoint detail', () => {
     expect(text(renderer!)).toContain('Production key')
     await act(async () => { button(renderer!, '確認撤銷').props.onClick(); await flush() })
     await flush()
-    expect(text(renderer!)).toContain('revoked')
+    expect(text(renderer!)).toContain('已撤銷')
     expect(fetchMock).toHaveBeenCalledWith('/api/published-endpoints/endpoint-1/credentials/credential-1/revoke',
       expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ 'X-CSRF-Token': 'csrf-safe-value' }) }))
 
-    await act(async () => button(renderer!, 'Docs').props.onClick())
+    await act(async () => button(renderer!, '文件').props.onClick())
     await flush()
     expect(text(renderer!)).toContain('${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke')
     expect(text(renderer!)).toContain('${API_KEY}')
@@ -214,8 +215,9 @@ describe('A22-03 Owner safe endpoint detail', () => {
       })
     await act(async () => { renderer = create(<App />) })
     await flush()
-    await act(async () => button(renderer!, 'Credentials').props.onClick())
+    await act(async () => button(renderer!, '憑證').props.onClick())
     await flush()
+    await act(async () => button(renderer!, '建立新憑證').props.onClick())
     const change = async (id: string, value: string) => act(async () => {
       renderer!.root.findByProps({ id }).props.onChange({ currentTarget: { value } })
     })
@@ -229,8 +231,8 @@ describe('A22-03 Owner safe endpoint detail', () => {
       await flush()
     })
     expect(button(renderer!, '建立 credential').props.disabled).toBe(true)
-    expect(button(renderer!, '撤銷').props.disabled).toBe(true)
-    await act(async () => button(renderer!, 'Overview').props.onClick())
+    expect(button(renderer!, '建立新憑證').props.disabled).toBe(true)
+    await act(async () => button(renderer!, '總覽').props.onClick())
     expect(createSignal.aborted).toBe(true)
     await act(async () => {
       pendingCreate.resolve(jsonResponse({ ...credential('credential-late'), initial_api_key: initialApiKey }, 201))
@@ -252,7 +254,7 @@ describe('A22-03 Owner safe endpoint detail', () => {
       .mockResolvedValueOnce(jsonResponse({ items: [credential('credential-1', 'revoked')] }))
     await act(async () => { renderer = create(<App />) })
     await flush()
-    await act(async () => button(renderer!, 'Credentials').props.onClick())
+    await act(async () => button(renderer!, '憑證').props.onClick())
     await flush()
     await act(async () => button(renderer!, '撤銷').props.onClick())
     await act(async () => { void button(renderer!, '確認撤銷').props.onClick() })
@@ -265,7 +267,7 @@ describe('A22-03 Owner safe endpoint detail', () => {
       await flush()
     })
     await flush()
-    expect(text(renderer!)).toContain('revoked')
+    expect(text(renderer!)).toContain('已撤銷')
     expect(text(renderer!)).not.toContain('確認撤銷')
   })
 
@@ -279,7 +281,7 @@ describe('A22-03 Owner safe endpoint detail', () => {
       .mockResolvedValueOnce(jsonResponse({ detail: 'PRIVATE_READBACK_FAILURE' }, 503))
     await act(async () => { renderer = create(<App />) })
     await flush()
-    await act(async () => button(renderer!, 'Credentials').props.onClick())
+    await act(async () => button(renderer!, '憑證').props.onClick())
     await flush()
     await act(async () => button(renderer!, '撤銷').props.onClick())
     await act(async () => { button(renderer!, '確認撤銷').props.onClick(); await flush() })

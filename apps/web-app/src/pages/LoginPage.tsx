@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { flushSync } from 'react-dom'
 import { AUTH_ERROR_MESSAGE, AuthError } from '../api/auth'
 import { useSession } from '../app/SessionProvider'
+import { 按鈕, 欄位, 輸入樣式 } from '../ui/元件'
+import 圖示 from '../ui/圖示'
 
 export interface LoginPageProps {
   onAuthenticated?: () => void
@@ -61,43 +63,80 @@ export default function LoginPage({ onAuthenticated }: LoginPageProps) {
   }
 
   return (
-    <main className="app-shell">
-      <section className="welcome-card" aria-labelledby="login-title">
-        <p className="eyebrow">TestAgent2</p>
-        <h1 id="login-title">登入智慧工作空間</h1>
-        <form onSubmit={handleSubmit} aria-describedby={error ? 'login-error' : undefined}>
-          <div>
-            <label htmlFor="username">帳號</label>
-            <input
-              id="username"
-              name="username"
-              type="text"
-              autoComplete="username"
-              required
-              maxLength={128}
-              value={username}
-              onChange={(event) => setUsername(event.currentTarget.value)}
-              disabled={submitting}
-            />
-          </div>
-          <div>
-            <label htmlFor="password">密碼</label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              autoComplete="current-password"
-              required
-              maxLength={256}
-              value={password}
-              onChange={(event) => setPassword(event.currentTarget.value)}
-              disabled={submitting}
-            />
-          </div>
-          {error && <p id="login-error" role="alert">{error}</p>}
-          <button type="submit" disabled={submitting}>
+    <main className="app-shell flex min-h-screen items-center justify-center bg-background p-lg">
+      <section
+        aria-labelledby="login-title"
+        className="w-full max-w-[28rem] rounded-lg border border-outline-variant bg-surface-container-lowest p-xl shadow-[0_4px_6px_-1px_rgba(15,23,42,0.1)]"
+      >
+        <div className="mb-xl text-center">
+          <span className="mb-sm inline-flex size-12 items-center justify-center rounded-full bg-primary-container text-primary-fixed">
+            <圖示 名稱="標誌" 大小={26} />
+          </span>
+          <h1 id="login-title" className="font-headline-md text-headline-md text-on-surface">
+            TestAgent2
+          </h1>
+          <p className="font-body-md text-body-md text-on-surface-variant">登入智慧工作空間</p>
+        </div>
+
+        <form
+          onSubmit={handleSubmit}
+          aria-describedby={error ? 'login-error' : undefined}
+          className="flex flex-col gap-md"
+        >
+          <欄位 標籤="帳號" htmlFor="username">
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-on-surface-variant">
+                <圖示 名稱="帳號" 大小={18} />
+              </span>
+              <input
+                id="username"
+                name="username"
+                type="text"
+                autoComplete="username"
+                required
+                maxLength={128}
+                value={username}
+                onChange={(event) => setUsername(event.currentTarget.value)}
+                disabled={submitting}
+                className={`${輸入樣式} pl-10`}
+              />
+            </div>
+          </欄位>
+
+          <欄位 標籤="密碼" htmlFor="password">
+            <div className="relative">
+              <span className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-on-surface-variant">
+                <圖示 名稱="鎖定" 大小={18} />
+              </span>
+              <input
+                id="password"
+                name="password"
+                type="password"
+                autoComplete="current-password"
+                required
+                maxLength={256}
+                value={password}
+                onChange={(event) => setPassword(event.currentTarget.value)}
+                disabled={submitting}
+                className={`${輸入樣式} pl-10`}
+              />
+            </div>
+          </欄位>
+
+          {error && (
+            <div className="flex items-start gap-sm rounded border border-error/30 bg-error-container px-md py-sm text-on-error-container">
+              <span aria-hidden={true} className="mt-0.5 shrink-0">
+                <圖示 名稱="錯誤" 大小={16} />
+              </span>
+              <p id="login-error" role="alert" className="font-body-md text-body-md">
+                {error}
+              </p>
+            </div>
+          )}
+
+          <按鈕 樣式="主要" type="submit" disabled={submitting} className="mt-sm w-full py-2">
             {submitting ? '登入中…' : '登入'}
-          </button>
+          </按鈕>
         </form>
       </section>
     </main>

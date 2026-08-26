@@ -148,7 +148,7 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
       expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }))
-    await act(async () => button(renderer!, '返回對話').props.onClick())
+    await act(async () => button(renderer!, '對話').props.onClick())
     await flush()
     expect(button(renderer!, '端點管理')).toBeDefined()
     expect(button(renderer!, '完整呼叫紀錄')).toBeDefined()
@@ -265,7 +265,7 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
     await act(async () => { pending.resolve(jsonResponse(page([]))); await pending.promise })
     expect(text(renderer!)).toContain('目前沒有端點。')
 
-    await act(async () => button(renderer!, '返回對話').props.onClick())
+    await act(async () => button(renderer!, '對話').props.onClick())
     fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }))
     await flush()
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'PRIVATE_MARKER' }, 503))

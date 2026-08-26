@@ -277,6 +277,24 @@ describe('CP3 真實對話工作流程', () => {
     vi.unstubAllGlobals()
   })
 
+  function 對話區文字(renderer: ReactTestRenderer): string {
+    return renderer.root
+      .findByProps({ 'aria-label': '對話內容' })
+      .findAllByType('p')
+      .map((節點) => 節點.children.filter((子) => typeof 子 === 'string').join(''))
+      .join('\n')
+  }
+
+  /*
+   * 頁面標題 <h1> 現在顯示當前對話串的標題，會與側欄那顆對話按鈕文字相同，
+   * 因此要指名 button，不能只用文字比對取節點。斷言本身不變。
+   */
+  function 對話按鈕(renderer: ReactTestRenderer, 標題: string) {
+    return renderer.root
+      .findAllByProps({ children: 標題 })
+      .filter((節點) => 節點.type === 'button')[0]
+  }
+
   async function openChat(sessions: unknown[] = []) {
     fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({ sessions }))
     await act(async () => { renderer = create(<App />) })
@@ -290,9 +308,9 @@ describe('CP3 真實對話工作流程', () => {
       session: { id: 'root', title: '舊對話', updated_at: 1 },
       messages: [{ role: 'user', content: '舊問題' }, { role: 'assistant', content: '舊答案' }],
     }))
-    await act(async () => renderer.root.findByProps({ children: '舊對話' }).props.onClick())
+    await act(async () => 對話按鈕(renderer, '舊對話').props.onClick())
     expect(JSON.stringify(renderer.toJSON())).toContain('舊答案')
-    const activeSession = renderer.root.findByProps({ children: '舊對話' })
+    const activeSession = 對話按鈕(renderer, '舊對話')
     expect(activeSession.props['aria-current']).toBe('page')
     expect(activeSession.props['aria-pressed']).toBe(true)
     expect(activeSession.props.style).toMatchObject({ fontWeight: 700 })
@@ -312,7 +330,7 @@ describe('CP3 真實對話工作流程', () => {
     }))
     await act(async () => renderer.root.findByProps({ children: '新增對話' }).props.onClick())
     expect(JSON.stringify(renderer.toJSON())).not.toContain('新答案')
-    expect(renderer.root.findByProps({ children: '舊對話' }).props['aria-pressed']).toBe(false)
+    expect(對話按鈕(renderer, '舊對話').props['aria-pressed']).toBe(false)
   })
 
   it('同一 render 的重複送出只啟動一組 auth 與 chat requests', async () => {
@@ -357,11 +375,11 @@ describe('CP3 真實對話工作流程', () => {
       session: { id: 'old', title: '舊對話', updated_at: 1 },
       messages: [{ role: 'assistant', content: '舊內容' }],
     }))
-    await act(async () => renderer.root.findByProps({ children: '舊對話' }).props.onClick())
+    await act(async () => 對話按鈕(renderer, '舊對話').props.onClick())
 
     let resolveDetail!: (response: Response) => void
     fetchMock.mockReturnValueOnce(new Promise((resolve) => { resolveDetail = resolve }))
-    await act(async () => { void renderer.root.findByProps({ children: '新對話' }).props.onClick() })
+    await act(async () => { void 對話按鈕(renderer, '新對話').props.onClick() })
     await act(async () => renderer.root.findByType('textarea').props.onChange({ currentTarget: { value: '不可送到舊對話' } }))
     expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(true)
     await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
@@ -371,8 +389,8 @@ describe('CP3 真實對話工作流程', () => {
       session: { id: 'next', title: '新對話', updated_at: 2 },
       messages: [{ role: 'assistant', content: '新內容' }],
     })))
-    expect(JSON.stringify(renderer.toJSON())).toContain('新內容')
-    expect(JSON.stringify(renderer.toJSON())).not.toContain('你：不可送到舊對話')
+    expect(對話區文字(renderer)).toContain('新內容')
+    expect(對話區文字(renderer)).not.toContain('不可送到舊對話')
   })
 
   it('較舊的明細回應不可覆蓋後選工作階段', async () => {
@@ -382,12 +400,12 @@ describe('CP3 真實對話工作流程', () => {
     ])
     let resolveSlow!: (response: Response) => void
     fetchMock.mockReturnValueOnce(new Promise((resolve) => { resolveSlow = resolve }))
-    await act(async () => { void renderer.root.findByProps({ children: '慢對話' }).props.onClick() })
+    await act(async () => { void 對話按鈕(renderer, '慢對話').props.onClick() })
     fetchMock.mockResolvedValueOnce(jsonResponse({
       session: { id: 'fast', title: '快對話', updated_at: 2 },
       messages: [{ role: 'assistant', content: '最新內容' }],
     }))
-    await act(async () => renderer.root.findByProps({ children: '快對話' }).props.onClick())
+    await act(async () => 對話按鈕(renderer, '快對話').props.onClick())
     await act(async () => resolveSlow(jsonResponse({
       session: { id: 'slow', title: '慢對話', updated_at: 1 },
       messages: [{ role: 'assistant', content: '過期內容' }],
@@ -420,7 +438,7 @@ describe('CP3 真實對話工作流程', () => {
     await act(async () => { resolveChat(jsonResponse({ detail: 'private traceback' })); await send })
     expect(JSON.stringify(renderer.toJSON())).not.toContain('private traceback')
     expect(renderer.root.findByType('textarea').props.value).toBe('保留我')
-    expect(JSON.stringify(renderer.toJSON())).not.toContain('你：保留我')
+    expect(對話區文字(renderer)).not.toContain('保留我')
   })
 
   it('登出失敗後不會讓被中斷的傳送卡住 pending', async () => {
