@@ -49,6 +49,7 @@ export default function ChatPage({
    * 所以用這個計數器區分「使用者只是按了新增對話」與「狀態被抹除了」。
    */
   const eraseCountRef = useRef(0)
+  const isComposingRef = useRef(false)
 
   const eraseProtectedState = useCallback(() => {
     eraseCountRef.current += 1
@@ -267,6 +268,25 @@ export default function ChatPage({
             onChange={(event) => {
               draftRef.current = event.currentTarget.value
               setDraft(event.currentTarget.value)
+            }}
+            onCompositionStart={() => {
+              isComposingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              isComposingRef.current = false
+            }}
+            onKeyDown={(event) => {
+              // 支援 Enter 傳送，且避開中文輸入法的選字 Enter
+              // keyCode === 229 是很多瀏覽器在輸入法組合期間按鍵會觸發的統一碼
+              if (
+                event.key === 'Enter' &&
+                !event.shiftKey &&
+                !isComposingRef.current &&
+                event.keyCode !== 229
+              ) {
+                event.preventDefault()
+                event.currentTarget.form?.requestSubmit()
+              }
             }}
             className="w-full resize-none border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
           />
