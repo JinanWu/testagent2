@@ -161,6 +161,7 @@ def 正規化Gemini模型名稱(模型名稱: str) -> str:
 
 
 Gemini模型上下文長度表: dict[str, int] = {
+    "gemini-3.7-flash": 1_048_576,
     "gemini-2.5-flash-lite": 1_048_576,
     "gemini-2.5-flash": 1_048_576,
     "gemini-2.5-pro": 1_048_576,
@@ -202,6 +203,28 @@ def 查詢Gemini上下文長度(模型名稱: str) -> int:
     if any(標記 in 小寫 for 標記 in ("1.5", "2.0", "2.5")):
         return 1_048_576
     return Gemini預設上下文長度
+
+
+def 解析上下文長度(模式: str, 模型名稱: str) -> int:
+    """決定壓縮門檻用的 context window 長度。
+
+    壓縮門檻 = context window × 觸發比例（預設 0.5）。若沿用舊預設 32768，門檻只有
+    16384，光是系統提示詞＋工具 schema 的固定開銷就逼近門檻，會在對話極早期就誤觸壓縮。
+
+    住在這裡而不是 cli：cli 與 Web 兩條入口都要用同一份解析結果，
+    放在 cli 會讓 Web 匯入不到而掉回 代理執行階段 的參數預設值 32768。
+
+    參數：
+        模式: 模型模式（fake / gemini）。
+        模型名稱: 執行模型名稱；查詢時會先經別名正規化。
+    返回值：int，context window token 數。
+    """
+    覆寫 = (os.getenv("AIAGENT_CONTEXT_WINDOW") or "").strip()
+    if 覆寫.isdigit() and int(覆寫) > 0:
+        return int(覆寫)
+    if 模式 == "fake":
+        return 32768
+    return 查詢Gemini上下文長度(模型名稱)
 
 
 class GeminiADC供應商:

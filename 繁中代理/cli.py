@@ -24,7 +24,7 @@ from typing import Any
 from .代理執行階段 import 代理執行階段
 from .工作階段庫 import 工作階段庫
 from .儲存 import 建立工作階段庫, 建立使用者庫
-from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱, 查詢Gemini上下文長度
+from .模型供應商 import 建立模型供應商, 正規化Gemini模型名稱, 解析上下文長度
 from .輔助壓縮摘要 import 解析摘要失敗是否中止
 from .使用者 import (
     使用者上下文,
@@ -538,25 +538,6 @@ def 建立執行階段(
         壓縮模型=參數.compression_model,
         上下文長度=上下文長度,
     )
-
-
-def 解析上下文長度(模式: str, 模型名稱: str) -> int:
-    """決定壓縮門檻用的 context window 長度。
-
-    壓縮門檻 = context window × 觸發比例（預設 0.5）。若沿用舊預設 32768，門檻只有
-    16384，光是系統提示詞＋工具 schema 的固定開銷就逼近門檻，會在對話極早期就誤觸壓縮。
-
-    參數：
-        模式: 模型模式（fake / gemini）。
-        模型名稱: 已正規化的執行模型名稱。
-    返回值：int，context window token 數。
-    """
-    覆寫 = (os.getenv("AIAGENT_CONTEXT_WINDOW") or "").strip()
-    if 覆寫.isdigit() and int(覆寫) > 0:
-        return int(覆寫)
-    if 模式 == "fake":
-        return 32768
-    return 查詢Gemini上下文長度(模型名稱)
 
 
 def 印出JSON(資料: Any) -> None:
