@@ -39,6 +39,22 @@ _設定錯誤 = "Planner生產設定無效"
 _本機Path型別 = type(Path())
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
+# 供應商的結構化輸出只會產生已宣告的屬性，因此輸出欄位的型別與說明必須逐項宣告，
+# 否則模型只回得出 {"type": "object"} 這種沒有欄位的空結構。
+_純量型別 = ["string", "number", "integer", "boolean"]
+_欄位定義綱要 = {
+    "type": "object",
+    "required": ["type", "description"],
+    "properties": {
+        "type": {"type": "string", "enum": [*_純量型別, "array"]},
+        "description": {"type": "string"},
+        "items": {
+            "type": "object",
+            "properties": {"type": {"type": "string", "enum": _純量型別}},
+        },
+    },
+}
+
 _Planner回應綱要 = {
     "type": "object",
     "additionalProperties": False,
@@ -58,9 +74,13 @@ _Planner回應綱要 = {
         "input_schema": {"anyOf": [{"type": "object"}, {"type": "null"}]},
         "response_schema": {
             "type": "object",
-            "required": ["type"],
-            "properties": {"type": {"type": "string", "const": "object"}},
-            "additionalProperties": True,
+            "required": ["type", "properties", "required", "additionalProperties"],
+            "properties": {
+                "type": {"type": "string", "const": "object"},
+                "properties": {"type": "object", "additionalProperties": _欄位定義綱要},
+                "required": {"type": "array", "items": {"type": "string"}},
+                "additionalProperties": {"type": "boolean"},
+            },
         },
         "human_docs": {"type": "string"},
         "rate_limit": {

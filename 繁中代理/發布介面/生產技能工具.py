@@ -12,6 +12,8 @@ import re
 from typing import Any
 
 from ..工具 import 工具定義
+from ..工具集.管理部_bigquery import 管理部文件搜尋
+from ..工具集.釐清詢問 import 建立釐清處理器
 from .執行期.工具發布庫 import 工具發布描述, 工具發布註冊
 from .執行期.工具版本庫 import (
     工具修訂提供者, 工具快照項目, 工具版本庫,
@@ -21,11 +23,23 @@ from .執行期.工具版本庫 import (
 技能工具發布名稱 = "testagent2-published-skills-v1"
 技能清單修訂 = "skills_list@bundle-v1"
 技能檢視修訂 = "skill_view@bundle-v1"
+管理部搜尋修訂 = "administrative_search@published-v1"
+釐清修訂 = "clarify@published-v1"
 _名稱格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 _結果最大位元組 = 65_536
 _拒絕訊息 = "技能套件工具拒絕存取"
 _清單說明 = "List skills contained in this endpoint version's verified immutable bundle."
 _檢視說明 = "Read SKILL.md, references, or templates from this endpoint version's verified bundle."
+_管理部搜尋說明 = (
+    "Search administrative department documents in BigQuery. Defaults to hybrid retrieval: "
+    "semantic search over documents.embedding plus keyword search over title, content, "
+    "category, and headings. Images are returned only as supplementary context for matched documents."
+)
+_釐清說明 = (
+    "Ask the user a question when you need clarification, feedback, or a decision before "
+    "proceeding. In one-shot Published API calls this returns a no-interactive-channel "
+    "guidance result so the model can make a reasonable assumption and continue."
+)
 _清單結構 = {
     "type": "object",
     "properties": {"category": {"type": "string"}},
@@ -40,6 +54,72 @@ _檢視結構 = {
     "required": ["name"],
     "additionalProperties": False,
 }
+_管理部搜尋結構 = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": "The administrative question or exact text to search for."},
+        "search_mode": {
+            "type": "string",
+            "enum": ["hybrid", "semantic", "keyword"],
+            "description": (
+                "Retrieval mode. Use hybrid by default. Use keyword only for explicit exact-field "
+                "or exact-text searches. Use semantic only when explicitly requested or for debugging."
+            ),
+            "default": "hybrid",
+        },
+        "include_images": {
+            "type": "boolean",
+            "description": "Whether to fetch image metadata for matched documents.",
+            "default": True,
+        },
+        "filters": {
+            "type": "object",
+            "description": "Optional exact filters applied to documents.",
+            "properties": {
+                "category": {"type": "string", "description": "Exact document category filter."},
+                "version": {"type": "string", "description": "Exact document version filter."},
+                "source_file": {"type": "string", "description": "Exact source file filter."},
+            },
+            "additionalProperties": False,
+        },
+        "limit": {
+            "type": "integer",
+            "description": "Maximum number of merged document results to return.",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5,
+        },
+        "hybrid_weights": {
+            "type": "object",
+            "description": "Optional hybrid scoring weights. Do not set unless explicitly requested.",
+            "properties": {
+                "semantic": {"type": "number", "description": "Semantic retrieval weight.", "minimum": 0},
+                "keyword": {"type": "number", "description": "Keyword retrieval weight.", "minimum": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "required": ["query"],
+}
+_釐清結構 = {
+    "type": "object",
+    "properties": {
+        "question": {"type": "string", "description": "The question to present to the user."},
+        "choices": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": 4,
+            "description": "Up to 4 answer choices. Omit this parameter entirely to ask an open-ended question.",
+        },
+    },
+    "required": ["question"],
+}
+_發布工具規格 = (
+    ("skills_list", 技能清單修訂, _清單說明, _清單結構),
+    ("skill_view", 技能檢視修訂, _檢視說明, _檢視結構),
+    ("administrative_search", 管理部搜尋修訂, _管理部搜尋說明, _管理部搜尋結構),
+    ("clarify", 釐清修訂, _釐清說明, _釐清結構),
+)
 
 
 def _拒絕(_參數: dict[str, object]) -> dict[str, object]:
@@ -57,6 +137,12 @@ def 建立技能工具發布描述() -> 工具發布描述:
             )),
             工具發布註冊(技能檢視修訂, 工具定義(
                 "skill_view", _檢視說明, _檢視結構, _拒絕,
+            )),
+            工具發布註冊(管理部搜尋修訂, 工具定義(
+                "administrative_search", _管理部搜尋說明, _管理部搜尋結構, 管理部文件搜尋,
+            )),
+            工具發布註冊(釐清修訂, 工具定義(
+                "clarify", _釐清說明, _釐清結構, 建立釐清處理器(),
             )),
         ),
     )
@@ -97,18 +183,21 @@ def 建立技能套件釘選工具登錄器(
 
     # 先以既有 resolver 驗證 provider 回傳的 metadata/revision/digest。
     已安裝 = 建立版本釘選工具登錄器(已安裝發布提供者, 版本工具快照)
-    if tuple((項.name, 項.revision) for 項 in 版本工具快照) != (
-        ("skills_list", 技能清單修訂), ("skill_view", 技能檢視修訂),
-    ):
+    規格表 = {名稱: (修訂, 說明, 結構) for 名稱, 修訂, 說明, 結構 in _發布工具規格}
+    順序 = [名稱 for 名稱, _修訂, _說明, _結構 in _發布工具規格]
+    快照名稱 = [項.name for 項 in 版本工具快照]
+    if (any(名稱 not in 規格表 for 名稱 in 快照名稱)
+            or len(快照名稱) != len(set(快照名稱))
+            or 快照名稱 != [名稱 for 名稱 in 順序 if 名稱 in set(快照名稱)]
+            or any(項.revision != 規格表[項.name][0] for 項 in 版本工具快照)):
         raise ValueError(_拒絕訊息) from None
-    if 已安裝.列出工具結構() != [
-        {"type": "function", "function": {
-            "name": "skills_list", "description": _清單說明, "parameters": _清單結構,
-        }},
-        {"type": "function", "function": {
-            "name": "skill_view", "description": _檢視說明, "parameters": _檢視結構,
-        }},
-    ]:
+    預期結構 = []
+    for 名稱 in 快照名稱:
+        _修訂, 說明, 結構 = 規格表[名稱]
+        預期結構.append({"type": "function", "function": {
+            "name": 名稱, "description": 說明, "parameters": 結構,
+        }})
+    if 已安裝.列出工具結構() != 預期結構:
         raise ValueError(_拒絕訊息) from None
 
     索引: dict[str, bytes] = {}
@@ -168,6 +257,12 @@ def 建立技能套件釘選工具登錄器(
     本次工具庫.登錄修訂(技能檢視修訂, 工具定義(
         "skill_view", _檢視說明, _檢視結構, 檢視技能,
     ))
+    本次工具庫.登錄修訂(管理部搜尋修訂, 工具定義(
+        "administrative_search", _管理部搜尋說明, _管理部搜尋結構, 管理部文件搜尋,
+    ))
+    本次工具庫.登錄修訂(釐清修訂, 工具定義(
+        "clarify", _釐清說明, _釐清結構, 建立釐清處理器(),
+    ))
     return 建立版本釘選工具登錄器(本次工具庫, 版本工具快照)
 
 
@@ -177,6 +272,6 @@ def 安裝生產技能工具(工具庫: object) -> None:
 
 
 __all__ = (
-    "技能工具發布名稱", "技能清單修訂", "技能檢視修訂",
+    "技能工具發布名稱", "技能清單修訂", "技能檢視修訂", "管理部搜尋修訂", "釐清修訂",
     "建立技能工具發布描述", "建立技能套件釘選工具登錄器", "安裝生產技能工具",
 )
