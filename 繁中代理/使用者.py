@@ -486,7 +486,7 @@ class 使用者庫:
             roles: 角色清單。
             enabled_tools: 可用工具清單；`*` 或空值表示全部。
             enabled_skills: 可用技能清單；`*` 或空值表示全部。
-            skill_roots: 技能根目錄清單。
+            skill_roots: 技能根目錄清單；`*` 或空值表示使用內建與使用者技能根。
             allowed_workdirs: 允許工作目錄清單。
             memory_home: 使用者記憶根目錄。
 
@@ -510,7 +510,7 @@ class 使用者庫:
                 user_id,
                 json.dumps(enabled_tools or ["*"], ensure_ascii=False),
                 json.dumps(enabled_skills or ["*"], ensure_ascii=False),
-                json.dumps(skill_roots or [], ensure_ascii=False),
+                json.dumps(skill_roots or ["*"], ensure_ascii=False),
                 json.dumps(allowed_workdirs or [], ensure_ascii=False),
                 memory_home or str(取得預設記憶根目錄(user_id)),
                 json.dumps({}, ensure_ascii=False),
