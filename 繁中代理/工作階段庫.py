@@ -711,6 +711,27 @@ class 工作階段庫:
             ).fetchall()
         return [self._資料列轉訊息(資料列) for 資料列 in 資料列清單]
 
+    def 讀取首則使用者訊息(self, 工作階段識別碼: str, user_id: str | None = None) -> str | None:
+        """讀取整條 lineage 中最早一則使用者訊息的文字。
+
+        參數：
+            工作階段識別碼: session id，可為 compression lineage 的任一節點。
+            user_id: 可選使用者 scope。
+
+        返回值：
+            str | None：找不到使用者訊息時回傳 None。
+        """
+        self.檢查工作階段存取(工作階段識別碼, user_id=user_id)
+        識別碼清單 = self.取得工作階段譜系(工作階段識別碼)
+        佔位符清單 = ",".join("?" for _ in 識別碼清單)
+        with self._鎖:
+            資料列 = self.連線.execute(
+                f"SELECT content FROM messages WHERE session_id IN ({佔位符清單}) "
+                "AND active=1 AND role='user' ORDER BY timestamp, id LIMIT 1",
+                tuple(識別碼清單),
+            ).fetchone()
+        return 資料列["content"] if 資料列 and 資料列["content"] else None
+
     def _資料列轉訊息(self, 資料列: sqlite3.Row) -> dict[str, Any]:
         """把 messages row 還原成 canonical message dict。
 

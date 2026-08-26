@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from 繁中代理.基本工具 import 取得技能根目錄清單
+from 繁中代理.提示詞常數 import 壓縮摘要前綴
 from 繁中代理.使用者 import 使用者上下文
 from .安全技能目錄 import (
     安全讀取技能 as _共用安全讀取技能,
@@ -28,12 +29,18 @@ from .安全技能目錄 import (
     走訪有界技能檔案 as _走訪有界技能索引檔案,
 )
 
+_未命名標題 = "新對話"
 _WEB來源 = "web"
 _最大訊息位元組 = 16_384
 _最大成功文字位元組 = 65_536
 _最大識別碼字元 = 128
 _最大技能檔案位元組 = 256 * 1024
 _最大工作階段訊息數量 = 10_000
+
+# 壓縮交接訊息是以 role="user" 寫進 transcript 的（模型需要在對話流裡讀到它），
+# 但它不是使用者講的話，畫面上不該出現。只比對開頭哨兵，前綴內文改版仍認得舊訊息。
+_壓縮摘要哨兵 = 壓縮摘要前綴.split("]", 1)[0] + "]"
+
 _最大工作階段總位元組 = 16 * 1024 * 1024
 _最大技能索引項目數量 = 1_000
 _最大技能索引總位元組 = 16 * 1024 * 1024
@@ -228,6 +235,17 @@ class Web代理服務:
         except Exception:
             raise Web服務不可用 from None
 
+    def _列表標題(self, 根識別碼: str, 使用者識別碼: str) -> str:
+        """title 仍等於 session id 時，改用第一則使用者訊息當顯示標題。"""
+        try:
+            內容 = self._工作階段庫.讀取首則使用者訊息(根識別碼, user_id=使用者識別碼)
+        except Exception:
+            return _未命名標題
+        if type(內容) is not str or not 內容.strip():
+            return _未命名標題
+        摘要 = " ".join(內容.split())
+        return 摘要[:40] + "…" if len(摘要) > 40 else 摘要
+
     def 列出工作階段(self, 使用者識別碼: str, 數量上限: int = 20) -> tuple[工作階段列表項目, ...]:
         """列出登入 user 的 active Web logical roots，並丟棄所有內部 metadata。
 
@@ -257,6 +275,8 @@ class Web代理服務:
                 _驗證時間(更新時間)
                 if type(訊息數量) is not int or 訊息數量 < 0:
                     raise ValueError
+                if 標題 == 根識別碼:
+                    標題 = self._列表標題(根識別碼, 使用者識別碼)
                 結果.append(工作階段列表項目(根識別碼, 標題, float(更新時間), 訊息數量))
             return tuple(結果)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
@@ -315,6 +335,8 @@ class Web代理服務:
                     if 總位元組 > _最大工作階段總位元組:
                         raise ValueError
                 if 訊息.get("role") not in {"user", "assistant"}:
+                    continue
+                if type(內容) is str and 內容.startswith(_壓縮摘要哨兵):
                     continue
                 角色 = 訊息.get("role")
                 if type(內容) is not str or len(內容.encode("utf-8")) > _最大成功文字位元組:
