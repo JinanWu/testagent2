@@ -338,6 +338,10 @@ class Web代理服務:
                     continue
                 if type(內容) is str and 內容.startswith(_壓縮摘要哨兵):
                     continue
+                # 工具呼叫的 assistant 訊息 content 是空字串（工具名與參數存在 tool_calls），
+                # 投影只輸出純文字，讓它通過就會在畫面上變成一顆空泡泡。
+                if type(內容) is str and not 內容.strip():
+                    continue
                 角色 = 訊息.get("role")
                 if type(內容) is not str or len(內容.encode("utf-8")) > _最大成功文字位元組:
                     raise ValueError
