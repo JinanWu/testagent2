@@ -88,7 +88,7 @@ export default function 應用框架({
             <圖示 名稱="標誌" 大小={18} />
           </span>
           <p className="truncate font-headline-md text-headline-md font-bold text-on-surface">
-            TestAgent2
+            ColaX
           </p>
         </div>
 
@@ -102,12 +102,12 @@ export default function 應用框架({
           aria-label="主導覽"
           className="flex w-sidebar-width shrink-0 flex-col border-r border-outline-variant bg-surface-container-low py-lg"
         >
-          {側欄頂部 && <div className="px-sm pb-lg">{側欄頂部}</div>}
+          {側欄頂部 && <div className="px-md pb-lg">{側欄頂部}</div>}
 
           <p className="px-lg pb-sm font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
             導覽
           </p>
-          <ul className="flex flex-col gap-xs px-sm">
+          <ul className="flex flex-col gap-xs px-md">
             {導覽清單.map((項目) => {
               if (項目.僅管理者 && user?.role !== 'admin') return null
               const 是目前 = 項目.代號 === 目前分頁
@@ -126,7 +126,7 @@ export default function 應用框架({
                     className={[
                       '導覽項目',
                       項目.圖示類別,
-                      'w-full rounded-xl px-4 py-2 text-left font-body-md text-body-md transition-colors',
+                      'w-full rounded-xl px-2 py-2 text-left font-body-md text-body-md transition-colors',
                       是目前
                         ? 'bg-primary-container font-bold text-on-primary-container'
                         : 'text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface',
@@ -142,7 +142,7 @@ export default function 應用框架({
           {側欄額外}
 
           {/* 身分區固定在左下角：頭像縮寫 ＋ 帳號 ＋ 角色，登出只留一顆小圖示鈕 */}
-          <div className="mt-auto px-sm pt-md">
+          <div className="mt-auto px-md pt-md">
             <div className="flex items-center gap-sm rounded-xl bg-surface-container px-sm py-2">
               <span
                 aria-hidden={true}

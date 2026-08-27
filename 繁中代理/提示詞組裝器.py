@@ -25,7 +25,7 @@ from typing import Any
 
 from .提示詞常數 import (
     Google模型操作指引,
-    Hermes說明指引,
+    Cola說明指引,
     中途導向指引,
     執行紀律指引,
     完成任務指引,
@@ -175,7 +175,7 @@ class 提示詞組裝器:
 
         # ── 穩定層：身份、任務規則、工具規則、技能索引、環境與平台提示 ──
 
-        穩定區塊: list[str] = [self.讀取助理身份(), Hermes說明指引]
+        穩定區塊: list[str] = [self.讀取助理身份(), Cola說明指引]
         工具名稱集合 = set(self.設定.工具名稱清單)
         if 工具名稱集合:
             穩定區塊.extend([完成任務指引])

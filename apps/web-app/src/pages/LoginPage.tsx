@@ -73,7 +73,7 @@ export default function LoginPage({ onAuthenticated }: LoginPageProps) {
             <圖示 名稱="標誌" 大小={26} />
           </span>
           <h1 id="login-title" className="font-headline-md text-headline-md text-on-surface">
-            TestAgent2
+            ColaX
           </h1>
           <p className="font-body-md text-body-md text-on-surface-variant">登入智慧工作空間</p>
         </div>

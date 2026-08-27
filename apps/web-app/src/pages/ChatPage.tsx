@@ -8,6 +8,14 @@ import { 錯誤訊息 } from '../ui/元件'
 import 圖示 from '../ui/圖示'
 import 應用框架 from '../ui/應用框架'
 
+/*
+ * 輸入框的兩段高度（行高 26px + 上下 p-sm 各 8px）：
+ * 塞得下就收合成 1 行，塞不下就一次跳到 5 行的固定高度並停住，
+ * 不隨字數連續變化；再多的字在框內捲動。
+ */
+const 輸入框收合高度 = 42
+const 輸入框展開高度 = 146
+
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
 export default function ChatPage({
@@ -20,6 +28,13 @@ export default function ChatPage({
   const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
+  const 輸入框Ref = useRef<HTMLTextAreaElement | null>(null)
+  const [輸入區高度, set輸入區高度] = useState(0)
+  const [捲軸寬度, set捲軸寬度] = useState(0)
+  const 輸入區觀察器 = useRef<ResizeObserver | null>(null)
+  const 捲動區觀察器 = useRef<ResizeObserver | null>(null)
+  const [已複製索引, set已複製索引] = useState<number | null>(null)
+  const 複製計時器 = useRef<number | null>(null)
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
   const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -192,7 +207,7 @@ export default function ChatPage({
     <button
       type="button"
       onClick={newConversation}
-      className="導覽項目 導覽項目-新增 w-full rounded-xl bg-primary-container px-4 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+      className="導覽項目 導覽項目-新增 w-full rounded-xl bg-primary-container px-2 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
     >
       新增對話
     </button>
@@ -208,7 +223,7 @@ export default function ChatPage({
           尚無對話紀錄。
         </p>
       ) : (
-        <ul aria-label="工作階段" className="flex min-h-0 flex-1 flex-col gap-xs overflow-y-auto px-sm">
+        <ul aria-label="工作階段" className="flex min-h-0 flex-1 flex-col gap-xs overflow-y-auto px-md">
           {sessions.map((session) => {
             const isActive = session.id === sessionId
             return (
@@ -221,7 +236,7 @@ export default function ChatPage({
                   style={isActive ? { fontWeight: 700 } : undefined}
                   onClick={() => { void openSession(session.id) }}
                   className={[
-                    'block w-full truncate rounded-xl px-4 py-2 text-left font-body-md text-body-md transition-colors',
+                    'block w-full truncate rounded-xl px-2 py-1.5 text-left font-body-md text-body-md transition-colors',
                     isActive
                       ? 'bg-surface-container-highest text-on-surface'
                       : 'text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface',
@@ -241,6 +256,71 @@ export default function ChatPage({
    * 空白對話（剛按下新增對話）走「整頁式」：不畫分隔線，輸入框直接置中，
    * 一進來就能打字。有訊息之後才切回上方捲動、輸入框釘底的版面。
    */
+  /*
+   * 先壓回收合高度才量得到真實 scrollHeight；塞不下就整段換成展開高度。
+   * 只有這兩個值，所以不會出現「300 字高一點、500 字更高」的連續變化。
+   * react-test-renderer 沒有真實節點，ref 為 null 時直接略過。
+   */
+  useEffect(() => {
+    const 節點 = 輸入框Ref.current
+    if (節點 === null) return
+    節點.style.height = `${輸入框收合高度}px`
+    if (節點.scrollHeight > 輸入框收合高度) {
+      節點.style.height = `${輸入框展開高度}px`
+    }
+  }, [draft])
+
+
+  /*
+   * 複製泡泡文字。複製的是 message.content 本身——也就是泡泡上顯示的同一份字串，
+   * 不含系統提示、工具呼叫或壓縮摘要（transcript 契約只允許 user/assistant）。
+   * navigator.clipboard 在非安全來源不存在，try 會接住 TypeError，安靜略過。
+   */
+  const 複製訊息 = useCallback(async (索引: number, 內容: string) => {
+    try {
+      await navigator.clipboard.writeText(內容)
+    } catch {
+      return
+    }
+    set已複製索引(索引)
+    if (複製計時器.current !== null) window.clearTimeout(複製計時器.current)
+    複製計時器.current = window.setTimeout(() => { set已複製索引(null) }, 1500)
+  }, [])
+
+  /* 卸載時清掉「已複製」的還原計時器，避免對已卸載元件 setState。 */
+  useEffect(() => () => {
+    if (複製計時器.current !== null) window.clearTimeout(複製計時器.current)
+  }, [])
+
+
+  /*
+   * 這兩個節點只在「非空白對話」分支渲染，所以一律用 callback ref 掛觀察器，
+   * 不能用 useEffect(..., [])：首次掛載時若還是空白對話，ref 為 null 會直接
+   * return，而 [] 依賴讓它永不重跑，觀察器就再也接不上——底部內距與捲軸補償
+   * 都會永遠停在 0（表現為最後一則訊息被輸入區蓋住、左右泡泡對不齊）。
+   */
+  const 掛載輸入區 = useCallback((節點: HTMLDivElement | null) => {
+    輸入區觀察器.current?.disconnect()
+    輸入區觀察器.current = null
+    if (節點 === null || typeof ResizeObserver === 'undefined') return
+    const 觀察器 = new ResizeObserver(() => { set輸入區高度(節點.offsetHeight) })
+    觀察器.observe(節點)
+    輸入區觀察器.current = 觀察器
+    set輸入區高度(節點.offsetHeight)
+  }, [])
+
+  /* 捲動區被捲軸吃掉的寬度；疊層式捲軸量到 0，補償自動失效。 */
+  const 掛載捲動區 = useCallback((節點: HTMLDivElement | null) => {
+    捲動區觀察器.current?.disconnect()
+    捲動區觀察器.current = null
+    if (節點 === null || typeof ResizeObserver === 'undefined') return
+    const 更新 = () => { set捲軸寬度(節點.offsetWidth - 節點.clientWidth) }
+    const 觀察器 = new ResizeObserver(更新)
+    觀察器.observe(節點)
+    捲動區觀察器.current = 觀察器
+    更新()
+  }, [])
+
   const 是空白對話 = messages.length === 0 && !pending && !detailPending
 
   const 輸入區 = (
@@ -260,7 +340,8 @@ export default function ChatPage({
           <textarea
             id="chat-message"
             name="message"
-            rows={3}
+            ref={輸入框Ref}
+            rows={1}
             /* 整頁式的空白對話一進來就能直接打字 */
             autoFocus={是空白對話}
             value={draft}
@@ -288,7 +369,7 @@ export default function ChatPage({
                 event.currentTarget.form?.requestSubmit()
               }
             }}
-            className="w-full resize-none border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
+            className="w-full resize-none overflow-y-auto border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
           />
           <div className="flex justify-end">
             {/*
@@ -301,7 +382,15 @@ export default function ChatPage({
               className={[
                 '導覽項目',
                 pending || detailPending ? '導覽項目-載入中' : '導覽項目-傳送',
-                'rounded-xl bg-secondary px-4 py-2 font-body-md text-body-md font-semibold text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50',
+                /* 只留圖示：沿用登出鈕的慣例，文字以 font-size:0 收掉但節點與無障礙名稱都在 */
+                '導覽項目-僅圖示',
+                /*
+                  size-10 寫死 40x40 正方：靠內距推算會被文字節點繼承來的 line-height
+                  把高度撐開而變成長方形；leading-none 再把那個行高歸零。
+                  另不可加任何 text-* 字級類：utilities layer 會蓋掉
+                  導覽項目-僅圖示 的 font-size:0，文字就藏不住。
+                */
+                'size-10 shrink-0 rounded-xl bg-secondary leading-none text-on-secondary transition-colors hover:bg-secondary/90 disabled:cursor-not-allowed disabled:opacity-50',
               ].join(' ')}
             >
               {detailPending ? '載入中…' : pending ? '傳送中…' : '傳送'}
@@ -320,8 +409,12 @@ export default function ChatPage({
       側欄頂部={新增對話按鈕}
       側欄額外={對話清單}
       滿版={true}
-      分隔線={!是空白對話}
-      標題可見={!是空白對話}
+      /*
+       * 對話頁一律不畫標題列與分隔線：整個工作區就是對話本身。
+       * header 轉為 sr-only，h1 仍留在 DOM 當畫面的無障礙名稱。
+       */
+      分隔線={false}
+      標題可見={false}
       on開啟端點={onOpenEndpoints}
       on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
       on登出={() => {
@@ -341,19 +434,22 @@ export default function ChatPage({
             </span>
             <p className="mb-sm font-headline-md text-headline-md text-on-surface">開始新的對話</p>
             <p className="max-w-[28rem] font-body-md text-body-md text-on-surface-variant">
-              描述您的需求即可，系統會自動選擇適合的執行方式。
+              描述您的需求即可，ColaX 為您處理。
             </p>
           </div>
 
           <div className="w-full max-w-[48rem]">{輸入區}</div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="relative flex min-h-0 flex-1 flex-col">
           <div
+            ref={掛載捲動區}
             role="log"
             aria-live="polite"
             aria-label="對話內容"
             className="min-h-0 flex-1 overflow-y-auto p-lg"
+            /* 疊在上方的輸入區會蓋住底部，補等高內距讓最後一則訊息捲得出來 */
+            style={{ paddingBottom: 輸入區高度 }}
           >
             <div className="mx-auto flex w-full max-w-4xl flex-col gap-lg">
               {messages.map((message, index) => {
@@ -375,17 +471,36 @@ export default function ChatPage({
                     >
                       <圖示 名稱={是使用者 ? '帳號' : '標誌'} 大小={16} />
                     </span>
+                    {/*
+                      泡泡與複製鈕疊成一直欄：複製鈕落在泡泡「外面的下方」。
+                      寬度上限移到這層，items-start/end 讓泡泡仍依內容縮放而非撐滿。
+                    */}
                     <div
                       className={[
-                        'min-w-0 max-w-[min(80%,42rem)] rounded-2xl border bg-surface-container-lowest p-md',
-                        是使用者
-                          ? 'rounded-tr-lg border-primary/25'
-                          : 'rounded-tl-lg border-outline-variant',
+                        'flex min-w-0 max-w-[min(80%,42rem)] flex-col gap-xs',
+                        是使用者 ? 'items-end' : 'items-start',
                       ].join(' ')}
                     >
-                      <p className="whitespace-pre-wrap break-words font-body-lg text-body-lg text-on-surface">
-                        {message.content}
-                      </p>
+                      <div
+                        className={[
+                          'min-w-0 max-w-full rounded-2xl border bg-surface-container-lowest p-md',
+                          是使用者
+                            ? 'rounded-tr-lg border-primary/25'
+                            : 'rounded-tl-lg border-outline-variant',
+                        ].join(' ')}
+                      >
+                        <p className="whitespace-pre-wrap break-words font-body-lg text-body-lg text-on-surface">
+                          {message.content}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { void 複製訊息(index, message.content) }}
+                        aria-label={已複製索引 === index ? '已複製' : '複製訊息'}
+                        className="rounded-md p-1 text-on-surface-variant transition-colors hover:bg-surface-container-highest hover:text-on-surface"
+                      >
+                        <圖示 名稱={已複製索引 === index ? '成功' : '複製'} 大小={15} />
+                      </button>
                     </div>
                   </div>
                 )
@@ -413,8 +528,27 @@ export default function ChatPage({
             </div>
           </div>
 
-          <div className="shrink-0 border-t border-outline-variant bg-surface p-lg">
-            <div className="mx-auto w-full max-w-4xl">{輸入區}</div>
+          <div
+            ref={掛載輸入區}
+            /* pt 決定霧玻璃層的總高＝漸層鋪開的距離；太短會讓整段過渡擠在一行字裡 */
+            className="absolute inset-x-0 bottom-0 px-lg pb-lg pt-[15rem]"
+            /* 右內距補上捲軸寬度，內容盒才與捲動區一致（見上方 useEffect） */
+            style={{ paddingRight: `calc(var(--spacing-lg) + ${捲軸寬度}px)` }}
+          >
+            {/*
+              霧玻璃層：blur 與底色都用遮罩由上往下淡入，訊息捲近輸入區時是漸漸糊掉，
+              而不是撞上一條清楚的邊界——這層取代了原本的 border-t 分隔線。
+              另外拆成獨立一層而非直接套在容器上，避免遮罩把輸入框本身也啃掉。
+            */}
+            <div
+              aria-hidden={true}
+              className="對話霧玻璃 pointer-events-none absolute inset-0 backdrop-blur-[30px]"
+            />
+            {/*
+              寬度對齊兩方泡泡而非整列：訊息列 max-w-4xl(56rem) 扣掉兩側
+              頭像 size-8(2rem) 與 gap-md(1rem)，剩 50rem。
+            */}
+            <div className="relative mx-auto w-full max-w-[50rem]">{輸入區}</div>
           </div>
         </div>
       )}

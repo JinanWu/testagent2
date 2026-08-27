@@ -27,9 +27,8 @@ type SessionState =
   | { status: 'anonymous' }
   | { status: 'authenticated'; user: AuthUser }
 
-export interface SessionContextValue {
-  status: SessionState['status']
-  user: AuthUser | null
+// 與登入狀態無關的操作，三個 status 變體共用。
+interface 工作階段操作 {
   login(username: string, password: string): Promise<void>
   logout(): Promise<void>
   registerProtectedStateOwner(erase: () => void): {
@@ -38,6 +37,14 @@ export interface SessionContextValue {
   }
   runAuthorized<T>(request: Readonly<AuthorizedRequest<T>>): Promise<T>
 }
+
+// 寫成 top-level union（而非 `工作階段操作 & (…|…)`）是刻意的：只有這個形狀
+// 能讓消費端 `const { status, user } = useSession()` 解構後仍收窄 —— 判斷過
+// `status === 'authenticated'` 之後 user 即為 AuthUser，不需另外補 null 守衛。
+export type SessionContextValue =
+  | (工作階段操作 & { status: 'initializing'; user: null })
+  | (工作階段操作 & { status: 'anonymous'; user: null })
+  | (工作階段操作 & { status: 'authenticated'; user: AuthUser })
 
 const SessionContext = createContext<SessionContextValue | null>(null)
 
@@ -252,14 +259,17 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     }
   }, [assertCurrentOperation, beginOperation, commitState, finishOperation])
 
-  const value = useMemo<SessionContextValue>(() => ({
-    status: state.status,
-    user: state.status === 'authenticated' ? state.user : null,
-    login,
-    logout,
-    registerProtectedStateOwner,
-    runAuthorized,
-  }), [state, login, logout, registerProtectedStateOwner, runAuthorized])
+  const value = useMemo<SessionContextValue>(() => {
+    const 操作 = { login, logout, registerProtectedStateOwner, runAuthorized }
+    // 逐個變體明確帶出 status 字面值，才能對上 union 的判別欄位。
+    if (state.status === 'authenticated') {
+      return { ...操作, status: 'authenticated', user: state.user }
+    }
+    if (state.status === 'anonymous') {
+      return { ...操作, status: 'anonymous', user: null }
+    }
+    return { ...操作, status: 'initializing', user: null }
+  }, [state, login, logout, registerProtectedStateOwner, runAuthorized])
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }
