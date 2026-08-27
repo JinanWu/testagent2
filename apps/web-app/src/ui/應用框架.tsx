@@ -178,17 +178,24 @@ export default function 應用框架({
         </nav>
 
         <div className="flex min-h-0 flex-1 flex-col">
+          {/*
+            標題可見=false 但有工具列時（端點管理），整列不能一起 sr-only——
+            「建立端點」那些動作鈕就在裡面，跟著藏掉這頁就沒得操作了。
+            這時保留同高度的一列、只把標題文字收成 sr-only，畫面上看起來就是
+            乾淨的一排按鈕；沒有工具列的頁（對話、呼叫紀錄）維持整列 sr-only。
+          */}
           <header
             className={
-              標題可見
+              標題可見 || 工具列
                 ? [
                     'flex min-h-16 shrink-0 items-center justify-between gap-md bg-surface px-xl py-sm',
-                    分隔線 ? 'border-b border-outline-variant' : '',
+                    分隔線 && 標題可見 ? 'border-b border-outline-variant' : '',
                   ].join(' ')
                 : 'sr-only'
             }
           >
-            <div className="min-w-0">
+            {/* h1 是這個畫面的無障礙名稱，也是既有測試取節點的依據，一律留在 DOM */}
+            <div className={標題可見 ? 'min-w-0' : 'sr-only'}>
               <h1 id={標題Id} className="truncate font-headline-sm text-headline-sm text-on-surface">
                 {標題}
               </h1>

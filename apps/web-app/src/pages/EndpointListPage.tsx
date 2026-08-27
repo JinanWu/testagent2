@@ -157,6 +157,9 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
       目前分頁="端點"
       標題="端點管理"
       副標題="管理與觀測您的 Agent 介面。"
+      /* 與對話頁一致：不畫標題列文字與分隔線，只留右側動作鈕那一排 */
+      分隔線={false}
+      標題可見={false}
       on開啟對話={onClose}
       on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
       on登出={() => {
@@ -169,15 +172,28 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
               <label htmlFor="endpoint-scope" className="sr-only">
                 清單範圍
               </label>
-              <select
-                id="endpoint-scope"
-                value={scope}
-                onChange={(event) => changeScope(event.currentTarget.value)}
-                className={`${輸入樣式} w-40 rounded-xl py-2`}
-              >
-                <option value="owner">我的端點</option>
-                <option value="all">所有端點</option>
-              </select>
+              {/*
+                原生 select 的箭頭畫在內容區右緣，輸入樣式只有 px-3 會讓它壓在文字上。
+                關掉原生外觀、右內距留給自繪箭頭；select 是 replaced element，
+                ::after 多數瀏覽器不繪製，所以箭頭用同層的絕對定位 span。
+              */}
+              <div className="relative">
+                <select
+                  id="endpoint-scope"
+                  value={scope}
+                  onChange={(event) => changeScope(event.currentTarget.value)}
+                  className={`${輸入樣式} w-40 cursor-pointer appearance-none rounded-xl py-2 pr-9 transition-colors hover:border-outline`}
+                >
+                  <option value="owner">我的端點</option>
+                  <option value="all">所有端點</option>
+                </select>
+                <span
+                  aria-hidden={true}
+                  className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-on-surface-variant"
+                >
+                  <圖示 名稱="展開" 大小={16} />
+                </span>
+              </div>
             </>
           )}
           {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}

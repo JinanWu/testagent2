@@ -24,6 +24,7 @@ from .觀測契約 import (
 
 _固定錯誤 = "端點觀測不可取得"
 _用量欄位 = frozenset(("input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"))
+_最小用量欄位 = frozenset(("total_tokens",))
 _最大子列 = 4096
 
 
@@ -262,10 +263,15 @@ def _建立項目(連線: Any, 端點: str, 列: tuple[Any, ...],
     已遮蔽錯誤 = any(項[2] == "error" for 項 in 遮蔽列)
     if 錯誤 is not None and type(錯誤) is not dict: raise ValueError
     if 用量 is not None:
-        if type(用量) is not dict or set(用量) != _用量欄位: raise ValueError
-        輸入數, 輸出數, 總數 = (用量[鍵] for 鍵 in ("input_tokens", "output_tokens", "total_tokens"))
-        if any(type(值) is not int or 值 < 0 for 值 in (輸入數, 輸出數, 總數)) or 輸入數 + 輸出數 != 總數:
-            raise ValueError
+        if type(用量) is not dict: raise ValueError
+        if set(用量) == _最小用量欄位:
+            總數 = 用量["total_tokens"]
+            if type(總數) is not int or 總數 < 0: raise ValueError
+        else:
+            if set(用量) != _用量欄位: raise ValueError
+            輸入數, 輸出數, 總數 = (用量[鍵] for 鍵 in ("input_tokens", "output_tokens", "total_tokens"))
+            if any(type(值) is not int or 值 < 0 for 值 in (輸入數, 輸出數, 總數)) or 輸入數 + 輸出數 != 總數:
+                raise ValueError
         診斷用量值 = 診斷用量(總數)
     else:
         診斷用量值 = None

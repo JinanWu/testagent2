@@ -146,16 +146,18 @@ def test_daily不將午夜前次微秒REAL四捨五入至隔日(指標資料庫)
     assert tuple(項.date for 項 in 指標.daily) == ("1970-01-01",)
 
 
-def test_畸形persisted_usage與動態欄位是operational_failure(指標資料庫):
-    """Corruption 不得誤判成 endpoint missing。"""
+def test_只有總token的執行紀錄不阻斷指標(指標資料庫):
+    """公開呼叫只提供總 token 時，保留呼叫指標但不捏造拆分與成本。"""
     with closing(sqlite3.connect(指標資料庫)) as 連線, 連線:
-        連線.execute("UPDATE endpoint_invocations SET usage_json='{\"total_tokens\":7}' WHERE id='i2'")
-    with pytest.raises(端點觀測查詢錯誤) as 捕捉:
-        _服務(指標資料庫).讀取端點指標(
-            擁有者使用者識別碼="owner-1", 是否管理者=False, 端點識別碼="ep-1", 視窗秒數=50,
+        連線.execute(
+            "UPDATE endpoint_invocations SET usage_json='{\"total_tokens\":7}',pricing_version=NULL WHERE id='i2'"
         )
-    assert 捕捉.value.args == ("端點觀測不可取得",)
-    assert 捕捉.value.__cause__ is 捕捉.value.__context__ is None
+    指標 = _服務(指標資料庫).讀取端點指標(
+        擁有者使用者識別碼="owner-1", 是否管理者=False, 端點識別碼="ep-1", 視窗秒數=50,
+    ).指標
+    assert (指標.invocation_count, 指標.terminal_count, 指標.error_count) == (4, 3, 2)
+    assert (指標.usage.sample_count, 指標.usage.input_tokens, 指標.usage.output_tokens, 指標.usage.total_tokens) == (1, 10, 2, 12)
+    assert 指標.estimated_cost_usd == "0.001"
 
 
 def test_safe_error_projection_trigger漂移固定失敗(指標資料庫):

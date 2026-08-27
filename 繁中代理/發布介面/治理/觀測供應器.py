@@ -27,6 +27,7 @@ _最大計數 = 2**63 - 1
 _終態 = frozenset(("succeeded", "failed", "rate_limited", "invalid_api_key"))
 _錯誤態 = frozenset(("failed", "rate_limited", "invalid_api_key"))
 _用量欄位 = frozenset(("input_tokens", "output_tokens", "total_tokens", "estimated_cost_usd"))
+_最小用量欄位 = frozenset(("total_tokens",))
 _持久成本格式 = re.compile(r"(?:0|[1-9][0-9]{0,17})(?:\.[0-9]{0,27}[1-9])?\Z")
 _安全錯誤碼格式 = re.compile(r"[a-z][a-z0-9_.-]{0,127}\Z")
 _最大頁位元組 = 1_048_576
@@ -210,6 +211,13 @@ def _建立指標(端點識別碼: str, 開始: float, 結束: float,
                     raise ValueError
                 continue
             用量 = _解析可空物件(用量文字)
+            if set(用量) == _最小用量欄位:
+                總數 = 用量["total_tokens"]
+                if type(總數) is not int or not 0 <= 總數 <= _最大計數:
+                    raise ValueError
+                # 只有總數時無法誠實拆分 input/output 或估算成本；保留呼叫與延遲指標，
+                # 但不把不完整資料納入用量聚合。
+                continue
             if set(用量) != _用量欄位 or type(定價版本) is not str:
                 raise ValueError
             輸入, 輸出, 總數 = (用量[鍵] for 鍵 in ("input_tokens", "output_tokens", "total_tokens"))
@@ -317,7 +325,7 @@ def _讀取有界用量列(連線: Any, 端點: str, 開始: float,
                 if 長度 is not None or 版本 is not None:
                     raise ValueError
             elif (類型 != "text" or type(長度) is not int or 長度 < 0
-                  or type(版本) is not str):
+                  or 版本 is not None and type(版本) is not str):
                 raise ValueError
             中繼列.append(列)
         _關閉游標(游標); 游標 = None

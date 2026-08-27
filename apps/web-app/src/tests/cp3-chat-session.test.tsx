@@ -414,6 +414,92 @@ describe('CP3 真實對話工作流程', () => {
     expect(JSON.stringify(renderer.toJSON())).not.toContain('過期內容')
   })
 
+  /*
+   * 捲動行為的測試要拿到真實節點才跑得到 effect：react-test-renderer 預設把
+   * host ref 餵 null，ChatPage 的自動捲動會整段 early-return，等於沒測到。
+   * createNodeMock 讓我們替捲動區換上可觀測的假節點。
+   */
+  function 建立捲動區模擬() {
+    return { scrollTop: 0, scrollHeight: 5000, clientHeight: 600, offsetWidth: 800, clientWidth: 800 }
+  }
+
+  /* createNodeMock 的 element.props 型別是 unknown，取值前要先窄化 */
+  function 建立節點模擬(捲動區模擬: ReturnType<typeof 建立捲動區模擬>) {
+    return (element: { type: unknown; props: unknown }) => {
+      if (element.type === 'textarea') return { style: {}, scrollHeight: 20 }
+      const props = element.props as Record<string, unknown>
+      if (props.role === 'log' && props['aria-label'] === '對話內容') return 捲動區模擬
+      return { offsetHeight: 120, offsetWidth: 800, clientWidth: 800 }
+    }
+  }
+
+  async function openChatWithNodes(捲動區模擬: ReturnType<typeof 建立捲動區模擬>) {
+    fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    await act(async () => {
+      renderer = create(<App />, { createNodeMock: 建立節點模擬(捲動區模擬) })
+    })
+    await act(async () => { await Promise.resolve() })
+  }
+
+  function 捲動區(renderer: ReactTestRenderer) {
+    return renderer.root.findByProps({ role: 'log', 'aria-label': '對話內容' })
+  }
+
+  it('送出訊息後把畫面捲到最新內容', async () => {
+    const 捲動區模擬 = 建立捲動區模擬()
+    await openChatWithNodes(捲動區模擬)
+    fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({
+      session_id: 's1', reply: { role: 'assistant', content: '回覆內容' },
+    })).mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    await act(async () => renderer.root.findByType('textarea').props.onChange({ currentTarget: { value: '問題' } }))
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
+    /* 樂觀訊息與打字動畫、以及之後整段插入的回覆，都必須把視窗帶到底部 */
+    expect(捲動區模擬.scrollTop).toBe(捲動區模擬.scrollHeight)
+    expect(對話區文字(renderer)).toContain('回覆內容')
+  })
+
+  it('等待回覆時使用者往上捲，回覆到達不會把畫面拉回底部', async () => {
+    const 捲動區模擬 = 建立捲動區模擬()
+    await openChatWithNodes(捲動區模擬)
+    let resolveChat!: (response: Response) => void
+    fetchMock.mockResolvedValueOnce(jsonResponse(auth))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveChat = resolve }))
+      .mockResolvedValueOnce(jsonResponse({ sessions: [] }))
+    await act(async () => renderer.root.findByType('textarea').props.onChange({ currentTarget: { value: '問題' } }))
+    let send!: Promise<void>
+    await act(async () => { send = renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }) })
+
+    /* 等待期間使用者往回翻歷史：離底部 3000px，遠超過貼底容差 */
+    await act(async () => 捲動區(renderer).props.onScroll({
+      currentTarget: { scrollHeight: 5000, scrollTop: 1400, clientHeight: 600 },
+    }))
+    捲動區模擬.scrollTop = 1400
+
+    await act(async () => { resolveChat(jsonResponse({
+      session_id: 's1', reply: { role: 'assistant', content: '回覆內容' },
+    })); await send })
+
+    expect(對話區文字(renderer)).toContain('回覆內容')
+    expect(捲動區模擬.scrollTop).toBe(1400)
+  })
+
+  it('開啟既有對話時停在最新一則而非開場白', async () => {
+    const 捲動區模擬 = 建立捲動區模擬()
+    fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(jsonResponse({
+      sessions: [{ id: 'root', title: '舊對話', updated_at: 1, message_count: 2 }],
+    }))
+    await act(async () => {
+      renderer = create(<App />, { createNodeMock: 建立節點模擬(捲動區模擬) })
+    })
+    await act(async () => { await Promise.resolve() })
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      session: { id: 'root', title: '舊對話', updated_at: 1 },
+      messages: [{ role: 'user', content: '舊問題' }, { role: 'assistant', content: '舊答案' }],
+    }))
+    await act(async () => 對話按鈕(renderer, '舊對話').props.onClick())
+    expect(捲動區模擬.scrollTop).toBe(捲動區模擬.scrollHeight)
+  })
+
   it('傳送失敗時顯示安全錯誤並保留草稿', async () => {
     await openChat()
     fetchMock.mockResolvedValueOnce(jsonResponse(auth)).mockResolvedValueOnce(

@@ -134,6 +134,14 @@ def test_safe_allowlist_usage與tool_names精確(診斷資料庫):
     assert 項.tool_names == ("a_tool", "z_tool")
 
 
+def test_只有總token的公開呼叫仍可顯示安全診斷(診斷資料庫):
+    with closing(sqlite3.connect(診斷資料庫)) as 連線, 連線:
+        連線.execute("UPDATE endpoint_invocations SET usage_json='{\"total_tokens\":7}' WHERE id='inv-c'")
+    項 = _列出(_服務(診斷資料庫), limit=1).頁.items[0]
+    assert 項.invocation_id == "inv-c"
+    assert 項.usage.total_tokens == 7
+
+
 def _固定失敗(呼叫):
     with pytest.raises(端點觀測查詢錯誤) as 捕捉:
         呼叫()

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type UIEvent } from 'react'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { CHAT_ERROR_MESSAGE } from '../api/chat'
 import { getSessionDetail, listSessions, type SessionSummary, type TranscriptMessage } from '../api/sessions'
@@ -18,6 +18,13 @@ const 輸入框展開高度 = 146
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
+/*
+ * 貼底判定的容差：距離底部小於這個距離就算貼底。不能用 0——捲軸位置在
+ * 縮放比例非整數、或字體度量取整時會差個 1~2px，抓死 0 會讓貼底狀態
+ * 隨機失效（表現為「有時候會自動捲、有時候不會」）。
+ */
+const 貼底容差 = 64
+
 export default function ChatPage({
   onOpenEndpoints,
   onOpenAdminLogs,
@@ -33,6 +40,13 @@ export default function ChatPage({
   const [捲軸寬度, set捲軸寬度] = useState(0)
   const 輸入區觀察器 = useRef<ResizeObserver | null>(null)
   const 捲動區觀察器 = useRef<ResizeObserver | null>(null)
+  const 捲動區Ref = useRef<HTMLDivElement | null>(null)
+  /*
+   * 是否「貼底」：使用者目前是不是停在對話最下緣。預設 true，因為剛進頁面
+   * 或剛開新對話時，最新一則就是唯一一則。只有貼底時才自動捲——使用者往上
+   * 翻歷史時把畫面硬拉回底部，比不捲更惱人。
+   */
+  const 是否貼底 = useRef(true)
   const [已複製索引, set已複製索引] = useState<number | null>(null)
   const 複製計時器 = useRef<number | null>(null)
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
@@ -129,6 +143,8 @@ export default function ChatPage({
       const detail = await getSessionDetail(id, controller.signal)
       if (epoch.current !== requestEpoch || controller.signal.aborted) return
       setSessionId(detail.session.id)
+      /* 開既有對話要看的是最近講到哪，不是幾百則以前的開場白 */
+      是否貼底.current = true
       setMessages(detail.messages)
     } catch {
       if (epoch.current === requestEpoch && !controller.signal.aborted) setError(SESSION_ERROR_MESSAGE)
@@ -156,6 +172,11 @@ export default function ChatPage({
      */
     const eraseCountAtSubmit = eraseCountRef.current
     const 樂觀訊息: TranscriptMessage = { role: 'user', content: text }
+    /*
+     * 按下傳送是使用者主動要看新內容，就算他剛剛翻在歷史裡也要拉回底部，
+     * 否則自己送出的訊息和「正在回覆」動畫都落在視窗外，看起來像沒送出去。
+     */
+    是否貼底.current = true
     setMessages((current) => [...current, 樂觀訊息])
     draftRef.current = ''
     setDraft('')
@@ -313,6 +334,19 @@ export default function ChatPage({
   const 掛載捲動區 = useCallback((節點: HTMLDivElement | null) => {
     捲動區觀察器.current?.disconnect()
     捲動區觀察器.current = null
+    /*
+     * 節點要在 ResizeObserver 的守衛「之前」存起來：下面那行在測試環境
+     * （沒有 ResizeObserver）會直接 return，寫在後面就永遠存不到，自動捲動
+     * 在測試裡整組失效。
+     */
+    捲動區Ref.current = 節點
+    /*
+     * 剛掛上的捲動區一定停在 scrollTop 0，沒有任何使用者捲動歷史，貼底旗標
+     * 要跟著歸位。這條同時涵蓋「新增對話」與工作階段被抹除後再開講——那兩條
+     * 路徑會把 messages 清空、整個容器換成空白對話版面再換回來，旗標若留著
+     * 上一輪的 false，新對話的第一則回覆就不會自動捲。
+     */
+    if (節點 !== null) 是否貼底.current = true
     if (節點 === null || typeof ResizeObserver === 'undefined') return
     const 更新 = () => { set捲軸寬度(節點.offsetWidth - 節點.clientWidth) }
     const 觀察器 = new ResizeObserver(更新)
@@ -320,6 +354,32 @@ export default function ChatPage({
     捲動區觀察器.current = 觀察器
     更新()
   }, [])
+
+  /*
+   * 每次使用者手動捲動都重算貼底狀態。用 ref 而非 state：這個值一秒可以變
+   * 幾十次，進 state 會讓整頁跟著重繪，而它只被 effect 讀，不影響畫面。
+   */
+  const 記錄貼底 = useCallback((事件: UIEvent<HTMLDivElement>) => {
+    const 節點 = 事件.currentTarget
+    是否貼底.current = 節點.scrollHeight - 節點.scrollTop - 節點.clientHeight <= 貼底容差
+  }, [])
+
+  /*
+   * 貼底時把畫面帶到最新內容。四個依賴各對應一種會把底部推走的變化：
+   *   messages      —— 樂觀訊息與回覆（本產品無 streaming，回覆是整段插入）
+   *   pending       —— 打字動畫出現／被回覆取代，兩者高度差可達數百 px
+   *   detailPending —— 切換既有對話的載入態
+   *   輸入區高度     —— 捲動區的 paddingBottom 綁在它身上，輸入框 42↔146px
+   *                    的跳變會直接改變 scrollHeight，不補捲就是內容位移
+   * ResizeObserver 把高度寫回 state 是在 paint 之後，所以 paddingBottom 的
+   * 補捲一定得靠這個依賴再跑一次，不能只靠 messages。
+   */
+  useEffect(() => {
+    if (!是否貼底.current) return
+    const 節點 = 捲動區Ref.current
+    if (節點 === null) return
+    節點.scrollTop = 節點.scrollHeight
+  }, [messages, pending, detailPending, 輸入區高度])
 
   const 是空白對話 = messages.length === 0 && !pending && !detailPending
 
@@ -444,6 +504,7 @@ export default function ChatPage({
         <div className="relative flex min-h-0 flex-1 flex-col">
           <div
             ref={掛載捲動區}
+            onScroll={記錄貼底}
             role="log"
             aria-live="polite"
             aria-label="對話內容"

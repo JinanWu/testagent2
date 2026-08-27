@@ -256,6 +256,9 @@ export default function InvocationLogsPage({ onClose, onOpenEndpoints }: Invocat
       標題="完整呼叫紀錄"
       標題Id="logs-title"
       副標題="用於治理與合規的不可逆執行紀錄。"
+      /* 這頁沒有工具列，整條標題列收成 sr-only，版面與對話頁同樣乾淨 */
+      分隔線={false}
+      標題可見={false}
       滿版={true}
       on開啟對話={() => { invalidate(true); onClose() }}
       on開啟端點={onOpenEndpoints === undefined ? undefined : () => { invalidate(true); onOpenEndpoints() }}
@@ -432,7 +435,8 @@ export default function InvocationLogsPage({ onClose, onOpenEndpoints }: Invocat
 
         {/* ── 右欄：詳情 ───────────────────────────────────── */}
         <section className="min-w-0 flex-1 overflow-y-auto bg-surface">
-          <div className="flex flex-col gap-md p-lg">
+          {/* min-h-full 讓空狀態能垂直置中；有詳情時沒有 flex-1 子節點，內容照常靠上 */}
+          <div className="flex min-h-full flex-col gap-md p-lg">
             {錯誤在詳情欄 && error && <錯誤訊息>{error}</錯誤訊息>}
             {redactionCompleted && <成功訊息>不可逆遮蔽已完成。</成功訊息>}
             {detailPending && <載入中>正在載入詳情…</載入中>}
@@ -441,7 +445,9 @@ export default function InvocationLogsPage({ onClose, onOpenEndpoints }: Invocat
                 redactionPending={redactionPending} onRedact={redactSelected} />
             )}
             {!detailPending && !detail && !error && (
-              <空狀態>從左側選擇一筆呼叫紀錄以查看詳情。</空狀態>
+              <div className="flex flex-1 items-center justify-center">
+                <空狀態>從左側選擇一筆呼叫紀錄以查看詳情。</空狀態>
+              </div>
             )}
           </div>
         </section>
