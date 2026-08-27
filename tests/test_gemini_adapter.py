@@ -17,6 +17,7 @@ def _注入隔離使用者上下文(參數, tmp_path) -> None:
 
 def test_查詢Gemini上下文長度_依模型查表():
     """確認壓縮門檻會依實際模型 context window 查表，而非 gemini 模式一律 1M。"""
+    assert 查詢Gemini上下文長度("gemini-3.7-flash") == 1_048_576
     assert 查詢Gemini上下文長度("gemini-2.5-flash-lite") == 1_048_576
     assert 查詢Gemini上下文長度("gemini-flash-lite") == 1_048_576
     assert 查詢Gemini上下文長度("gemini-1.0-pro") == 32_768

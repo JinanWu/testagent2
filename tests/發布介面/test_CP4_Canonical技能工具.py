@@ -48,6 +48,8 @@ def test_production技能工具factory建立request_local_closures且限制路�
     assert [(項.tool.名稱, 項.revision) for 項 in 描述.tools] == [
         ("skills_list", "skills_list@bundle-v1"),
         ("skill_view", "skill_view@bundle-v1"),
+        ("administrative_search", "administrative_search@published-v1"),
+        ("clarify", "clarify@published-v1"),
     ]
     快照 = _快照(
         ("alpha/SKILL.md", b"alpha body"),
@@ -122,7 +124,7 @@ def _建立技能執行器(套件, 模型):
     from 繁中代理.發布介面.執行期.工具發布庫 import 工具發布庫
     工具庫 = 工具發布庫()
     發布版 = 工具庫.登錄發布(建立技能工具發布描述())
-    工具快照 = 發布版.工具快照
+    工具快照 = 發布版.工具快照[:2]
     版本 = 發布執行快照(
         endpoint_id="ep-1", version_id="ver-1", service_account_id="sa-1",
         system_prompt="pinned", permission_snapshot_digest="a" * 64,

@@ -10,6 +10,7 @@ import 繁中代理.發布介面.生產Web代理 as 組裝
 from 繁中代理.發布介面.Web代理服務 import Web代理服務, Web服務不可用
 from 繁中代理.發布介面.生產Web代理 import 延遲Web代理服務, 生產Web代理資源
 from 繁中代理.發布介面.設定 import 生產設定
+from 繁中代理.模型供應商 import 解析上下文長度
 
 
 class _連線:
@@ -113,3 +114,40 @@ def test_draining_barrier拒新lease並等待既有call後才close():
     可返回.set(); 呼叫.join(2); 關閉.join(2)
     assert not 呼叫.is_alive() and not 關閉.is_alive()
     assert 紀錄 == ["user", "session"]
+
+
+def test_web執行階段的上下文長度沿用共用解析器而非預設32768(tmp_path, monkeypatch):
+    """Web 必須把 解析上下文長度() 的結果傳進執行階段，不能漏傳而掉回參數預設。
+
+    這條 regression 存在的理由：cli 早就改用 解析上下文長度()，Web 卻一直沒接上，
+    於是掉回 代理執行階段 的參數預設 32768，壓縮門檻只剩 16384，對話極早期就誤觸壓縮。
+    漏傳時程式不會報錯，只會安靜地壓縮得更頻繁，所以只能靠測試釘住。
+    """
+    monkeypatch.delenv("AIAGENT_CONTEXT_WINDOW", raising=False)
+    捕獲: dict = {}
+
+    def 假代理執行階段(*位置參數, **關鍵字參數):
+        捕獲.update(關鍵字參數)
+        return object()
+
+    monkeypatch.setattr(組裝, "代理執行階段", 假代理執行階段)
+    monkeypatch.setattr(組裝, "GeminiADC供應商", lambda *位置參數, **關鍵字參數: object())
+    設定 = 生產設定(
+        資料庫路徑=tmp_path / "production.sqlite3",
+        允許來源=("https://web.example",),
+        模型供應器="gemini-adc",
+        模型名稱="gemini-3.7-flash",
+        Gemini專案識別碼="proj",
+        Gemini位置="us-central1",
+    )
+    資源 = 組裝._建立生產Web代理資源(設定, 延遲Web代理服務())
+    try:
+        資源._服務._執行階段工廠(使用者上下文物件=None, source="web")
+    finally:
+        asyncio.run(資源.關閉())
+
+    期望 = 解析上下文長度(設定.模型供應器, 設定.模型名稱)
+    # 與 cli 同一個解析器：換模型或改對照表時，期望值自動跟著走，不用回頭改測試。
+    assert 捕獲["上下文長度"] == 期望
+    # 漏傳時會靜悄悄掉回 代理執行階段 的參數預設，這行專門擋那個情況。
+    assert 捕獲["上下文長度"] != 32768

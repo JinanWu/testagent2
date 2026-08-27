@@ -109,8 +109,16 @@ def test_CP4_PLANNER_05_Production_Gemini轉接器固定結構化參數並回傳
     ]
     assert 呼叫[0]["response_schema"]["additionalProperties"] is False
     回應結構綱要 = 呼叫[0]["response_schema"]["properties"]["response_schema"]
-    assert 回應結構綱要["required"] == ["type"]
+    assert 回應結構綱要["required"] == ["type", "properties", "required", "additionalProperties"]
     assert 回應結構綱要["properties"]["type"] == {"type": "string", "const": "object"}
+    # 輸出欄位必須逐項宣告，否則供應商只會產生 {"type": "object"} 這種空結構
+    欄位定義 = 回應結構綱要["properties"]["properties"]["additionalProperties"]
+    assert 欄位定義["required"] == ["type", "description"]
+    assert 欄位定義["properties"]["type"]["enum"] == [
+        "string", "number", "integer", "boolean", "array",
+    ]
+    assert 回應結構綱要["properties"]["required"] == {"type": "array", "items": {"type": "string"}}
+    assert 回應結構綱要["properties"]["additionalProperties"] == {"type": "boolean"}
 
 
 def test_CP4_PLANNER_06_Gemini提示固定text與structured回應結構契約():
