@@ -180,6 +180,21 @@ describe('A22-03 draft-driven endpoint Builder', () => {
     expect(text(renderer!)).not.toContain('請至少選擇 1 個 Skill。')
   })
 
+  it('需求內容過長時禁止進入下一步並顯示固定提示', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session()))
+      .mockResolvedValueOnce(jsonResponse(skills))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    await act(async () => { input(renderer!, 'endpoint-requirement').props.onChange({ target: { value: '密'.repeat(6000) } }) })
+
+    expect(text(renderer!)).toContain('內容太長，請縮短後再送出')
+    expect(button(renderer!, '下一步：選擇 Skills').props.disabled).toBe(true)
+    const before = fetchMock.mock.calls.length
+    expect(fetchMock).toHaveBeenCalledTimes(before)
+  })
+
   it('publishes exact detached five-key confirmation and shows the initial key only in current success state', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(session()))

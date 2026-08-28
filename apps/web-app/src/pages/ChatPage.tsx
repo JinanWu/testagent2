@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNod
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
-import { CHAT_ERROR_MESSAGE } from '../api/chat'
+import { CHAT_ERROR_MESSAGE, CHAT_MESSAGE_MAX_BYTES } from '../api/chat'
+import { byteLength } from '../api/client'
 import { getSessionDetail, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
 import { createSendChatOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
@@ -19,6 +20,7 @@ const 輸入框收合高度 = 42
 const 輸入框展開高度 = 146
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
+const 內容過長訊息 = '內容太長，請縮短後再送出'
 
 function 助理訊息表格({ children }: { children?: ReactNode }) {
   return (
@@ -218,6 +220,10 @@ export default function ChatPage({
     const text = draftRef.current.trim()
     const requestEpoch = epoch.current
     if (!text || protectedOwner === null || submitOwnerEpochRef.current !== null || pending || detailPendingRef.current) return
+    if (byteLength(text) > CHAT_MESSAGE_MAX_BYTES) {
+      setError(內容過長訊息)
+      return
+    }
     submitOwnerEpochRef.current = requestEpoch
     const controller = new AbortController()
     controllers.current.add(controller)
@@ -399,6 +405,7 @@ export default function ChatPage({
   }, [messages, pending, detailPending, 輸入區高度])
 
   const 是空白對話 = messages.length === 0 && !pending && !detailPending
+  const 輸入內容過長 = draft.trim().length > 0 && byteLength(draft.trim()) > CHAT_MESSAGE_MAX_BYTES
 
   const 輸入區 = (
     <>
@@ -423,6 +430,8 @@ export default function ChatPage({
             autoFocus={是空白對話}
             value={draft}
             placeholder="請輸入您的指令或需求…"
+            aria-invalid={輸入內容過長 || undefined}
+            aria-describedby={輸入內容過長 ? 'chat-message-limit' : undefined}
             onChange={(event) => {
               draftRef.current = event.currentTarget.value
               setDraft(event.currentTarget.value)
@@ -448,14 +457,21 @@ export default function ChatPage({
             }}
             className="w-full resize-none overflow-y-auto border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
           />
-          <div className="flex justify-end">
+          <div className="flex items-center justify-between gap-md px-sm pb-xs">
+            {輸入內容過長 ? (
+              <p id="chat-message-limit" className="font-body-sm text-body-sm text-error">
+                {內容過長訊息}
+              </p>
+            ) : (
+              <span aria-hidden={true} />
+            )}
             {/*
               子節點維持純字串：既有測試以 findByProps({ type: 'submit' }).props.children
               直接比對「傳送」／「傳送中…」。圖示因此改由偽元素繪製，不進入 DOM。
             */}
             <button
               type="submit"
-              disabled={!draft.trim() || pending || detailPending}
+              disabled={!draft.trim() || 輸入內容過長 || pending || detailPending}
               className={[
                 '導覽項目',
                 pending || detailPending ? '導覽項目-載入中' : '導覽項目-傳送',
@@ -516,7 +532,7 @@ export default function ChatPage({
             </p>
           </div>
 
-          <div className="w-full max-w-[48rem]">{輸入區}</div>
+          <div className="w-full max-w-[42rem]">{輸入區}</div>
         </div>
       ) : (
         <div className="relative flex min-h-0 flex-1 flex-col">
@@ -526,11 +542,11 @@ export default function ChatPage({
             role="log"
             aria-live="polite"
             aria-label="對話內容"
-            className="min-h-0 flex-1 overflow-y-auto p-lg"
+            className="min-h-0 flex-1 overflow-y-auto px-lg pb-lg pt-2xl"
             /* 疊在上方的輸入區會蓋住底部，補等高內距讓最後一則訊息捲得出來 */
             style={{ paddingBottom: 輸入區高度 }}
           >
-            <div className="mx-auto flex w-full max-w-4xl flex-col gap-lg">
+            <div className="mx-auto flex w-full max-w-[48rem] flex-col gap-lg">
               {messages.map((message, index) => {
                 const 是使用者 = message.role === 'user'
                 return (
@@ -556,7 +572,7 @@ export default function ChatPage({
                     */}
                     <div
                       className={[
-                        'flex min-w-0 max-w-[min(80%,42rem)] flex-col gap-xs',
+                        'flex min-w-0 max-w-[min(76%,36rem)] flex-col gap-xs',
                         是使用者 ? 'items-end' : 'items-start',
                       ].join(' ')}
                     >
@@ -639,11 +655,11 @@ export default function ChatPage({
               className="對話霧玻璃 pointer-events-none absolute inset-0 backdrop-blur-[30px]"
             />
             {/*
-              寬度對齊兩方泡泡而非整列：訊息列 max-w-4xl(56rem) 扣掉兩側
-              頭像 size-8(2rem) 與 gap-md(1rem)，剩 50rem。
+              寬度對齊兩方泡泡而非整列：訊息列 48rem 扣掉兩側
+              頭像與間距後，保留約 43rem 的輸入寬度。
             */}
             {/* 只有輸入框本體收回指標事件；左右兩側的留白仍讓滾輪穿透到底下的捲動區 */}
-            <div className="pointer-events-auto relative mx-auto w-full max-w-[50rem]">{輸入區}</div>
+            <div className="pointer-events-auto relative mx-auto w-full max-w-[43rem]">{輸入區}</div>
           </div>
         </div>
       )}

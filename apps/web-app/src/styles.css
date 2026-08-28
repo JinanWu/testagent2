@@ -76,15 +76,15 @@
    * （max-w-md 會解析成 max-width: 16px）。需要限制寬度時請改用
    * 明確值，例如 max-w-[28rem]，不要用 max-w-{xs,sm,md,lg,xl}。
    */
-  --spacing-xs: 4px;
-  --spacing-base: 4px;
-  --spacing-sm: 8px;
-  --spacing-md: 16px;
-  --spacing-lg: 24px;
-  --spacing-xl: 32px;
+  --spacing-xs: 3.5px;
+  --spacing-base: 3.5px;
+  --spacing-sm: 7px;
+  --spacing-md: 13.5px;
+  --spacing-lg: 20px;
+  --spacing-xl: 27px;
   /* 區塊之間的呼吸空間 */
-  --spacing-2xl: 48px;
-  --spacing-sidebar-width: 260px;
+  --spacing-2xl: 40px;
+  --spacing-sidebar-width: 220px;
 
   /* 圓角 */
   --radius-DEFAULT: 0.125rem;
@@ -109,33 +109,33 @@
   --font-label-sm: var(--font-code-md);
 
   /* 字級 */
-  --text-label-sm: 13px;
-  --text-label-sm--line-height: 20px;
+  --text-label-sm: 11px;
+  --text-label-sm--line-height: 17px;
   --text-label-sm--font-weight: 500;
 
-  --text-code-md: 15px;
-  --text-code-md--line-height: 24px;
+  --text-code-md: 13px;
+  --text-code-md--line-height: 20px;
   --text-code-md--font-weight: 400;
 
-  --text-body-md: 16px;
-  --text-body-md--line-height: 26px;
+  --text-body-md: 13.6px;
+  --text-body-md--line-height: 22px;
   --text-body-md--font-weight: 400;
 
-  --text-body-lg: 18px;
-  --text-body-lg--line-height: 30px;
+  --text-body-lg: 15.3px;
+  --text-body-lg--line-height: 25.5px;
   --text-body-lg--font-weight: 400;
 
-  --text-headline-sm: 22px;
-  --text-headline-sm--line-height: 32px;
+  --text-headline-sm: 18.7px;
+  --text-headline-sm--line-height: 27px;
   --text-headline-sm--font-weight: 600;
 
-  --text-headline-md: 28px;
-  --text-headline-md--line-height: 38px;
+  --text-headline-md: 23.8px;
+  --text-headline-md--line-height: 32px;
   --text-headline-md--letter-spacing: -0.01em;
   --text-headline-md--font-weight: 600;
 
-  --text-display-lg: 40px;
-  --text-display-lg--line-height: 48px;
+  --text-display-lg: 34px;
+  --text-display-lg--line-height: 41px;
   --text-display-lg--letter-spacing: -0.02em;
   --text-display-lg--font-weight: 700;
 }
@@ -224,7 +224,7 @@
     color: var(--color-on-background);
     font-family: var(--font-body-md);
     font-size: var(--text-body-md);
-    line-height: 26px;
+    line-height: var(--text-body-md--line-height);
   }
 
   button,
@@ -303,8 +303,8 @@
     content: "";
     display: inline-block;
     flex-shrink: 0;
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     background-color: currentColor;
     mask-repeat: no-repeat;
     mask-position: center;
@@ -357,8 +357,8 @@
   }
 
   .導覽項目-僅圖示::before {
-    width: 18px;
-    height: 18px;
+    width: 16px;
+    height: 16px;
   }
 
   /*
@@ -535,11 +535,11 @@
     flex-shrink: 0;
     border: 1px solid color-mix(in oklab, var(--color-tertiary) 40%, transparent);
     border-radius: var(--radius-DEFAULT);
-    padding: 0 4px;
+    padding: 0 3px;
     color: var(--color-tertiary);
     font-family: var(--font-label-sm);
-    font-size: 10px;
-    line-height: 16px;
+    font-size: 9.5px;
+    line-height: 14px;
     letter-spacing: 0.05em;
   }
 
@@ -598,7 +598,7 @@
     border-radius: var(--radius-lg);
     font-family: var(--font-code-md);
     font-size: var(--text-code-md);
-    line-height: 24px;
+    line-height: var(--text-code-md--line-height);
     overflow-x: auto;
     white-space: pre-wrap;
     word-break: break-word;

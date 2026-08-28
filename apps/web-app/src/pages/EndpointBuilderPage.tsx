@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { byteLength } from '../api/client'
 import type { DraftReceipt } from '../api/endpoints'
 import { useSession } from '../app/SessionProvider'
 import {
@@ -18,6 +19,8 @@ import 應用框架 from '../ui/應用框架'
 
 const SLUG = /^[a-z0-9][a-z0-9-]{0,62}$/
 export const BUILDER_ERROR_MESSAGE = '目前無法完成要求，請稍後再試。'
+const 需求最大位元組 = 16_384
+const 內容過長訊息 = '內容太長，請縮短後再送出'
 
 export interface EndpointBuilderPageProps {
   mode: 'new' | 'version'
@@ -147,6 +150,10 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
       setError('請輸入需求。')
       return
     }
+    if (byteLength(trimmed) > 需求最大位元組) {
+      setError(內容過長訊息)
+      return
+    }
     if (selectedSkills.length === 0) {
       setError('請至少選擇 1 個 Skill。')
       return
@@ -248,6 +255,7 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
   /* 已走到哪一步：決定 stepper 上哪幾步可以點回去看 */
   const 可達步驟 = success !== null ? 5 : draft !== null ? 4 : requirement.trim().length > 0 ? 2 : 1
   const 目前步驟 = success !== null ? 5 : Math.min(檢視步驟, 可達步驟)
+  const 需求過長 = requirement.trim().length > 0 && byteLength(requirement.trim()) > 需求最大位元組
 
   const 步驟清單 = [
     { 序: 1, 名: '需求定義' },
@@ -351,8 +359,15 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
               <欄位 標籤={<span className="font-body-md text-body-md font-semibold normal-case tracking-normal">需求</span>} htmlFor="endpoint-requirement">
                 <textarea id="endpoint-requirement" value={requirement} disabled={intentLocked} rows={6}
                   placeholder="例如：分析使用者的資源配置需求，並依門檻決定要路由到哪個子系統。"
+                  aria-invalid={需求過長 || undefined}
+                  aria-describedby={需求過長 ? 'endpoint-requirement-limit' : undefined}
                   className={`${輸入樣式} resize-y`}
                   onChange={(event) => 更新需求(event.target.value)} />
+                {需求過長 && (
+                  <p id="endpoint-requirement-limit" className="mt-xs font-body-sm text-body-sm text-error">
+                    {內容過長訊息}
+                  </p>
+                )}
               </欄位>
 
               <欄位 標籤="Response mode" htmlFor="endpoint-response-mode" className="max-w-[20rem]">
@@ -365,7 +380,7 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
               </欄位>
 
               <div className="flex justify-end border-t border-outline-variant pt-lg">
-                <button type="button" disabled={requirement.trim().length === 0}
+                <button type="button" disabled={requirement.trim().length === 0 || 需求過長}
                   onClick={() => 切換步驟(2)} className={主要按鈕}>
                   下一步：選擇 Skills
                 </button>

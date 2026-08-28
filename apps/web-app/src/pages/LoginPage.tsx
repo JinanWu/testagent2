@@ -75,7 +75,6 @@ export default function LoginPage({ onAuthenticated }: LoginPageProps) {
           <h1 id="login-title" className="font-headline-md text-headline-md text-on-surface">
             ColaX
           </h1>
-          <p className="font-body-md text-body-md text-on-surface-variant">登入智慧工作空間</p>
         </div>
 
         <form

@@ -3,6 +3,7 @@ import {
 } from './client'
 
 export const CHAT_ERROR_MESSAGE = '目前無法傳送訊息，請稍後再試。'
+export const CHAT_MESSAGE_MAX_BYTES = 16_384
 
 export interface ChatReply {
   sessionId: string
@@ -16,7 +17,7 @@ export async function sendChat(
   signal?: AbortSignal,
 ): Promise<ChatReply> {
   const trimmed = message.trim()
-  if (!boundedString(trimmed, 16_384) || byteLength(trimmed) > 16_384 ||
+  if (!boundedString(trimmed, CHAT_MESSAGE_MAX_BYTES) || byteLength(trimmed) > CHAT_MESSAGE_MAX_BYTES ||
       (sessionId !== null && !boundedString(sessionId, 128)) || !boundedString(csrfToken, 512)) {
     throw new ApiFormatError()
   }

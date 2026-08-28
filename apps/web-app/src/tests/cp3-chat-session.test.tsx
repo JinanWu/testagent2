@@ -574,4 +574,17 @@ describe('CP3 真實對話工作流程', () => {
     await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
     expect(JSON.stringify(renderer.toJSON())).toContain('恢復後回覆')
   })
+
+  it('輸入內容過長時禁止送出並顯示固定提示', async () => {
+    await openChat()
+    const before = fetchMock.mock.calls.length
+    await act(async () => renderer.root.findByType('textarea').props.onChange({
+      currentTarget: { value: '密'.repeat(6000) },
+    }))
+
+    expect(JSON.stringify(renderer.toJSON())).toContain('內容太長，請縮短後再送出')
+    expect(renderer.root.findByProps({ type: 'submit' }).props.disabled).toBe(true)
+    await act(async () => renderer.root.findByType('form').props.onSubmit({ preventDefault: vi.fn() }))
+    expect(fetchMock).toHaveBeenCalledTimes(before)
+  })
 })
