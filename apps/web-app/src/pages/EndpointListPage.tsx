@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { listOwnerEndpoints, type OwnerEndpointItem } from '../api/endpoints'
 import { useSession } from '../app/SessionProvider'
-import { 載入中, 錯誤訊息, 輸入樣式 } from '../ui/元件'
+import { 載入中, 錯誤訊息 } from '../ui/元件'
 import { 格式化相對時間, 狀態文字 } from '../ui/格式'
 import 圖示 from '../ui/圖示'
 import 應用框架 from '../ui/應用框架'
@@ -15,6 +15,7 @@ export interface EndpointListPageProps {
   onOpenEndpoint(endpointId: string): void
   onCreateEndpoint(): void
   onOpenAdminLogs?(): void
+  onSelectConversation?(sessionId: string): void
 }
 
 function mergeEndpointItems(
@@ -44,7 +45,7 @@ const 狀態外觀: Record<'active' | 'disabled' | 'archived', { 圖磚: string;
   archived: { 圖磚: 'bg-surface-container text-on-surface-variant/70', 圓點: 'bg-error' },
 }
 
-export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndpoint, onOpenAdminLogs }: EndpointListPageProps) {
+export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndpoint, onOpenAdminLogs, onSelectConversation }: EndpointListPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [items, setItems] = useState<OwnerEndpointItem[]>([])
   const [nextCursor, setNextCursor] = useState<string | null>(null)
@@ -52,6 +53,7 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
   const [loadingMore, setLoadingMore] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [scope, setScope] = useState<EndpointScope>('owner')
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false)
   const generation = useRef(0)
   const controllers = useRef(new Set<AbortController>())
   const mounted = useRef(false)
@@ -152,6 +154,11 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
     setScope(value)
   }
 
+  function chooseScope(value: EndpointScope) {
+    changeScope(value)
+    setScopeMenuOpen(false)
+  }
+
   return (
     <應用框架
       目前分頁="端點"
@@ -161,53 +168,65 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
       分隔線={false}
       標題可見={false}
       on開啟對話={onClose}
+      on選取對話={onSelectConversation}
       on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
       on登出={() => {
         void logout().catch(() => { if (mounted.current) setError(AUTH_ERROR_MESSAGE) })
       }}
-      工具列={
-        <>
-          {user?.role === 'admin' && (
-            <>
-              <label htmlFor="endpoint-scope" className="sr-only">
-                清單範圍
-              </label>
-              {/*
-                原生 select 的箭頭畫在內容區右緣，輸入樣式只有 px-3 會讓它壓在文字上。
-                關掉原生外觀、右內距留給自繪箭頭；select 是 replaced element，
-                ::after 多數瀏覽器不繪製，所以箭頭用同層的絕對定位 span。
-              */}
-              <div className="relative">
-                <select
-                  id="endpoint-scope"
-                  value={scope}
-                  onChange={(event) => changeScope(event.currentTarget.value)}
-                  className={`${輸入樣式} w-40 cursor-pointer appearance-none rounded-xl py-2 pr-9 transition-colors hover:border-outline`}
-                >
-                  <option value="owner">我的端點</option>
-                  <option value="all">所有端點</option>
-                </select>
-                <span
-                  aria-hidden={true}
-                  className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-on-surface-variant"
-                >
-                  <圖示 名稱="展開" 大小={16} />
-                </span>
-              </div>
-            </>
-          )}
-          {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}
+      工具列={user?.role === 'admin' && (
+        <div className="relative w-44 translate-y-3">
           <button
+            id="endpoint-scope"
             type="button"
-            onClick={onCreateEndpoint}
-            className="導覽項目 導覽項目-新增 rounded-xl bg-primary-container px-4 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+            aria-haspopup="menu"
+            aria-expanded={scopeMenuOpen}
+            aria-controls="endpoint-scope-menu"
+            onClick={() => setScopeMenuOpen((open) => !open)}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setScopeMenuOpen(false)
+            }}
+            className="flex w-full items-center justify-between gap-sm rounded-xl border border-outline-variant bg-surface-container-lowest px-4 py-2 font-body-md text-body-md font-semibold text-on-surface shadow-sm transition-[border-color,box-shadow,background-color] hover:border-outline hover:bg-surface-container-low focus-visible:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/20"
           >
-            建立端點
+            <span>{scope === 'owner' ? '我的端點' : '所有端點'}</span>
+            <圖示
+              名稱="展開"
+              大小={18}
+              className={`shrink-0 text-on-surface-variant transition-transform duration-200 ${scopeMenuOpen ? 'rotate-180' : ''}`}
+            />
           </button>
-        </>
-      }
+          {scopeMenuOpen && (
+            <div
+              id="endpoint-scope-menu"
+              role="menu"
+              aria-labelledby="endpoint-scope"
+              className="absolute right-0 z-20 mt-2 w-full overflow-hidden rounded-xl border border-outline-variant bg-surface-container-lowest p-1 shadow-[0_16px_32px_rgba(28,27,26,0.16)]"
+            >
+              {([
+                ['owner', '我的端點'],
+                ['all', '所有端點'],
+              ] as const).map(([value, label]) => {
+                const selected = scope === value
+                return (
+                  <button
+                    key={value}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    data-scope-value={value}
+                    onClick={() => chooseScope(value)}
+                    className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left font-body-md text-body-md font-semibold transition-colors ${selected ? 'bg-primary-container/12 text-primary' : 'text-on-surface hover:bg-surface-container'}`}
+                  >
+                    <span>{label}</span>
+                    {selected && <span aria-hidden={true} className="font-headline-sm text-headline-sm leading-none">✓</span>}
+                  </button>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      )}
     >
-      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-xl py-md">
+      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-xl pb-md pt-xl">
         {error && <錯誤訊息>{error}</錯誤訊息>}
 
         {loading ? (
@@ -226,67 +245,83 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
             </p>
           </div>
         ) : (
-          /*
-            無框線列表：不畫卡片也不畫表頭，靠留白分組，游標移過去整列變淺灰。
-            兩欄排列讓 80 個端點的捲動距離只有單欄表格的一半。
-          */
-          <ul aria-label="端點清單" className="grid gap-x-xl gap-y-xs lg:grid-cols-2">
-            {items.map((item) => {
-              const 外觀 = 狀態外觀[item.status]
-              return (
-                <li
-                  key={item.endpointId}
-                  className="group relative rounded-xl transition-colors hover:bg-surface-container"
-                >
-                  <div className="pointer-events-none flex items-center gap-md p-md">
-                    <span
-                      aria-hidden={true}
-                      className={['flex size-10 shrink-0 items-center justify-center rounded-xl', 外觀.圖磚].join(' ')}
-                    >
-                      <圖示 名稱="端點" 大小={20} />
-                    </span>
+          <section aria-labelledby="endpoint-list-heading" className="flex flex-col gap-lg">
+            <div className="flex items-end justify-between gap-md border-b border-outline-variant pb-md">
+              <h2 id="endpoint-list-heading" className="font-headline-sm text-headline-sm text-on-surface">
+                {scope === 'owner' ? '我的端點' : '所有端點'}
+              </h2>
+              {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}
+              <button
+                type="button"
+                onClick={onCreateEndpoint}
+                className="導覽項目 導覽項目-新增 flex min-w-32 items-center justify-center rounded-xl bg-primary-container px-3 py-1.5 font-label-lg text-label-lg font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+              >
+                建立端點
+              </button>
+            </div>
 
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
-                        {item.slug}
-                      </p>
-                      <p className="flex items-center gap-sm truncate font-body-md text-body-md text-on-surface-variant">
-                        <span className="flex items-center gap-1.5">
-                          <span aria-hidden={true} className={['size-1.5 shrink-0 rounded-full', 外觀.圓點].join(' ')} />
-                          {狀態文字(item.status)}
-                        </span>
-                        <span aria-hidden={true}>·</span>
-                        <span className="font-code-md text-code-md">
-                          {item.currentVersionNumber === null ? '尚未發布' : `v${item.currentVersionNumber}`}
-                        </span>
-                        <span aria-hidden={true}>·</span>
-                        <span className="truncate">{格式化相對時間(item.updatedAt)}</span>
-                      </p>
+            {/*
+              兩欄清單呼應插件列表的瀏覽節奏：每筆仍是輕量 row，不做厚重卡片。
+              後續端點變多時，左右欄可以一起向下延展，掃描距離比較短。
+            */}
+            <ul aria-label="端點清單" className="grid gap-x-2xl gap-y-sm lg:grid-cols-2">
+              {items.map((item) => {
+                const 外觀 = 狀態外觀[item.status]
+                return (
+                  <li
+                    key={item.endpointId}
+                    className="group relative rounded-xl border-b border-outline-variant/70 transition-colors hover:bg-surface-container lg:border-b-0"
+                  >
+                    <div className="pointer-events-none flex items-center gap-md px-sm py-md">
+                      <span
+                        aria-hidden={true}
+                        className={['flex size-11 shrink-0 items-center justify-center rounded-xl border border-outline-variant/70', 外觀.圖磚].join(' ')}
+                      >
+                        <圖示 名稱="端點" 大小={20} />
+                      </span>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-body-md text-body-md font-semibold text-on-surface">
+                          {item.slug}
+                        </p>
+                        <p className="flex items-center gap-sm truncate font-body-md text-body-md text-on-surface-variant">
+                          <span className="flex items-center gap-1.5">
+                            <span aria-hidden={true} className={['size-1.5 shrink-0 rounded-full', 外觀.圓點].join(' ')} />
+                            {狀態文字(item.status)}
+                          </span>
+                          <span aria-hidden={true}>·</span>
+                          <span className="font-code-md text-code-md">
+                            {item.currentVersionNumber === null ? '尚未發布' : `v${item.currentVersionNumber}`}
+                          </span>
+                          <span aria-hidden={true}>·</span>
+                          <span className="truncate">{格式化相對時間(item.updatedAt)}</span>
+                        </p>
+                      </div>
+
+                      <span
+                        aria-hidden={true}
+                        className="shrink-0 text-on-surface-variant/50 transition-colors group-hover:text-on-surface-variant"
+                      >
+                        <圖示 名稱="前往" 大小={18} />
+                      </span>
                     </div>
 
-                    <span
-                      aria-hidden={true}
-                      className="shrink-0 text-on-surface-variant/50 transition-colors group-hover:text-on-surface-variant"
+                    {/*
+                      子節點維持純字串：既有測試以 button.children.join('') 比對 slug 取得此按鈕。
+                      按鈕覆蓋整列（.整列連結 以 font-size: 0 收掉文字），可視內容畫在上面那層。
+                    */}
+                    <button
+                      type="button"
+                      onClick={() => onOpenEndpoint(item.endpointId)}
+                      className="整列連結"
                     >
-                      <圖示 名稱="前往" 大小={18} />
-                    </span>
-                  </div>
-
-                  {/*
-                    子節點維持純字串：既有測試以 button.children.join('') 比對 slug 取得此按鈕。
-                    按鈕覆蓋整列（.整列連結 以 font-size: 0 收掉文字），可視內容畫在上面那層。
-                  */}
-                  <button
-                    type="button"
-                    onClick={() => onOpenEndpoint(item.endpointId)}
-                    className="整列連結"
-                  >
-                    {item.slug}
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
+                      {item.slug}
+                    </button>
+                  </li>
+                )
+              })}
+            </ul>
+          </section>
         )}
 
         {nextCursor !== null && (

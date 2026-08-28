@@ -80,6 +80,9 @@ function text(renderer: ReactTestRenderer) { return JSON.stringify(renderer.toJS
 function button(renderer: ReactTestRenderer, label: string) {
   return renderer.root.findAllByType('button').find((node) => node.children.join('') === label)!
 }
+function buttonByLabel(renderer: ReactTestRenderer, label: string) {
+  return renderer.root.findAllByType('button').find((node) => node.props['aria-label'] === label)!
+}
 
 describe('A22-03 Owner safe endpoint detail', () => {
   const fetchMock = vi.fn<typeof fetch>()
@@ -140,6 +143,36 @@ describe('A22-03 Owner safe endpoint detail', () => {
     expect(text(renderer!)).toContain('建立新版本')
   })
 
+  it('returns from endpoint detail to the endpoint management list from the sidebar', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(session()))
+      .mockResolvedValueOnce(jsonResponse(detail('endpoint-1')))
+      .mockResolvedValueOnce(jsonResponse({
+        items: [{
+          endpoint_id: 'endpoint-2',
+          slug: 'another-api',
+          status: 'active',
+          current_version_id: 'version-1',
+          current_version_number: 1,
+          updated_at: 30,
+        }],
+        next_cursor: null,
+      }))
+    await act(async () => { renderer = create(<App />) })
+    await flush()
+
+    const endpointNav = button(renderer!, '端點管理')
+    expect(endpointNav.props.disabled).toBe(false)
+    await act(async () => { endpointNav.props.onClick(); await flush() })
+    await flush()
+
+    expect(pathname).toBe('/endpoints')
+    expect(text(renderer!)).toContain('建立端點')
+    expect(text(renderer!)).toContain('another-api')
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/published-endpoints?scope=owner&limit=20',
+      expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
+  })
+
   it('creates a one-time credential, blocks mutations until clear, then confirms/reloads revoke and renders live docs', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(session()))
@@ -151,6 +184,7 @@ describe('A22-03 Owner safe endpoint detail', () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(jsonResponse({ items: [credential('credential-1', 'revoked'), credential('credential-2')] }))
       .mockResolvedValueOnce(jsonResponse(docs()))
+      .mockResolvedValueOnce(jsonResponse({ items: [credential('credential-1', 'revoked'), credential('credential-2')] }))
     await act(async () => { renderer = create(<App />) })
     await flush()
 
@@ -199,6 +233,39 @@ describe('A22-03 Owner safe endpoint detail', () => {
     expect(text(renderer!)).toContain('${BASE_URL}/v1/endpoints/${ENDPOINT_SLUG}/invoke')
     expect(text(renderer!)).toContain('${API_KEY}')
     expect(text(renderer!)).not.toContain(initialApiKey)
+
+    const createdAnchors: Array<{ href: string; download: string; rel: string; click: ReturnType<typeof vi.fn>; remove: ReturnType<typeof vi.fn> }> = []
+    const createdUrls: Blob[] = []
+    vi.stubGlobal('Blob', Blob)
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn((blob: Blob) => {
+        createdUrls.push(blob)
+        return 'blob:docs-download'
+      }),
+      revokeObjectURL: vi.fn(),
+    })
+    vi.stubGlobal('document', {
+      body: { append: vi.fn() },
+      createElement: vi.fn(() => {
+        const anchor = { href: '', download: '', rel: '', click: vi.fn(), remove: vi.fn() }
+        createdAnchors.push(anchor)
+        return anchor
+      }),
+    })
+    await act(async () => buttonByLabel(renderer!, '下載 API 交付文件').props.onClick())
+    expect(createdAnchors[0]).toMatchObject({
+      href: 'blob:docs-download',
+      download: 'safe-api-api-docs.md',
+      rel: 'noopener',
+    })
+    expect(createdAnchors[0].click).toHaveBeenCalled()
+    expect(createdAnchors[0].remove).toHaveBeenCalled()
+    const markdown = await createdUrls[0].text()
+    const maskedApiKey = `${initialApiKey.slice(0, 12)}…${initialApiKey.slice(-4)}`
+    expect(markdown).toContain('# safe-api API — API 交付文件')
+    expect(markdown).toContain(`API key**：\`${maskedApiKey}\``)
+    expect(markdown).toContain(`Authorization: Bearer ${maskedApiKey}`)
+    expect(markdown).not.toContain(initialApiKey)
   })
 
   it('aborts create on tab switch and suppresses a late one-time key completion that ignores abort', async () => {

@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type UIEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type UIEvent } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
 import { CHAT_ERROR_MESSAGE } from '../api/chat'
-import { getSessionDetail, listSessions, type SessionSummary, type TranscriptMessage } from '../api/sessions'
+import { getSessionDetail, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
 import { createSendChatOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
 import { 錯誤訊息 } from '../ui/元件'
@@ -18,21 +20,73 @@ const 輸入框展開高度 = 146
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 
+function 助理訊息表格({ children }: { children?: ReactNode }) {
+  return (
+    <div className="助理訊息表格捲動" tabIndex={0} aria-label="可左右捲動的表格">
+      <table>{children}</table>
+    </div>
+  )
+}
+
+function 整理助理訊息Markdown(內容: string): string {
+  const 行列 = 內容.split('\n')
+  const 結果: string[] = []
+  let 表格中 = false
+
+  for (let 索引 = 0; 索引 < 行列.length; 索引 += 1) {
+    const 行 = 行列[索引]
+    const 下行 = 行列[索引 + 1] ?? ''
+    const 是表格列 = /^\s*\|.*\|\s*$/.test(行)
+    const 下行是分隔列 = /^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(下行)
+
+    if (是表格列 && 下行是分隔列) {
+      表格中 = true
+      結果.push(行)
+      continue
+    }
+
+    if (表格中 && 是表格列) {
+      const 儲存格 = 行.trim().replace(/^\||\|$/g, '').split('|').map((值) => 值.trim())
+      const 說明 = 儲存格[0] ?? ''
+      const 其餘欄位皆空白 = 儲存格.slice(1).every((值) => 值 === '')
+
+      if (/^[（(]/.test(說明) && 其餘欄位皆空白) {
+        結果.push('', 說明, '')
+        continue
+      }
+
+      結果.push(行)
+      continue
+    }
+
+    表格中 = false
+    結果.push(行)
+  }
+
+  return 結果.join('\n')
+}
+
 /*
  * 貼底判定的容差：距離底部小於這個距離就算貼底。不能用 0——捲軸位置在
  * 縮放比例非整數、或字體度量取整時會差個 1~2px，抓死 0 會讓貼底狀態
  * 隨機失效（表現為「有時候會自動捲、有時候不會」）。
+ *
+ * 但也不能開太大：只要還在容差內就算貼底，下一次重繪（例如輸入框從 1 行
+ * 變 5 行）就會把畫面拉回底部。使用者剛往上滾一小段就被彈回去，手感等同
+ * 「滾不動」。取 24px 足以吸收取整誤差，又小於一次滾輪的距離。
  */
-const 貼底容差 = 64
+const 貼底容差 = 24
 
 export default function ChatPage({
   onOpenEndpoints,
   onOpenAdminLogs,
+  initialSessionId = null,
 }: {
   onOpenEndpoints?: () => void
   onOpenAdminLogs?: () => void
+  initialSessionId?: string | null
 }) {
-  const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
+  const { user, logout, registerProtectedStateOwner, runAuthorized, recentSessions, refreshRecentSessions } = useSession()
   const [draft, setDraft] = useState('')
   const draftRef = useRef('')
   const 輸入框Ref = useRef<HTMLTextAreaElement | null>(null)
@@ -50,7 +104,6 @@ export default function ChatPage({
   const [已複製索引, set已複製索引] = useState<number | null>(null)
   const 複製計時器 = useRef<number | null>(null)
   const [messages, setMessages] = useState<TranscriptMessage[]>([])
-  const [sessions, setSessions] = useState<SessionSummary[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -86,7 +139,6 @@ export default function ChatPage({
     draftRef.current = ''
     setDraft('')
     setMessages([])
-    setSessions([])
     setSessionId(null)
     setError(null)
   }, [invalidate])
@@ -104,14 +156,13 @@ export default function ChatPage({
     const controller = new AbortController()
     controllers.current.add(controller)
     try {
-      const next = await listSessions(20, controller.signal)
-      if (epoch.current === requestEpoch && !controller.signal.aborted) setSessions(next)
+      await refreshRecentSessions(controller.signal)
     } catch {
       if (epoch.current === requestEpoch && !controller.signal.aborted) setError(SESSION_ERROR_MESSAGE)
     } finally {
       controllers.current.delete(controller)
     }
-  }, [])
+  }, [refreshRecentSessions])
 
   useEffect(() => {
     if (protectedOwner === null) return
@@ -156,6 +207,11 @@ export default function ChatPage({
       }
     }
   }
+
+  useEffect(() => {
+    if (protectedOwner === null || initialSessionId === null) return
+    void openSession(initialSessionId)
+  }, [protectedOwner, initialSessionId])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -220,7 +276,7 @@ export default function ChatPage({
    * 頁面標題用「當前對話串標題」而不是固定的「對話」：固定字串在每一串對話都長一樣，
    * 等於沒有資訊。未選任何對話（新對話）時退回「未命名對話」。
    */
-  const 目前對話 = sessions.find((session) => session.id === sessionId)
+  const 目前對話 = recentSessions.find((session) => session.id === sessionId)
   const 頁面標題 = (sessionId !== null && 目前對話?.title) || '未命名對話'
 
   /* 子節點維持純字串：既有測試以 findByProps({ children: '新增對話' }) 取得此按鈕。 */
@@ -232,45 +288,6 @@ export default function ChatPage({
     >
       新增對話
     </button>
-  )
-
-  const 對話清單 = (
-    <div className="mt-lg flex min-h-0 flex-1 flex-col">
-      <p className="px-lg pb-xs pt-sm font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
-        最近對話
-      </p>
-      {sessions.length === 0 ? (
-        <p className="px-lg py-sm font-body-md text-body-md text-on-surface-variant/70">
-          尚無對話紀錄。
-        </p>
-      ) : (
-        <ul aria-label="工作階段" className="flex min-h-0 flex-1 flex-col gap-xs overflow-y-auto px-md">
-          {sessions.map((session) => {
-            const isActive = session.id === sessionId
-            return (
-              <li key={session.id}>
-                {/* 子節點維持純字串：測試以對話標題比對 children，並檢查 fontWeight 行內樣式。 */}
-                <button
-                  type="button"
-                  aria-current={isActive ? 'page' : undefined}
-                  aria-pressed={isActive}
-                  style={isActive ? { fontWeight: 700 } : undefined}
-                  onClick={() => { void openSession(session.id) }}
-                  className={[
-                    'block w-full truncate rounded-xl px-2 py-1.5 text-left font-body-md text-body-md transition-colors',
-                    isActive
-                      ? 'bg-surface-container-highest text-on-surface'
-                      : 'text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface',
-                  ].join(' ')}
-                >
-                  {session.title || '未命名對話'}
-                </button>
-              </li>
-            )
-          })}
-        </ul>
-      )}
-    </div>
   )
 
   /*
@@ -467,7 +484,8 @@ export default function ChatPage({
       標題={頁面標題}
       標題Id="chat-title"
       側欄頂部={新增對話按鈕}
-      側欄額外={對話清單}
+      on選取對話={(id) => { void openSession(id) }}
+      目前對話Id={sessionId}
       滿版={true}
       /*
        * 對話頁一律不畫標題列與分隔線：整個工作區就是對話本身。
@@ -550,9 +568,17 @@ export default function ChatPage({
                             : 'rounded-tl-lg border-outline-variant',
                         ].join(' ')}
                       >
-                        <p className="whitespace-pre-wrap break-words font-body-lg text-body-lg text-on-surface">
-                          {message.content}
-                        </p>
+                        {是使用者 ? (
+                          <p className="whitespace-pre-wrap break-words font-body-lg text-body-lg text-on-surface">
+                            {message.content}
+                          </p>
+                        ) : (
+                          <div className="助理訊息Markdown break-words font-body-lg text-body-lg text-on-surface">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: 助理訊息表格 }}>
+                              {整理助理訊息Markdown(message.content)}
+                            </ReactMarkdown>
+                          </div>
+                        )}
                       </div>
                       <button
                         type="button"
@@ -591,8 +617,14 @@ export default function ChatPage({
 
           <div
             ref={掛載輸入區}
-            /* pt 決定霧玻璃層的總高＝漸層鋪開的距離；太短會讓整段過渡擠在一行字裡 */
-            className="absolute inset-x-0 bottom-0 px-lg pb-lg pt-[15rem]"
+            /* pt：霧玻璃層總高。改它會連帶改捲動區底部留白（見 掛載輸入區） */
+            /*
+             * 整層不吃指標事件：這一層覆蓋捲動區底部整片（高度看 pt），游標落在這個範圍內
+             * 時滾輪會打在這層上，而它的祖先都不可捲動（app-shell 是 overflow-hidden），
+             * 於是滾輪整個沒反應——表現就是「畫面下半部有時候滾不動」。
+             * 真正要接事件的只有輸入框那一塊，改由內層自己開回來。
+             */
+            className="pointer-events-none absolute inset-x-0 bottom-0 px-lg pb-lg pt-[9rem]"
             /* 右內距補上捲軸寬度，內容盒才與捲動區一致（見上方 useEffect） */
             style={{ paddingRight: `calc(var(--spacing-lg) + ${捲軸寬度}px)` }}
           >
@@ -601,6 +633,7 @@ export default function ChatPage({
               而不是撞上一條清楚的邊界——這層取代了原本的 border-t 分隔線。
               另外拆成獨立一層而非直接套在容器上，避免遮罩把輸入框本身也啃掉。
             */}
+            {/* backdrop-blur：模糊強度 */}
             <div
               aria-hidden={true}
               className="對話霧玻璃 pointer-events-none absolute inset-0 backdrop-blur-[30px]"
@@ -609,7 +642,8 @@ export default function ChatPage({
               寬度對齊兩方泡泡而非整列：訊息列 max-w-4xl(56rem) 扣掉兩側
               頭像 size-8(2rem) 與 gap-md(1rem)，剩 50rem。
             */}
-            <div className="relative mx-auto w-full max-w-[50rem]">{輸入區}</div>
+            {/* 只有輸入框本體收回指標事件；左右兩側的留白仍讓滾輪穿透到底下的捲動區 */}
+            <div className="pointer-events-auto relative mx-auto w-full max-w-[50rem]">{輸入區}</div>
           </div>
         </div>
       )}

@@ -18,6 +18,7 @@ import {
 function RouteShell() {
   const { status, user, logout } = useSession()
   const [route, setRoute] = useState<AppRoute | null>(currentAppRoute)
+  const [requestedSessionId, setRequestedSessionId] = useState<string | null>(null)
 
   useEffect(() => {
     const handlePopState = () => setRoute(currentAppRoute())
@@ -26,9 +27,15 @@ function RouteShell() {
   }, [])
 
   function openDefaultRoute() {
+    setRequestedSessionId(null)
     if (replaceAppRoute(DEFAULT_APP_ROUTE)) {
       setRoute(DEFAULT_APP_ROUTE)
     }
+  }
+
+  function openConversation(sessionId: string) {
+    setRequestedSessionId(sessionId)
+    if (replaceAppRoute(DEFAULT_APP_ROUTE)) setRoute(DEFAULT_APP_ROUTE)
   }
 
   function openEndpoints() {
@@ -84,22 +91,22 @@ function RouteShell() {
     return <LoginPage onAuthenticated={openDefaultRoute} />
   }
   if (route === DEFAULT_APP_ROUTE) {
-    return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
+    return <ChatPage onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} initialSessionId={requestedSessionId} />
   }
   if (route === ENDPOINTS_ROUTE) {
-    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} onCreateEndpoint={openEndpointBuilder} onOpenAdminLogs={openAdminLogs} />
+    return <EndpointListPage onClose={openDefaultRoute} onOpenEndpoint={openEndpointDetail} onCreateEndpoint={openEndpointBuilder} onOpenAdminLogs={openAdminLogs} onSelectConversation={openConversation} />
   }
   if (route === ADMIN_LOGS_ROUTE && user.role === 'admin') {
-    return <InvocationLogsPage onClose={openDefaultRoute} onOpenEndpoints={openEndpoints} />
+    return <InvocationLogsPage onClose={openDefaultRoute} onOpenEndpoints={openEndpoints} onSelectConversation={openConversation} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-detail') {
-    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} onCreateVersion={openEndpointVersionBuilder} onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} />
+    return <EndpointDetailPage endpointId={route.endpointId} onClose={openDefaultRoute} onCreateVersion={openEndpointVersionBuilder} onOpenEndpoints={openEndpoints} onOpenAdminLogs={openAdminLogs} onSelectConversation={openConversation} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-new') {
-    return <EndpointBuilderPage key={`new:${user.id}`} mode="new" onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} />
+    return <EndpointBuilderPage key={`new:${user.id}`} mode="new" onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} onSelectConversation={openConversation} />
   }
   if (typeof route === 'object' && route?.kind === 'endpoint-version-new') {
-    return <EndpointBuilderPage key={`version:${route.endpointId}:${user.id}`} mode="version" endpointId={route.endpointId} onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} />
+    return <EndpointBuilderPage key={`version:${route.endpointId}:${user.id}`} mode="version" endpointId={route.endpointId} onClose={openEndpoints} onOpenChat={openDefaultRoute} onOpenAdminLogs={openAdminLogs} onSelectConversation={openConversation} />
   }
   return (
     <main className="app-shell">

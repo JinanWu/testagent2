@@ -668,7 +668,7 @@ describe('A18 Admin logs UI與敏感state lifecycle', () => {
     await act(async () => logItem(renderer!, 'invocation-old').props.onClick())
     expect(text(renderer!)).toContain(RAW_OLD)
     await act(async () => { void logItem(renderer!, 'invocation-old').props.onClick() })
-    await act(async () => button(renderer!, '對話').props.onClick())
+    await act(async () => button(renderer!, '新增對話').props.onClick())
     expect(signal.aborted).toBe(true)
     expect(text(renderer!)).not.toContain(RAW_OLD)
     expect(pathname).toBe(DEFAULT_APP_ROUTE)

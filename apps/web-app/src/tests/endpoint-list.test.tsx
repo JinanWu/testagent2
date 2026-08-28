@@ -62,6 +62,11 @@ function button(renderer: ReactTestRenderer, label: string) {
   return renderer.root.findAllByType('button').find((item) => item.children.join('') === label)!
 }
 
+async function chooseScope(renderer: ReactTestRenderer, value: 'owner' | 'all') {
+  await act(async () => renderer.root.findByProps({ id: 'endpoint-scope' }).props.onClick())
+  await act(async () => renderer.root.findByProps({ 'data-scope-value': value }).props.onClick())
+}
+
 describe('A22 role-aware shell與Owner endpoint list', () => {
   const fetchMock = vi.fn<typeof fetch>()
   let renderer: ReactTestRenderer | undefined
@@ -139,16 +144,14 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
     expect(fetchMock.mock.calls.map(([route]) => String(route)).join(' ')).not.toContain('scope=all')
 
     fetchMock.mockResolvedValueOnce(jsonResponse(page([endpoint('endpoint-global', 'global-safe')])))
-    await act(async () => renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({
-      currentTarget: { value: 'all' },
-    }))
+    await chooseScope(renderer!, 'all')
     await flush()
     expect(text(renderer!)).toContain('global-safe')
     expect(fetchMock).toHaveBeenCalledWith('/api/published-endpoints?scope=all&limit=20',
       expect.objectContaining({ method: 'GET', credentials: 'include', signal: expect.any(AbortSignal) }))
 
     fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }))
-    await act(async () => button(renderer!, '對話').props.onClick())
+    await act(async () => button(renderer!, '新增對話').props.onClick())
     await flush()
     expect(button(renderer!, '端點管理')).toBeDefined()
     expect(button(renderer!, '完整呼叫紀錄')).toBeDefined()
@@ -173,9 +176,7 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
     await act(async () => { renderer = create(<App />) })
     await flush()
 
-    await act(async () => renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({
-      currentTarget: { value: 'all' },
-    }))
+    await chooseScope(renderer!, 'all')
     await flush()
     await act(async () => { button(renderer!, '登出').props.onClick(); await flush() })
     await flush()
@@ -209,7 +210,10 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
     await act(async () => { void button(renderer!, '載入更多').props.onClick() })
 
     await act(async () => {
-      renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onChange({ currentTarget: { value: 'all' } })
+      renderer!.root.findByProps({ id: 'endpoint-scope' }).props.onClick()
+    })
+    await act(async () => {
+      renderer!.root.findByProps({ 'data-scope-value': 'all' }).props.onClick()
       expect(oldOwnerSignal.aborted).toBe(true)
     })
     await flush()
@@ -267,7 +271,7 @@ describe('A22 role-aware shell與Owner endpoint list', () => {
     await act(async () => { pending.resolve(jsonResponse(page([]))); await pending.promise })
     expect(text(renderer!)).toContain('目前沒有端點。')
 
-    await act(async () => button(renderer!, '對話').props.onClick())
+    await act(async () => button(renderer!, '新增對話').props.onClick())
     fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [] }))
     await flush()
     fetchMock.mockResolvedValueOnce(jsonResponse({ detail: 'PRIVATE_MARKER' }, 503))

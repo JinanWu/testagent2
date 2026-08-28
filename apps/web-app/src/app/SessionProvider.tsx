@@ -15,6 +15,7 @@ import {
   type AuthSession,
   type AuthUser,
 } from '../api/auth'
+import { listSessions, type SessionSummary } from '../api/sessions'
 import {
   consumeProtectedOperation,
   dispatchProtectedOperation,
@@ -36,6 +37,8 @@ interface 工作階段操作 {
     unregister(): void
   }
   runAuthorized<T>(request: Readonly<AuthorizedRequest<T>>): Promise<T>
+  recentSessions: readonly SessionSummary[]
+  refreshRecentSessions(signal?: AbortSignal): Promise<void>
 }
 
 // 寫成 top-level union（而非 `工作階段操作 & (…|…)`）是刻意的：只有這個形狀
@@ -58,6 +61,7 @@ function samePrincipal(left: AuthUser, right: AuthUser): boolean {
 
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<SessionState>({ status: 'initializing' })
+  const [recentSessions, setRecentSessions] = useState<SessionSummary[]>([])
   const stateRef = useRef<SessionState>({ status: 'initializing' })
   const initialRequest = useRef<{
     epoch: number
@@ -77,12 +81,25 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const eraseProtectedState = useCallback(() => {
+    setRecentSessions([])
     const snapshot = [...owners.current.entries()]
     for (const controller of protectedControllers.current.keys()) controller.abort()
     protectedControllers.current.clear()
     for (const [owner, erase] of snapshot) {
       if (!owners.current.has(owner)) continue
       try { erase() } catch { /* one consumer cannot retain another consumer's state */ }
+    }
+  }, [])
+
+  const refreshRecentSessions = useCallback(async (signal?: AbortSignal) => {
+    const current = stateRef.current
+    if (current.status !== 'authenticated') {
+      setRecentSessions([])
+      return
+    }
+    const sessions = await listSessions(20, signal)
+    if (stateRef.current.status === 'authenticated' && stateRef.current.user.id === current.user.id) {
+      setRecentSessions(sessions)
     }
   }, [])
 
@@ -260,7 +277,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, [assertCurrentOperation, beginOperation, commitState, finishOperation])
 
   const value = useMemo<SessionContextValue>(() => {
-    const 操作 = { login, logout, registerProtectedStateOwner, runAuthorized }
+    const 操作 = { login, logout, registerProtectedStateOwner, runAuthorized, recentSessions, refreshRecentSessions }
     // 逐個變體明確帶出 status 字面值，才能對上 union 的判別欄位。
     if (state.status === 'authenticated') {
       return { ...操作, status: 'authenticated', user: state.user }
@@ -269,7 +286,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       return { ...操作, status: 'anonymous', user: null }
     }
     return { ...操作, status: 'initializing', user: null }
-  }, [state, login, logout, registerProtectedStateOwner, runAuthorized])
+  }, [state, login, logout, registerProtectedStateOwner, runAuthorized, recentSessions, refreshRecentSessions])
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>
 }

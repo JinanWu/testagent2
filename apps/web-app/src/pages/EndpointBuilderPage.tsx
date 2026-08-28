@@ -25,6 +25,7 @@ export interface EndpointBuilderPageProps {
   onClose(): void
   onOpenChat?(): void
   onOpenAdminLogs?(): void
+  onSelectConversation?(sessionId: string): void
 }
 
 type Success =
@@ -55,7 +56,7 @@ function versionConfiguration(requirement: string, preview: DraftReceipt['previe
   }
 }
 
-export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenChat, onOpenAdminLogs }: EndpointBuilderPageProps) {
+export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenChat, onOpenAdminLogs, onSelectConversation }: EndpointBuilderPageProps) {
   const { logout, registerProtectedStateOwner, runAuthorized, user } = useSession()
   const [requirement, setRequirement] = useState('')
   const [selectedSkills, setSelectedSkills] = useState<string[]>([])
@@ -265,7 +266,11 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
       目前分頁="端點"
       標題={mode === 'new' ? '建立端點' : '建立新版本'}
       副標題={mode === 'version' ? `端點 ${endpointId ?? ''}` : undefined}
+      /* 建立流程各階段都使用整頁工作區，不顯示上方標題列與分隔線。 */
+      分隔線={false}
+      標題可見={false}
       on開啟對話={onOpenChat}
+      on選取對話={onSelectConversation}
       on開啟端點={onClose}
       on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
       on登出={() => { void logout().catch(() => { if (mounted.current) setError(BUILDER_ERROR_MESSAGE) }) }}
@@ -343,7 +348,7 @@ export default function EndpointBuilderPage({ mode, endpointId, onClose, onOpenC
         <div hidden={目前步驟 !== 1}>
           <卡片 標題="描述這支 API 要做什麼" 說明="規劃引擎會依這段描述草擬 system prompt 與輸入輸出結構。">
             <div className="flex flex-col gap-xl">
-              <欄位 標籤="需求" htmlFor="endpoint-requirement">
+              <欄位 標籤={<span className="font-body-md text-body-md font-semibold normal-case tracking-normal">需求</span>} htmlFor="endpoint-requirement">
                 <textarea id="endpoint-requirement" value={requirement} disabled={intentLocked} rows={6}
                   placeholder="例如：分析使用者的資源配置需求，並依門檻決定要路由到哪個子系統。"
                   className={`${輸入樣式} resize-y`}

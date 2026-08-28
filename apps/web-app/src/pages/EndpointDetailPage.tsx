@@ -19,6 +19,7 @@ export interface EndpointDetailPageProps {
   onCreateVersion(endpointId: string): void
   onOpenEndpoints?(): void
   onOpenAdminLogs?(): void
+  onSelectConversation?(sessionId: string): void
 }
 
 type DetailState =
@@ -41,7 +42,7 @@ const DETAIL_TABS: ReadonlyArray<Readonly<{ id: DetailTab; label: string }>> = [
   { id: 'diagnostics', label: '監控' },
 ]
 
-export default function EndpointDetailPage({ endpointId, onClose, onCreateVersion, onOpenEndpoints, onOpenAdminLogs }: EndpointDetailPageProps) {
+export default function EndpointDetailPage({ endpointId, onClose, onCreateVersion, onOpenEndpoints, onOpenAdminLogs, onSelectConversation }: EndpointDetailPageProps) {
   const { logout, registerProtectedStateOwner, user } = useSession()
   const [state, setState] = useState<DetailState>({ kind: 'loading' })
   const [logoutError, setLogoutError] = useState(false)
@@ -205,6 +206,7 @@ export default function EndpointDetailPage({ endpointId, onClose, onCreateVersio
       標題={state.kind === 'ready' ? state.detail.slug : '端點詳情'}
       副標題={state.kind === 'ready' ? '端點詳情' : undefined}
       on開啟對話={onClose}
+      on選取對話={onSelectConversation}
       on開啟端點={onOpenEndpoints}
       on開啟稽核={user?.role === 'admin' ? onOpenAdminLogs : undefined}
       on登出={handleLogout}

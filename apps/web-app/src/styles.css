@@ -372,6 +372,7 @@
    * 「先變白再變糊」的分層感。色票走 var(--color-surface)，深淺模式自動跟著換。
    */
   .對話霧玻璃 {
+    /* 淡入的分布曲線；百分比相對霧層高度（由 ChatPage 那層的 pt 決定） */
     --對話霧遮罩: linear-gradient(
       to bottom,
       rgb(0 0 0 / 0) 0%,
@@ -385,6 +386,7 @@
       rgb(0 0 0 / 0.98) 93%,
       rgb(0 0 0 / 1) 100%
     );
+    /* 88%：底部最濃時的不透明度 */
     background-color: color-mix(in oklab, var(--color-surface) 88%, transparent);
     /*
      * 模糊本身交給 Tailwind 的 backdrop-blur-* 工具類，不寫在這裡：
@@ -475,6 +477,7 @@
 
   .端點詳情面板 {
     min-height: clamp(32rem, calc(100vh - 14rem), 52rem);
+    padding-top: 1rem;
     animation: 端點詳情面板淡入 160ms ease-out;
   }
 
@@ -539,6 +542,36 @@
     line-height: 16px;
     letter-spacing: 0.05em;
   }
+
+  /* 助理回覆採安全 Markdown 渲染；使用者訊息維持純文字。 */
+  .助理訊息Markdown { line-height: 1.65; }
+  .助理訊息Markdown > :first-child { margin-top: 0; }
+  .助理訊息Markdown > :last-child { margin-bottom: 0; }
+  .助理訊息Markdown p { margin: 0.7rem 0; }
+  .助理訊息Markdown h1,
+  .助理訊息Markdown h2,
+  .助理訊息Markdown h3,
+  .助理訊息Markdown h4 { margin: 1rem 0 0.45rem; font-weight: 700; line-height: 1.35; }
+  .助理訊息Markdown h1 { font-size: 1.35em; }
+  .助理訊息Markdown h2 { font-size: 1.2em; }
+  .助理訊息Markdown h3 { font-size: 1.08em; }
+  .助理訊息Markdown ul,
+  .助理訊息Markdown ol { margin: 0.7rem 0; padding-left: 1.35rem; }
+  .助理訊息Markdown ul { list-style: disc; }
+  .助理訊息Markdown ol { list-style: decimal; }
+  .助理訊息Markdown li + li { margin-top: 0.45rem; }
+  .助理訊息Markdown hr { margin: 1rem 0; border: 0; border-top: 1px solid var(--color-outline-variant); }
+  .助理訊息Markdown code { border-radius: 0.3rem; background: var(--color-surface-container); padding: 0.08rem 0.28rem; font-family: var(--font-code-md); font-size: 0.9em; }
+  .助理訊息Markdown pre { margin: 0.8rem 0; overflow-x: auto; border-radius: var(--radius-xl); background: var(--color-surface-container); padding: 0.8rem; }
+  .助理訊息Markdown pre code { background: transparent; padding: 0; }
+  .助理訊息表格捲動 { max-width: 100%; margin: 0.9rem 0; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--color-outline-variant); border-radius: 0.5rem; overscroll-behavior-inline: contain; }
+  .助理訊息表格捲動:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+  .助理訊息Markdown table { width: max-content; min-width: 44rem; margin: 0; border-collapse: collapse; line-height: 1.5; }
+  .助理訊息Markdown th,
+  .助理訊息Markdown td { border-right: 1px solid var(--color-outline-variant); border-bottom: 1px solid var(--color-outline-variant); padding: 0.55rem 0.75rem; text-align: left; vertical-align: middle; white-space: nowrap; }
+  .助理訊息Markdown tr > :last-child { border-right: 0; }
+  .助理訊息Markdown tbody tr:last-child > * { border-bottom: 0; }
+  .助理訊息Markdown th { background: var(--color-surface-container); font-weight: 700; }
 
   /*
    * 選中時底色換成 primary-container 的紫，tertiary 的深橘褐壓上去幾乎讀不到

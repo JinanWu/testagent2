@@ -18,7 +18,6 @@ interface 導覽項目 {
  * 改字會讓那條斷言變成永遠成立而失去保護作用。
  */
 const 導覽清單: readonly 導覽項目[] = [
-  { 代號: '對話', 標籤: '對話', 圖示類別: '導覽項目-對話', 僅管理者: false },
   { 代號: '端點', 標籤: '端點管理', 圖示類別: '導覽項目-端點', 僅管理者: false },
   { 代號: '稽核', 標籤: '完整呼叫紀錄', 圖示類別: '導覽項目-稽核', 僅管理者: true },
 ]
@@ -47,6 +46,8 @@ export interface 應用框架屬性 {
    */
   標題可見?: boolean
   on開啟對話?: () => void
+  on選取對話?: (sessionId: string) => void
+  目前對話Id?: string | null
   on開啟端點?: () => void
   on開啟稽核?: () => void
   on登出: () => void
@@ -66,13 +67,29 @@ export default function 應用框架({
   分隔線 = true,
   標題可見 = true,
   on開啟對話,
+  on選取對話,
+  目前對話Id = null,
   on開啟端點,
   on開啟稽核,
   on登出,
   登出中 = false,
   children,
 }: 應用框架屬性) {
-  const { user } = useSession()
+  const { user, recentSessions } = useSession()
+  /*
+   * 側欄頂部在每一頁都保留同一個操作高度，避免從對話切到管理頁時，
+   * 導覽清單因為少了「新增對話」而整段跳動。對話頁可傳入自己的按鈕
+   * 以保留原本的新對話處理；其他頁則回到對話的空白新串。
+   */
+  const 側欄頂部內容 = 側欄頂部 ?? (on開啟對話 ? (
+    <button
+      type="button"
+      onClick={on開啟對話}
+      className="導覽項目 導覽項目-新增 w-full rounded-xl bg-primary-container px-2 py-2 font-body-md text-body-md font-semibold text-on-primary-container transition-colors hover:bg-primary-container/90"
+    >
+      新增對話
+    </button>
+  ) : undefined)
   const 開啟處理器: Record<分頁代號, (() => void) | undefined> = {
     對話: on開啟對話,
     端點: on開啟端點,
@@ -102,7 +119,7 @@ export default function 應用框架({
           aria-label="主導覽"
           className="flex w-sidebar-width shrink-0 flex-col border-r border-outline-variant bg-surface-container-low py-lg"
         >
-          {側欄頂部 && <div className="px-md pb-lg">{側欄頂部}</div>}
+          {側欄頂部內容 && <div className="px-md pb-lg">{側欄頂部內容}</div>}
 
           <p className="px-lg pb-sm font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
             導覽
@@ -121,7 +138,7 @@ export default function 應用框架({
                   <button
                     type="button"
                     aria-current={是目前 ? 'page' : undefined}
-                    disabled={是目前 || !處理器}
+                    disabled={!處理器}
                     onClick={處理器}
                     className={[
                       '導覽項目',
@@ -139,7 +156,40 @@ export default function 應用框架({
             })}
           </ul>
 
-          {側欄額外}
+          {側欄額外 ?? (
+            <div className="mt-lg flex min-h-0 flex-1 flex-col">
+              <p className="px-lg pb-xs pt-sm font-label-sm text-label-sm uppercase tracking-wider text-on-surface-variant">
+                最近對話
+              </p>
+              {recentSessions.length === 0 ? (
+                <p className="px-lg py-sm font-body-md text-body-md text-on-surface-variant/70">尚無對話紀錄。</p>
+              ) : (
+                <ul aria-label="工作階段" className="flex min-h-0 flex-1 flex-col gap-xs overflow-y-auto px-md">
+                  {recentSessions.map((session) => {
+                    const active = session.id === 目前對話Id
+                    return (
+                      <li key={session.id}>
+                        <button
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          aria-pressed={active}
+                          disabled={!on選取對話}
+                          onClick={() => on選取對話?.(session.id)}
+                          style={active ? { fontWeight: 700 } : undefined}
+                          className={[
+                            'block w-full truncate rounded-xl px-2 py-1.5 text-left font-body-md text-body-md transition-colors disabled:cursor-default',
+                            active ? 'bg-surface-container-highest font-bold text-on-surface' : 'text-on-surface-variant hover:bg-surface-container-highest hover:text-on-surface',
+                          ].join(' ')}
+                        >
+                          {session.title || '未命名對話'}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
 
           {/* 身分區固定在左下角：頭像縮寫 ＋ 帳號 ＋ 角色，登出只留一顆小圖示鈕 */}
           <div className="mt-auto px-md pt-md">
@@ -205,7 +255,7 @@ export default function 應用框架({
                 </p>
               )}
             </div>
-            {工具列 && <div className="flex shrink-0 items-center gap-sm">{工具列}</div>}
+            {工具列 && <div className="ml-auto flex shrink-0 items-center gap-sm">{工具列}</div>}
           </header>
 
           {滿版 ? (

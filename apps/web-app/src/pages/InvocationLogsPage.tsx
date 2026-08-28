@@ -68,9 +68,10 @@ const 狀態燈樣式: Record<string, string> = {
 export interface InvocationLogsPageProps {
   onClose(): void
   onOpenEndpoints?(): void
+  onSelectConversation?(sessionId: string): void
 }
 
-export default function InvocationLogsPage({ onClose, onOpenEndpoints }: InvocationLogsPageProps) {
+export default function InvocationLogsPage({ onClose, onOpenEndpoints, onSelectConversation }: InvocationLogsPageProps) {
   const { user, logout, registerProtectedStateOwner, runAuthorized } = useSession()
   const [endpointId, setEndpointId] = useState('')
   const [fromAt, setFromAt] = useState('')
@@ -261,6 +262,7 @@ export default function InvocationLogsPage({ onClose, onOpenEndpoints }: Invocat
       標題可見={false}
       滿版={true}
       on開啟對話={() => { invalidate(true); onClose() }}
+      on選取對話={onSelectConversation}
       on開啟端點={onOpenEndpoints === undefined ? undefined : () => { invalidate(true); onOpenEndpoints() }}
       on登出={() => {
         invalidate(true)
