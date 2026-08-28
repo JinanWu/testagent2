@@ -21,7 +21,7 @@
     程式碼之外的第二道保險。
 
 環境變數：
-    BQTOOL_PROJECT           專案 ID。唯一必填。
+    BQTOOL_PROJECT           專案 ID；未設定時使用部署預設專案。
     BQTOOL_ALLOWED_DATASETS  可查的 dataset，逗號分隔；預設本專案全部。
     BQTOOL_LOCATION          job location。
     BQTOOL_MAX_BYTES         單次掃描上限，預設 2 GiB。
@@ -94,12 +94,10 @@ def 讀取BigQuery查詢設定() -> BigQuery查詢設定:
     """從環境變數讀取通用 BigQuery 查詢設定。
 
     參數：無。
-    返回值：BigQuery查詢設定；缺少必要環境變數時丟出 ValueError。
+    返回值：BigQuery查詢設定；未提供專案時使用部署預設專案。
     """
     載入本機環境檔()
-    專案 = os.getenv("BQTOOL_PROJECT", "").strip()
-    if not 專案:
-        raise ValueError("bigquery_query 尚未設定：缺少 BQTOOL_PROJECT")
+    專案 = os.getenv("BQTOOL_PROJECT", "").strip() or 預設BigQuery專案
     # 未設 allowlist 時預設為本專案全部 dataset；跨專案仍擋下，要更嚴再逐一列出。
     允許原文 = os.getenv("BQTOOL_ALLOWED_DATASETS", "").strip() or "*"
     檢查資源名稱(專案, "project")
