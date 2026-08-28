@@ -32,7 +32,8 @@ def test_prompt_組裝_保持_hermes_三層順序(tmp_path):
     )
     區塊 = 提示詞組裝器(設定).組裝提示詞區塊("額外系統訊息")
     assert set(區塊) == {"stable", "context", "volatile"}
-    assert 區塊["stable"].index("You are Hermes Agent") < 區塊["stable"].index("# Finishing the job")
+    assert 區塊["stable"].index("You are Cola Agent") < 區塊["stable"].index("# Finishing the job")
+    assert "# User-facing communication" in 區塊["stable"]
     assert 區塊["stable"].index("# Tool-use enforcement") < 區塊["stable"].index("# Google model operational directives")
     assert "<available_skills>" in 區塊["stable"]
     assert "額外系統訊息" in 區塊["context"]
@@ -44,7 +45,7 @@ def test_prompt_完整字串_依序串接三層(tmp_path):
     """確認完整 system prompt 是 stable、context、volatile 依序串接。"""
     設定 = 提示詞設定(工具名稱清單=["read_file"], 工作階段識別碼="s2", Hermes家目錄=str(tmp_path / ".hermes"))
     完整 = 提示詞組裝器(設定).組裝系統提示詞("context-marker")
-    assert 完整.index("You are Hermes Agent") < 完整.index("context-marker") < 完整.index("Conversation started:")
+    assert 完整.index("You are Cola Agent") < 完整.index("context-marker") < 完整.index("Conversation started:")
     assert "You're responding through an API server" in 完整
 
 
@@ -108,7 +109,7 @@ def test_prompt_soul_md_預設使用使用者家目錄並自動建立(tmp_path, 
     soul路徑 = tmp_path / ".hermes" / "SOUL.md"
     assert soul路徑.is_file()
     assert soul路徑.read_text(encoding="utf-8") == 身份文字
-    assert 身份文字.startswith("You are Hermes Agent")
+    assert 身份文字.startswith("You are Cola Agent")
 
 
 def test_prompt_soul_md_支援_testagent2_hermes_home(tmp_path, monkeypatch):

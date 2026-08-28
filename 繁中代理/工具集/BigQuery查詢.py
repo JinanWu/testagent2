@@ -43,6 +43,7 @@ from ..環境設定 import 檢查資源名稱, 載入本機環境檔
 預設可掃描位元組 = 2 * 1024 * 1024 * 1024
 預設回傳列數 = 200
 預設逾時秒數 = 60
+預設BigQuery專案 = "lab-cola-rd"
 可用動作集合 = {"list_datasets", "list_tables", "describe_table", "query"}
 
 

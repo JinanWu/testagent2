@@ -107,12 +107,12 @@ def 設定(monkeypatch):
     return 讀取BigQuery查詢設定()
 
 
-def test_缺少專案時明確報錯(monkeypatch):
+def test_缺少專案時使用部署預設值(monkeypatch):
     monkeypatch.setenv("BQTOOL_PROJECT", "")
     monkeypatch.setenv("BQTOOL_ALLOWED_DATASETS", "")
-    with pytest.raises(ValueError) as 錯誤:
-        讀取BigQuery查詢設定()
-    assert "BQTOOL_PROJECT" in str(錯誤.value)
+    設定物件 = 讀取BigQuery查詢設定()
+    assert 設定物件.專案 == "lab-cola-rd"
+    assert 設定物件.允許資料集 == ("lab-cola-rd.*",)
 
 
 def test_未設allowlist時預設為本專案全部但仍擋跨專案(monkeypatch):
