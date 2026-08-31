@@ -102,11 +102,14 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
 
   useEffect(() => {
     mounted.current = true
-    if (user?.role !== 'admin' && scope !== 'owner') {
-      setScope('owner')
-      return () => {
-        mounted.current = false
-        invalidate(false)
+    if (user?.role !== 'admin') {
+      setScopeMenuOpen(false)
+      if (scope !== 'owner') {
+        setScope('owner')
+        return () => {
+          mounted.current = false
+          invalidate(false)
+        }
       }
     }
     const registration = registerProtectedStateOwner(() => { invalidate(true) })
@@ -149,7 +152,8 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
   }
 
   function changeScope(value: string) {
-    if ((value !== 'owner' && value !== 'all') || value === scope) return
+    if ((value !== 'owner' && value !== 'all') || value === scope ||
+        (value === 'all' && user?.role !== 'admin')) return
     invalidate(true)
     setScope(value)
   }
@@ -183,7 +187,8 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
               {scope === 'owner' ? '我的端點' : '所有端點'}
             </h2>
             <div className="flex items-center gap-md">
-              <div className="relative w-[7.75rem]">
+              {user?.role === 'admin' && (
+                <div className="relative w-[7.75rem]">
                 <button
                   id="endpoint-scope"
                   type="button"
@@ -232,7 +237,8 @@ export default function EndpointListPage({ onClose, onOpenEndpoint, onCreateEndp
                     })}
                   </div>
                 )}
-              </div>
+                </div>
+              )}
               {/* 子節點維持純字串：既有測試以 children.join('') 取得此按鈕。 */}
               <button
                 type="button"
