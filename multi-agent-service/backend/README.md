@@ -146,7 +146,7 @@ env -u PYTHONPATH -u VIRTUAL_ENV -u PYTHONHOME PYTHONNOUSERSITE=1 \
 ## 前後端分離
 
 此 backend repository 只提供 FastAPI API，不再供應 React SPA、`index.html` 或
-`/assets/*`。前端位於 sibling `frontend/` 資料夾，production 以 Nginx 將
+`/assets/*`。前端位於 `../../multi-agent-web/frontend/`，production 以 Nginx 將
 `/api/*` 與 `/v1/*` 代理到本服務。API 路由核對清單見
 `docs/api-route-inventory.md`。
 
@@ -178,10 +178,10 @@ env -u PYTHONPATH -u VIRTUAL_ENV -u PYTHONHOME PYTHONNOUSERSITE=1 \
 Production browser authority固定為Playwright `1.62.1`與其匹配Chromium。必须显式提供可执行的absolute项目Python，runner不会fallback到ambient/system Python；命令会重新build、启动同源canonical ASGI、使用真Web/Published SQLite完成Admin login→list→detail→route/logout cleanup，并在结束后删除server与临时资料：
 
 ```bash
-cd apps/web-app
+cd ../../multi-agent-web/frontend
 npm ci
 npx playwright install chromium
-A18_BROWSER_PYTHON="$(cd ../.. && pwd)/.venv/bin/python" npm run browser:smoke
+A18_BROWSER_PYTHON="$(cd ../../multi-agent-service/backend && pwd)/.venv/bin/python" npm run browser:smoke
 ```
 
 目前repo尚未建立frontend lint authority；`typecheck`、Vitest、production build与browser smoke各自是独立Gate，不得把`typecheck`改称lint。

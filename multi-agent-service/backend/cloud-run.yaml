@@ -34,11 +34,11 @@ spec:
             - name: CORE_BQ_SKIP_DDL
               value: "0"
             - name: TESTAGENT2_DB_PATH
-              value: /data/web.sqlite3
+              value: /tmp/agent-service/web.sqlite3
             - name: TESTAGENT2_PUBLISHED_DB_PATH
-              value: /data/published.sqlite3
+              value: /tmp/agent-service/published.sqlite3
             - name: TESTAGENT2_PUBLISHED_BUNDLE_ROOT
-              value: /data/bundles
+              value: /tmp/agent-service/bundles
             - name: TESTAGENT2_WEB_ORIGINS
               value: '["https://REPLACE_FRONTEND_HOSTNAME"]'
             - name: TESTAGENT2_COOKIE_SECURE

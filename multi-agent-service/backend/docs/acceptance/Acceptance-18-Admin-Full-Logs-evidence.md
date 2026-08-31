@@ -43,7 +43,7 @@ Result: 67 collected; 67 passed; exit 0.
 ### Frontend and production browser
 
 ```bash
-cd apps/web-app
+cd ../../multi-agent-web/frontend
 npm test -- --run
 npm run typecheck
 npm run build

@@ -33,9 +33,6 @@ RUN playwright install --with-deps chromium \
 COPY 繁中代理/ ./繁中代理/
 COPY assets/ ./assets/
 COPY asgi.py ./
-# Test deployment configuration. Do not use this pattern for production
-# secrets; inject those through Cloud Run or Secret Manager instead.
-COPY .env ./
 
 COPY docker-seed/ ./docker-seed/
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint

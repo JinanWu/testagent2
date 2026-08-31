@@ -24,3 +24,14 @@ docker run --rm -p 8080:8080 \
 ```
 
 前端程式不得設定或使用後端公開 URL；API request 一律維持相對路徑。
+
+## Cloud Run
+
+`cloud-run.yaml` 會部署獨立的 frontend service。部署前明確替換：
+
+- `REPLACE_FRONTEND_SERVICE_ACCOUNT`：前端 Cloud Run service account。
+- `REPLACE_BACKEND_HOSTNAME`：後端 Cloud Run HTTPS hostname，不含結尾 `/`。
+- image URI：改成此次建置並推送的 immutable tag 或 digest。
+
+後端的 `TESTAGENT2_WEB_ORIGINS` 必須包含正式前端 origin。`BACKEND_ORIGIN`
+只由 Nginx runtime 讀取，不會進入 Vite bundle。

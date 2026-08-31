@@ -2,7 +2,7 @@
 # image 本身不含任何憑證；憑證與本機設定一律在這裡以掛載方式提供。
 #
 # 啟動：docker compose up --build
-# 開啟：http://localhost:8000
+# 前端：http://localhost:8080；後端直連：http://localhost:8000
 
 services:
   agent:
@@ -22,7 +22,7 @@ services:
       TESTAGENT2_DB_PATH: /data/web.sqlite3
       TESTAGENT2_PUBLISHED_DB_PATH: /data/published.sqlite3
       TESTAGENT2_PUBLISHED_BUNDLE_ROOT: /data/bundles
-      TESTAGENT2_WEB_ORIGINS: '["http://localhost:8000","http://127.0.0.1:8000"]'
+      TESTAGENT2_WEB_ORIGINS: '["http://localhost:8080","http://127.0.0.1:8080","http://localhost:8000","http://127.0.0.1:8000"]'
 
     volumes:
       # GCP ADC：唯讀掛入你本機 gcloud 憑證。容器內 HOME 是 /home/app，
@@ -44,4 +44,17 @@ services:
     # 網頁渲染.py 雖已帶 --disable-dev-shm-usage，仍建議一併放寬。
     shm_size: 1gb
 
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ../../multi-agent-web/frontend
+    image: testagent2-web:local
+    ports:
+      - "8080:8080"
+    environment:
+      BACKEND_ORIGIN: http://agent:8000
+    depends_on:
+      agent:
+        condition: service_healthy
     restart: unless-stopped

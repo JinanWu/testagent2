@@ -10,13 +10,9 @@ __pycache__
 .hermes
 .DS_Store
 **/.DS_Store
-
-node_modules
-**/node_modules
-apps/web-app/dist
-apps/web-app/test-results
-apps/web-app/playwright-report
-*.tsbuildinfo
+.env
+.env.*
+build
 
 var
 

@@ -9,14 +9,9 @@ __pycache__
 .hermes
 .DS_Store
 **/.DS_Store
-
-# 前端：node_modules 由 npm ci 在 image 內重建；dist 由 build stage 重新產生
-node_modules
-**/node_modules
-apps/web-app/dist
-apps/web-app/test-results
-apps/web-app/playwright-report
-*.tsbuildinfo
+.env
+.env.*
+build
 
 # 本機資料庫與技能包：執行時以 volume 掛入，不烤進 image
 var
