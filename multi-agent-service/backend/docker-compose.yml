@@ -1,0 +1,47 @@
+# 本機 Docker Desktop 用的執行設定。
+# image 本身不含任何憑證；憑證與本機設定一律在這裡以掛載方式提供。
+#
+# 啟動：docker compose up --build
+# 開啟：http://localhost:8000
+
+services:
+  agent:
+    build:
+      context: .
+    image: testagent2:local
+    ports:
+      - "8000:8000"
+
+    # API-only 後端設定與 credential keyring secret 沿用既有的 repo 外設定檔。
+    # 這個檔案本身就是嚴格白名單內的變數，不會觸發 解析Canonical環境設定 的拒絕。
+    env_file:
+      - ${HOME}/.config/testagent2/dev.env
+
+    # environment 優先於 env_file：把 dev.env 內的 macOS 絕對路徑蓋成容器內路徑。
+    environment:
+      TESTAGENT2_DB_PATH: /data/web.sqlite3
+      TESTAGENT2_PUBLISHED_DB_PATH: /data/published.sqlite3
+      TESTAGENT2_PUBLISHED_BUNDLE_ROOT: /data/bundles
+      TESTAGENT2_WEB_ORIGINS: '["http://localhost:8000","http://127.0.0.1:8000"]'
+
+    volumes:
+      # GCP ADC：唯讀掛入你本機 gcloud 憑證。容器內 HOME 是 /home/app，
+      # google-genai 與 google-cloud-bigquery 會自己從這個路徑找到憑證。
+      - ${HOME}/.config/gcloud:/home/app/.config/gcloud:ro
+
+      # SQLite 與技能包：直接沿用本機 var/dev（既有使用者與 bundle 立刻可用）。
+      # 注意：本機 .venv 的後端不要與容器同時啟動，兩邊搶同一份 SQLite 鎖。
+      - ./var/dev:/data
+
+      # 工具用的 .env（AIAGENT_MODEL、BQTOOL_*、WEB_RENDER_BACKEND…）。
+      # 唯讀掛入而非 COPY 進 image，避免設定被烤進映像檔。
+      - ./.env:/app/.env:ro
+
+      # 技能使用量與自訂技能是執行期會寫入的狀態，掛出來才不會隨 image 重建歸零。
+      - ./assets:/app/assets
+
+    # Chromium 渲染大頁面時 /dev/shm 預設 64MB 會不夠；
+    # 網頁渲染.py 雖已帶 --disable-dev-shm-usage，仍建議一併放寬。
+    shm_size: 1gb
+
+    restart: unless-stopped
