@@ -12,7 +12,7 @@ async function login(page: Page, username: string) {
   await page.getByLabel('帳號').fill(username)
   await page.getByLabel('密碼').fill(PASSWORD)
   await page.getByRole('button', { name: '登入', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
 }
 
 async function assertRawAbsent(page: Page, consoleMessages: string[], responseBodies: string[]) {
@@ -69,7 +69,7 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
   })
   const deepLink = await anonymousPage.goto(`/endpoints/${ENDPOINT_A}`)
   expect(deepLink?.status()).toBe(200)
-  await expect(anonymousPage.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(anonymousPage.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   expect(anonymousOwnerRequests).toEqual([])
   await closeCleanly(anonymous)
 
@@ -83,8 +83,8 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
   await pageA.goto('/')
   await login(pageA, 'browser-owner-a')
   await pageA.goto(`/endpoints/${ENDPOINT_A}`)
-  await expect(pageA.getByRole('heading', { name: '端點詳情' })).toBeVisible()
-  await pageA.getByRole('tab', { name: 'Diagnostics' }).click()
+  await expect(pageA.getByRole('heading', { name: '端點詳情', level: 1 })).toBeVisible()
+  await pageA.getByRole('tab', { name: '監控' }).click()
   await expect(pageA.getByLabel('端點指標')).toContainText('US$ 0.001')
   await expect(pageA.getByLabel('端點指標')).toContainText('safe_a')
   await expect(pageA.getByLabel('端點指標')).toContainText('終態數')
@@ -115,14 +115,14 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
   expect(endpointResponses(observedA.responses, ENDPOINT_MISSING)).toEqual([])
   await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
   await pageA.goto('/')
-  await expect(pageA.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(pageA.getByText('開始新的對話', { exact: true })).toBeVisible()
   await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
 
   await pageA.goto(`/endpoints/${ENDPOINT_A}`)
-  await pageA.getByRole('tab', { name: 'Diagnostics' }).click()
+  await pageA.getByRole('tab', { name: '監控' }).click()
   await expect(pageA.getByLabel('安全診斷紀錄')).toContainText('invocation-browser-a19-a')
   await pageA.getByRole('button', { name: '登出' }).click()
-  await expect(pageA.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(pageA.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   await assertRawAbsent(pageA, consoleA, await Promise.all(observedA.bodies))
   expect(errorsA).toEqual([])
   await closeCleanly(ownerA)
@@ -137,7 +137,7 @@ test('production SPA與canonical ASGI完成A19 two-owner zero-raw browser closur
   await pageB.goto('/')
   await login(pageB, 'browser-owner-b')
   await pageB.goto(`/endpoints/${ENDPOINT_B}`)
-  await pageB.getByRole('tab', { name: 'Diagnostics' }).click()
+  await pageB.getByRole('tab', { name: '監控' }).click()
   await expect(pageB.getByLabel('端點指標')).toContainText('safe_b')
   await expect(pageB.getByLabel('安全診斷紀錄')).toContainText('invocation-browser-a19-b')
   expect(endpointResponses(observedB.responses, ENDPOINT_B)).toEqual([

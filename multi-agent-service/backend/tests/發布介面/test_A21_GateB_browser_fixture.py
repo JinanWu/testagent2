@@ -5,9 +5,10 @@ import re
 
 
 def test_A21_browser_fixture只由canonical_invoke建立dynamic_rows():
-    根 = Path(__file__).resolve().parents[2]
-    server = (根 / "apps/web-app/browser/啟動A21Browser伺服器.py").read_text(encoding="utf-8")
-    spec = (根 / "apps/web-app/browser/tests/a21-admin-sensitive-hits.spec.ts").read_text(
+    後端根 = Path(__file__).resolve().parents[2]
+    前端根 = 後端根.parents[1] / "multi-agent-web" / "frontend"
+    server = (前端根 / "browser/啟動A21Browser伺服器.py").read_text(encoding="utf-8")
+    spec = (前端根 / "browser/tests/a21-admin-sensitive-hits.spec.ts").read_text(
         encoding="utf-8"
     )
     for table in (
@@ -24,8 +25,9 @@ def test_A21_browser_fixture只由canonical_invoke建立dynamic_rows():
 
 
 def test_A21_restart階段不重新invoke或遮蔽():
-    根 = Path(__file__).resolve().parents[2]
-    spec = (根 / "apps/web-app/browser/tests/a21-admin-sensitive-hits.spec.ts").read_text(
+    後端根 = Path(__file__).resolve().parents[2]
+    前端根 = 後端根.parents[1] / "multi-agent-web" / "frontend"
+    spec = (前端根 / "browser/tests/a21-admin-sensitive-hits.spec.ts").read_text(
         encoding="utf-8"
     )
     restart, primary = spec.split("if (PHASE === 'restart')", 1)[1].split("\n  }\n", 1)

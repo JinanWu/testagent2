@@ -28,6 +28,8 @@ function isolated(overrides = {}) {
   return environment
 }
 
+const backendRoot = resolve('../../multi-agent-service/backend')
+
 async function removable(path) {
   const entries = await readdir(path, { withFileTypes: true }).catch((error) => {
     if (error?.code === 'ENOENT') return []
@@ -70,7 +72,8 @@ const fixedSourceFiles = [
   'playwright.a22.config.ts', 'browser/run-a22-smoke.mjs', 'browser/啟動A22Browser伺服器.py',
   'browser/檢查A22Browser資料庫.py', 'browser/tests/a22-owner-admin.spec.ts',
   'browser/tests/a19-owner-observability.spec.ts', 'browser/tests/a21-admin-sensitive-hits.spec.ts',
-  '../../tests/發布介面/test_前端管理整合.py', '../../tests/e2e/test_owner_admin_frontend.py',
+  join(backendRoot, 'tests/發布介面/test_前端管理整合.py'),
+  join(backendRoot, 'tests/e2e/test_owner_admin_frontend.py'),
 ]
 
 async function sourceSnapshot() {
@@ -84,11 +87,11 @@ const skipPlanner = process.env.A22_SKIP_PLANNER === '1'
 if (!python || !python.startsWith('/')) throw new Error('A22_BROWSER_PYTHON absolute path is required')
 await access(python, constants.X_OK)
 const preflight = spawnSync(python, ['-c', 'import fastapi,uvicorn,pydantic_core,google.auth,google.auth.transport.requests'], {
-  cwd: resolve('../..'), encoding: 'utf8', env: isolated(),
+  cwd: backendRoot, encoding: 'utf8', env: isolated(),
 })
 if (preflight.status !== 0) throw new Error('A22 browser Python dependency preflight failed')
 const lock = createHash('sha256').update(await readFile(resolve('package-lock.json'))).digest('hex')
-if (lock !== '8cf5d24102c277a2caf9ce27206bad60e8f2738b52bb42321b9086ca50f7b0e3') {
+if (lock !== '0ea2528135fc4b610ce951c5c9d9ecf5cc9b889c11dfd43e5c24b86c2d2d07e9') {
   throw new Error('A22 package lock authority changed')
 }
 

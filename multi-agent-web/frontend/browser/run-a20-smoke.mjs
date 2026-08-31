@@ -26,12 +26,15 @@ function isolatedEnvironment(overrides = {}) {
   return environment
 }
 
+const backendRoot = resolve('../../multi-agent-service/backend')
+
 const candidateFiles = [
   'package.json', 'tsconfig.browser.json', 'playwright.a20.config.ts',
   'browser/run-a20-smoke.mjs', 'browser/啟動A20Browser伺服器.py',
   'browser/檢查A20Browser資料庫.py', 'browser/tests/a20-redaction-tombstone.spec.ts',
   'src/api/logs.ts', 'src/tests/invocation-logs.test.tsx',
-  '../../繁中代理/發布介面/治理/管理查詢契約.py', '../../tests/發布介面/test_管理查詢.py',
+  join(backendRoot, '繁中代理/發布介面/治理/管理查詢契約.py'),
+  join(backendRoot, 'tests/發布介面/test_管理查詢.py'),
 ]
 
 async function candidateFingerprint() {
@@ -60,7 +63,7 @@ const python = process.env.A20_BROWSER_PYTHON
 if (!python || !python.startsWith('/')) throw new Error('A20_BROWSER_PYTHON absolute path is required')
 await access(python, constants.X_OK)
 const preflight = spawnSync(python, ['-c', 'import fastapi,uvicorn,pydantic_core,繁中代理'], {
-  cwd: resolve('../..'), encoding: 'utf8', env: isolatedEnvironment({ AIAGENT_MODEL_MODE: 'fake' }),
+  cwd: backendRoot, encoding: 'utf8', env: isolatedEnvironment({ AIAGENT_MODEL_MODE: 'fake' }),
 })
 if (preflight.status !== 0) throw new Error('A20 browser Python dependency preflight failed')
 

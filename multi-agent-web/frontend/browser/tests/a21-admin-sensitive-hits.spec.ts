@@ -26,7 +26,7 @@ async function login(page: Page, username: string, password = PASSWORD) {
   await page.getByLabel('帳號').fill(username)
   await page.getByLabel('密碼').fill(password)
   await page.getByRole('button', { name: '登入', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
 }
 
 function databaseCommand(code: string, ...arguments_: string[]): string {
@@ -34,7 +34,7 @@ function databaseCommand(code: string, ...arguments_: string[]): string {
   const root = requiredEnvironment('A21_BROWSER_ROOT')
   const environment: NodeJS.ProcessEnv = { ...process.env, PYTHONNOUSERSITE: '1' }
   for (const name of ['PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV', 'PYTHONUSERBASE']) delete environment[name]
-  const authority = `import sys;sys.path.insert(0,${JSON.stringify(resolve('../..'))});`
+  const authority = `import sys;sys.path.insert(0,${JSON.stringify(resolve('../../multi-agent-service/backend'))});`
   return execFileSync(python, ['-c', authority + code, join(root, 'published.sqlite3'), ...arguments_], {
     encoding: 'utf8', env: environment,
   }).trim()
@@ -208,7 +208,7 @@ test('A21 production SPA canonical Admin sensitive-hit browser closure', async (
   const deepLink = await anonymousPage.goto('/admin/invocations')
   expect(deepLink?.status()).toBe(200)
   expect(deepLink?.headers()['cache-control']).toBe('no-store')
-  await expect(anonymousPage.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(anonymousPage.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   expect((await anonymous.request.get(detailRoute)).status()).toBe(401)
   await anonymous.close()
 

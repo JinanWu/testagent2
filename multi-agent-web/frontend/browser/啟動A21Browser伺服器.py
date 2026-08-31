@@ -11,15 +11,15 @@ from pathlib import Path
 
 import uvicorn
 
-_專案根 = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_專案根))
-sys.path.insert(0, str(_專案根 / "tests" / "發布介面"))
+_後端根 = Path(__file__).resolve().parents[3] / "multi-agent-service" / "backend"
+sys.path.insert(0, str(_後端根))
+sys.path.insert(0, str(_後端根 / "tests" / "發布介面"))
 
-import asgi as root_asgi
 from a08_3_formal_publish import 建立正式v1
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.模型供應商 import GeminiADC供應商
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
+from 繁中代理.發布介面.asgi import 建立CP4SPAASGI應用程式, 解析Production環境設定
 from 繁中代理.發布介面.執行期.模型契約 import 模型回應快照
 
 _管理員帳號 = "browser-admin-a21"
@@ -157,10 +157,9 @@ def main() -> int:
         "A21_BROWSER_OWNER_CURSOR_KEY",
     ):
         os.environ.pop(名稱, None)
-    uvicorn.run(
-        root_asgi.建立應用程式(), host="127.0.0.1", port=int(Port),
-        log_level="warning", access_log=False,
-    )
+    Web設定, Published設定, SPA設定 = 解析Production環境設定(os.environ)
+    應用程式 = 建立CP4SPAASGI應用程式(Web設定, Published設定, SPA設定)
+    uvicorn.run(應用程式, host="127.0.0.1", port=int(Port), log_level="warning", access_log=False)
     return 0
 
 

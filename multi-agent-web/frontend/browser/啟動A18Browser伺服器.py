@@ -10,8 +10,8 @@ from pathlib import Path
 
 import uvicorn
 
-_專案根 = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_專案根))
+_後端根 = Path(__file__).resolve().parents[3] / "multi-agent-service" / "backend"
+sys.path.insert(0, str(_後端根))
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.發布介面.asgi import 建立CP4SPAASGI應用程式

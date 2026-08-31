@@ -24,7 +24,7 @@ async function login(page: Page, username: string) {
   await page.getByLabel('帳號').fill(username)
   await page.getByLabel('密碼').fill(PASSWORD)
   await page.getByRole('button', { name: '登入', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
 }
 
 async function assertRawAbsent(page: Page, consoleMessages: string[]) {
@@ -71,7 +71,7 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
   expect(deepLinkResponse?.status()).toBe(200)
   expect(deepLinkResponse?.headers()['cache-control']).toBe('no-store')
   expect(deepLinkResponse?.headers()['content-security-policy']).toContain("default-src 'self'")
-  await expect(anonymousPage.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(anonymousPage.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   expect(anonymousAdminRequests).toEqual([])
   await anonymous.close()
 
@@ -85,10 +85,10 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
   await login(memberPage, MEMBER_USERNAME)
   await expect(memberPage.getByRole('button', { name: '完整呼叫紀錄' })).toHaveCount(0)
   await memberPage.goto('/admin/invocations')
-  await expect(memberPage.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(memberPage.getByText('開始新的對話', { exact: true })).toBeVisible()
   expect(memberAdminRequests).toEqual([])
   await memberPage.getByRole('button', { name: '登出' }).click()
-  await expect(memberPage.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(memberPage.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   await member.close()
 
   const admin = await browser.newContext()
@@ -115,7 +115,7 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
   await expect(page.getByText(RAW_MARKERS[2])).toBeVisible()
   await expect(page.getByLabel('Metadata')).toContainText('已遮蔽')
   await expect(page.getByLabel('執行事件')).toContainText('已遮蔽')
-  await expect(page.getByRole('heading', { name: '遮蔽紀錄' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '遮蔽紀錄', level: 2 })).toBeVisible()
   await expect(page.getByLabel('遮蔽紀錄')).toContainText('/trace')
   await expect(page.getByLabel('遮蔽紀錄')).toContainText('/state')
   const detailText = await page.locator('body').innerText()
@@ -130,8 +130,8 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
     `GET /api/admin/endpoints/${ENDPOINT_ID}/invocations/${INVOCATION_ID}`,
   ])
 
-  await page.getByRole('button', { name: '返回對話' }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await page.getByRole('button', { name: '新增對話' }).click()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
   await assertRawAbsent(page, consoleMessages)
 
   await page.getByRole('button', { name: '完整呼叫紀錄' }).click()
@@ -140,7 +140,7 @@ test('production SPA與canonical ASGI完成Admin logs同源browser closure', asy
   await page.getByRole('button', { name: new RegExp(INVOCATION_ID) }).click()
   await expect(page.getByRole('heading', { name: '呼叫詳情' })).toBeVisible()
   await page.getByRole('button', { name: '登出' }).click()
-  await expect(page.getByRole('heading', { name: '登入智慧工作空間' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'ColaX' })).toBeVisible()
   await assertRawAbsent(page, consoleMessages)
   expect(committedDetailAuditCount()).toBe(2)
   expect(pageErrors).toEqual([])

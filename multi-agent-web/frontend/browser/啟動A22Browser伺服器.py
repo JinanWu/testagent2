@@ -8,12 +8,12 @@ import time
 from pathlib import Path
 import uvicorn
 
-_PROJECT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(_PROJECT))
-sys.path.insert(0, str(_PROJECT / "tests" / "發布介面"))
-import asgi as root_asgi
+_BACKEND_ROOT = Path(__file__).resolve().parents[3] / "multi-agent-service" / "backend"
+sys.path.insert(0, str(_BACKEND_ROOT))
+sys.path.insert(0, str(_BACKEND_ROOT / "tests" / "發布介面"))
 from a08_3_formal_publish import 建立正式v1
 from 繁中代理.使用者 import 使用者庫
+from 繁中代理.發布介面.asgi import 建立CP4SPAASGI應用程式, 解析Production環境設定
 from 繁中代理.發布介面.資料庫 import 初始化發布介面資料庫
 
 
@@ -128,7 +128,9 @@ def main() -> int:
     password = marker = ""
     for name in ("A22_BROWSER_PASSWORD", "A22_BROWSER_RAW_MARKER", "A22_BROWSER_CREDENTIAL_KEY", "A22_BROWSER_OWNER_CURSOR_KEY"):
         os.environ.pop(name, None)
-    uvicorn.run(root_asgi.建立應用程式(), host="127.0.0.1", port=int(port), log_level="warning", access_log=False)
+    Web設定, Published設定, SPA設定 = 解析Production環境設定(os.environ)
+    應用程式 = 建立CP4SPAASGI應用程式(Web設定, Published設定, SPA設定)
+    uvicorn.run(應用程式, host="127.0.0.1", port=int(port), log_level="warning", access_log=False)
     return 0
 
 

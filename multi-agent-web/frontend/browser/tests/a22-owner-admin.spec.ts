@@ -11,7 +11,7 @@ async function login(page: Page, username: string) {
   await page.getByLabel('帳號').fill(username)
   await page.getByLabel('密碼').fill(PASSWORD)
   await page.getByRole('button', { name: '登入', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
 }
 
 function observe(page: Page) {
@@ -46,7 +46,7 @@ async function openOwnerEndpoint(page: Page): Promise<string> {
   await page.getByRole('button', { name: '端點管理' }).click()
   await expect(page.getByRole('heading', { name: '端點管理' })).toBeVisible()
   await page.getByRole('button', { name: 'stable', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '端點詳情' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '端點詳情', level: 1 })).toBeVisible()
   const match = locationFromPage(page).match(/\/endpoints\/([A-Za-z0-9_-]{1,128})$/)
   if (!match) throw new Error('owner endpoint identity unavailable')
   return match[1]
@@ -65,7 +65,7 @@ async function openAdminDetail(page: Page, endpointId: string) {
 async function redactInput(page: Page) {
   await page.getByLabel('目標類型').selectOption('invocation_input')
   await page.getByLabel('目標資料列識別碼').fill(INVOCATION)
-  await page.getByLabel('JSON Pointer（空白代表整份文件）').fill('/secret')
+  await page.getByLabel('JSON Pointer').fill('/secret')
   await page.getByLabel('遮蔽原因').fill('privacy request')
   await page.getByRole('button', { name: '準備不可逆遮蔽' }).click()
   const response = page.waitForResponse(item => item.request().method() === 'POST' && item.url().includes('/redactions'))
@@ -102,11 +102,12 @@ test('A22 canonical Owner/Admin browser and restart closure', async ({ browser }
   const endpointA = await openOwnerEndpoint(ownerA)
 
   if (PHASE === 'primary') {
-    await ownerA.getByRole('tab', { name: 'Credentials' }).click()
+    await ownerA.getByRole('tab', { name: '憑證' }).click()
+    await ownerA.getByRole('button', { name: '建立新憑證' }).click()
     await ownerA.getByLabel('名稱').fill('browser-created')
-    await ownerA.getByLabel('用途').fill('canonical browser')
+    await ownerA.getByLabel('用途描述').fill('canonical browser')
     await ownerA.getByLabel('到期時間戳').fill(String(Math.floor(Date.now() / 1000) + 86400))
-    await ownerA.getByLabel('IP allowlist（逗號分隔）').fill('127.0.0.1')
+    await ownerA.getByLabel('IP 白名單').fill('127.0.0.1')
     await ownerA.getByLabel('Rate limit requests').fill('25')
     const created = ownerA.waitForResponse(item => item.request().method() === 'POST' && item.url().endsWith(`/api/published-endpoints/${endpointA}/credentials`))
     await ownerA.getByRole('button', { name: '建立 credential' }).click()
@@ -117,7 +118,7 @@ test('A22 canonical Owner/Admin browser and restart closure', async ({ browser }
     await expect(ownerA.getByLabel('一次性 API key')).toHaveCount(0)
     await assertAbsent(ownerA, ownerObserved, [key, RAW_MARKER])
   } else {
-    await ownerA.getByRole('tab', { name: 'Credentials' }).click()
+    await ownerA.getByRole('tab', { name: '憑證' }).click()
     await expect(ownerA.getByLabel('Credential safe summaries')).toContainText('browser-created')
     await expect(ownerA.getByLabel('Credential safe summaries')).toContainText('canonical browser')
     await expect(ownerA.getByLabel('一次性 API key')).toHaveCount(0)
@@ -125,17 +126,17 @@ test('A22 canonical Owner/Admin browser and restart closure', async ({ browser }
 
   const docsResponse = ownerA.waitForResponse(item =>
     item.request().method() === 'GET' && new URL(item.url()).pathname === `/api/published-endpoints/${endpointA}/docs`)
-  await ownerA.getByRole('tab', { name: 'Docs' }).click()
+  await ownerA.getByRole('tab', { name: '文件' }).click()
   const docsNetworkResponse = await docsResponse
   expect(docsNetworkResponse.status()).toBe(200)
   const docsPayload = await docsNetworkResponse.json()
   expect(() => parseEndpointDocs(docsPayload)).not.toThrow()
   await expect(ownerA.getByRole('heading', { name: 'Docs' })).toBeVisible()
   await expect(ownerA.getByLabel('端點文件摘要')).toContainText('stable')
-  await ownerA.getByRole('tab', { name: 'Diagnostics' }).click(); await expect(ownerA.getByLabel('安全診斷紀錄')).toContainText(INVOCATION)
+  await ownerA.getByRole('tab', { name: '監控' }).click(); await expect(ownerA.getByLabel('安全診斷紀錄')).toContainText(INVOCATION)
   const adminRequests: string[] = []
   ownerA.on('request', request => { if (request.url().includes('/api/admin/')) adminRequests.push(request.url()) })
-  await ownerA.goto('/admin/invocations'); await expect(ownerA.getByRole('heading', { name: '開始對話' })).toBeVisible(); expect(adminRequests).toEqual([])
+  await ownerA.goto('/admin/invocations'); await expect(ownerA.getByText('開始新的對話', { exact: true })).toBeVisible(); expect(adminRequests).toEqual([])
 
   const ownerBContext = await browser.newContext(); const ownerB = await ownerBContext.newPage(); observe(ownerB)
   await ownerB.goto('/'); await login(ownerB, 'browser-owner-b'); await ownerB.goto(`/endpoints/${endpointA}`)
@@ -146,10 +147,11 @@ test('A22 canonical Owner/Admin browser and restart closure', async ({ browser }
   await admin.goto('/'); await login(admin, 'browser-admin-a22')
   await admin.getByRole('button', { name: '端點管理' }).click()
   await expect(admin.getByText('目前沒有端點。')).toBeVisible()
-  await admin.getByLabel('清單範圍').selectOption('all')
+  await admin.getByRole('button', { name: '我的端點' }).click()
+  await admin.getByRole('menuitemradio', { name: '所有端點' }).click()
   await expect(admin.getByRole('button', { name: 'stable', exact: true })).toBeVisible()
   await expect(admin.getByRole('button', { name: 'browser-a22-b', exact: true })).toBeVisible()
-  await admin.getByRole('button', { name: '返回對話' }).click()
+  await admin.getByRole('button', { name: '新增對話' }).click()
   await openAdminDetail(admin, endpointA)
   if (PHASE === 'primary') {
     const rawText = await admin.getByLabel('輸入').locator('pre').innerText()

@@ -18,7 +18,7 @@ async function login(page: Page): Promise<void> {
   await page.getByLabel('帳號').fill('browser-admin-a20')
   await page.getByLabel('密碼').fill(PASSWORD)
   await page.getByRole('button', { name: '登入', exact: true }).click()
-  await expect(page.getByRole('heading', { name: '開始對話' })).toBeVisible()
+  await expect(page.getByText('開始新的對話', { exact: true })).toBeVisible()
 }
 
 async function openDetail(page: Page): Promise<void> {
@@ -32,7 +32,7 @@ async function openDetail(page: Page): Promise<void> {
 async function redact(page: Page, target: string, row: string): Promise<void> {
   await page.getByLabel('目標類型').selectOption(target)
   await page.getByLabel('目標資料列識別碼').fill(row)
-  await page.getByLabel('JSON Pointer（空白代表整份文件）').fill('/payload/value')
+  await page.getByLabel('JSON Pointer').fill('/payload/value')
   await page.getByLabel('遮蔽原因').fill('privacy request')
   await page.getByRole('button', { name: '準備不可逆遮蔽' }).click()
   const dialog = page.getByRole('dialog', { name: '確認永久遮蔽' })
