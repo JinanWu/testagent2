@@ -1,0 +1,11 @@
+# Cloud SDK upload context
+.gcloudignore
+.git
+.gitignore
+node_modules
+dist
+test-results
+playwright-report
+*.tsbuildinfo
+.env
+.env.*

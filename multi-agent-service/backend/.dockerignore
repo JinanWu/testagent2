@@ -1,0 +1,28 @@
+# 版控與本機虛擬環境
+.git
+.gitignore
+.venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.hermes
+.DS_Store
+**/.DS_Store
+.env
+.env.*
+build
+
+# 本機資料庫與技能包：執行時以 volume 掛入，不烤進 image
+var
+
+# 打包不需要的內容
+tests
+docs
+scripts
+testagent2.egg-info
+
+# 執行期產生的技能使用量狀態（本機由 compose 掛載覆蓋）
+assets/skill_usage.json
+assets/skill_usage.json.lock
+assets/skill_usage_events.jsonl

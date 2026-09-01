@@ -1,0 +1,80 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: testagent2
+  annotations:
+    run.googleapis.com/ingress: all
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/maxScale: "1"
+        run.googleapis.com/execution-environment: gen2
+        run.googleapis.com/cpu-throttling: "false"
+    spec:
+      serviceAccountName: REPLACE_CLOUD_RUN_SERVICE_ACCOUNT
+      containerConcurrency: 1
+      timeoutSeconds: 300
+      containers:
+        - image: asia-east1-docker.pkg.dev/lab-cola-rd/testagent2/testagent2:latest
+          ports:
+            - name: http1
+              containerPort: 8000
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          env:
+            - name: STORAGE_BACKEND
+              value: sqlite
+            - name: CORE_BQ_PROJECT
+              value: lab-cola-rd
+            - name: CORE_BQ_DATASET
+              value: agent_core
+            - name: CORE_BQ_SKIP_DDL
+              value: "0"
+            - name: TESTAGENT2_DB_PATH
+              value: /tmp/agent-service/web.sqlite3
+            - name: TESTAGENT2_PUBLISHED_DB_PATH
+              value: /tmp/agent-service/published.sqlite3
+            - name: TESTAGENT2_PUBLISHED_BUNDLE_ROOT
+              value: /tmp/agent-service/bundles
+            - name: TESTAGENT2_WEB_ORIGINS
+              value: '["https://REPLACE_FRONTEND_HOSTNAME"]'
+            - name: TESTAGENT2_COOKIE_SECURE
+              value: "true"
+            - name: TESTAGENT2_SESSION_TTL_SECONDS
+              value: "86400"
+            - name: TESTAGENT2_MODEL_PROVIDER
+              value: gemini-adc
+            - name: TESTAGENT2_MODEL_NAME
+              value: gemini-3.7-flash
+            - name: AIAGENT_GCP_PROJECT
+              value: lab-cola-rd
+            - name: AIAGENT_GCP_LOCATION
+              value: global
+            - name: ADMIN_BQ_PROJECT
+              value: lab-cola-rd
+            - name: ADMIN_BQ_DATASET
+              value: administrative
+            - name: ADMIN_BQ_LOCATION
+              value: asia-east1
+            - name: WEB_RENDER_BACKEND
+              value: playwright
+            - name: WEB_RENDER_TIMEOUT
+              value: "60"
+            - name: TESTAGENT2_PUBLISHED_CREDENTIAL_ACTIVE_KEY_VERSION
+              valueFrom:
+                secretKeyRef:
+                  name: testagent2-published-credential-active-key-version
+                  key: latest
+            - name: TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON
+              valueFrom:
+                secretKeyRef:
+                  name: testagent2-published-credential-keys-json
+                  key: latest
+            - name: TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: testagent2-owner-observability-cursor-key
+                  key: latest
