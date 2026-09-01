@@ -7,6 +7,7 @@ from weakref import WeakKeyDictionary
 
 from fastapi import FastAPI
 
+from ..儲存契約 import 確認PostgreSQL全域就緒
 from .相依項 import 發布介面相依項
 from .應用程式 import 建立網頁應用程式
 from .設定 import 生產設定
@@ -88,6 +89,9 @@ def 建立生產相依項(
     """
     if type(設定) is not 生產設定:
         raise ValueError("生產組裝無效")
+    if 設定.交易儲存.後端 == "postgres":
+        確認PostgreSQL全域就緒()
+        raise RuntimeError("PostgreSQL 儲存後端尚未接線")
     網頁設定 = 設定.建立網頁安全設定()
     工作階段服務 = 網頁工作階段服務(
         設定.資料庫路徑,

@@ -23,7 +23,8 @@ from fastapi import FastAPI
 
 from ..模型供應商 import GeminiADC供應商
 from ..使用者 import 使用者庫
-from ..環境設定 import 載入本機環境檔
+from ..儲存契約 import 確認PostgreSQL全域就緒
+from ..環境設定 import 載入本機環境檔, 讀取交易儲存設定
 from .嚴格JSON import 解析嚴格JSON
 from .憑證.加密 import AESGCM憑證封套
 from .生產Web代理 import 生產Web代理建構器
@@ -56,12 +57,21 @@ Published資料庫環境名稱 = "TESTAGENT2_PUBLISHED_DB_PATH"
 憑證Keyring環境名稱 = "TESTAGENT2_PUBLISHED_CREDENTIAL_KEYS_JSON"
 ProductionSPADist環境名稱 = "TESTAGENT2_WEB_DIST_ROOT"
 Owner觀測游標金鑰環境名稱 = "TESTAGENT2_OWNER_OBSERVABILITY_CURSOR_KEY"
+儲存後端環境名稱 = "STORAGE_BACKEND"
+PostgreSQL資料庫URL環境名稱 = "DATABASE_URL"
+CloudSQL連線名稱環境名稱 = "CLOUD_SQL_INSTANCE_CONNECTION_NAME"
+PostgreSQLPool最小環境名稱 = "POSTGRES_POOL_MIN_SIZE"
+PostgreSQLPool最大環境名稱 = "POSTGRES_POOL_MAX_SIZE"
+PostgreSQLPool等待環境名稱 = "POSTGRES_POOL_TIMEOUT_SECONDS"
 _錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
+_受管設定環境前綴 = ("TESTAGENT2_", "AIAGENT_", "POSTGRES_")
 _核准設定環境名稱 = frozenset((
     資料庫環境名稱, 來源環境名稱, 供應器環境名稱, 安全Cookie環境名稱,
     工作階段TTL環境名稱, 模型名稱環境名稱, Gemini專案環境名稱,
     Gemini位置環境名稱, Published資料庫環境名稱, 技能套件根環境名稱,
     憑證Active版本環境名稱, 憑證Keyring環境名稱, Owner觀測游標金鑰環境名稱,
+    儲存後端環境名稱, PostgreSQL資料庫URL環境名稱, CloudSQL連線名稱環境名稱,
+    PostgreSQLPool最小環境名稱, PostgreSQLPool最大環境名稱, PostgreSQLPool等待環境名稱,
     # API-only deployment no longer reads this legacy SPA setting.  It remains
     # accepted temporarily so an old environment file cannot prevent startup.
     ProductionSPADist環境名稱,
@@ -151,6 +161,7 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
     if not isinstance(環境, Mapping):
         raise ValueError("ASGI設定無效")
     try:
+        交易儲存 = 讀取交易儲存設定(環境)
         資料庫文字 = 環境.get(資料庫環境名稱)
         來源文字 = 環境.get(來源環境名稱)
         供應器 = 環境.get(供應器環境名稱)
@@ -187,6 +198,7 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
             Gemini位置,
             Cookie安全=安全文字 == "true",
             工作階段有效秒數=int(TTL文字),
+            交易儲存=交易儲存,
         )
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
@@ -209,10 +221,12 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
                 raise ValueError
             if 名稱 in _錯誤路徑別名:
                 raise ValueError
-            if (
-                名稱.startswith("TESTAGENT2_") or 名稱.startswith("AIAGENT_")
-            ) and 名稱 not in _核准設定環境名稱:
+            if 名稱.startswith(_受管設定環境前綴) and 名稱 not in _核准設定環境名稱:
                 raise ValueError
+        交易儲存 = 讀取交易儲存設定(環境)
+        if 交易儲存.後端 == "postgres":
+            確認PostgreSQL全域就緒()
+            raise RuntimeError("PostgreSQL 儲存後端尚未接線")
         Web文字 = 環境.get(Web資料庫環境名稱)
         Published文字 = 環境.get(Published資料庫環境名稱)
         根文字 = 環境.get(技能套件根環境名稱)
@@ -317,6 +331,8 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         )
         return Web設定, Published設定
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except RuntimeError:
         raise
     except BaseException:
         raise ValueError("Canonical環境設定無效") from None
