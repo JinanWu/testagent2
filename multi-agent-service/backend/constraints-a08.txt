@@ -4,3 +4,8 @@ httpx==0.28.1
 uvicorn==0.34.0
 pytest==8.3.4
 pytest-asyncio==0.24.0
+psycopg==3.3.4
+psycopg-binary==3.3.4
+psycopg-pool==3.3.1
+alembic==1.19.1
+SQLAlchemy==2.0.52
