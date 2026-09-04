@@ -26,9 +26,10 @@ class 延遲Owner觀測服務:
         self._進行中 = 0
         self._停止中 = False
 
-    def 安裝(self, 服務: SQLite端點觀測查詢服務) -> int:
+    def 安裝(self, 服務: object) -> int:
         """安裝exact startup provider並回傳新generation。"""
-        if type(服務) is not SQLite端點觀測查詢服務:
+        from .治理.PostgreSQL端點觀測查詢服務 import PostgreSQL端點觀測查詢服務
+        if type(服務) not in (SQLite端點觀測查詢服務, PostgreSQL端點觀測查詢服務):
             raise ValueError("Published Owner觀測服務無效") from None
         with self._條件:
             if self._服務 is not None or self._進行中:
@@ -104,7 +105,10 @@ async def 安裝Owner觀測資源(主資源, 代理: 延遲Owner觀測服務, �
     try:
         服務 = SQLite端點觀測查詢服務(str(資料庫路徑), 游標簽章金鑰=游標金鑰)
         世代 = 代理.安裝(服務)
-        原始同步清理 = getattr(主資源, "_執行關閉同步", None)
+        try:
+            原始同步清理 = object.__getattribute__(主資源, "_執行關閉同步")
+        except AttributeError:
+            原始同步清理 = None
         if not callable(原始同步清理):
             raise ValueError("Published Owner觀測資源無效") from None
 

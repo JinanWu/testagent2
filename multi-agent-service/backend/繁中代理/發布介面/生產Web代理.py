@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from pathlib import Path
 from threading import Condition, RLock
 from typing import cast
 
@@ -20,7 +21,7 @@ from .路由.聊天 import 建立聊天路由器
 from .路由.工作階段 import 建立工作階段路由器
 from .路由.技能 import 建立技能路由器
 from 繁中代理.代理執行階段 import 代理執行階段
-from 繁中代理.使用者 import 使用者庫
+from 繁中代理.使用者 import 使用者上下文, 使用者庫
 from 繁中代理.工作階段庫 import 工作階段庫
 from 繁中代理.模型供應商 import GeminiADC供應商, 假模型供應商, 解析上下文長度
 
@@ -184,12 +185,26 @@ def _建立生產Web代理資源(設定: 生產設定, 延遲服務: 延遲Web�
     工作階段庫物件: 工作階段庫 | None = None
     使用者庫物件: 使用者庫 | None = None
     try:
-        工作階段庫物件 = 工作階段庫(設定.資料庫路徑)
-        使用者庫物件 = 使用者庫(設定.資料庫路徑)
-        初始化發布介面資料庫(設定.資料庫路徑)
+        if 設定.交易儲存.後端 == "postgres":
+            from 繁中代理.PostgreSQL工作階段庫 import PostgreSQL工作階段庫
+            from 繁中代理.PostgreSQL使用者庫 import PostgreSQL使用者庫
+            工作階段庫物件 = PostgreSQL工作階段庫(設定.交易儲存)
+            使用者庫物件 = PostgreSQL使用者庫(設定.交易儲存)
+            SQLite工作目錄 = None
+        else:
+            SQLite資料庫路徑 = cast(Path, 設定.資料庫路徑)
+            工作階段庫物件 = 工作階段庫(SQLite資料庫路徑)
+            使用者庫物件 = 使用者庫(SQLite資料庫路徑)
+            初始化發布介面資料庫(SQLite資料庫路徑)
+            SQLite工作目錄 = str(SQLite資料庫路徑.parent)
 
         def 建立執行階段(*, 使用者上下文物件, source: str) -> Web執行階段:
             """為每次Web turn建立不共享mutable provider/runtime的執行階段。"""
+            工作目錄 = (
+                _解析PostgreSQLWeb工作目錄(使用者上下文物件)
+                if 設定.交易儲存.後端 == "postgres"
+                else cast(str, SQLite工作目錄)
+            )
             return cast(Web執行階段, 代理執行階段(
                 工作階段庫物件,
                 假模型供應商() if 設定.模型供應器 == "fake" else GeminiADC供應商(
@@ -198,7 +213,7 @@ def _建立生產Web代理資源(設定: 生產設定, 延遲服務: 延遲Web�
                 設定.模型名稱,
                 供應商名稱=設定.模型供應器,
                 平台名稱="web",
-                工作目錄=str(設定.資料庫路徑.parent),
+                工作目錄=工作目錄,
                 最大迭代次數=8,
                 # 與 cli 走同一個解析器：不傳的話會掉回 代理執行階段 的參數預設 32768，
                 # 門檻只剩 16384，對話極早期就會誤觸壓縮（見 解析上下文長度 的說明）。
@@ -222,6 +237,22 @@ def _建立生產Web代理資源(設定: 生產設定, 延遲服務: 延遲Web�
         raise
 
 
+def _解析PostgreSQLWeb工作目錄(使用者上下文物件) -> str:
+    """只接受使用者權限明列的唯一絕對目錄，絕不由DB path或process cwd fallback。"""
+    if type(使用者上下文物件) is not 使用者上下文:
+        raise ValueError("Web執行工作目錄無效")
+    目錄清單 = object.__getattribute__(使用者上下文物件, "allowed_workdirs")
+    if type(目錄清單) is not list or len(目錄清單) != 1:
+        raise ValueError("Web執行工作目錄無效")
+    原始路徑 = 目錄清單[0]
+    if not isinstance(原始路徑, Path) or not 原始路徑.is_absolute():
+        raise ValueError("Web執行工作目錄無效")
+    解析路徑 = 原始路徑.expanduser().resolve()
+    if 解析路徑 != 原始路徑:
+        raise ValueError("Web執行工作目錄無效")
+    return str(解析路徑)
+
+
 def _關閉兩個連線(使用者庫物件, 工作階段庫物件) -> tuple[BaseException | None, BaseException | None]:
     """依序attempt兩個close，回傳第一個control-flow與第一個ordinary錯誤。"""
     控制錯誤 = 一般錯誤 = None
@@ -229,7 +260,9 @@ def _關閉兩個連線(使用者庫物件, 工作階段庫物件) -> tuple[Base
         if 庫 is None:
             continue
         try:
-            庫.連線.close()
+            close = getattr(庫, "連線", None)
+            if close is not None:
+                close.close()
         except BaseException as 錯誤:
             if isinstance(錯誤, (KeyboardInterrupt, SystemExit, GeneratorExit)):
                 if 控制錯誤 is None:

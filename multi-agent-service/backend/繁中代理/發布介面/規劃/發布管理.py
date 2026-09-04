@@ -20,6 +20,9 @@ from ..技能套件.協調器 import 技能套件協調器
 from ..技能套件.發布器 import (
     套件發布收據, 套件耐久性未知, 已驗證技能套件清單, 技能套件發布器,
 )
+from ..技能套件.CloudStorage權威 import (
+    CloudStorage技能套件權威, CloudStorage技能套件協調器,
+)
 from ..路由.規劃發布 import (
     發布確認, 端點發布結果 as 路由端點發布結果, 管理操作錯誤, 版本建立結果,
 )
@@ -52,9 +55,10 @@ class 發布管理協調器:
 
     def __init__(
         self, *, 草稿服務: 規劃服務, 擁有者解析器: 擁有者能力轉接器,
-        套件發布器物件: 技能套件發布器, 套件協調器物件: 技能套件協調器,
-        端點發布服務: SQLite端點發布服務, 憑證封套: AESGCM憑證封套,
-        版本配置服務: SQLite版本配置服務 | None = None,
+        套件發布器物件: 技能套件發布器 | CloudStorage技能套件權威,
+        套件協調器物件: 技能套件協調器 | CloudStorage技能套件協調器,
+        端點發布服務: SQLite端點發布服務 | Any, 憑證封套: AESGCM憑證封套,
+        版本配置服務: SQLite版本配置服務 | Any | None = None,
         模型設定: dict[str, Any] | None = None, 重試政策: dict[str, Any] | None = None,
         憑證存續秒數: float = 31_536_000, 時鐘: Callable[[], float] = __import__("time").time,
         識別碼產生器: Callable[[str], str] | None = None,
@@ -69,11 +73,11 @@ class 發布管理協調器:
         """
         if (
             type(草稿服務) is not 規劃服務 or type(擁有者解析器) is not 擁有者能力轉接器
-            or type(套件發布器物件) is not 技能套件發布器
-            or type(套件協調器物件) is not 技能套件協調器
-            or type(端點發布服務) is not SQLite端點發布服務
+            or type(套件發布器物件) not in (技能套件發布器, CloudStorage技能套件權威)
+            or type(套件協調器物件) not in (技能套件協調器, CloudStorage技能套件協調器)
+            or type(端點發布服務) not in (SQLite端點發布服務, __import__("繁中代理.發布介面.PostgreSQL端點庫", fromlist=["PostgreSQL端點庫"]).PostgreSQL端點庫)
             or type(憑證封套) is not AESGCM憑證封套
-            or (版本配置服務 is not None and type(版本配置服務) is not SQLite版本配置服務)
+            or (版本配置服務 is not None and type(版本配置服務) not in (SQLite版本配置服務, __import__("繁中代理.發布介面.PostgreSQL版本服務", fromlist=["PostgreSQL版本配置服務"]).PostgreSQL版本配置服務))
             or type(憑證存續秒數) not in (int, float) or not math.isfinite(憑證存續秒數)
             or 憑證存續秒數 <= 0 or not callable(時鐘) or not callable(隨機位元組)
             or (識別碼產生器 is not None and not callable(識別碼產生器))
@@ -606,6 +610,10 @@ class 發布管理協調器:
         副作用：可呼叫套件協調器把 active bundle 移至孤兒隔離區。
         """
         try:
+            # Cloud objects are immutable recovery candidates.  Only the fresh
+            # three-state DB判定 below may authorize an orphan action.
+            if type(self._套件發布器) is CloudStorage技能套件權威:
+                return
             self._套件協調器.標記孤兒(收據)
         except BaseException as 清理錯誤:
             self._清除秘密框架(清理錯誤)

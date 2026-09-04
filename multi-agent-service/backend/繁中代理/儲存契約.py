@@ -145,11 +145,11 @@ def _耐久(領域: str) -> 權威分類:
 })
 
 必要PostgreSQL耐久領域 = frozenset(耐久領域)
-PostgreSQL已接線領域 = frozenset[str]()
+PostgreSQL已接線領域 = 必要PostgreSQL耐久領域
 PostgreSQL尚未接線錯誤 = "PostgreSQL 儲存後端尚未接線"
 
 
 def 確認PostgreSQL全域就緒() -> None:
-    """在任何可能建立 local/BigQuery authority 前執行全域 readiness gate。"""
+    """保留 canonical gate；實際 SELECT 1/head readiness 由 lifespan 執行。"""
     if PostgreSQL已接線領域 != 必要PostgreSQL耐久領域:
         raise RuntimeError(PostgreSQL尚未接線錯誤)

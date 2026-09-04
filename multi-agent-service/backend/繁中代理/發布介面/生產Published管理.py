@@ -21,9 +21,11 @@ from starlette.concurrency import run_in_threadpool
 
 from 繁中代理.模型供應商 import GeminiADC供應商
 from 繁中代理.使用者 import 使用者庫
+from 繁中代理.交易儲存設定 import 交易儲存設定
 
 from .執行期.工具發布庫 import 工具發布庫
 from .規劃.擁有者能力 import 使用者權威來源, 擁有者能力轉接器
+from .規劃.工具政策 import ONE_SHOT_PUBLISHED禁止工具
 from .規劃.規劃器供應商 import Gemini規劃器, 決定性假規劃器
 from .規劃.規劃器契約 import 規劃器轉接器
 from .規劃.規劃器服務 import 伺服器端草稿規劃服務
@@ -68,7 +70,7 @@ _Planner回應綱要 = {
         "suggested_slug": {"type": "string"},
         "behavior_summary": {"type": "string"},
         "selected_skills": {"type": "array", "items": {"type": "string"}},
-        "recommended_tools": {"type": "array", "items": {"type": "string"}},
+        "recommended_tools": {"type": "array", "uniqueItems": True, "items": {"type": "string"}},
         "tool_capabilities": {"type": "object", "additionalProperties": {"type": "string"}},
         "system_prompt": {"type": "string"},
         "input_schema": {"anyOf": [{"type": "object"}, {"type": "null"}]},
@@ -129,7 +131,10 @@ class GeminiADC結構化產生器:
             tools=[],
             response_schema=_Planner回應綱要,
         )
-        文字 = getattr(回應, "text", None)
+        try:
+            文字 = object.__getattribute__(回應, "text")
+        except AttributeError:
+            文字 = None
         if type(文字) is not str:
             raise ValueError(_設定錯誤) from None
         return 文字
@@ -159,6 +164,7 @@ class Planner生產設定:
     使用者權威來源工廠: Callable[[Path], 使用者權威來源]
     規劃器工廠: Callable[[], 規劃器轉接器]
     草稿存續秒數: float = 86_400.0
+    one_shot禁止工具: frozenset[tuple[str, str]] = ONE_SHOT_PUBLISHED禁止工具
 
     def __post_init__(self) -> None:
         """驗證 exact release、callbacks 與 ephemeral TTL 上限。
@@ -172,6 +178,7 @@ class Planner生產設定:
         來源工廠 = object.__getattribute__(self, "使用者權威來源工廠")
         規劃器工廠 = object.__getattribute__(self, "規劃器工廠")
         秒數 = object.__getattribute__(self, "草稿存續秒數")
+        禁止工具 = object.__getattribute__(self, "one_shot禁止工具")
         if (
             type(發布) is not str
             or _識別格式.fullmatch(發布) is None
@@ -181,6 +188,13 @@ class Planner生產設定:
             or 秒數 <= 0
             or 秒數 > 86_400
             or (type(秒數) is float and not math.isfinite(秒數))
+            or type(禁止工具) is not frozenset
+            or any(
+                type(項目) is not tuple or len(項目) != 2
+                or type(項目[0]) is not str or _識別格式.fullmatch(項目[0]) is None
+                or type(項目[1]) is not str or not 項目[1] or len(項目[1]) > 128
+                for 項目 in 禁止工具
+            )
         ):
             raise ValueError(_設定錯誤) from None
 
@@ -590,7 +604,7 @@ def _關閉自有使用者來源(來源: object | None) -> None:
 
 def 建立生產Planner資源(
     設定: Planner生產設定,
-    Web資料庫路徑: Path,
+    Web資料庫路徑: Path | 交易儲存設定,
     工具發布庫物件: 工具發布庫,
     代理: 延遲草稿規劃服務,
 ) -> 生產Planner資源:
@@ -603,8 +617,10 @@ def 建立生產Planner資源(
     """
     if (
         type(設定) is not Planner生產設定
-        or type(Web資料庫路徑) is not _本機Path型別
-        or not Web資料庫路徑.is_absolute()
+        or (type(Web資料庫路徑) is not _本機Path型別
+            and type(Web資料庫路徑) is not 交易儲存設定)
+        or (type(Web資料庫路徑) is _本機Path型別
+            and not Web資料庫路徑.is_absolute())
         or type(工具發布庫物件) is not 工具發布庫
         or type(代理) is not 延遲草稿規劃服務
     ):
@@ -615,10 +631,15 @@ def 建立生產Planner資源(
         if 工具發布庫物件.取得發布(設定.處理器發布) is None:
             raise ValueError(_組裝錯誤) from None
         使用者來源 = 設定.使用者權威來源工廠(Web資料庫路徑)
-        查詢 = getattr(使用者來源, "建立使用者上下文", None)
+        try:
+            查詢 = object.__getattribute__(使用者來源, "建立使用者上下文")
+        except AttributeError:
+            查詢 = None
         if not callable(查詢):
             raise ValueError(_組裝錯誤) from None
-        權限轉接器 = 擁有者能力轉接器(使用者來源, 工具發布庫物件, 設定.處理器發布)
+        權限轉接器 = 擁有者能力轉接器(
+            使用者來源, 工具發布庫物件, 設定.處理器發布, 設定.one_shot禁止工具,
+        )
         規劃器 = 設定.規劃器工廠()
         if type(規劃器) not in (決定性假規劃器, Gemini規劃器):
             raise ValueError(_組裝錯誤) from None

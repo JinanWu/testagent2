@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.工具 import 工具定義
 from 繁中代理.使用者 import 使用者庫
@@ -205,8 +206,9 @@ def test_startup安裝器與模型工廠exact_once並在shutdown清除(tmp_path)
         assert client.get("/openapi.json").status_code == 200
         assert calls == ["installer", "models"]
         resources = app.state.發布介面資源
-        assert len(resources) == 2 and resources[1]._已關閉 is False
-    assert resources[1]._已關閉 is True and resources[1]._編排器 is None
+        Published資源 = 取得Published資源(app)
+        assert len(resources) == 2 and Published資源._已關閉 is False
+    assert Published資源._已關閉 is True and Published資源._編排器 is None
     assert calls == ["installer", "models"]
 
 

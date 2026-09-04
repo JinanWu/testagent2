@@ -138,7 +138,7 @@ class 生產設定:
         無；不讀取環境、不連線資料庫，也不建立執行期資源。
     """
 
-    資料庫路徑: Path
+    資料庫路徑: Path | None
     允許來源: tuple[str, ...]
     模型供應器: str
     模型名稱: str
@@ -151,13 +151,17 @@ class 生產設定:
     def __post_init__(self) -> None:
         """驗證必要值並重用exact-origin與cookie安全契約。"""
         if (
-            not isinstance(self.資料庫路徑, Path)
-            or not self.資料庫路徑.is_absolute()
-            or not self.資料庫路徑.name
+            (self.交易儲存.後端 == "sqlite" and (
+                not isinstance(self.資料庫路徑, Path)
+                or not self.資料庫路徑.is_absolute()
+                or not self.資料庫路徑.name
+            ))
+            or (self.交易儲存.後端 != "sqlite" and self.資料庫路徑 is not None)
             or type(self.允許來源) is not tuple
             or not self.允許來源
             or type(self.交易儲存) is not 交易儲存設定
             or self.模型供應器 not in {"fake", "gemini-adc"}
+            or (self.交易儲存.後端 == "postgres" and self.模型供應器 != "gemini-adc")
             or type(self.模型名稱) is not str
             or not 1 <= len(self.模型名稱) <= 128
             or self.模型名稱.strip() != self.模型名稱

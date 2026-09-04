@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -123,6 +124,48 @@ def test_owner能力保留工具release有序authority(tmp_path):
     反向摘要 = 能力摘要(快照.權限修訂, 快照.技能, tuple(reversed(快照.工具)))
     with pytest.raises(擁有者能力錯誤, match="^擁有者發布能力不可用$"):
         轉接器.解析發布能力("owner-1", 反向摘要)
+
+
+def test_one_shot_Published能力以exact_pin排除互動工具(tmp_path):
+    _技能(tmp_path, "alpha")
+    使用者庫 = _使用者庫(_上下文(
+        tmp_path, enabled_tools={"clarify", "alpha-tool"},
+    ))
+    庫 = 工具發布庫()
+    工具們 = (
+        工具發布註冊("clarify@published-v1", 工具定義(
+            "clarify", "interactive", {"type": "object"}, lambda _: "no channel",
+        )),
+        工具發布註冊("rev-a", 工具定義(
+            "alpha-tool", "safe", {"type": "object"}, lambda _: "ok",
+        )),
+    )
+    庫.登錄發布(工具發布描述("release-1", 工具們))
+    轉接器 = 擁有者能力轉接器(使用者庫, 庫, "release-1")
+    快照 = 轉接器.查詢規劃權限("owner-1")
+    assert [(項.名稱, 項.釘選修訂) for 項 in 快照.工具] == [("alpha-tool", "rev-a")]
+    摘要 = 能力摘要(快照.權限修訂, 快照.技能, 快照.工具)
+    發布能力 = 轉接器.解析發布能力("owner-1", 摘要)
+    assert tuple(發布能力.工具結構快照) == ("alpha-tool",)
+    assert [項.名稱 for 項 in 發布能力.權限快照.工具] == ["alpha-tool"]
+
+
+def test_one_shot禁止工具必須exact_revision且政策格式fail_closed(tmp_path):
+    _技能(tmp_path, "alpha")
+    使用者庫 = _使用者庫(_上下文(tmp_path, enabled_tools={"clarify"}))
+    庫 = 工具發布庫()
+    庫.登錄發布(工具發布描述("release-1", (工具發布註冊(
+        "clarify@published-v2", 工具定義("clarify", "safe-v2", {"type": "object"}, lambda _: "ok"),
+    ),)))
+    轉接器 = 擁有者能力轉接器(使用者庫, 庫, "release-1")
+    assert [(項.名稱, 項.釘選修訂) for 項 in 轉接器.查詢規劃權限("owner-1").工具] == [
+        ("clarify", "clarify@published-v2"),
+    ]
+    with pytest.raises(擁有者能力錯誤):
+        擁有者能力轉接器(
+            使用者庫, 庫, "release-1",
+            cast(Any, {("clarify", "clarify@published-v1")}),
+        )
 
 
 def test_permission_revision使用完整canonical_authority(tmp_path):

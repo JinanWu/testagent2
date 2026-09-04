@@ -23,7 +23,6 @@ from fastapi import FastAPI
 
 from ..模型供應商 import GeminiADC供應商
 from ..使用者 import 使用者庫
-from ..儲存契約 import 確認PostgreSQL全域就緒
 from ..環境設定 import 載入本機環境檔, 讀取交易儲存設定
 from .嚴格JSON import 解析嚴格JSON
 from .憑證.加密 import AESGCM憑證封套
@@ -63,6 +62,7 @@ CloudSQL連線名稱環境名稱 = "CLOUD_SQL_INSTANCE_CONNECTION_NAME"
 PostgreSQLPool最小環境名稱 = "POSTGRES_POOL_MIN_SIZE"
 PostgreSQLPool最大環境名稱 = "POSTGRES_POOL_MAX_SIZE"
 PostgreSQLPool等待環境名稱 = "POSTGRES_POOL_TIMEOUT_SECONDS"
+PublishedBundleBucket環境名稱 = "TESTAGENT2_PUBLISHED_BUNDLE_BUCKET"
 _錯誤路徑別名 = frozenset(("TESTAGENT2_WEB_DB_PATH", "TESTAGENT2_BUNDLE_ROOT"))
 _受管設定環境前綴 = ("TESTAGENT2_", "AIAGENT_", "POSTGRES_")
 _核准設定環境名稱 = frozenset((
@@ -72,6 +72,7 @@ _核准設定環境名稱 = frozenset((
     憑證Active版本環境名稱, 憑證Keyring環境名稱, Owner觀測游標金鑰環境名稱,
     儲存後端環境名稱, PostgreSQL資料庫URL環境名稱, CloudSQL連線名稱環境名稱,
     PostgreSQLPool最小環境名稱, PostgreSQLPool最大環境名稱, PostgreSQLPool等待環境名稱,
+    PublishedBundleBucket環境名稱,
     # API-only deployment no longer reads this legacy SPA setting.  It remains
     # accepted temporarily so an old environment file cannot prevent startup.
     ProductionSPADist環境名稱,
@@ -182,7 +183,9 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
             raise ValueError
         if not 2 <= len(TTL文字) <= 6 or not TTL文字.isascii() or not TTL文字.isdecimal():
             raise ValueError
-        if type(資料庫文字) is not str or 供應器 not in {"fake", "gemini-adc"}:
+        if ((交易儲存.後端 == "sqlite" and type(資料庫文字) is not str)
+                or (交易儲存.後端 == "postgres" and 資料庫文字 is not None)
+                or 供應器 not in {"fake", "gemini-adc"}):
             raise ValueError
         if 供應器 == "fake":
             if 模型名稱 != "fake" or Gemini專案 is not None or Gemini位置 is not None:
@@ -190,7 +193,7 @@ def 解析環境生產設定(環境: Mapping[str, str]) -> 生產設定:
         elif any(type(值) is not str for 值 in (模型名稱, Gemini專案, Gemini位置)):
             raise ValueError
         return 生產設定(
-            Path(資料庫文字),
+            None if 交易儲存.後端 == "postgres" else Path(資料庫文字),
             tuple(來源值),
             供應器,
             cast(str, 模型名稱),
@@ -224,22 +227,34 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
             if 名稱.startswith(_受管設定環境前綴) and 名稱 not in _核准設定環境名稱:
                 raise ValueError
         交易儲存 = 讀取交易儲存設定(環境)
-        if 交易儲存.後端 == "postgres":
-            確認PostgreSQL全域就緒()
-            raise RuntimeError("PostgreSQL 儲存後端尚未接線")
         Web文字 = 環境.get(Web資料庫環境名稱)
         Published文字 = 環境.get(Published資料庫環境名稱)
         根文字 = 環境.get(技能套件根環境名稱)
         Active版本文字 = 環境.get(憑證Active版本環境名稱)
         Keyring文字 = 環境.get(憑證Keyring環境名稱)
         Owner游標金鑰文字 = 環境.get(Owner觀測游標金鑰環境名稱)
-        if any(type(值) is not str or not 值 for 值 in (Web文字, Published文字, 根文字)):
-            raise ValueError
-        Web路徑, Published路徑, 根路徑 = Path(Web文字), Path(Published文字), Path(根文字)
-        if any(not 路徑.is_absolute() or ".." in 路徑.parts for 路徑 in (Web路徑, Published路徑, 根路徑)):
-            raise ValueError
-        if Web路徑 == Published路徑:
-            raise ValueError
+        BundleBucket文字 = 環境.get(PublishedBundleBucket環境名稱)
+        供應器 = 環境.get(供應器環境名稱)
+        模型名稱 = 環境.get(模型名稱環境名稱)
+        Gemini專案 = 環境.get(Gemini專案環境名稱)
+        Gemini位置 = 環境.get(Gemini位置環境名稱)
+        if 交易儲存.後端 == "postgres":
+            if any(type(值) is not str or not 值 for 值 in (Active版本文字, Keyring文字, Owner游標金鑰文字)):
+                raise ValueError
+            if (type(BundleBucket文字) is not str or not BundleBucket文字
+                    or len(BundleBucket文字) > 222 or not BundleBucket文字.isascii()):
+                raise ValueError
+            Web路徑 = Published路徑 = 根路徑 = None
+        else:
+            if any(type(值) is not str or not 值 for 值 in (Web文字, Published文字, 根文字)):
+                raise ValueError
+            Web路徑, Published路徑, 根路徑 = Path(Web文字), Path(Published文字), Path(根文字)
+            if any(not 路徑.is_absolute() or ".." in 路徑.parts for 路徑 in (Web路徑, Published路徑, 根路徑)):
+                raise ValueError
+            if Web路徑 == Published路徑:
+                raise ValueError
+            if BundleBucket文字 is not None:
+                raise ValueError
         if (
             type(Active版本文字) is not str or not Active版本文字.isascii()
             or not Active版本文字.isdecimal() or Active版本文字.startswith("0")
@@ -279,11 +294,18 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
         if (len(Owner游標金鑰) != 32
                 or base64.urlsafe_b64encode(Owner游標金鑰).rstrip(b"=").decode("ascii") != Owner游標金鑰文字):
             raise ValueError
-        明示供應器 = 環境.get(供應器環境名稱)
-        if 明示供應器 not in (None, "gemini-adc"):
+        if 交易儲存.後端 == "postgres":
+            if 供應器 != "gemini-adc":
+                raise ValueError
+        elif 供應器 not in (None, "gemini-adc"):
             raise ValueError
         Web環境 = dict(環境)
-        Web環境[資料庫環境名稱] = Web文字
+        if 交易儲存.後端 == "postgres":
+            if any(type(值) is not str or not 值 for 值 in (Gemini專案, Gemini位置)):
+                raise ValueError
+            Web環境.pop(資料庫環境名稱, None)
+        else:
+            Web環境[資料庫環境名稱] = Web文字
         Web環境[供應器環境名稱] = "gemini-adc"
         Web設定 = 解析環境生產設定(Web環境)
 
@@ -321,13 +343,31 @@ def 解析Canonical環境設定(環境: Mapping[str, str]) -> tuple[生產設定
             }
             return AESGCM憑證封套(金鑰環, Active版本)
 
+        CloudBucket工廠 = None
+        CloudClient工廠 = None
+        if 交易儲存.後端 == "postgres":
+            bucket_name = BundleBucket文字
+            def CloudClient工廠():
+                from google.cloud import storage
+                return storage.Client()
+
+            def CloudBucket工廠():
+                return CloudClient工廠().bucket(bucket_name)
+
         Published設定 = Published生產設定(
             Published路徑, 根路徑, 安裝生產技能工具, 建立模型註冊表,
             Planner設定=Planner生產設定(
-                技能工具發布名稱, lambda 路徑: 使用者庫(路徑), 建立Planner,
+                技能工具發布名稱,
+                (lambda 路徑: 使用者庫(路徑)) if 交易儲存.後端 == "sqlite" else
+                (lambda 路徑: __import__("繁中代理.PostgreSQL使用者庫", fromlist=["PostgreSQL使用者庫"]).PostgreSQL使用者庫(交易儲存)),
+                建立Planner,
             ),
             憑證封套工廠=建立憑證封套,
             Owner觀測游標金鑰=Owner游標金鑰,
+            CloudStorageBucket工廠=CloudBucket工廠,
+            CloudStorageClient工廠=CloudClient工廠,
+            CloudStorageBucket名稱=BundleBucket文字,
+            PostgreSQL模式=交易儲存.後端 == "postgres",
         )
         return Web設定, Published設定
     except (KeyboardInterrupt, SystemExit, GeneratorExit):

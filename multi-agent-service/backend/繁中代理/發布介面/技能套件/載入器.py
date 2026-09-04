@@ -21,7 +21,7 @@ import unicodedata
 
 from .安全複製 import 技能套件最大總位元組數, 限制
 from .發布器 import 已驗證技能套件清單, 驗證已發布技能套件清單
-from .清單 import 是合法技能套件清單參照
+from .清單 import 是合法技能套件定位參照, 是合法技能套件清單參照
 from ..執行期.執行器 import 技能套件快照, 技能套件檔案
 
 
@@ -82,7 +82,7 @@ class 技能套件定位:
         try:
             if not _是識別碼(version_id) or not _是識別碼(bundle_id):
                 raise ValueError
-            if manifest_reference != f"{bundle_id}/manifest.json":
+            if not 是合法技能套件定位參照(manifest_reference, bundle_id):
                 raise ValueError
             if not _是摘要(manifest_digest) or not _是摘要(bundle_hash):
                 raise ValueError

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
@@ -251,7 +252,7 @@ def test_草稿擁有者取自真Session而非客戶端(tmp_path):
     觀察: list[tuple] = []
 
     with TestClient(應用) as 客戶端:
-        代理 = 應用.state.發布介面資源[1].取得Planner資源()._代理
+        代理 = 取得Published資源(應用).取得Planner資源()._代理
         原始 = type(代理).建立草稿
 
         def 記錄(自身, 擁有者識別碼, *參數, **選項):
@@ -327,7 +328,7 @@ def test_草稿路由使用建構器的同一Lazy服務(tmp_path):
             _草稿路徑, json=_草稿本文(), headers={"X-CSRF-Token": csrf},
         )
         assert 回應.status_code == 201, 回應.text
-        assert 應用.state.發布介面資源[1].取得Planner資源()._代理 is 代理
+        assert 取得Published資源(應用).取得Planner資源()._代理 is 代理
 
     assert 命中 == ["代理"]
 

@@ -22,6 +22,8 @@ dependencies = [
   "psycopg-pool==3.3.1",
   "alembic==1.19.1",
   "SQLAlchemy==2.0.52",
+  "google-cloud-secret-manager==2.24.0",
+  "google-cloud-storage==2.19.0",
 ]
 
 [project.scripts]

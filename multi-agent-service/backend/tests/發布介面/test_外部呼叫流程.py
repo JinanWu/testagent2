@@ -173,8 +173,16 @@ class 假政策:
         return True
 
 
+class 假呼叫儲存庫:
+    def __init__(self):
+        self.結案 = []
+
+    def 完成呼叫(self, *args, **kwargs):
+        self.結案.append((args, kwargs))
+
+
 def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=None, 記錄執行嘗試=None,
-        釘選類型: type = 釘選, 驗證輸入=None, 工作階段儲存庫=None):
+        釘選類型: type = 釘選, 驗證輸入=None, 工作階段儲存庫=None, 呼叫儲存庫=None):
     if 記錄執行嘗試 is None:
         記錄執行嘗試 = lambda invocation, request, result, schema_valid: 執行嘗試紀錄收據(
             invocation.id, request.attempt, True, request.attempt,
@@ -182,7 +190,7 @@ def _編排(解析器, 憑證服務, 政策, *, 執行嘗試=None, 驗證輸出=
     if 驗證輸入 is None:
         驗證輸入 = 政策.驗證輸入
     return 外部呼叫編排器(
-        解析器, object(), 憑證服務,
+        解析器, 假呼叫儲存庫() if 呼叫儲存庫 is None else 呼叫儲存庫, 憑證服務,
         解析未找到型別=LookupError,
         釘選型別=釘選類型, 驗證型別=驗證結果, 驗證狀態型別=狀態,
         階段型別=階段, 準備擷取=政策.準備, 寫入擷取=政策.寫入,
@@ -429,6 +437,20 @@ def test_拒絕憑證建立呼叫但不刷新且沿用穩定錯誤映射(credent
     assert 政策.準備呼叫[0][0] is stage
     assert 政策.寫入呼叫[0][-1]["credential_id"] is None
     assert 憑證服務.刷新呼叫 == []
+
+
+def test_執行拒絕憑證時精確結案且不留下pending():
+    憑證服務, 政策, 儲存庫 = 假憑證服務(驗證結果(狀態.已撤銷, "不可寫入")), 假政策(), 假呼叫儲存庫()
+    結果 = _編排(
+        假解析器(釘選("ep-1", "ver-3", 3)), 憑證服務, 政策,
+        呼叫儲存庫=儲存庫,
+    ).執行("demo", "req-1", "raw-key", {"q": 1}, {"trace": 2}, 10.0)
+
+    assert 結果.status_code == 401
+    assert 儲存庫.結案 == [(("inv-1", "invalid_api_key"), {
+        "error": {"code": "invalid_api_key", "message": "API key 無效。", "details": {}},
+        "latency_ms": 0.0,
+    })]
 
 
 def test_exact_authenticated寫入後才刷新並進入主流程():

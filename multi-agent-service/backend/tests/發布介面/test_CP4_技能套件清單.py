@@ -15,7 +15,7 @@ from 繁中代理.發布介面.技能套件.安全複製 import (
 )
 from 繁中代理.發布介面.技能套件 import 載入器 as 載入器模組
 from 繁中代理.發布介面.技能套件.清單 import (
-    建立清單, 是合法技能套件清單參照, 正規JSON, 計算套件雜湊,
+    建立清單, 是合法技能套件定位參照, 是合法技能套件清單參照, 正規JSON, 計算套件雜湊,
 )
 from 繁中代理.發布介面.執行期.模型契約 import 模型設定快照
 from 繁中代理.發布介面.執行期.執行器 import 發布執行快照, 發布執行錯誤
@@ -66,6 +66,22 @@ def test_manifest_reference共享authority三處同判定(參照, 合法):
     else:
         with pytest.raises(發布執行錯誤, match="^發布執行期不可用$"):
             發布執行快照(**參數)
+
+
+def test_定位參照只接受同bundle的本機或generation_pinned_GCS() -> None:
+    assert 是合法技能套件定位參照("bundle-1/manifest.json", "bundle-1") is True
+    assert 是合法技能套件定位參照(
+        "bundles/v1/bundle-1/manifest.json#generation=7", "bundle-1",
+    ) is True
+    assert 是合法技能套件定位參照(
+        "bundles/v1/other/manifest.json#generation=7", "bundle-1",
+    ) is False
+    assert 是合法技能套件定位參照(
+        "bundles/v1/bundle-1/manifest.json#generation=0", "bundle-1",
+    ) is False
+    assert 是合法技能套件定位參照(
+        "bundles/v1/bundle-1/manifest.json", "bundle-1",
+    ) is False
 
 
 def test_manifest_reference共享authority保留控制流程identity(monkeypatch):

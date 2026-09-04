@@ -37,6 +37,8 @@ class _敵意相依:
         raise AssertionError("不得雜湊 dependency callback")
 
     def __eq__(self, other):
+        if other is type or other is object:
+            return False
         self.比較次數 += 1
         raise AssertionError("不得比較 dependency callback")
 

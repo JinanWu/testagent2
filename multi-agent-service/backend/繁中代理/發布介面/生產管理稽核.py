@@ -40,8 +40,8 @@ class 延遲管理稽核服務:
 
     def 安裝(self, 服務) -> int:
         """安裝具list/detail exact methods的startup provider並回傳generation。"""
-        if (not callable(getattr(服務, "列出管理員安全呼叫", None))
-                or not callable(getattr(服務, "查詢管理員原始資料", None))):
+        from .治理.PostgreSQL管理稽核提供者 import PostgreSQL管理稽核提供者
+        if type(服務) not in (管理稽核提供者, PostgreSQL管理稽核提供者):
             raise ValueError("Published管理稽核服務無效") from None
         with self._條件:
             if self._服務 is not None or self._進行中:
@@ -148,7 +148,7 @@ class 管理稽核組合資源:
 
     def __getattr__(self, 名稱: str):
         """將既有Published resource介面透明委派給被包裝的主資源。"""
-        return getattr(self._主資源, 名稱)
+        return object.__getattribute__(self._主資源, 名稱)
 
     async def 關閉(self) -> None:
         """撤銷查詢authority後關閉主資源；控制流程優先。"""
@@ -195,10 +195,16 @@ async def 安裝管理稽核資源(主資源, 代理: 延遲管理稽核服務, 
     """在主Published resource成功後安裝Admin provider；失敗時關閉主資源。"""
     服務 = None
     try:
-        收據權威 = getattr(代理, "_拒絕收據權威", None)
+        try:
+            收據權威 = object.__getattribute__(代理, "_拒絕收據權威")
+        except AttributeError:
+            收據權威 = None
         服務 = 管理稽核提供者(資料庫路徑, 收據權威)
         世代 = 代理.安裝(服務)
-        原始同步清理 = getattr(主資源, "_執行關閉同步", None)
+        try:
+            原始同步清理 = object.__getattribute__(主資源, "_執行關閉同步")
+        except AttributeError:
+            原始同步清理 = None
         if callable(原始同步清理):
             def 清除含管理稽核() -> None:
                 """先撤銷Admin authority，再盡力完成既有Published同步清理。"""
@@ -260,7 +266,7 @@ class 管理遮蔽組合資源:
         self._已關閉 = False
 
     def __getattr__(self, 名稱: str):
-        return getattr(self._主資源, 名稱)
+        return object.__getattribute__(self._主資源, 名稱)
 
     async def 關閉(self) -> None:
         if self._已關閉:
@@ -307,7 +313,10 @@ async def 安裝管理遮蔽資源(主資源, 權限: 管理遮蔽治理權限, 
         )
         _管理遮蔽安裝能力.準備安裝(權限, 嘗試, 服務, 命令)
         世代 = _管理遮蔽安裝能力.發布已準備安裝(權限, 嘗試)
-        原始同步清理 = getattr(主資源, "_執行關閉同步", None)
+        try:
+            原始同步清理 = object.__getattribute__(主資源, "_執行關閉同步")
+        except AttributeError:
+            原始同步清理 = None
         if callable(原始同步清理):
             def 清除含管理遮蔽() -> None:
                 """先撤銷A20 authority，再執行既有Published同步清理。"""

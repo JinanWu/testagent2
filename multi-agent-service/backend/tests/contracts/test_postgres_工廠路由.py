@@ -18,11 +18,10 @@ def test_取得儲存後端使用中央交易設定(monkeypatch):
 
 
 @pytest.mark.parametrize("工廠名稱", ("建立工作階段庫", "建立使用者庫"))
-def test_postgres核心工廠在SQLite或BigQuery建構前明確拒絕(tmp_path, monkeypatch, 工廠名稱):
+def test_postgres核心工廠回傳PostgreSQL且不建立SQLite或BigQuery(tmp_path, monkeypatch, 工廠名稱):
     monkeypatch.setattr(儲存模組, "讀取交易儲存設定", lambda: __import__("繁中代理.環境設定", fromlist=["讀取交易儲存設定"]).讀取交易儲存設定(_POSTGRES_ENV))
     monkeypatch.setattr(儲存模組, "工作階段庫", lambda *_: pytest.fail("不得建立 SQLite 工作階段庫"))
     monkeypatch.setattr(儲存模組, "使用者庫", lambda *_: pytest.fail("不得建立 SQLite 使用者庫"))
-    with pytest.raises(RuntimeError, match="^PostgreSQL 儲存後端尚未接線$") as 捕捉:
-        getattr(儲存模組, 工廠名稱)(tmp_path / "must-not-exist.sqlite3")
-    assert "top-secret" not in str(捕捉.value)
+    結果 = getattr(儲存模組, 工廠名稱)(tmp_path / "must-not-exist.sqlite3")
+    assert type(結果).__name__.startswith("PostgreSQL")
     assert not (tmp_path / "must-not-exist.sqlite3").exists()

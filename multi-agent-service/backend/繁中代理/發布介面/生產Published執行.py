@@ -46,6 +46,7 @@ from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證�
 from .呼叫.儲存庫 import SQLite呼叫儲存庫, 呼叫敏感交易協調器
 from .呼叫.敏感稽核 import SQLite敏感稽核儲存庫
 from .呼叫.Published工作階段 import SQLitePublished工作階段儲存庫
+from .呼叫.PostgreSQLPublished工作階段 import PostgreSQLPublished工作階段儲存庫
 from .呼叫.限流 import 限流決策
 from .呼叫.擷取政策 import 擷取階段, 準備呼叫擷取, 寫入呼叫擷取
 from .呼叫.編排器 import 外部呼叫編排器
@@ -56,19 +57,38 @@ from .呼叫.生產橋接 import (
     驗證釘選輸出結構,
 )
 from .執行期.工具版本庫 import 計算工具修訂摘要
+from .執行期.模型契約 import 模型設定快照
 from .執行期.工具發布庫 import 工具發布庫
 from .執行期.快照儲存庫 import SQLite發布快照儲存庫
+from .執行期.PostgreSQL快照儲存庫 import PostgreSQL發布快照儲存庫
+from . import PostgreSQL端點庫 as _PostgreSQL端點模組
+from . import PostgreSQL版本服務 as _PostgreSQL版本模組
+from .憑證.PostgreSQL儲存庫 import PostgreSQL憑證儲存庫
+from .呼叫.PostgreSQL儲存庫 import PostgreSQL呼叫儲存庫
+from .呼叫.PostgreSQL限流 import PostgreSQL限流儲存庫
+from .. import PostgreSQL連線
 from .執行期.呼叫橋接 import 建立發布執行嘗試橋接
 from .技能套件.載入器 import 已發布技能套件載入器
 from .技能套件.協調器 import 技能套件協調器
 from .技能套件.發布器 import 技能套件發布器
+from .技能套件.CloudStorage權威 import CloudStorage技能套件權威, CloudStorage技能套件協調器
 from .路由.外部呼叫 import 建立外部呼叫路由
 from .路由.憑證管理 import 建立憑證管理路由器
 from .生產Owner觀測 import 延遲Owner觀測服務, 建立Owner觀測路由, 安裝Owner觀測資源
+from .治理.PostgreSQL稽核 import PostgreSQL稽核服務
+from .治理.PostgreSQL查詢投影 import PostgreSQL呼叫查詢投影
+from .治理.PostgreSQL管理稽核提供者 import PostgreSQL管理稽核提供者
+from .治理.PostgreSQL端點文件服務 import PostgreSQL憑證文件分類器, PostgreSQL端點文件服務
+from .治理.PostgreSQL端點觀測查詢服務 import PostgreSQL端點觀測查詢服務
+from .治理.PostgreSQL端點管理查詢服務 import PostgreSQL端點管理查詢服務
+from .治理.查詢投影 import 管理員原始資料稽核閘門
+from .治理.PostgreSQL遮蔽 import PostgreSQL不可逆遮蔽服務
+from .治理.PostgreSQL保存期限 import PostgreSQL保存候選規劃器, PostgreSQL保存清除服務
 from .生產端點查詢 import (
     延遲端點管理查詢服務,
     建立端點管理身份相依,
     安裝端點查詢資源,
+    衍生端點查詢游標金鑰,
 )
 from .路由.端點查詢 import 建立端點查詢路由器
 from .路由.文件 import 建立端點文件路由器
@@ -79,6 +99,13 @@ from .路由.規劃發布 import (
 _本機Path型別 = type(Path())
 _資料庫隔離錯誤 = "Published資料庫不得與Web資料庫共用"
 _控制流程例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
+
+
+def _建立Published模型設定(供應器: str, 模型: str) -> dict[str, object]:
+    """建立SQLite與PostgreSQL publication共用的完整immutable模型設定。"""
+    return 模型設定快照(
+        供應器, 模型, 0.0, 4096, 60.0, True, 1,
+    ).轉成JSON物件()
 
 
 def _驗證資料庫實體隔離(Web資料庫: Path, Published資料庫: Path) -> None:
@@ -124,14 +151,18 @@ class Published生產設定:
 
     描述：部署端必須明確提供的 CP4 executable dependencies。
     """
-    發布資料庫路徑: Path
-    技能套件發布根: Path
+    發布資料庫路徑: Path | None
+    技能套件發布根: Path | None
     工具發布安裝器: Callable[[工具發布庫], None]
     模型供應商註冊表工廠: Callable[[], dict[str, object]]
     孤兒保留秒數: float = 86_400.0
     Planner設定: Planner生產設定 | None = None
     憑證封套工廠: Callable[[], AESGCM憑證封套] | None = None
     Owner觀測游標金鑰: bytes | None = field(default=None, repr=False)
+    CloudStorageBucket工廠: Callable[[], object] | None = field(default=None, repr=False)
+    CloudStorageClient工廠: Callable[[], object] | None = field(default=None, repr=False)
+    CloudStorageBucket名稱: str | None = field(default=None, repr=False)
+    PostgreSQL模式: bool = False
     def __post_init__(self) -> None:
         """拒絕 cwd/home fallback、Path subclass 與非 callable 注入。
         參數：無；讀取五個設定欄位。
@@ -149,8 +180,16 @@ class Published生產設定:
         Planner組裝 = object.__getattribute__(self, "Planner設定")
         封套工廠 = object.__getattribute__(self, "憑證封套工廠")
         觀測金鑰 = object.__getattribute__(self, "Owner觀測游標金鑰")
-        if (type(資料庫) is not _本機Path型別 or not 資料庫.is_absolute()
-                or type(根) is not _本機Path型別 or not 根.is_absolute()
+        模式 = object.__getattribute__(self, "PostgreSQL模式")
+        if type(模式) is not bool:
+            raise ValueError("Published生產設定無效") from None
+        路徑無效 = (type(資料庫) is not _本機Path型別
+                or (資料庫 is not None and not 資料庫.is_absolute())
+                or type(根) is not _本機Path型別
+                or (根 is not None and not 根.is_absolute()))
+        if (路徑無效 and not 模式) or (模式 and (資料庫 is not None or 根 is not None)):
+            raise ValueError("Published生產設定無效") from None
+        if ((not 模式 and 路徑無效)
                 or not callable(安裝器) or not callable(工廠)
                 or type(保留秒數) not in (int, float)
                 or 保留秒數 < 0 or 保留秒數 > sys.float_info.max
@@ -159,6 +198,19 @@ class Published生產設定:
                 or (封套工廠 is not None and not callable(封套工廠))):
             raise ValueError("Published生產設定無效") from None
         if 觀測金鑰 is not None and (type(觀測金鑰) is not bytes or len(觀測金鑰) != 32):
+            raise ValueError("Published生產設定無效") from None
+        if 工廠 := object.__getattribute__(self, "CloudStorageBucket工廠"):
+            if not callable(工廠):
+                raise ValueError("Published生產設定無效") from None
+        Client工廠 = object.__getattribute__(self, "CloudStorageClient工廠")
+        if Client工廠 is not None and not callable(Client工廠):
+            raise ValueError("Published生產設定無效") from None
+        Bucket名稱 = object.__getattribute__(self, "CloudStorageBucket名稱")
+        if Bucket名稱 is not None and (
+            type(Bucket名稱) is not str or not 1 <= len(Bucket名稱) <= 222 or not Bucket名稱.isascii()
+        ):
+            raise ValueError("Published生產設定無效") from None
+        if 模式 and not callable(工廠) and not callable(Client工廠):
             raise ValueError("Published生產設定無效") from None
 
 
@@ -174,16 +226,16 @@ class 延遲憑證管理服務:
         參數：無；使用已封裝狀態或固定測試資料。
         返回值：無；建立尚未安裝服務的per-app provider slot。
         """
-        self._服務: SQLite憑證管理服務 | None = None
+        self._服務: SQLite憑證管理服務 | PostgreSQL憑證儲存庫 | None = None
         self._條件 = Condition(RLock()); self._進行中 = 0; self._正在停止 = False; self._停止中的服務 = None
         self._世代 = 0; self._目前世代: int | None = None; self._停止中世代: int | None = None
-    def 安裝(self, 服務: SQLite憑證管理服務) -> int:
+    def 安裝(self, 服務: SQLite憑證管理服務 | PostgreSQL憑證儲存庫) -> int:
         """在 startup exact-once 安裝真實 SQLite adapter。
         描述：在 startup exact-once 安裝真實 SQLite adapter。
         參數：``服務``。
         返回值：無；exact-once保存啟動中的``SQLite憑證管理服務``。
         """
-        if type(服務) is not SQLite憑證管理服務:
+        if type(服務) not in (SQLite憑證管理服務, PostgreSQL憑證儲存庫):
             raise ValueError("Published憑證管理服務無效") from None
         with self._條件:
             if self._服務 is not None or self._進行中:
@@ -191,14 +243,14 @@ class 延遲憑證管理服務:
             self._世代 += 1; self._目前世代 = self._世代
             self._正在停止 = False; self._停止中的服務 = None; self._停止中世代 = None; self._服務 = 服務
             return self._世代
-    def 清除(self, 服務: SQLite憑證管理服務, 世代: int) -> None:
+    def 清除(self, 服務: SQLite憑證管理服務 | PostgreSQL憑證儲存庫, 世代: int) -> None:
         """shutdown 只清除本次 startup 的 exact provider reference。
         描述：shutdown 只清除本次 startup 的 exact provider reference。參數：``服務``與``世代``。
         返回值：無；只有identity相同時清除目前服務參照。
         """
         self._撤銷並等待(服務, 世代)
     def _撤銷並等待(
-        self, 服務: SQLite憑證管理服務, 世代: int | None, *, 允許解析目前世代: bool = False,
+        self, 服務: SQLite憑證管理服務 | PostgreSQL憑證儲存庫, 世代: int | None, *, 允許解析目前世代: bool = False,
     ) -> None:
         """由production owner繞過可失敗wrapper，依世代撤銷slot並等待active lease。"""
         with self._條件:
@@ -361,10 +413,12 @@ class 生產Published執行資源:
                  發布管理服務: 發布管理協調器 | None = None,
                  技能套件協調器物件: 技能套件協調器 | None = None,
                  技能套件發布器物件: 技能套件發布器 | None = None,
-                 端點發布服務物件: SQLite端點發布服務 | None = None,
+                 端點發布服務物件: object | None = None,
                  憑證管理代理: 延遲憑證管理服務 | None = None,
-                 憑證管理服務物件: SQLite憑證管理服務 | None = None,
-                 憑證管理世代: int | None = None) -> None:
+                 憑證管理服務物件: object | None = None,
+                 憑證管理世代: int | None = None,
+                 PostgreSQL資源物件: object | None = None,
+                 CloudStorageClient物件: object | None = None) -> None:
         """保存已成功安裝的資源參照。
         參數：代理、編排器、工具庫與模型表皆屬於同一次 startup。
         返回值：``None``；Python 建構完成 lifespan resource。
@@ -378,6 +432,10 @@ class 生產Published執行資源:
         self._技能套件協調器, self._技能套件發布器 = 技能套件協調器物件, 技能套件發布器物件
         self._端點發布服務, self._憑證管理代理, self._憑證管理服務 = 端點發布服務物件, 憑證管理代理, 憑證管理服務物件
         self._憑證管理世代 = 憑證管理世代
+        self._PostgreSQL資源 = PostgreSQL資源物件
+        self._CloudStorageClient = CloudStorageClient物件
+        self.PostgreSQL提供者 = None
+        self._PostgreSQL治理提供者: tuple[object, ...] | None = None
         self._關閉條件 = Condition(RLock())
         self._已關閉 = False
         self._關閉狀態 = "尚未開始"
@@ -572,6 +630,31 @@ class 生產Published執行資源:
                     elif 普通清除錯誤 is None:
                         普通清除錯誤 = 錯誤
             self._工具庫 = None
+        # Release external clients only after every route-owned provider has
+        # been revoked and drained.
+        try:
+            client = self._CloudStorageClient
+            if client is not None:
+                client.close()
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通清除錯誤 is None:
+                普通清除錯誤 = 錯誤
+        finally:
+            self._CloudStorageClient = None
+            self._PostgreSQL治理提供者 = None
+        try:
+            pg = self._PostgreSQL資源
+            if pg is not None:
+                asyncio.run(pg.關閉())
+        except BaseException as 錯誤:
+            if isinstance(錯誤, _控制流程例外):
+                if 控制流程錯誤 is None: 控制流程錯誤 = 錯誤
+            elif 普通清除錯誤 is None:
+                普通清除錯誤 = 錯誤
+        finally:
+            self._PostgreSQL資源 = None
         if 控制流程錯誤 is not None:
             raise 控制流程錯誤
         if 普通清除錯誤 is not None:
@@ -684,6 +767,22 @@ class 生產Published執行建構器:
 
             描述：在 threadpool 建立並安裝一次真實 Published composition。
             """
+            if 設定.交易儲存.後端 == "postgres":
+                主資源 = await run_in_threadpool(
+                    _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
+                    self._發布管理代理, self._憑證管理代理,
+                )
+                try:
+                    return await run_in_threadpool(
+                        _安裝PostgreSQL治理提供者,
+                        主資源, 設定.交易儲存,
+                        self._管理稽核代理, self._端點文件代理,
+                        self._Owner觀測代理, self._端點查詢代理,
+                        self._設定.Owner觀測游標金鑰,
+                    )
+                except BaseException:
+                    await 主資源.關閉()
+                    raise
             主資源 = await 安裝管理稽核資源(await run_in_threadpool(
                 _建立Published資源, 設定, self._設定, 代理, self._草稿規劃代理,
                 self._發布管理代理, self._憑證管理代理,
@@ -752,14 +851,18 @@ class 生產Controller建構器:
             副作用：
                 先在 threadpool 查詢 FS identity，再委派一次 Web resource factory。
             """
-            await run_in_threadpool(
-                _驗證資料庫實體隔離, 設定.資料庫路徑, self._Published._設定.發布資料庫路徑,
-            )
+            if 設定.交易儲存.後端 == "sqlite":
+                await run_in_threadpool(
+                    _驗證資料庫實體隔離, 設定.資料庫路徑, self._Published._設定.發布資料庫路徑,
+                )
             return await Web工廠()
 
         return 發布介面相依項(
             網頁.路由器清單 + 發布.路由器清單,
-            (建立已隔離Web資源,) + 發布.資源工廠清單,
+            # The canonical pool factory is prepended by 生產組裝.  Published
+            # then owns the GCS/provider stack before Web's remaining startup
+            # resources, giving shutdown the exact reverse order.
+            發布.資源工廠清單 + (建立已隔離Web資源,),
         )
 
 
@@ -779,8 +882,92 @@ def _工具摘要(name: str, revision: str, description: str, parameters_json: s
 
 
 from .生產管理稽核 import (
-    建立管理稽核權限, 建立管理稽核路由, 安裝管理稽核資源, 安裝管理遮蔽資源,
+    延遲管理稽核服務, 建立管理稽核權限, 建立管理稽核路由,
+    安裝管理稽核資源, 安裝管理遮蔽資源,
 )
+
+
+def _安裝PostgreSQL治理提供者(
+    主資源: 生產Published執行資源,
+    設定: object,
+    管理代理: 延遲管理稽核服務,
+    文件代理: 延遲端點文件服務,
+    Owner代理: 延遲Owner觀測服務,
+    查詢代理: 延遲端點管理查詢服務,
+    游標金鑰: bytes | None,
+) -> 生產Published執行資源:
+    """安裝 PostgreSQL-only 管理／文件／觀測 providers，並納入唯一 shutdown owner。"""
+    providers = object.__getattribute__(主資源, "PostgreSQL提供者")
+    credential = object.__getattribute__(主資源, "_憑證管理服務")
+    if (type(providers) is not tuple or len(providers) < 6
+            or type(credential) is not PostgreSQL憑證儲存庫):
+        raise ValueError("PostgreSQL治理組裝無效") from None
+    audit, projection = providers[4], providers[5]
+    if type(audit) is not PostgreSQL稽核服務 or type(projection) is not PostgreSQL呼叫查詢投影:
+        raise ValueError("PostgreSQL治理組裝無效") from None
+
+    def 讀取詳情(endpoint_id: str, invocation_id: str):
+        return projection.查詢管理員原始資料(True, endpoint_id, invocation_id)
+
+    def 配對存在(endpoint_id: str, invocation_id: str):
+        return projection.管理員呼叫配對存在(endpoint_id, invocation_id)
+
+    receipt_authority = object.__getattribute__(管理代理, "_拒絕收據權威")
+    admin = PostgreSQL管理稽核提供者(
+        projection, audit,
+        管理員原始資料稽核閘門(audit, 讀取詳情, 配對存在, receipt_authority),
+    )
+    docs = PostgreSQL端點文件服務(設定, PostgreSQL憑證文件分類器(credential))
+    services: list[tuple[object, object, int]] = []
+    try:
+        services.append((管理代理, admin, 管理代理.安裝(admin)))
+        services.append((文件代理, docs, 文件代理.安裝(docs)))
+        if 游標金鑰 is not None:
+            owner = PostgreSQL端點觀測查詢服務(
+                設定, 游標簽章金鑰=游標金鑰,
+            )
+            endpoint_query = PostgreSQL端點管理查詢服務(
+                設定, 游標簽章金鑰=衍生端點查詢游標金鑰(游標金鑰),
+            )
+            services.append((Owner代理, owner, Owner代理.安裝(owner)))
+            services.append((查詢代理, endpoint_query, 查詢代理.安裝(endpoint_query)))
+    except BaseException:
+        for proxy, service, generation in reversed(services):
+            try:
+                proxy.清除(service, generation)
+            except BaseException:
+                pass
+        raise
+
+    原始清理 = object.__getattribute__(主資源, "_執行關閉同步")
+
+    def 清除PostgreSQL治理() -> None:
+        控制流程錯誤 = 普通錯誤 = None
+        for proxy, service, generation in reversed(services):
+            try:
+                proxy.清除(service, generation)
+            except BaseException as error:
+                if isinstance(error, _控制流程例外):
+                    if 控制流程錯誤 is None:
+                        控制流程錯誤 = error
+                elif 普通錯誤 is None:
+                    普通錯誤 = error
+        try:
+            原始清理()
+        except BaseException as error:
+            if isinstance(error, _控制流程例外):
+                if 控制流程錯誤 is None:
+                    控制流程錯誤 = error
+            elif 普通錯誤 is None:
+                普通錯誤 = error
+        if 控制流程錯誤 is not None:
+            raise 控制流程錯誤
+        if 普通錯誤 is not None:
+            raise 普通錯誤
+
+    主資源._執行關閉同步 = 清除PostgreSQL治理
+    主資源._PostgreSQL治理提供者 = tuple(service for _, service, _ in services)
+    return 主資源
 
 
 def _提交協調資料庫(協調資料庫: sqlite3.Connection) -> None:
@@ -877,6 +1064,128 @@ def _執行技能套件啟動協調(發布: Published生產設定) -> 技能套�
     raise AssertionError
 
 
+def _建立PostgreSQL資源(生產: 生產設定, 發布: Published生產設定, 代理, 草稿代理=None, 管理代理=None, 憑證管理代理=None) -> 生產Published執行資源:
+    """Build PostgreSQL composition with one failure-cleanup owner."""
+    狀態: dict[str, object] = {}
+    try:
+        return _建立PostgreSQL資源核心(
+            生產, 發布, 代理, 草稿代理, 管理代理, 憑證管理代理, 狀態,
+        )
+    except BaseException:
+        資源 = 狀態.get("resource")
+        if isinstance(資源, 生產Published執行資源):
+            try:
+                資源._清除同步()
+            except BaseException:
+                pass
+        else:
+            憑證代理 = 狀態.get("credential_proxy")
+            憑證服務 = 狀態.get("credential_service")
+            憑證世代 = 狀態.get("credential_generation")
+            if (type(憑證代理) is 延遲憑證管理服務
+                    and type(憑證服務) in (SQLite憑證管理服務, PostgreSQL憑證儲存庫)
+                    and type(憑證世代) is int):
+                try: 憑證代理._撤銷並等待(憑證服務, 憑證世代)
+                except BaseException: pass
+            編排器 = 狀態.get("orchestrator")
+            if isinstance(編排器, 外部呼叫編排器):
+                try: 代理.清除(編排器)
+                except BaseException: pass
+            client = 狀態.get("client")
+            if client is not None:
+                try: client.close()
+                except BaseException: pass
+        raise
+
+
+def _建立PostgreSQL資源核心(生產: 生產設定, 發布: Published生產設定, 代理,
+                         草稿代理=None, 管理代理=None, 憑證管理代理=None,
+                         狀態: dict[str, object] | None = None) -> 生產Published執行資源:
+    """Construct the CP4 PostgreSQL composition without SQLite authorities."""
+    設定 = 生產.交易儲存
+    if any(x is None for x in (草稿代理, 管理代理, 憑證管理代理)):
+        raise ValueError("PostgreSQL Published lazy authority 不完整")
+    if not callable(發布.CloudStorageClient工廠) and not callable(發布.CloudStorageBucket工廠):
+        raise ValueError("PostgreSQL Cloud Storage authority 未設定") from None
+    client = None
+    if callable(發布.CloudStorageClient工廠):
+        client = 發布.CloudStorageClient工廠()
+        if 狀態 is not None: 狀態["client"] = client
+        bucket_name = 發布.CloudStorageBucket名稱
+        bucket = client.bucket(bucket_name) if bucket_name is not None else None
+    else:
+        bucket = 發布.CloudStorageBucket工廠()
+    if bucket is None:
+        raise ValueError("PostgreSQL Cloud Storage authority 未設定") from None
+    cloud = CloudStorage技能套件權威(bucket)
+    cloud_coordinator = CloudStorage技能套件協調器(cloud)
+    # All following repositories are PostgreSQL transaction consumers.  The
+    # shared pool has already passed exact readiness in the preceding factory.
+    呼叫庫 = PostgreSQL呼叫儲存庫(設定)
+    if 發布.憑證封套工廠 is None:
+        raise ValueError("PostgreSQL 憑證封套未設定")
+    封套 = 發布.憑證封套工廠()
+    憑證 = PostgreSQL憑證儲存庫(設定, 封套)
+    if type(憑證管理代理) is not 延遲憑證管理服務:
+        raise ValueError("PostgreSQL Published credential authority 無效") from None
+    憑證管理世代 = 憑證管理代理.安裝(憑證)
+    if 狀態 is not None:
+        狀態["credential_proxy"] = 憑證管理代理
+        狀態["credential_service"] = 憑證
+        狀態["credential_generation"] = 憑證管理世代
+    解析器 = _PostgreSQL版本模組.PostgreSQL目前版本解析器(設定)
+    工作階段庫 = PostgreSQLPublished工作階段儲存庫(設定)
+    限流器 = PostgreSQL限流儲存庫(設定)
+    快照庫 = PostgreSQL發布快照儲存庫(設定, _工具摘要)
+    工具庫 = 工具發布庫()
+    發布.工具發布安裝器(工具庫)
+    模型表 = 發布.模型供應商註冊表工廠()
+    if type(模型表) is not dict or not 模型表: raise ValueError("模型供應商註冊表無效")
+    端點服務 = _PostgreSQL端點模組.PostgreSQL端點庫(
+        設定, lambda: f"ep-{uuid.uuid4().hex}", lambda: f"ver-{uuid.uuid4().hex}",
+        lambda: f"cred-{uuid.uuid4().hex}", lambda: f"sa-{uuid.uuid4().hex}", time.time,
+    )
+    版本服務 = _PostgreSQL版本模組.PostgreSQL版本配置服務(
+        設定, lambda: f"ver-{uuid.uuid4().hex}", time.time,
+    )
+    Runtime橋接 = 建立發布執行嘗試橋接(發布快照儲存庫=快照庫, 技能套件載入器=cloud, 工具發布庫=工具庫, 模型供應商註冊表=模型表, 工具呼叫紀錄器=呼叫庫.附加工具呼叫)
+    台帳 = InvocationLedger橋接(呼叫庫)
+    編排器 = 外部呼叫編排器(解析器, 呼叫庫, 憑證, 解析未找到型別=目前版本不存在錯誤, 釘選型別=已釘選版本, 驗證型別=憑證驗證結果, 驗證狀態型別=憑證驗證狀態, 階段型別=擷取階段, 準備擷取=準備呼叫擷取, 寫入擷取=寫入呼叫擷取, 限流決策型別=限流決策, 提交雙層計數=限流器.增加雙層計數並判定, 驗證輸入=驗證釘選輸入結構, 開始執行嘗試=台帳.開始執行嘗試, 執行嘗試=Runtime橋接, 驗證輸出=驗證釘選輸出結構, 記錄執行嘗試=台帳.記錄執行嘗試, 工作階段儲存庫=工作階段庫)
+    代理.安裝(編排器)
+    if 狀態 is not None: 狀態["orchestrator"] = 編排器
+    資源 = 生產Published執行資源(
+        代理, 編排器, 工具庫, 模型表,
+        憑證管理代理=憑證管理代理, 憑證管理服務物件=憑證,
+        憑證管理世代=憑證管理世代, CloudStorageClient物件=client,
+    )
+    if 狀態 is not None: 狀態["resource"] = 資源
+    資源.PostgreSQL提供者 = (
+        端點服務, 版本服務,
+        cloud, cloud_coordinator,
+        PostgreSQL稽核服務(設定), PostgreSQL呼叫查詢投影(設定),
+        PostgreSQL不可逆遮蔽服務(設定), PostgreSQL保存候選規劃器(設定),
+        PostgreSQL保存清除服務(設定),
+    )
+    if 發布.Planner設定 is not None:
+        資源._Planner資源 = 建立生產Planner資源(
+            發布.Planner設定, 設定, 工具庫, 草稿代理,
+        )
+        資源._端點發布服務 = 端點服務
+        資源._技能套件發布器 = cloud
+        資源._技能套件協調器 = cloud_coordinator
+        管理服務 = 發布管理協調器(
+            草稿服務=資源._Planner資源.取得規劃服務(),
+            擁有者解析器=資源._Planner資源.取得擁有者解析器(),
+            套件發布器物件=cloud, 套件協調器物件=cloud_coordinator,
+            端點發布服務=端點服務, 憑證封套=封套,
+            版本配置服務=版本服務,
+            模型設定=_建立Published模型設定(生產.模型供應器, 生產.模型名稱),
+        )
+        管理代理.安裝(管理服務)
+        資源._發布管理代理, 資源._發布管理服務 = 管理代理, 管理服務
+    return 資源
+
+
 def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                     代理: 延遲外部呼叫編排器,
                     草稿代理: 延遲草稿規劃服務 | None = None,
@@ -898,6 +1207,8 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
 
     描述：startup 建立完整 Published composition，任一局部失敗皆清空 handler authority。
     """
+    if 生產.交易儲存.後端 == "postgres":
+        return _建立PostgreSQL資源(生產, 發布, 代理, 草稿代理, 管理代理, 憑證管理代理)
     資料庫 = 發布.發布資料庫路徑
     _驗證資料庫實體隔離(生產.資料庫路徑, 資料庫)
     初始化發布介面資料庫(資料庫)
@@ -988,15 +1299,7 @@ def _建立Published資源(生產: 生產設定, 發布: Published生產設定,
                 端點發布服務=端點發布服務,
                 憑證封套=憑證封套,
                 版本配置服務=版本服務,
-                模型設定={
-                    "provider": 生產.模型供應器,
-                    "model": 生產.模型名稱,
-                    "temperature": 0.0,
-                    "max_tokens": 4096,
-                    "timeout_seconds": 60.0,
-                    "structured_output": True,
-                    "schema_retry_count": 1,
-                },
+                模型設定=_建立Published模型設定(生產.模型供應器, 生產.模型名稱),
             )
             管理代理.安裝(管理服務)
         return 生產Published執行資源(

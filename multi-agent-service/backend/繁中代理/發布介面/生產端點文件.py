@@ -6,7 +6,6 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Condition, RLock
-from typing import Protocol
 
 from .端點文件 import 端點文件投影, 渲染端點文件
 from .憑證.服務 import SQLite憑證驗證服務, 憑證驗證結果, 憑證驗證狀態
@@ -24,10 +23,6 @@ class 文件憑證未授權(RuntimeError):
     """所有 key identity/status denial 的單一公開分類。"""
 
 
-class 文件憑證分類器(Protocol):
-    def 驗證(self, endpoint_id: str, presented_api_key: str) -> 憑證驗證結果: ...
-
-
 class SQLite憑證文件分類器:
     """只暴露既有 SQLite credential service 的 read-only 驗證；不刷新 last_used。"""
 
@@ -43,12 +38,13 @@ class SQLite憑證文件分類器:
 class SQLite端點文件服務:
     """每次 operation 以 fresh mode=ro BEGIN snapshot 投影 current version safe columns。"""
 
-    def __init__(self, 資料庫路徑: str | Path, 憑證分類器: 文件憑證分類器) -> None:
+    def __init__(self, 資料庫路徑: str | Path, 憑證分類器: object) -> None:
         if type(資料庫路徑) not in (str, type(Path())):
             raise ValueError(_失敗) from None
         path = Path(資料庫路徑)
-        verifier = getattr(憑證分類器, "驗證", None)
-        if not path.is_absolute() or not path.name or not callable(verifier):
+        驗證方法 = type(憑證分類器).__dict__.get("驗證")
+        if (not path.is_absolute() or not path.name
+                or not callable(驗證方法)):
             raise ValueError(_失敗) from None
         self._uri = path.as_uri() + "?mode=ro"
         self._classifier = 憑證分類器
@@ -196,8 +192,9 @@ class 延遲端點文件服務:
         self._active = 0
         self._draining = False
 
-    def 安裝(self, service: SQLite端點文件服務) -> int:
-        if type(service) is not SQLite端點文件服務:
+    def 安裝(self, service: object) -> int:
+        from .治理.PostgreSQL端點文件服務 import PostgreSQL端點文件服務
+        if type(service) not in (SQLite端點文件服務, PostgreSQL端點文件服務):
             raise ValueError(_失敗) from None
         with self._condition:
             if self._service is not None or self._active or self._draining_service is not None:
@@ -258,7 +255,10 @@ async def 安裝端點文件資源(main_resource, proxy: 延遲端點文件服�
         classifier = SQLite憑證文件分類器(SQLite憑證驗證服務(database_path))
         service = SQLite端點文件服務(database_path, classifier)
         generation = proxy.安裝(service)
-        original_cleanup = getattr(main_resource, "_執行關閉同步", None)
+        try:
+            original_cleanup = object.__getattribute__(main_resource, "_執行關閉同步")
+        except AttributeError:
+            original_cleanup = None
         if not callable(original_cleanup):
             raise ValueError(_失敗) from None
 

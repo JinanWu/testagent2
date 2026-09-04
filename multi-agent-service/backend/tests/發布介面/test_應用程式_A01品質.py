@@ -304,6 +304,8 @@ def test_final_route保留callable_object身份與source有效ID():
             return {"ok": True}
 
         def __eq__(self, other):
+            if other is type or other is object:
+                return False
             raise AssertionError("不得比較 endpoint")
 
         def __hash__(self):

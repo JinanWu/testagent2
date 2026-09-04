@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 import asgi as root_asgi
 from 繁中代理.發布介面 import asgi as asgi模組
@@ -242,7 +243,7 @@ def test_lifespan成功時固定authority各建立一次且shutdown只清理一�
     with TestClient(app) as client:
         assert client.get("/healthz").status_code == 200
         assert 次數 == {"installer": 1, "model": 1, "shutdown": 0}
-        Published資源 = app.state.發布介面資源[1]
+        Published資源 = 取得Published資源(app)
         assert Published資源._憑證管理服務 is not None
         assert Published資源._憑證管理代理._服務 is Published資源._憑證管理服務
     assert 次數 == {"installer": 1, "model": 1, "shutdown": 1}

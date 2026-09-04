@@ -14,9 +14,9 @@ from .設定 import 生產設定
 from .網頁工作階段 import 網頁使用者, 網頁工作階段服務
 from .路由.網頁認證 import (
     建立CSRF相依項,
-    建立SQLite帳密驗證器,
+    建立SQLite帳密驗證器, 建立PostgreSQL帳密驗證器,
     建立目前工作階段相依項,
-    建立網頁認證路由器,
+    建立網頁認證路由器, 是核准工作階段服務,
 )
 
 目前工作階段相依型別 = Callable[..., 網頁使用者]
@@ -30,7 +30,7 @@ def _取得生產工作階段權限(目前工作階段相依):
         服務, 設定 = _工作階段權限中繼資料[目前工作階段相依]
     except (KeyError, TypeError):
         raise ValueError("生產組裝無效") from None
-    if type(服務) is not 網頁工作階段服務:
+    if not 是核准工作階段服務(服務):
         raise ValueError("生產組裝無效") from None
     return 服務, 設定
 
@@ -89,20 +89,22 @@ def 建立生產相依項(
     """
     if type(設定) is not 生產設定:
         raise ValueError("生產組裝無效")
-    if 設定.交易儲存.後端 == "postgres":
-        確認PostgreSQL全域就緒()
-        raise RuntimeError("PostgreSQL 儲存後端尚未接線")
     網頁設定 = 設定.建立網頁安全設定()
-    工作階段服務 = 網頁工作階段服務(
-        設定.資料庫路徑,
-        有效秒數=設定.工作階段有效秒數,
-    )
+    if 設定.交易儲存.後端 == "postgres":
+        from .PostgreSQL網頁工作階段 import PostgreSQL網頁工作階段服務
+        工作階段服務 = PostgreSQL網頁工作階段服務(設定.交易儲存, 有效秒數=設定.工作階段有效秒數)
+        驗證器 = 建立PostgreSQL帳密驗證器(設定.交易儲存)
+    else:
+        工作階段服務 = 網頁工作階段服務(設定.資料庫路徑, 有效秒數=設定.工作階段有效秒數)
+        驗證器 = 建立SQLite帳密驗證器(設定.資料庫路徑)
+    from .路由.網頁認證 import 登錄核准工作階段服務
+    登錄核准工作階段服務(工作階段服務)
     目前工作階段相依 = 建立目前工作階段相依項(工作階段服務, 網頁設定)
     CSRF相依 = 建立CSRF相依項(工作階段服務, 網頁設定)
     _工作階段權限中繼資料[目前工作階段相依] = (工作階段服務, 網頁設定)
     認證路由器 = 建立網頁認證路由器(
         工作階段服務,
-        建立SQLite帳密驗證器(設定.資料庫路徑),
+        驗證器,
         設定=網頁設定,
         目前工作階段相依項=目前工作階段相依,
     )
@@ -112,9 +114,15 @@ def 建立生產相依項(
         附加相依項 = 建構器.建立附加相依項(設定, 目前工作階段相依, CSRF相依)
         if type(附加相依項) is not 發布介面相依項:
             raise ValueError("生產組裝無效")
+    資源工廠 = 附加相依項.資源工廠清單
+    if 設定.交易儲存.後端 == "postgres":
+        from .PostgreSQL資源 import 建立PostgreSQL資源
+        async def 建立池資源():
+            return await 建立PostgreSQL資源(設定.交易儲存)
+        資源工廠 = (建立池資源, *資源工廠)
     return 發布介面相依項(
         (認證路由器, *附加相依項.路由器清單),
-        附加相依項.資源工廠清單,
+        資源工廠,
     )
 
 
