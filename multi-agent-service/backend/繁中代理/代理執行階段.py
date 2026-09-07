@@ -203,7 +203,11 @@ class 代理執行階段:
             `上下文壓縮器物件`，後者可能包含 auxiliary LLM summary 函式。
         """
         self.工作階段庫物件 = 工作階段庫物件
-        設定目前工作階段資料庫路徑(str(工作階段庫物件.資料庫路徑))
+        if type(工作階段庫物件) is 工作階段庫:
+            設定目前工作階段資料庫路徑(str(object.__getattribute__(工作階段庫物件, "資料庫路徑")))
+        else:
+            # PostgreSQL runtime 沒有也不得模擬 SQLite path authority；並清除同脈絡舊值。
+            設定目前工作階段資料庫路徑(None)
         self.模型供應商物件 = 模型供應商物件
         self.模型名稱 = 模型名稱
         self.供應商名稱 = 供應商名稱
@@ -261,7 +265,17 @@ class 代理執行階段:
             完整使用者上下文；不會沿用 local/admin 預設權限。
         """
         try:
-            return 建立使用者庫(self.工作階段庫物件.資料庫路徑).建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
+            if type(self.工作階段庫物件) is 工作階段庫:
+                使用者們 = 建立使用者庫(object.__getattribute__(self.工作階段庫物件, "資料庫路徑"))
+            else:
+                from .PostgreSQL工作階段庫 import PostgreSQL工作階段庫
+                from .PostgreSQL使用者庫 import PostgreSQL使用者庫
+                if type(self.工作階段庫物件) is not PostgreSQL工作階段庫:
+                    raise ValueError("工作階段庫不支援使用者解析")
+                使用者們 = PostgreSQL使用者庫(
+                    object.__getattribute__(self.工作階段庫物件, "凍結設定")
+                )
+            return 使用者們.建立使用者上下文(user_id=user_id, 工作目錄=工作目錄)
         except ValueError:
             允許目錄 = [Path(工作目錄).expanduser().resolve()]
             return 使用者上下文(

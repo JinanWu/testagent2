@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
@@ -95,7 +96,7 @@ def 建立正式v1(
         users.連線.close()
     app = _管理應用(web, db, bundles)
     with TestClient(app) as _client:
-        resource = app.state.發布介面資源[-1]
+        resource = 取得Published資源(app)
         planner = resource.取得Planner資源()._服務
         draft = planner.建立草稿(owner_id, "REQ-V1", ("stable",), "structured", 現在=time.time())
         preview = draft.綱要
@@ -118,7 +119,7 @@ def 正式切換v2(*, web: Path, db: Path, bundles: Path, skill_root: Path,
         "---\nname: stable\ndescription: A08 stable skill\n---\n\nBUNDLE-V2", encoding="utf-8")
     app = _管理應用(web, db, bundles)
     with TestClient(app) as _client:
-        result = app.state.發布介面資源[-1].取得發布管理服務().原子建立並切換版本(
+        result = 取得Published資源(app).取得發布管理服務().原子建立並切換版本(
             擁有者使用者識別碼=owner, 端點識別碼=endpoint, 配置=_配置(2))
         assert not isinstance(result, 管理操作錯誤)
         assert result.版本編號 == 2 and result.目前版本識別碼 == result.版本識別碼

@@ -19,6 +19,7 @@ from typing import Any
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 import 繁中代理.發布介面.生產Published執行 as 生產Published執行模組
 from 繁中代理.使用者 import 使用者庫
@@ -425,7 +426,7 @@ def _取得Planner聚合(應用程式):
     例外：資源未啟動或 composition 漂移時傳出 attribute/index 錯誤。
     重要副作用：無；只讀 app state。
     """
-    return 應用程式.state.發布介面資源[-1].取得Planner資源().取得規劃服務()
+    return 取得Published資源(應用程式).取得Planner資源().取得規劃服務()
 
 
 def _取得管理服務(應用程式):
@@ -436,7 +437,7 @@ def _取得管理服務(應用程式):
     例外：資源尚未啟動或 wiring 漂移時傳出明確 attribute/index 錯誤。
     重要副作用：無；只讀 app state，不直接呼叫 coordinator。
     """
-    return 應用程式.state.發布介面資源[-1].取得發布管理服務()
+    return 取得Published資源(應用程式).取得發布管理服務()
 
 
 def _建立完整副作用快照(暫存目錄: Path, 應用程式) -> dict[str, Any]:
@@ -684,7 +685,7 @@ def test_construction零封套呼叫且startup共用identity並於shutdown撤銷
     捕捉管理代理 = None
     with TestClient(應用程式, raise_server_exceptions=False):
         assert 封套呼叫 == ["envelope"]
-        Published資源 = 應用程式.state.發布介面資源[-1]
+        Published資源 = 取得Published資源(應用程式)
         Planner資源 = Published資源.取得Planner資源()
         管理服務 = Published資源.取得發布管理服務()
         assert Planner資源 is not None and 管理服務 is not None

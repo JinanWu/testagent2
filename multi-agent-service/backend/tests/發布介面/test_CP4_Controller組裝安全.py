@@ -121,18 +121,15 @@ def test_Published初始化後實體變成別名仍在callback前拒絕(tmp_path
         initializer 在暫存目錄將 Published 路徑建立為 Web DB 硬連結。
     """
     網頁資料庫, Published資料庫, 紀錄 = tmp_path / "web.sqlite3", tmp_path / "published.sqlite3", []
-
-    def 初始化網頁(路徑: Path) -> None:
-        """建立 Web 檔案；參數為路徑；返回 ``None``；例外原樣；副作用是寫檔。"""
-        路徑.write_bytes(b"web")
-        紀錄.append("Web migration")
+    (tmp_path / "bundles").mkdir()
+    原始Web初始化 = 網頁組裝.初始化發布介面資料庫
 
     def 初始化Published(路徑: Path) -> None:
         """建立 hardlink；參數為路徑；返回 ``None``；例外原樣；副作用是建立別名。"""
+        原始Web初始化(網頁資料庫)
         os.link(網頁資料庫, 路徑)
         紀錄.append("Published migration")
 
-    monkeypatch.setattr(網頁組裝, "初始化發布介面資料庫", 初始化網頁)
     monkeypatch.setattr(組裝, "初始化發布介面資料庫", 初始化Published)
     生產, 發布 = _設定(
         網頁資料庫, Published資料庫,
@@ -140,7 +137,7 @@ def test_Published初始化後實體變成別名仍在callback前拒絕(tmp_path
         lambda: 紀錄.append("model") or {"fake": object()},
     )
     _斷言啟動拒絕(生產, 發布)
-    assert 紀錄 == ["Web migration", "Published migration"]
+    assert 紀錄 == ["Published migration"]
 
 
 def _安裝可觀測發布(盒: dict):

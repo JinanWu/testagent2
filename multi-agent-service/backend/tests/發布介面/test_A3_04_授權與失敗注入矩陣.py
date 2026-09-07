@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
@@ -138,7 +139,7 @@ def _擁有者身份(環境: dict, 帳號: str = _帳號) -> 網頁使用者:
 
 def _Planner資源(應用):
     """取得 canonical startup 安裝的 Planner 資源。"""
-    return 應用.state.發布介面資源[1].取得Planner資源()
+    return 取得Published資源(應用).取得Planner資源()
 
 
 class _注入規劃器:
@@ -680,13 +681,15 @@ def test_兩owner並行canonical_requests與readback完全隔離(tmp_path):
         客戶端.cookies.clear()
         csrf二 = _登入(客戶端, _帳號二, _密碼二)
         cookie二 = dict(客戶端.cookies)
+        客戶端.cookies.clear()
 
         def 建立(資料):
             cookie, csrf, 標記 = 資料
+            cookie_header = "; ".join(f"{名稱}={值}" for 名稱, 值 in sorted(cookie.items()))
             return 客戶端.post(
                 _草稿路徑,
                 json={**_本文(), "original_requirement_text": f"建立 {標記} API"},
-                headers={"X-CSRF-Token": csrf}, cookies=cookie,
+                headers={"X-CSRF-Token": csrf, "Cookie": cookie_header},
             )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as 執行器:

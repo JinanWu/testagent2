@@ -199,8 +199,9 @@ class 延遲端點管理查詢服務:
         self._active = 0
         self._draining = False
 
-    def 安裝(self, service: SQLite端點管理查詢服務) -> int:
-        if type(service) is not SQLite端點管理查詢服務:
+    def 安裝(self, service: object) -> int:
+        from .治理.PostgreSQL端點管理查詢服務 import PostgreSQL端點管理查詢服務
+        if type(service) not in (SQLite端點管理查詢服務, PostgreSQL端點管理查詢服務):
             raise ValueError("Published端點查詢服務無效") from None
         with self._condition:
             if self._service is not None or self._active:
@@ -295,7 +296,10 @@ async def 安裝端點查詢資源(main_resource, proxy: 延遲端點管理查�
             database_path, 游標簽章金鑰=衍生端點查詢游標金鑰(deployment_key),
         )
         generation = proxy.安裝(service)
-        original_cleanup = getattr(main_resource, "_執行關閉同步", None)
+        try:
+            original_cleanup = object.__getattribute__(main_resource, "_執行關閉同步")
+        except AttributeError:
+            original_cleanup = None
         if not callable(original_cleanup):
             raise ValueError("Published端點查詢資源無效") from None
 

@@ -249,7 +249,7 @@ class InvocationLedger橋接:
         例外：型別不符時固定拋 ``生產橋接錯誤``。
         副作用：無。
         """
-        if type(repository) is not SQLite呼叫儲存庫:
+        if not isinstance(repository, (SQLite呼叫儲存庫,)) and repository.__class__.__name__ != "PostgreSQL呼叫儲存庫":
             raise 生產橋接錯誤("invocation ledger橋接初始化失敗") from None
         self._儲存庫 = repository
 

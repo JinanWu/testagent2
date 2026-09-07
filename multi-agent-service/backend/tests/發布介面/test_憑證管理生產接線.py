@@ -7,6 +7,7 @@ from threading import Event, Thread
 from typing import Any, cast
 
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.憑證.加密 import AESGCM憑證封套
@@ -69,7 +70,7 @@ def test_startup_exact_once建立管理provider且shutdown清除reference(tmp_pa
     published.技能套件發布根.mkdir()
     app = 建立CP4ASGI應用程式(web, published)
     with TestClient(app):
-        resource = app.state.發布介面資源[1]
+        resource = 取得Published資源(app)
         assert keyring呼叫 == ["keyring"]
         assert 呼叫 == ["installer", "models"]
         assert resource._憑證管理服務 is not None

@@ -379,6 +379,9 @@ def test_手動cookie與header解析固定拒絕且不自動422(tmp_path):
         client.cookies.set("published_web_session", "x" * 513, path="/api")
         oversized = client.get("/api/auth/session")
         assert oversized.status_code == 401
+        # 前一段故意植入的超大 cookie 已完成驗收；先清除，避免它與登入新發的
+        # host-only cookie 形成真實 duplicate-cookie ambiguity。Duplicate 必須 fail closed。
+        client.cookies.clear()
         login = client.post(
             "/api/auth/login", json={"username": "alice", "password": "correct horse"}
         )

@@ -23,6 +23,7 @@ from ..嚴格JSON import 建立正規JSON, 解析嚴格JSON
 from ..安全技能目錄 import 安全技能描述, 建立錨定安全技能目錄
 from ..執行期.工具發布庫 import 工具發布庫, 工具發布註冊
 from .權限協調 import 能力摘要
+from .工具政策 import ONE_SHOT_PUBLISHED禁止工具
 
 _識別 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _工具修訂 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:@-]{0,127}\Z")
@@ -123,17 +124,30 @@ class 擁有者能力轉接器:
     副作用：每次公開操作重查權威並有界唯讀掃描技能根。
     """
 
-    def __init__(self, 使用者庫物件: 使用者權威來源, 工具發布庫物件: 工具發布庫, 處理器發布: str) -> None:
+    def __init__(
+        self, 使用者庫物件: 使用者權威來源, 工具發布庫物件: 工具發布庫,
+        處理器發布: str,
+        one_shot禁止工具: frozenset[tuple[str, str]] = ONE_SHOT_PUBLISHED禁止工具,
+    ) -> None:
         """保存三個 authority locator。
 
         參數：使用者庫、exact 工具發布庫與 release ID。回傳：無。例外：輸入不符固定
         映射為能力錯誤。副作用：不查 authority、不掃描檔案，也不取得發布檢視。
         """
-        if type(工具發布庫物件) is not 工具發布庫 or not _是識別(處理器發布):
+        if (
+            type(工具發布庫物件) is not 工具發布庫 or not _是識別(處理器發布)
+            or type(one_shot禁止工具) is not frozenset
+            or any(
+                type(項目) is not tuple or len(項目) != 2
+                or not _是識別(項目[0]) or not _是工具修訂(項目[1])
+                for 項目 in one_shot禁止工具
+            )
+        ):
             _拒絕()
         self._使用者庫 = 使用者庫物件
         self._工具發布庫 = 工具發布庫物件
         self._處理器發布 = 處理器發布
+        self._one_shot禁止工具 = one_shot禁止工具
 
     def 查詢規劃權限(self, 擁有者: str, /) -> 規劃權限快照:
         """重查完整 owner authority。
@@ -231,6 +245,8 @@ class 擁有者能力轉接器:
             名稱, 說明, 結構 = 註冊.tool.名稱, 註冊.tool.說明, 註冊.tool.參數結構
             if not _是識別(名稱) or not _是工具修訂(註冊.revision) or type(說明) is not str or len(說明.encode("utf-8")) > 4096 or type(結構) is not dict:
                 raise ValueError
+            if (名稱, 註冊.revision) in self._one_shot禁止工具:
+                continue
             結構JSON = 建立正規JSON(結構)
             if len(結構JSON.encode("utf-8")) > 32768:
                 raise ValueError

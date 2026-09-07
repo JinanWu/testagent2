@@ -32,6 +32,7 @@ RUN playwright install --with-deps chromium \
 # 原始碼層：覆蓋掉上面的空套件目錄
 COPY 繁中代理/ ./繁中代理/
 COPY assets/ ./assets/
+COPY skills/ ./skills/
 COPY asgi.py ./
 
 COPY docker-seed/ ./docker-seed/
@@ -39,7 +40,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN useradd --create-home --uid 10001 app \
  && chmod 755 /usr/local/bin/docker-entrypoint \
- && mkdir -p /tmp/agent-service/bundles \
+ && mkdir -p /tmp/agent-service/bundles /tmp/agent-service/workspaces \
  && chown -R app:app /app /tmp/agent-service
 USER app
 

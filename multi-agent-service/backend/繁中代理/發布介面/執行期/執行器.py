@@ -20,7 +20,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
 from ..技能套件.清單 import (
-    是合法技能套件清單參照,
+    是合法技能套件定位參照,
     計算套件雜湊 as 計算清單套件雜湊,
 )
 from ..技能套件.安全複製 import 技能套件最大總位元組數
@@ -30,6 +30,7 @@ from .模型契約 import 模型設定快照, 複製JSON, 重建設定
 
 _識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _雜湊 = re.compile(r"[0-9a-f]{64}")
+
 _固定錯誤 = "發布執行期不可用"
 _唯一來源 = "endpoint_version_snapshot"
 _最大檔案數 = 256
@@ -264,7 +265,11 @@ class 發布執行快照:
             for 值 in (endpoint_id, version_id, service_account_id, tool_handler_release):
                 if not _是識別碼(值):
                     raise ValueError
-            if not 是合法技能套件清單參照(manifest_reference):
+            bundle_id = manifest_reference.split("/", 1)[0] if type(manifest_reference) is str else None
+            if type(manifest_reference) is str and manifest_reference.startswith("bundles/v1/"):
+                部件 = manifest_reference.split("/")
+                bundle_id = 部件[2] if len(部件) == 4 else None
+            if not 是合法技能套件定位參照(manifest_reference, bundle_id):
                 raise ValueError
             if type(system_prompt) is not str or not system_prompt.strip() or len(system_prompt.encode()) > 500_000:
                 raise ValueError

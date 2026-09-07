@@ -17,6 +17,13 @@ dependencies = [
   "cryptography>=46.0.0",
   "httpx>=0.28.0",
   "ddgs>=9.0.0",
+  "psycopg==3.3.4",
+  "psycopg-binary==3.3.4",
+  "psycopg-pool==3.3.1",
+  "alembic==1.19.1",
+  "SQLAlchemy==2.0.52",
+  "google-cloud-secret-manager==2.24.0",
+  "google-cloud-storage==2.19.0",
 ]
 
 [project.scripts]

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
@@ -162,12 +163,12 @@ def _使用者識別碼(環境: dict, 帳號: str) -> str:
 
 def _Planner資源(應用):
     """取得 canonical startup 安裝的 Planner 資源。"""
-    return 應用.state.發布介面資源[1].取得Planner資源()
+    return 取得Published資源(應用).取得Planner資源()
 
 
 def _Published資源(應用):
     """取得 canonical startup 安裝的 Published lifespan resource。"""
-    return 應用.state.發布介面資源[1]
+    return 取得Published資源(應用)
 
 
 def _草稿代理(應用) -> 延遲草稿規劃服務:

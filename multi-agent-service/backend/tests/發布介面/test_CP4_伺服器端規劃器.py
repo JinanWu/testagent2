@@ -138,3 +138,46 @@ def test_CP4_PLANNER_06_Gemini提示固定text與structured回應結構契約():
     assert '"answer"' in 產生器.系統指令
     assert "response_mode 為 structured" in 產生器.系統指令
     assert 'response_schema.type 必須是 "object"' in 產生器.系統指令
+    assert "recommended_tools 必須去重並依工具名稱嚴格遞增排序" in 產生器.系統指令
+    assert "tool_capabilities 的鍵順序必須與 recommended_tools 完全一致" in 產生器.系統指令
+
+
+def test_CP4_PLANNER_07_Gemini只正規化唯一且能力集合一致的工具順序():
+    class 未排序產生器:
+        def 產生JSON(self, **kwargs):
+            del kwargs
+            return json.dumps({
+                "recommended_tools": ["tool-b", "tool-a"],
+                "tool_capabilities": {"tool-b": "B", "tool-a": "A"},
+            })
+
+    result = json.loads(Gemini規劃器(未排序產生器()).產生(規劃器輸入("需求", "text", (), ())))
+    assert result["recommended_tools"] == ["tool-a", "tool-b"]
+    assert list(result["tool_capabilities"]) == ["tool-a", "tool-b"]
+
+
+def test_CP4_PLANNER_08_Gemini不替重複工具洗白():
+    class 重複工具產生器:
+        def 產生JSON(self, **kwargs):
+            del kwargs
+            return json.dumps({
+                "recommended_tools": ["tool-a", "tool-a"],
+                "tool_capabilities": {"tool-a": "A"},
+            })
+
+    raw = Gemini規劃器(重複工具產生器()).產生(規劃器輸入("需求", "text", (), ()))
+    assert json.loads(raw)["recommended_tools"] == ["tool-a", "tool-a"]
+
+
+def test_CP4_PLANNER_09_Gemini將可安全推導的建議短名正規化():
+    class 非正規短名產生器:
+        def 產生JSON(self, **kwargs):
+            del kwargs
+            return json.dumps({
+                "suggested_slug": " Demo_API v1 ",
+                "recommended_tools": [],
+                "tool_capabilities": {},
+            })
+
+    result = json.loads(Gemini規劃器(非正規短名產生器()).產生(規劃器輸入("需求", "text", (), ())))
+    assert result["suggested_slug"] == "demo-api-v1"

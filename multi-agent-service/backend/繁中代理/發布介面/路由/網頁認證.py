@@ -2,10 +2,11 @@
 from __future__ import annotations
 import json
 import sqlite3
+import secrets
 import weakref
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ConfigDict, Field, StrictStr, create_model, constr
@@ -17,6 +18,7 @@ from ..設定 import (
 from ..網頁工作階段 import (
     網頁CSRF無效, 網頁使用者, 網頁未授權, 網頁工作階段服務, 網頁工作階段結果, 網頁認證不可用,
 )
+_密封工作階段服務: weakref.WeakSet = weakref.WeakSet()
 登入請求模型 = create_model(
     "LoginRequest", __config__=ConfigDict(extra="forbid", strict=True),
     使用者名稱=(constr(strict=True, min_length=1, max_length=128), Field(alias="username")),
@@ -34,6 +36,70 @@ from ..網頁工作階段 import (
     CSRF權杖=(constr(strict=True, min_length=32, max_length=512), Field(alias="csrf_token")),
 )
 帳密驗證器 = Callable[[str, str], 網頁使用者]
+
+class 網頁工作階段協定(Protocol):
+    """Sealed session consumer surface shared by SQLite and PostgreSQL."""
+    def 讀取有效秒數(self) -> int: ...
+    def 發行(self, 使用者: 網頁使用者, 舊工作階段權杖: str | None = None, 使用者代理: str | None = None) -> 網頁工作階段結果: ...
+    def 恢復(self, 工作階段權杖: str, csrf_token: str | None = None) -> 網頁工作階段結果: ...
+    def 輪替(self, 工作階段權杖: str, csrf_token: str) -> 網頁工作階段結果: ...
+    def 撤銷(self, 工作階段權杖: str, csrf_token: str) -> None: ...
+
+def _是工作階段服務(服務: object) -> bool:
+    """只接受既有 SQLite authority 或由 canonical factory 密封的 exact PostgreSQL authority。"""
+    try:
+        if type(服務) is 網頁工作階段服務:
+            return type(網頁工作階段服務.讀取有效秒數(服務)) is int
+        from ..PostgreSQL網頁工作階段 import PostgreSQL網頁工作階段服務
+        return (
+            type(服務) is PostgreSQL網頁工作階段服務
+            and 服務 in _密封工作階段服務
+            and type(PostgreSQL網頁工作階段服務.讀取有效秒數(服務)) is int
+        )
+    except BaseException:
+        return False
+
+
+def _讀取核准工作階段TTL(服務: object) -> int:
+    """以 class-bound authority 讀取 TTL，拒絕 instance shadow。"""
+    if type(服務) is 網頁工作階段服務:
+        return 網頁工作階段服務.讀取有效秒數(服務)
+    from ..PostgreSQL網頁工作階段 import PostgreSQL網頁工作階段服務
+    if type(服務) is PostgreSQL網頁工作階段服務 and 服務 in _密封工作階段服務:
+        return PostgreSQL網頁工作階段服務.讀取有效秒數(服務)
+    raise ValueError("Web認證設定無效")
+
+
+def 登錄核准工作階段服務(服務: object) -> None:
+    """只讓 canonical 組裝登錄 exact PostgreSQL session authority。"""
+    from ..PostgreSQL網頁工作階段 import PostgreSQL網頁工作階段服務
+    if type(服務) is 網頁工作階段服務:
+        return
+    if type(服務) is not PostgreSQL網頁工作階段服務:
+        raise ValueError("Web工作階段服務未獲核准")
+    _密封工作階段服務.add(服務)
+
+是核准工作階段服務 = _是工作階段服務
+
+def 建立PostgreSQL帳密驗證器(設定) -> 帳密驗證器:
+    """Repository-backed verifier with dummy PBKDF2 work for unknown users."""
+    from 繁中代理.交易儲存設定 import 交易儲存設定
+    if type(設定) is not 交易儲存設定 or 設定.後端 != "postgres":
+        raise ValueError("PostgreSQL帳密驗證器設定無效")
+    from 繁中代理.PostgreSQL使用者庫 import PostgreSQL使用者庫
+    dummy = 產生密碼雜湊(secrets.token_urlsafe(32))
+    users = PostgreSQL使用者庫(設定)
+    def 驗證(使用者名稱: str, 密碼: str) -> 網頁使用者:
+        row = users.讀取使用者(username=使用者名稱)
+        saved = dummy if row is None else row.get("password_hash")
+        valid = type(saved) is str and 驗證密碼雜湊(密碼, saved)
+        if row is None or not valid or row.get("disabled") not in (False, 0):
+            raise ValueError("invalid_credentials")
+        roles = row.get("roles_json", row.get("roles", "[]"))
+        if isinstance(roles, str):
+            roles = json.loads(roles)
+        return 網頁使用者(str(row["id"]), str(row["username"]), "admin" if "admin" in roles else "member")
+    return 驗證
 _TOKEN字元 = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
 _目前工作階段相依項清單: weakref.WeakSet = weakref.WeakSet()
 _CSRF相依項清單: weakref.WeakSet = weakref.WeakSet()
@@ -70,11 +136,50 @@ def _讀取權杖(值: object) -> str | None:
 
 
 def _讀取cookie(請求: Request, 名稱: str) -> str | None:
-    """直接由 Starlette request cookie mapping 讀取，不建立 FastAPI 驗證參數。"""
+    """只由raw ASGI Cookie headers讀取唯一同名值，拒絕framework mapping折疊。"""
+    return _讀取raw_cookie(請求, 名稱)[1]
+
+
+def _讀取raw_cookie(請求: Request, 名稱: str) -> tuple[int, str | None]:
+    """回傳目標出現狀態與唯一合法值：0缺少、1單值、2含糊而必須拒絕。"""
     try:
-        return _讀取權杖(請求.cookies.get(名稱))
-    except (AttributeError, TypeError, ValueError):
-        return None
+        預期名稱 = 名稱.encode("ascii")
+        原始標頭 = 請求.scope.get("headers", ())
+    except (AttributeError, TypeError, UnicodeEncodeError):
+        return 2, None
+    if type(原始標頭) not in (list, tuple):
+        return 2, None
+    命中值: bytes | None = None
+    命中數 = 0
+    cookie總位元組 = 0
+    for 項目 in 原始標頭:
+        if type(項目) is not tuple or len(項目) != 2:
+            return 2, None
+        鍵, 原始值 = 項目
+        if type(鍵) is not bytes or type(原始值) is not bytes:
+            return 2, None
+        if 鍵.lower() != b"cookie":
+            continue
+        cookie總位元組 += len(原始值)
+        if cookie總位元組 > 16_384:
+            return 2, None
+        for 片段 in 原始值.split(b";"):
+            配對 = 片段.strip(b" \t")
+            if b"=" not in 配對:
+                continue
+            餅乾名稱, 餅乾值 = 配對.split(b"=", 1)
+            if 餅乾名稱 != 預期名稱:
+                continue
+            命中數 += 1
+            if 命中數 != 1:
+                return 2, None
+            命中值 = 餅乾值
+    if 命中數 == 0:
+        return 0, None
+    try:
+        return 1, _讀取權杖(命中值.decode("ascii"))
+    except (UnicodeDecodeError, AttributeError):
+        return 1, None
 
 
 def _讀取header(請求: Request, 名稱: str) -> str | None:
@@ -92,7 +197,7 @@ def _讀取header(請求: Request, 名稱: str) -> str | None:
 def 建立SQLite帳密驗證器(資料庫路徑: str | Path) -> 帳密驗證器:
     """建立重用既有 PBKDF2 格式且 unknown user 仍做 dummy verify 的 adapter。"""
     路徑 = Path(資料庫路徑)
-    虛擬雜湊 = 產生密碼雜湊("fixed-dummy-password", b"published-auth!")
+    虛擬雜湊 = 產生密碼雜湊(secrets.token_urlsafe(32))
     def 驗證(使用者名稱: str, 密碼: str) -> 網頁使用者:
         """將 credential failure 固定為 ValueError，infra/malformed roles 分開。"""
         連線 = None
@@ -189,9 +294,9 @@ def _建立目前工作階段DTO(使用者: 網頁使用者, CSRF權杖: str) ->
 def 建立目前工作階段相依項(服務: 網頁工作階段服務, 設定: 網頁安全設定):
     """建立 A03 可重用、但只回最小 A02 principal 的 current-session hook。"""
     if (
-        type(服務) is not 網頁工作階段服務
+        not _是工作階段服務(服務)
         or type(設定) is not 網頁安全設定
-        or 網頁工作階段服務.讀取有效秒數(服務) != 設定.工作階段有效秒數
+        or _讀取核准工作階段TTL(服務) != 設定.工作階段有效秒數
     ):
         raise ValueError("Web認證設定無效")
 
@@ -244,6 +349,8 @@ def _登錄網頁認證路由器TTL(路由器: APIRouter, 有效秒數: int) -> 
 
 def 建立CSRF相依項(服務: 網頁工作階段服務, 設定: 網頁安全設定):
     """建立可供 browser mutation 共用的 single-use rotating dependency。"""
+    if not _是工作階段服務(服務) or type(設定) is not 網頁安全設定 or _讀取核准工作階段TTL(服務) != 設定.工作階段有效秒數:
+        raise ValueError("Web認證設定無效")
     def 驗證並輪替(
         請求: Request,
         回應: Response,
@@ -333,9 +440,9 @@ def 建立網頁認證路由器(
         建立路由並以弱參照登錄其authoritative TTL；不建立global app或資料庫連線。
     """
     if (
-        type(服務) is not 網頁工作階段服務
+        not _是工作階段服務(服務)
         or type(設定) is not 網頁安全設定
-        or 網頁工作階段服務.讀取有效秒數(服務) != 設定.工作階段有效秒數
+        or _讀取核准工作階段TTL(服務) != 設定.工作階段有效秒數
         or not callable(驗證器)
         or (目前工作階段相依項 is not None and not callable(目前工作階段相依項))
     ):
@@ -356,7 +463,9 @@ def 建立網頁認證路由器(
             return _錯誤(422, "request_invalid")
         try:
             使用者 = 驗證器(請求資料.使用者名稱, 請求資料.密碼)
-            舊權杖 = _讀取cookie(請求, 網頁工作階段Cookie名稱)
+            舊cookie狀態, 舊權杖 = _讀取raw_cookie(請求, 網頁工作階段Cookie名稱)
+            if 舊cookie狀態 == 2:
+                return _錯誤(401, "invalid_credentials")
             結果 = 服務.發行(使用者, 舊權杖, 請求.headers.get("user-agent"))
         except ValueError:
             return _錯誤(401, "invalid_credentials")
@@ -417,5 +526,5 @@ def 建立網頁認證路由器(
         回應 = Response(status_code=204)
         _清除cookie(回應, 設定)
         return 回應
-    _登錄網頁認證路由器TTL(路由器, 網頁工作階段服務.讀取有效秒數(服務))
+    _登錄網頁認證路由器TTL(路由器, _讀取核准工作階段TTL(服務))
     return 路由器

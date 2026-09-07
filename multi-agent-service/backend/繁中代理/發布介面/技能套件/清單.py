@@ -19,6 +19,9 @@ import unicodedata
 
 _技能套件識別碼格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _清單參照最大位元組數 = 142
+_CloudStorage清單參照格式 = re.compile(
+    r"bundles/v1/([A-Za-z0-9][A-Za-z0-9_.:-]{0,127})/manifest\.json#generation=([1-9][0-9]*)\Z"
+)
 
 
 def 是合法技能套件清單參照(值: object) -> bool:
@@ -47,6 +50,31 @@ def 是合法技能套件清單參照(值: object) -> bool:
             and _技能套件識別碼格式.fullmatch(部件[0]) is not None
             and 部件[1] == "manifest.json"
         )
+    except (TypeError, ValueError, UnicodeError):
+        return False
+
+
+def 是合法技能套件定位參照(值: object, 套件識別碼: object) -> bool:
+    """接受exact本機清單或generation-pinned GCS清單，並核對bundle identity。
+
+    參數：``值``是不可信locator；``套件識別碼``是同一DTO的bundle ID。
+    回傳：只在本機``<bundle>/manifest.json``或GCS
+    ``bundles/v1/<bundle>/manifest.json#generation=<正整數>``完全匹配時為真。
+    例外：普通Unicode／型別錯誤關閉為假；控制流程例外不攔截。
+    副作用：僅做bounded lexical validation，不讀取檔案或網路。
+    """
+    try:
+        if (
+            type(值) is not str or type(套件識別碼) is not str
+            or _技能套件識別碼格式.fullmatch(套件識別碼) is None
+            or unicodedata.normalize("NFC", 值) != 值
+            or len(值.encode("utf-8")) > 200
+        ):
+            return False
+        if 值 == f"{套件識別碼}/manifest.json":
+            return 是合法技能套件清單參照(值)
+        匹配 = _CloudStorage清單參照格式.fullmatch(值)
+        return 匹配 is not None and 匹配.group(1) == 套件識別碼
     except (TypeError, ValueError, UnicodeError):
         return False
 

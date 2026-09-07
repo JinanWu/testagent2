@@ -636,6 +636,23 @@ class 外部呼叫編排器:
             self = 短名 = 請求識別 = 提供的API金鑰 = 輸入資料 = 中繼資料 = 驗證時間 = 入口 = None
             _清理並重拋(控制)
         if 入口.error is not None:
+            呼叫 = 入口.invocation
+            if 呼叫 is not None:
+                try:
+                    錯誤物件 = 入口.error.to_json()["envelope"]["error"]
+                    錯誤碼 = 錯誤物件["code"]
+                    終態 = "invalid_api_key" if 錯誤碼 == "invalid_api_key" else (
+                        "rate_limited" if 錯誤碼 == "rate_limit_exceeded" else "failed"
+                    )
+                    self._呼叫儲存庫.完成呼叫(
+                        呼叫.id, 終態, error=錯誤物件, latency_ms=0.0,
+                    )
+                except _控制流程 as 控制:
+                    _清理並重拋(控制)
+                except BaseException:
+                    return 映射呼叫錯誤(
+                        "internal_error", endpoint=入口.endpoint, invocation=呼叫,
+                    )
             return 入口.error
 
         請求 = 原始結果 = 安全結果 = 原始資料 = 信封 = 收據 = None

@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Protocol
 
-from ..嚴格JSON import 建立正規JSON
+from ..嚴格JSON import 建立正規JSON, 解析嚴格JSON
 from .規劃器契約 import 規劃器不可用, 規劃器輸入, 文字回應結構
 
 class Gemini結構化產生器(Protocol):
@@ -28,6 +29,37 @@ class Gemini結構化產生器(Protocol):
         副作用：通常會進行網路或其他外部供應商呼叫。
         """
         ...
+
+
+def _正規化模型輸出(原始文字: str) -> str:
+    """正規化可安全推導的slug與工具順序，其餘不合約內容仍交由驗證器拒絕。"""
+    try:
+        值 = 解析嚴格JSON(原始文字)
+        if type(值) is not dict:
+            return 原始文字
+        短名 = 值.get("suggested_slug")
+        if type(短名) is str:
+            正規短名 = re.sub(r"[^a-z0-9]+", "-", 短名.lower()).strip("-")[:63].rstrip("-")
+            if 正規短名:
+                值["suggested_slug"] = 正規短名
+        工具 = 值.get("recommended_tools")
+        能力 = 值.get("tool_capabilities")
+        if (
+            type(工具) is not list
+            or any(type(名稱) is not str for 名稱 in 工具)
+            or len(工具) != len(set(工具))
+            or type(能力) is not dict
+            or set(能力) != set(工具)
+        ):
+            return 原始文字
+        排序工具 = sorted(工具)
+        值["recommended_tools"] = 排序工具
+        值["tool_capabilities"] = {名稱: 能力[名稱] for 名稱 in 排序工具}
+        return 建立正規JSON(值)
+    except (KeyboardInterrupt, SystemExit, GeneratorExit):
+        raise
+    except BaseException:
+        return 原始文字
 
 @dataclass(frozen=True, slots=True)
 class 決定性假規劃器:
@@ -97,7 +129,9 @@ class Gemini規劃器:
             結果 = self.產生器.產生JSON(
                 系統指令=(
                     "你是 Published API Draft Planner。只輸出指定 exact JSON DTO；不得推薦 "
-                    "authorized_tools 以外的工具。response_mode 為 text 時，response_schema 必須"
+                    "authorized_tools 以外的工具。recommended_tools 必須去重並依工具名稱嚴格遞增排序，"
+                    "tool_capabilities 的鍵順序必須與 recommended_tools 完全一致。"
+                    "response_mode 為 text 時，response_schema 必須"
                     "精確等於 {\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"string\"}},"
                     "\"required\":[\"answer\"],\"additionalProperties\":false}；response_mode 為 "
                     "structured 時，response_schema.type 必須是 \"object\" 且必須是有效 JSON Schema。"
@@ -106,7 +140,7 @@ class Gemini規劃器:
             )
             if type(結果) is not str:
                 raise ValueError
-            return 結果
+            return _正規化模型輸出(結果)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except BaseException:

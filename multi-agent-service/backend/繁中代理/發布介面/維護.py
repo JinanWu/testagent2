@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import math
 import os
 import re
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from .治理.保存期限 import SQLite保存候選規劃器, SQLite保存清除服務
+from .治理.PostgreSQL保存期限 import PostgreSQL保存候選規劃器, PostgreSQL保存清除服務
+from .PostgreSQL資源 import 建立PostgreSQL資源
+from ..環境設定 import 讀取交易儲存設定
+from ..交易儲存設定 import 交易儲存設定
 
 _固定錯誤 = "retention maintenance failed"
 _非負十進位 = re.compile(r"[0-9]+(?:\.[0-9]+)?\Z")
@@ -57,7 +62,8 @@ def _建立剖析器() -> argparse.ArgumentParser:
         "retention", help="規劃或執行五年保存資料清除",
         description="以注入的參考時間規劃或執行一批五年保存資料清除。",
     )
-    保存.add_argument("--database", required=True, type=_絕對資料庫路徑, dest="資料庫")
+    保存.add_argument("--backend", choices=("sqlite", "postgres"), default="sqlite", dest="後端")
+    保存.add_argument("--database", required=False, type=_絕對資料庫路徑, dest="資料庫")
     保存.add_argument("--now-epoch", required=True, type=_非負有限epoch, dest="現在")
     保存.add_argument("--batch-limit", type=_批次上限, default=100, dest="批次上限")
     模式 = 保存.add_mutually_exclusive_group(required=True)
@@ -93,26 +99,66 @@ def _清除摘要(結果: Any) -> dict[str, object]:
     }
 
 
+async def _執行PostgreSQL一次(
+    參數: argparse.Namespace,
+    設定: 交易儲存設定,
+    *,
+    資源工廠: Callable[[交易儲存設定], Awaitable[Any]],
+    規劃器工廠: Callable[[交易儲存設定], Any],
+    清除服務工廠: Callable[[交易儲存設定], Any],
+) -> dict[str, object]:
+    """建立 canonical pool/readiness 資源，執行一批，並確實反向關閉。"""
+    資源 = await 資源工廠(設定)
+    try:
+        if 參數.僅規劃:
+            服務 = 規劃器工廠(設定)
+            return _規劃摘要(服務.規劃(參數.現在, 候選上限=參數.批次上限))
+        服務 = 清除服務工廠(設定)
+        return _清除摘要(服務.清除(參數.現在, 批次上限=參數.批次上限))
+    finally:
+        await 資源.關閉()
+
+
 def 執行主程式(
     參數列: Sequence[str] | None = None,
     *,
     規劃器工廠: Callable[[str], Any] = SQLite保存候選規劃器,
     清除服務工廠: Callable[[str], Any] = SQLite保存清除服務,
+    PostgreSQL規劃器工廠: Callable[[交易儲存設定], Any] = PostgreSQL保存候選規劃器,
+    PostgreSQL清除服務工廠: Callable[[交易儲存設定], Any] = PostgreSQL保存清除服務,
+    PostgreSQL資源工廠: Callable[[交易儲存設定], Awaitable[Any]] = 建立PostgreSQL資源,
+    交易設定工廠: Callable[[Mapping[str, str]], 交易儲存設定] = 讀取交易儲存設定,
 ) -> int:
     """剖析命令並執行一次；argparse 自行處理 help 與使用錯誤。"""
-    參數 = _建立剖析器().parse_args(參數列)
+    剖析器 = _建立剖析器()
+    參數 = 剖析器.parse_args(參數列)
+    if 參數.後端 == "sqlite" and 參數.資料庫 is None:
+        剖析器.error("--database is required with --backend sqlite")
+    if 參數.後端 == "postgres" and 參數.資料庫 is not None:
+        剖析器.error("--database is not allowed with --backend postgres")
     try:
-        if 參數.僅規劃:
-            計畫組 = 規劃器工廠(參數.資料庫).規劃(參數.現在, 候選上限=參數.批次上限)
-            摘要 = _規劃摘要(計畫組)
+        if 參數.後端 == "postgres":
+            設定 = 交易設定工廠(os.environ)
+            if 設定.後端 != "postgres":
+                raise ValueError
+            摘要 = asyncio.run(_執行PostgreSQL一次(
+                參數,
+                設定,
+                資源工廠=PostgreSQL資源工廠,
+                規劃器工廠=PostgreSQL規劃器工廠,
+                清除服務工廠=PostgreSQL清除服務工廠,
+            ))
         else:
-            結果 = 清除服務工廠(參數.資料庫).清除(參數.現在, 批次上限=參數.批次上限)
-            摘要 = _清除摘要(結果)
+            服務 = 規劃器工廠(參數.資料庫) if 參數.僅規劃 else 清除服務工廠(參數.資料庫)
+            if 參數.僅規劃:
+                摘要 = _規劃摘要(服務.規劃(參數.現在, 候選上限=參數.批次上限))
+            else:
+                摘要 = _清除摘要(服務.清除(參數.現在, 批次上限=參數.批次上限))
         輸出 = json.dumps(摘要, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     except (KeyboardInterrupt, SystemExit, GeneratorExit):
         raise
     except BaseException:
-        參數 = 計畫組 = 結果 = 摘要 = 輸出 = None
+        參數 = 摘要 = 輸出 = None
         print(_固定錯誤, file=sys.stderr)
         return 1
     print(輸出)

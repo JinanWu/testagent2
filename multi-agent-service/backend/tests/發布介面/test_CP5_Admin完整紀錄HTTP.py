@@ -22,10 +22,36 @@ from 繁中代理.發布介面.治理.管理查詢契約 import (
 )
 from 繁中代理.發布介面.網頁工作階段 import 網頁使用者
 from 繁中代理.發布介面.路由.管理稽核 import 建立管理稽核路由器, 管理員遮蔽回應
-from 繁中代理.發布介面.生產管理稽核 import 延遲管理稽核服務, 安裝管理稽核資源
+from 繁中代理.發布介面.生產管理稽核 import (
+    延遲管理稽核服務, 安裝管理稽核資源, 管理稽核提供者,
+)
 from 繁中代理.發布介面.asgi import 建立CP4ASGI應用程式
 from 繁中代理.發布介面.設定 import 生產設定
 from 繁中代理.發布介面.生產Published執行 import Published生產設定
+
+
+class _核准管理稽核測試服務:
+    """只供lease測試的delegate；由exact production provider包裝後安裝。"""
+
+    def __init__(self, *, 名稱=None, 進入=None, 釋放=None):
+        self.名稱, self.進入, self.釋放 = 名稱, 進入, 釋放
+
+    def 列出管理員安全呼叫(self, *參數):
+        if self.進入 is not None:
+            self.進入.set()
+            self.釋放.wait(2)
+        return self.名稱 if self.名稱 is not None else 參數
+
+    def 查詢管理員原始資料(self, *參數):
+        return self.名稱 if self.名稱 is not None else 參數
+
+
+def _建立核准管理稽核測試服務(**kwargs):
+    delegate = _核准管理稽核測試服務(**kwargs)
+    provider = object.__new__(管理稽核提供者)
+    provider._投影 = delegate
+    provider._閘門 = delegate
+    return provider
 
 
 class _列表:
@@ -459,7 +485,7 @@ def test_A18管理稽核proxy在startup前與shutdown後fail_closed():
     class 服務:
         def 列出管理員安全呼叫(self, *參數): return 參數
         def 查詢管理員原始資料(self, *參數): return 參數
-    服務物件 = 服務()
+    服務物件 = _建立核准管理稽核測試服務()
     世代 = 代理.安裝(服務物件)
     assert 代理.列出管理員安全呼叫("query", None) == ("query", None)
     代理.清除(服務物件, 世代)
@@ -632,7 +658,7 @@ def test_A18_same_generation並行clear皆等待同一drain_terminal():
         def 查詢管理員原始資料(self, *參數): return 參數
 
     代理 = 延遲管理稽核服務()
-    服務物件 = 服務()
+    服務物件 = _建立核准管理稽核測試服務(進入=進入, 釋放=釋放)
     世代 = 代理.安裝(服務物件)
     租借執行緒 = threading.Thread(target=代理.列出管理員安全呼叫, args=("query", None))
     租借執行緒.start()
@@ -658,10 +684,10 @@ def test_A18_stale_generation_clear不撤銷新provider且排空後可重裝():
         def 查詢管理員原始資料(self, *_參數): return self.名稱
 
     代理 = 延遲管理稽核服務()
-    舊服務 = 服務("舊")
+    舊服務 = _建立核准管理稽核測試服務(名稱="舊")
     舊世代 = 代理.安裝(舊服務)
     代理.清除(舊服務, 舊世代)
-    新服務 = 服務("新")
+    新服務 = _建立核准管理稽核測試服務(名稱="新")
     新世代 = 代理.安裝(新服務)
     代理.清除(舊服務, 舊世代)
     assert 代理.列出管理員安全呼叫(None, None) == "新"

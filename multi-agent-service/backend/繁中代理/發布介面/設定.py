@@ -1,7 +1,7 @@
 """發布介面 FastAPI 應用程式與 Web 安全固定設定。"""
 
 import ipaddress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
-
+from ..環境設定 import 交易儲存設定
 發布介面標題 = "繁中代理發布介面"
 """OpenAPI 的固定應用程式標題。"""
 
@@ -138,7 +138,7 @@ class 生產設定:
         無；不讀取環境、不連線資料庫，也不建立執行期資源。
     """
 
-    資料庫路徑: Path
+    資料庫路徑: Path | None
     允許來源: tuple[str, ...]
     模型供應器: str
     模型名稱: str
@@ -146,16 +146,22 @@ class 生產設定:
     Gemini位置: str | None = None
     Cookie安全: bool = True
     工作階段有效秒數: int = 86_400
+    交易儲存: 交易儲存設定 = field(default_factory=交易儲存設定)
 
     def __post_init__(self) -> None:
         """驗證必要值並重用exact-origin與cookie安全契約。"""
         if (
-            not isinstance(self.資料庫路徑, Path)
-            or not self.資料庫路徑.is_absolute()
-            or not self.資料庫路徑.name
+            (self.交易儲存.後端 == "sqlite" and (
+                not isinstance(self.資料庫路徑, Path)
+                or not self.資料庫路徑.is_absolute()
+                or not self.資料庫路徑.name
+            ))
+            or (self.交易儲存.後端 != "sqlite" and self.資料庫路徑 is not None)
             or type(self.允許來源) is not tuple
             or not self.允許來源
+            or type(self.交易儲存) is not 交易儲存設定
             or self.模型供應器 not in {"fake", "gemini-adc"}
+            or (self.交易儲存.後端 == "postgres" and self.模型供應器 != "gemini-adc")
             or type(self.模型名稱) is not str
             or not 1 <= len(self.模型名稱) <= 128
             or self.模型名稱.strip() != self.模型名稱

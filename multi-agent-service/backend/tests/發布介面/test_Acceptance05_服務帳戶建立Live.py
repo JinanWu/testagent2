@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from published_resource_support import 取得Published資源
 
 from 繁中代理.使用者 import 使用者庫
 from 繁中代理.工具 import 工具定義
@@ -208,7 +209,7 @@ def test_startup重用A3資源並於shutdown撤銷服務帳戶建立authority(tm
     捕捉管理代理 = None
 
     with TestClient(應用程式):
-        published資源 = 應用程式.state.發布介面資源[-1]
+        published資源 = 取得Published資源(應用程式)
         planner資源 = published資源.取得Planner資源()
         管理服務 = published資源.取得發布管理服務()
         assert planner資源 is not None and 管理服務 is not None
@@ -432,7 +433,7 @@ def test_live_HTTP每個交易寫入與commit失敗皆零孤立服務帳戶(
         csrf = _登入(客戶端, "alice", "correct horse")
         草稿 = _建立草稿(客戶端, csrf)
         assert 草稿.status_code == 201
-        管理服務 = 應用程式.state.發布介面資源[-1].取得發布管理服務()
+        管理服務 = 取得Published資源(應用程式).取得發布管理服務()
 
         class 精確失敗連線(sqlite3.Connection):
             """保留真 SQLite semantics，並在指定 mutation 前拋固定錯誤。"""
@@ -493,10 +494,14 @@ def test_相同slug兩個canonical_writer恰一winner且無多餘服務帳戶(tm
         草稿二 = _建立草稿(客戶端, csrf二)
         assert 草稿二.status_code == 201
         cookie二 = dict(客戶端.cookies)
+        客戶端.cookies.clear()
 
         def 建立(輸入):
             """以隔離 session cookie 與 successor CSRF 送出一個 canonical Create。"""
             cookie, 草稿 = 輸入
+            cookie_header = "; ".join(
+                f"{名稱}={值}" for 名稱, 值 in sorted(cookie.items())
+            )
             return 客戶端.post(
                 端點建立路徑,
                 json={
@@ -504,9 +509,11 @@ def test_相同slug兩個canonical_writer恰一winner且無多餘服務帳戶(tm
                     "slug": "same-api",
                     "configuration_confirmation": _建立確認(草稿.json()["preview"]),
                 },
-                headers={網頁CSRFHeader名稱: 草稿.headers[網頁CSRFHeader名稱]},
-                cookies=cookie,
-            )
+                headers={
+                    網頁CSRFHeader名稱: 草稿.headers[網頁CSRFHeader名稱],
+                    "Cookie": cookie_header,
+                },
+                )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as 執行器:
             回應們 = list(執行器.map(建立, ((cookie一, 草稿一), (cookie二, 草稿二))))
@@ -565,6 +572,7 @@ from pathlib import Path
 
 repo = Path(os.environ["A5_REPO"])
 sys.path.insert(0, str(repo))
+sys.path.insert(0, str(repo / "tests/發布介面"))
 
 from fastapi.testclient import TestClient
 import 繁中代理.發布介面.執行期.執行器 as 執行器模組
