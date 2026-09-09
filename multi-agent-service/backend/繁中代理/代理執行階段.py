@@ -156,7 +156,9 @@ class 代理執行階段:
         平台名稱: str = "api_server",
         工具登錄器物件: 工具登錄器 | None = None,
         工作目錄: str = ".",
-        最大迭代次數: int = 8,
+        # 預設每個使用者 turn 最多跑 15 次 tool loop（包含模型呼叫 + 工具回合）。
+        # 目的：降低「模型一直回 tool_call」時過早觸發 fallback 的機率，但仍保有上限防護。
+        最大迭代次數: int = 15,
         上下文長度: int = 32768,
         模型模式: str = "gemini",
         啟用壓縮摘要: bool | None = None,
