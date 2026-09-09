@@ -500,6 +500,27 @@ export default function ChatPage({
           訊息
         </label>
         <div className="rounded-2xl border border-outline-variant bg-surface-container-lowest p-sm shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors focus-within:border-primary/50">
+          {待送圖片清單.length > 0 && (
+            <ul className="flex flex-wrap gap-sm px-sm pt-xs" aria-label="待送出的圖片">
+              {待送圖片清單.map((項目) => (
+                <li key={項目.參照} className="relative">
+                  <img
+                    src={項目.預覽網址}
+                    alt={項目.檔名}
+                    className="size-16 rounded-lg border border-outline-variant object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => 移除待送圖片(項目.參照)}
+                    aria-label={`移除圖片 ${項目.檔名}`}
+                    className="absolute -right-1.5 -top-1.5 size-5 rounded-full bg-surface-container-highest text-body-sm leading-none text-on-surface shadow hover:bg-error hover:text-on-error"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <textarea
             id="chat-message"
             name="message"
@@ -536,27 +557,6 @@ export default function ChatPage({
             }}
             className="w-full resize-none overflow-y-auto border-none bg-transparent p-sm font-body-md text-body-md text-on-surface outline-none placeholder:text-placeholder"
           />
-          {待送圖片清單.length > 0 && (
-            <ul className="flex flex-wrap gap-sm px-sm pb-xs" aria-label="待送出的圖片">
-              {待送圖片清單.map((項目) => (
-                <li key={項目.參照} className="relative">
-                  <img
-                    src={項目.預覽網址}
-                    alt={項目.檔名}
-                    className="size-16 rounded-lg border border-outline-variant object-cover"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => 移除待送圖片(項目.參照)}
-                    aria-label={`移除圖片 ${項目.檔名}`}
-                    className="absolute -right-1.5 -top-1.5 size-5 rounded-full bg-surface-container-highest text-body-sm leading-none text-on-surface shadow hover:bg-error hover:text-on-error"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
           <div className="flex items-center justify-between gap-md px-sm pb-xs">
             {輸入內容過長 ? (
               <p id="chat-message-limit" className="font-body-sm text-body-sm text-error">
