@@ -45,7 +45,7 @@ _最大資源工廠數 = 64
 _最大路由數 = 512
 _最大操作識別碼長度 = 256
 _健康狀態操作識別碼 = "取得健康狀態_healthz_get"
-_瀏覽器前綴 = ("/api/auth", "/api/chat", "/api/admin", "/api/published-endpoints")
+_瀏覽器前綴 = ("/api/auth", "/api/chat", "/api/uploads", "/api/admin", "/api/published-endpoints")
 _變更方法 = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _認證操作 = frozenset({
     ("POST", "/api/auth/login"), ("GET", "/api/auth/session"), ("POST", "/api/auth/logout"),

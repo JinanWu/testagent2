@@ -18,6 +18,7 @@ from .相依項 import 發布介面相依項
 from .設定 import 生產設定
 from .資料庫 import 初始化發布介面資料庫
 from .路由.聊天 import 建立聊天路由器
+from .路由.圖片上傳 import 建立圖片上傳路由器
 from .路由.工作階段 import 建立工作階段路由器
 from .路由.技能 import 建立技能路由器
 from 繁中代理.代理執行階段 import 代理執行階段
@@ -82,10 +83,16 @@ class 延遲Web代理服務:
                 if not self._進行中:
                     self._條件.notify_all()
 
-    def 聊天(self, 使用者識別碼: str, 訊息: str, 工作階段識別碼: str | None = None):
+    def 聊天(
+        self,
+        使用者識別碼: str,
+        訊息: str,
+        工作階段識別碼: str | None = None,
+        圖片參照清單: list[str] | None = None,
+    ):
         """委派聊天；不在proxy保存request state。"""
         with self._租借服務() as 服務:
-            return 服務.聊天(使用者識別碼, 訊息, 工作階段識別碼)
+            return 服務.聊天(使用者識別碼, 訊息, 工作階段識別碼, 圖片參照清單)
 
     def 列出工作階段(self, 使用者識別碼: str, 數量上限: int = 20):
         """委派工作階段列表。"""
@@ -169,6 +176,7 @@ class 生產Web代理建構器:
         延遲服務 = 延遲Web代理服務()
         路由器清單 = (
             建立聊天路由器(延遲服務, 目前工作階段相依, CSRF相依),
+            建立圖片上傳路由器(目前工作階段相依, CSRF相依),
             建立工作階段路由器(延遲服務, 目前工作階段相依),
             建立技能路由器(延遲服務, 目前工作階段相依),
         )

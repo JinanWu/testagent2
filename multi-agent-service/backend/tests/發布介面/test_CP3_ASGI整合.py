@@ -145,6 +145,7 @@ def test_CP3_OpenAPI_exact_production_inventory(tmp_path):
         ("/api/auth/me", "get"): ("取得目前網頁認證使用者_api_auth_me_get", {"200", "401", "503"}),
         ("/api/auth/logout", "post"): ("登出網頁認證工作階段_api_auth_logout_post", {"204", "401", "403", "503"}),
         ("/api/chat", "post"): ("聊天_api_chat_post", {"200", "400", "404", "422", "503"}),
+        ("/api/uploads/image", "post"): ("上傳圖片_api_uploads_image_post", {"200", "400", "413", "422", "503"}),
         ("/api/sessions", "get"): ("列出工作階段_api_sessions_get", {"200", "400", "422", "503"}),
         ("/api/sessions/{session_id}", "get"): ("讀取工作階段_api_sessions__session_id__get", {"200", "400", "404", "422", "503"}),
         ("/api/skills", "get"): ("列出技能_api_skills_get", {"200", "503"}),

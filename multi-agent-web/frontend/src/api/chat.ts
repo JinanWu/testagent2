@@ -4,6 +4,8 @@ import {
 
 export const CHAT_ERROR_MESSAGE = '目前無法傳送訊息，請稍後再試。'
 export const CHAT_MESSAGE_MAX_BYTES = 16_384
+/* 與後端 每則訊息圖片上限 一致。 */
+export const CHAT_IMAGE_MAX_COUNT = 4
 
 export interface ChatReply {
   sessionId: string
@@ -15,13 +17,20 @@ export async function sendChat(
   sessionId: string | null,
   csrfToken: string,
   signal?: AbortSignal,
+  images: readonly string[] = [],
 ): Promise<ChatReply> {
   const trimmed = message.trim()
   if (!boundedString(trimmed, CHAT_MESSAGE_MAX_BYTES) || byteLength(trimmed) > CHAT_MESSAGE_MAX_BYTES ||
-      (sessionId !== null && !boundedString(sessionId, 128)) || !boundedString(csrfToken, 512)) {
+      (sessionId !== null && !boundedString(sessionId, 128)) || !boundedString(csrfToken, 512) ||
+      images.length > CHAT_IMAGE_MAX_COUNT ||
+      images.some((參照) => !boundedString(參照, 512) || !參照.startsWith('gs://'))) {
     throw new ApiFormatError()
   }
-  const body = sessionId === null ? { message: trimmed } : { message: trimmed, session_id: sessionId }
+  const body = {
+    message: trimmed,
+    ...(sessionId === null ? {} : { session_id: sessionId }),
+    ...(images.length === 0 ? {} : { images: [...images] }),
+  }
   const value = await apiRequest(API_ROUTES.chat, {
     method: 'POST', body: JSON.stringify(body), csrfToken, signal, expectedStatus: 200,
   })

@@ -12,14 +12,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 import math
 import os
 from pathlib import Path
 from typing import Any, Protocol
 
 from 繁中代理.基本工具 import 取得技能根目錄清單
+from 繁中代理.模型供應商 import 圖片參照欄位
 from 繁中代理.提示詞常數 import 壓縮摘要前綴
 from 繁中代理.使用者 import 使用者上下文
+from 繁中代理.圖片存放 import 驗證圖片參照
 from .安全技能目錄 import (
     安全讀取技能 as _共用安全讀取技能,
     建立錨定安全技能目錄,
@@ -32,6 +35,8 @@ from .安全技能目錄 import (
 _未命名標題 = "新對話"
 _WEB來源 = "web"
 _最大訊息位元組 = 16_384
+# 與 路由.聊天.每則訊息圖片上限 一致；服務層自帶界線，不倚賴 route 先擋過。
+_最大圖片張數 = 4
 _最大成功文字位元組 = 65_536
 _最大識別碼字元 = 128
 _最大技能檔案位元組 = 256 * 1024
@@ -70,7 +75,13 @@ class 使用者上下文供應器(Protocol):
 class Web執行階段(Protocol):
     """重用既有代理執行階段所需的單 turn 介面。"""
 
-    def 執行使用者訊息(self, 使用者訊息: str, 工作階段識別碼: str | None = None):
+    def 執行使用者訊息(
+        self,
+        使用者訊息: str,
+        工作階段識別碼: str | None = None,
+        *,
+        圖片參照清單: list[str] | None = None,
+    ):
         """執行一則使用者訊息並回傳既有執行結果。"""
         ...
 
@@ -131,12 +142,12 @@ class 工作階段列表項目:
 
 @dataclass(frozen=True, slots=True)
 class 工作階段詳情:
-    """工作階段 metadata 與已移除內部欄位的文字 transcript。"""
+    """工作階段 metadata 與已移除內部欄位的安全 transcript。"""
 
     識別碼: str
     標題: str
     更新時間: float
-    訊息清單: tuple[tuple[str, str], ...]
+    訊息清單: tuple[tuple[str, str, tuple[str, ...]], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,15 +190,23 @@ class Web代理服務:
         self._使用者庫 = 使用者庫物件
         self._執行階段工廠 = 執行階段工廠
 
-    def 聊天(self, 使用者識別碼: str, 訊息: str, 工作階段識別碼: str | None = None) -> 聊天回應:
+    def 聊天(
+        self,
+        使用者識別碼: str,
+        訊息: str,
+        工作階段識別碼: str | None = None,
+        圖片參照清單: list[str] | None = None,
+    ) -> 聊天回應:
         """以登入 user 的完整上下文執行 Web turn，並只回 logical root 與純文字回答。
 
         參數：使用者識別碼為 current-session identity；訊息為使用者文字；工作階段
-        識別碼可省略以建立新對話。返回值為固定聊天 DTO。owner/source/缺少會拋
-        Web資源不存在；依賴失敗會拋 Web服務不可用；本方法不回傳工具或推理內容。
+        識別碼可省略以建立新對話；圖片參照清單為本人先前上傳取得的 gs:// 參照。
+        返回值為固定聊天 DTO。owner/source/缺少會拋 Web資源不存在；依賴失敗會拋
+        Web服務不可用；本方法不回傳工具或推理內容。
         """
         _驗證識別碼(使用者識別碼)
         _驗證訊息(訊息)
+        _驗證圖片參照清單(圖片參照清單, 使用者識別碼)
         預期根識別碼 = None
         if 工作階段識別碼 is not None:
             _驗證識別碼(工作階段識別碼)
@@ -212,7 +231,7 @@ class Web代理服務:
             if type(使用者) is not 使用者上下文 or 使用者.user_id != 使用者識別碼:
                 raise ValueError
             執行階段 = self._執行階段工廠(使用者上下文物件=使用者, source=_WEB來源)
-            結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼)
+            結果 = 執行階段.執行使用者訊息(訊息, 工作階段識別碼, 圖片參照清單=圖片參照清單)
             回覆 = object.__getattribute__(結果, "最終回答")
             作用中識別碼 = object.__getattribute__(結果, "工作階段識別碼")
             _驗證識別碼(作用中識別碼)
@@ -268,16 +287,15 @@ class Web代理服務:
                     raise ValueError
                 根識別碼 = 原始項目.get("_lineage_root_id") or 原始項目.get("id")
                 標題 = 原始項目.get("title")
-                更新時間 = 原始項目.get("updated_at")
+                更新時間 = _正規化時間(原始項目.get("updated_at"))
                 訊息數量 = 原始項目.get("message_count")
                 _驗證識別碼(根識別碼)
                 _驗證文字(標題, 512)
-                _驗證時間(更新時間)
                 if type(訊息數量) is not int or 訊息數量 < 0:
                     raise ValueError
                 if 標題 == 根識別碼:
                     標題 = self._列表標題(根識別碼, 使用者識別碼)
-                結果.append(工作階段列表項目(根識別碼, 標題, float(更新時間), 訊息數量))
+                結果.append(工作階段列表項目(根識別碼, 標題, 更新時間, 訊息數量))
             return tuple(結果)
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
@@ -321,9 +339,9 @@ class Web代理服務:
             )
             if type(原始訊息) is not list or len(原始訊息) > _最大工作階段訊息數量:
                 raise ValueError
-            標題, 更新時間 = tip資料.get("title"), tip資料.get("updated_at")
+            標題 = tip資料.get("title")
+            更新時間 = _正規化時間(tip資料.get("updated_at"))
             _驗證文字(標題, 512)
-            _驗證時間(更新時間)
             投影 = []
             總位元組 = 0
             for 訊息 in 原始訊息:
@@ -345,8 +363,16 @@ class Web代理服務:
                 角色 = 訊息.get("role")
                 if type(內容) is not str or len(內容.encode("utf-8")) > _最大成功文字位元組:
                     raise ValueError
-                投影.append((角色, 內容))
-            return 工作階段詳情(根工作階段識別碼, 標題, float(更新時間), tuple(投影))
+                圖片參照 = ()
+                if 角色 == "user" and 圖片參照欄位 in 訊息:
+                    原始圖片參照 = 訊息.get(圖片參照欄位)
+                    if type(原始圖片參照) is not list or len(原始圖片參照) > _最大圖片張數:
+                        raise ValueError
+                    if not all(驗證圖片參照(參照, 使用者識別碼) for 參照 in 原始圖片參照):
+                        raise ValueError
+                    圖片參照 = tuple(原始圖片參照)
+                投影.append((角色, 內容, 圖片參照))
+            return 工作階段詳情(根工作階段識別碼, 標題, 更新時間, tuple(投影))
         except (KeyboardInterrupt, SystemExit, GeneratorExit):
             raise
         except Web資源不存在:
@@ -460,9 +486,24 @@ def 序列化工作階段詳情(詳情: 工作階段詳情) -> dict[str, object]
     """序列化 exact session/messages allowlist，永不輸出 lineage、reasoning 或工具欄位。"""
     if type(詳情) is not 工作階段詳情:
         raise Web服務不可用
+    訊息清單 = []
+    for 項目 in 詳情.訊息清單:
+        # 相容既有純文字 DTO fixture；實際服務一律產生三欄 tuple。
+        if type(項目) is not tuple or len(項目) not in {2, 3}:
+            raise Web服務不可用
+        角色, 內容 = 項目[0], 項目[1]
+        圖片參照 = () if len(項目) == 2 else 項目[2]
+        if type(角色) is not str or type(內容) is not str or type(圖片參照) is not tuple:
+            raise Web服務不可用
+        訊息 = {"role": 角色, "content": 內容}
+        if 圖片參照:
+            if not all(type(參照) is str for 參照 in 圖片參照):
+                raise Web服務不可用
+            訊息["images"] = list(圖片參照)
+        訊息清單.append(訊息)
     return {
         "session": {"id": 詳情.識別碼, "title": 詳情.標題, "updated_at": 詳情.更新時間},
-        "messages": [{"role": 角色, "content": 內容} for 角色, 內容 in 詳情.訊息清單],
+        "messages": 訊息清單,
     }
 
 
@@ -544,10 +585,35 @@ def _驗證時間(值: object) -> None:
         raise ValueError
 
 
+def _正規化時間(值: object) -> float:
+    """將 SQLite 的 epoch 或 PostgreSQL timestamptz 統一為 JSON epoch 秒數。"""
+    if type(值) is datetime:
+        if 值.tzinfo is None or 值.utcoffset() is None:
+            raise ValueError
+        值 = 值.timestamp()
+    _驗證時間(值)
+    return float(值)
+
+
 def _驗證識別碼(值: object) -> None:
     """要求 exact、非空、去邊界空白且 128 字元內的識別碼。"""
     if type(值) is not str or not 1 <= len(值) <= _最大識別碼字元 or 值.strip() != 值:
         raise Web請求無效
+
+
+def _驗證圖片參照清單(值: object, 使用者識別碼: str) -> None:
+    """要求每個參照都是本人上傳、由本服務發出的 canonical gs:// 參照。
+
+    這是圖片歸屬的唯一把關點。route 層只檢查形狀，沒有身分以外的資訊可判斷
+    某個參照是否屬於呼叫者；若在此漏掉，使用者就能靠猜路徑讀取他人圖片。
+    """
+    if 值 is None:
+        return
+    if type(值) is not list or not 值 or len(值) > _最大圖片張數:
+        raise Web請求無效
+    for 參照 in 值:
+        if not 驗證圖片參照(參照, 使用者識別碼):
+            raise Web請求無效
 
 
 def _驗證訊息(值: object) -> None:

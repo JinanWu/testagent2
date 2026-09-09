@@ -2,6 +2,7 @@
 
 import importlib
 import os
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -71,7 +72,7 @@ def test_聊天以完整登入上下文及web來源建立執行階段():
 
     def 工廠(*, 使用者上下文物件, source):
         捕捉.update(上下文=使用者上下文物件, source=source)
-        return SimpleNamespace(執行使用者訊息=lambda message, session_id=None: SimpleNamespace(
+        return SimpleNamespace(執行使用者訊息=lambda message, session_id=None, 圖片參照清單=None: SimpleNamespace(
             最終回答="安全回答", 工作階段識別碼="tip-1"
         ))
 
@@ -115,7 +116,7 @@ def test_聊天resume只接受logical_root且結果不得跨譜系():
 
     庫 = 假工作階段庫(資料, 根="other-root")
     def 工廠(**kwargs):
-        return SimpleNamespace(執行使用者訊息=lambda *args: SimpleNamespace(最終回答="回答", 工作階段識別碼="other-tip"))
+        return SimpleNamespace(執行使用者訊息=lambda *args, 圖片參照清單=None: SimpleNamespace(最終回答="回答", 工作階段識別碼="other-tip"))
     服務 = Web代理服務(庫, 假使用者庫(), 工廠)
     庫.根 = "root-1"
     庫.取得工作階段譜系 = lambda 識別碼: ["root-1"] if 識別碼 == "root-1" else ["other-root", 識別碼]
@@ -143,6 +144,19 @@ def test_工作階段列表使用既有篩選並只序列化安全欄位():
     }]}
 
 
+def test_工作階段列表正規化PostgreSQL時區時間():
+    """PostgreSQL 的 timestamptz row 可安全投影成前端契約的 epoch 秒數。"""
+    時間 = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+    原始 = {
+        "id": "root-1", "title": "標題", "updated_at": 時間, "message_count": 0,
+    }
+    服務 = Web代理服務(假工作階段庫(原始), 假使用者庫(), lambda **kwargs: None)
+
+    回應 = 序列化工作階段列表(服務.列出工作階段("user-1"))
+
+    assert 回應["sessions"][0]["updated_at"] == 時間.timestamp()
+
+
 def test_工作階段詳情解析tip且只保留使用者與助理文字():
     """CP3-WEB-SESSION-02：detail 排除 system/tool/reasoning/tool_calls。"""
     庫 = 假工作階段庫({"id": "root-1", "source": "web", "user_id": "user-1"})
@@ -159,6 +173,36 @@ def test_工作階段詳情解析tip且只保留使用者與助理文字():
             {"role": "assistant", "content": "回答"},
         ],
     }
+
+
+def test_工作階段詳情保留本人圖片參照供安全預覽(monkeypatch):
+    """圖片仍為私有 GCS 物件；詳情只帶本人、canonical 的參照。"""
+    monkeypatch.setenv("IMAGE_BUCKET", "image-bucket")
+    參照 = "gs://image-bucket/images/user-1/0123456789abcdef0123456789abcdef.png"
+    庫 = 假工作階段庫({"id": "root-1", "source": "web", "user_id": "user-1"})
+    庫.讀取訊息 = lambda *_args, **_kwargs: [{
+        "role": "user", "content": "這是什麼？", "圖片參照清單": [參照],
+    }]
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+
+    回應 = 序列化工作階段詳情(服務.讀取工作階段("user-1", "root-1"))
+
+    assert 回應["messages"] == [{"role": "user", "content": "這是什麼？", "images": [參照]}]
+
+
+def test_工作階段詳情正規化PostgreSQL時區時間():
+    """詳細內容同樣接受 repository 回傳的 PostgreSQL timestamptz。"""
+    時間 = datetime(2026, 9, 8, 9, 0, tzinfo=timezone.utc)
+    庫 = 假工作階段庫({"id": "root-1", "source": "web", "user_id": "user-1"})
+    庫.讀取工作階段 = lambda 識別碼: {
+        "id": 識別碼, "title": "目前標題", "updated_at": 時間,
+        "source": "web", "user_id": "user-1",
+    }
+    服務 = Web代理服務(庫, 假使用者庫(), lambda **kwargs: None)
+
+    回應 = 序列化工作階段詳情(服務.讀取工作階段("user-1", "root-1"))
+
+    assert 回應["session"]["updated_at"] == 時間.timestamp()
 
 
 def test_工作階段詳情拒絕以compression_child作為公開識別碼():

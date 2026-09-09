@@ -25,6 +25,12 @@ class 聊天成功回應(_嚴格模型):
     回覆: 聊天回覆模型 = Field(alias="reply")
 
 
+class 圖片上傳成功回應(_嚴格模型):
+    """圖片上傳成功時只公開可放進聊天請求的 gs:// 參照。"""
+
+    圖片參照: str = Field(alias="image", min_length=1, max_length=512)
+
+
 class 工作階段列表項目模型(_嚴格模型):
     """工作階段列表單項的固定公開欄位。"""
 
@@ -49,10 +55,11 @@ class 工作階段模型(_嚴格模型):
 
 
 class 工作階段訊息模型(_嚴格模型):
-    """只允許user或assistant純文字訊息。"""
+    """只允許 user/assistant 文字與 user 自己的圖片參照。"""
 
     角色: Literal["user", "assistant"] = Field(alias="role")
     內容: str = Field(alias="content", max_length=65_536)
+    圖片參照清單: list[str] | None = Field(default=None, alias="images", max_length=4)
 
 
 class 工作階段詳情回應(_嚴格模型):
