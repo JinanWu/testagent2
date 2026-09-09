@@ -186,7 +186,8 @@ def 建立沙箱指令(
     if 工作目錄:
         # 在沙箱內切目錄，而不是靠 subprocess 的 cwd——cwd 設定的是啟動器的目錄，
         # 不保證傳進沙箱的檔案系統視圖。
-        內層指令 = f"cd {shlex.quote(str(工作目錄))} && {指令}"
+        安全工作目錄 = shlex.quote(str(工作目錄))
+        內層指令 = f"mkdir -p {安全工作目錄} && cd {安全工作目錄} && {指令}"
 
     argv = [str(沙箱可執行檔), "do", "--write"]
 

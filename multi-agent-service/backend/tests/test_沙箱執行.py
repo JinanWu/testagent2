@@ -111,15 +111,16 @@ def test_允許連線才加egress旗標(假裝有沙箱):
     assert "--allow-egress" not in 建立沙箱指令("curl x", 允許連線=False)
 
 
-def test_工作目錄在沙箱內切換且有跳脫(假裝有沙箱):
-    """確認 cd 是在沙箱內做的，且含空白或引號的路徑不會被拆開或注入。"""
+def test_工作目錄在沙箱內建立切換且有跳脫(假裝有沙箱):
+    """確認 sandbox 先建立工作目錄再切換，且含空白或引號的路徑不會被拆開或注入。"""
     argv = 建立沙箱指令("ls", 工作目錄="/tmp/有 空白的'目錄")
     內層 = argv[-1]
-    assert 內層.startswith("cd ")
+    assert 內層.startswith("mkdir -p ")
     assert 內層.endswith(" && ls")
     # shlex.quote 後整段路徑必須是單一參數，不能讓引號逃出來
     import shlex
-    assert shlex.split(內層.removesuffix(" && ls"))[1] == "/tmp/有 空白的'目錄"
+    片段 = shlex.split(內層.removesuffix(" && ls"))
+    assert 片段 == ["mkdir", "-p", "/tmp/有 空白的'目錄", "&&", "cd", "/tmp/有 空白的'目錄"]
 
 
 def test_沒有沙箱可執行檔時fail_closed(monkeypatch):

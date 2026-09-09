@@ -42,7 +42,9 @@ RUN useradd --create-home --uid 10001 app \
  && chmod 755 /usr/local/bin/docker-entrypoint \
  && mkdir -p /tmp/agent-service/bundles /tmp/agent-service/workspaces \
  && chown -R app:app /app /tmp/agent-service
-USER app
+# Cloud Run Sandbox launcher 的診斷版本：讓父容器以 root 啟動，確認 launcher
+# 建立網路命名空間時是否受非 root 執行身分影響。
+USER root
 
 # 容器內的固定路徑 authority；compose 與雲端部署都沿用這組值。
 # 四個路徑互不為別名，符合 解析Canonical環境設定 的契約。
