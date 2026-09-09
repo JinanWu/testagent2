@@ -402,14 +402,14 @@ def _刪除技能(名稱: str, user_id: str | None = None) -> dict[str, Any]:
         if not 列:
             return {"success": False, "error": f"找不到使用者技能 '{名稱}'。"}
         skill_id = 列.get("skill_id")
-        if skill_id and 技能使用量.是否pin(skill_id):
+        if skill_id and 技能使用量.是否pin(skill_id, user_id=user_id):
             return {"success": False, "error": f"技能 '{名稱}' 已被 pin，無法刪除。請先解除 pin（unpin）再刪除。"}
         try:
-            庫.刪除技能(skill_id)
+            庫.刪除技能(skill_id, user_id=user_id)
         except Exception as 錯誤:
             return _包裝雲端技能錯誤("刪除技能", 錯誤)
         if skill_id:
-            技能使用量.遺忘(skill_id)
+            技能使用量.遺忘(skill_id, user_id=user_id)
         return {"success": True, "message": f"技能 '{名稱}' 已刪除。"}
     技能目錄 = _尋找使用者技能(名稱)
     if not 技能目錄:
