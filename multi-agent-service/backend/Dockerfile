@@ -40,7 +40,7 @@ COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN useradd --create-home --uid 10001 app \
  && chmod 755 /usr/local/bin/docker-entrypoint \
- && mkdir -p /tmp/agent-service/bundles /tmp/agent-service/workspaces \
+ && mkdir -p /tmp/agent-service/bundles /tmp/agent-service/workspaces /app/assets/user_skill \
  && chown -R app:app /app /tmp/agent-service
 # Cloud Run Sandbox launcher 的診斷版本：讓父容器以 root 啟動，確認 launcher
 # 建立網路命名空間時是否受非 root 執行身分影響。
