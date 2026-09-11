@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type UIEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type UIEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
@@ -130,6 +130,9 @@ export default function ChatPage({
   const [待送圖片清單, set待送圖片清單] = useState<待送圖片[]>([])
   const [圖片上傳中, set圖片上傳中] = useState(false)
   const 選檔Ref = useRef<HTMLInputElement | null>(null)
+  const [正在拖放圖片, set正在拖放圖片] = useState(false)
+  const 拖放進入次數 = useRef(0)
+  const [預覽圖片, set預覽圖片] = useState<string | null>(null)
 
   const invalidate = useCallback(() => {
     epoch.current += 1
@@ -276,6 +279,39 @@ export default function ChatPage({
       /* 清空 input，否則同一個檔案再選一次不會觸發 change */
       if (選檔Ref.current !== null) 選檔Ref.current.value = ''
     }
+  }
+
+  function 是圖片檔案拖曳(event: DragEvent<HTMLDivElement>) {
+    return Array.from(event.dataTransfer.types).includes('Files')
+  }
+
+  function 處理圖片拖入(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    if (圖片上傳中 || pending || detailPending || 待送圖片清單.length >= CHAT_IMAGE_MAX_COUNT) return
+    拖放進入次數.current += 1
+    set正在拖放圖片(true)
+  }
+
+  function 處理圖片拖曳中(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function 處理圖片拖離(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    拖放進入次數.current = Math.max(0, 拖放進入次數.current - 1)
+    if (拖放進入次數.current === 0) set正在拖放圖片(false)
+  }
+
+  function 處理圖片放下(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    拖放進入次數.current = 0
+    set正在拖放圖片(false)
+    if (圖片上傳中 || pending || detailPending) return
+    void 處理選擇圖片(event.dataTransfer.files)
   }
 
   function 移除待送圖片(參照: string) {
@@ -486,6 +522,15 @@ export default function ChatPage({
   const 是空白對話 = messages.length === 0 && !pending && !detailPending
   const 輸入內容過長 = draft.trim().length > 0 && byteLength(draft.trim()) > CHAT_MESSAGE_MAX_BYTES
 
+  useEffect(() => {
+    if (預覽圖片 === null) return
+    const 處理按鍵 = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') set預覽圖片(null)
+    }
+    window.addEventListener('keydown', 處理按鍵)
+    return () => { window.removeEventListener('keydown', 處理按鍵) }
+  }, [預覽圖片])
+
   const 輸入區 = (
     <>
       {/* 送出失敗時草稿會保留，錯誤就放在輸入區上方，讓「看到錯誤」與「重送」在同一處 */}
@@ -499,7 +544,25 @@ export default function ChatPage({
         <label htmlFor="chat-message" className="sr-only">
           訊息
         </label>
-        <div className="rounded-2xl border border-outline-variant bg-surface-container-lowest p-sm shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors focus-within:border-primary/50">
+        <div
+          onDragEnter={處理圖片拖入}
+          onDragOver={處理圖片拖曳中}
+          onDragLeave={處理圖片拖離}
+          onDrop={處理圖片放下}
+          className={[
+            'relative rounded-2xl border bg-surface-container-lowest p-sm shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors focus-within:border-primary/50',
+            正在拖放圖片 ? 'border-primary border-dashed bg-primary-container/10 ring-2 ring-primary/15' : 'border-outline-variant',
+          ].join(' ')}
+        >
+          {正在拖放圖片 && (
+            <div
+              id="chat-image-drop-hint"
+              aria-live="polite"
+              className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-xl bg-surface-container-lowest/90 text-center font-body-md text-body-md font-semibold text-primary backdrop-blur-sm"
+            >
+              放開即可附加圖片
+            </div>
+          )}
           {待送圖片清單.length > 0 && (
             <ul className="flex flex-wrap gap-sm px-sm pt-xs" aria-label="待送出的圖片">
               {待送圖片清單.map((項目) => (
@@ -613,7 +676,38 @@ export default function ChatPage({
     </>
   )
 
+  const 圖片預覽浮層 = 預覽圖片 !== null ? (
+    <div
+      role="presentation"
+      onClick={() => set預覽圖片(null)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/75 p-lg backdrop-blur-sm"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="圖片完整預覽"
+        onClick={(event) => event.stopPropagation()}
+        className="relative flex max-h-[92vh] max-w-[min(92vw,72rem)] items-center justify-center rounded-3xl border border-outline-variant bg-surface-container-lowest p-sm shadow-[0_24px_80px_rgba(0,0,0,0.28)]"
+      >
+        <img
+          src={buildChatImageRoute(預覽圖片)}
+          alt="圖片完整預覽"
+          className="max-h-[calc(92vh-1rem)] max-w-[calc(92vw-1rem)] rounded-2xl object-contain"
+        />
+        <button
+          type="button"
+          onClick={() => set預覽圖片(null)}
+          aria-label="關閉圖片預覽"
+          className="absolute right-3 top-3 flex size-9 items-center justify-center rounded-full border border-outline-variant bg-surface-container-lowest/90 text-on-surface shadow-sm transition-colors hover:bg-surface-container-highest"
+        >
+          ×
+        </button>
+      </section>
+    </div>
+  ) : null
+
   return (
+    <>
     <應用框架
       目前分頁="對話"
       標題={頁面標題}
@@ -668,6 +762,7 @@ export default function ChatPage({
             <div className="mx-auto flex w-full max-w-[48rem] flex-col gap-lg">
               {messages.map((message, index) => {
                 const 是使用者 = message.role === 'user'
+                const 圖片數量 = message.images?.length ?? 0
                 return (
                   /* 使用者靠右、助理靠左，泡泡不撐滿寬度，對話才有來回的感覺 */
                   <div
@@ -695,22 +790,38 @@ export default function ChatPage({
                         是使用者 ? 'items-end' : 'items-start',
                       ].join(' ')}
                     >
-                      {是使用者 && message.images !== undefined && message.images.length > 0 && (
+                      {是使用者 && 圖片數量 > 0 && message.images !== undefined && (
                         <div
                           className={[
                             'grid w-full gap-sm',
-                            message.images.length === 1 ? 'grid-cols-1' : 'grid-cols-2',
+                            圖片數量 === 1 ? 'grid-cols-1' : 'grid-cols-2',
                           ].join(' ')}
                           aria-label="此訊息附加的圖片"
                         >
                           {message.images.map((image, imageIndex) => (
-                            <img
+                            <button
                               key={image}
-                              src={buildChatImageRoute(image)}
-                              alt={`附加圖片 ${imageIndex + 1}`}
-                              className="aspect-video w-full rounded-3xl border border-primary/15 bg-surface-container object-cover"
-                              loading="lazy"
-                            />
+                              type="button"
+                              onClick={() => set預覽圖片(image)}
+                              aria-label={`開啟附加圖片 ${imageIndex + 1} 的完整預覽`}
+                              className={[
+                                'group relative w-fit max-w-full overflow-hidden rounded-3xl border border-primary/15 bg-surface-container text-left shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-shadow hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+                                圖片數量 === 1 ? 'justify-self-end' : 'w-full',
+                              ].join(' ')}
+                            >
+                              <img
+                                src={buildChatImageRoute(image)}
+                                alt={`附加圖片 ${imageIndex + 1}`}
+                                className={[
+                                  'h-auto max-h-[32rem] max-w-full object-contain',
+                                  圖片數量 === 1 ? 'w-auto' : 'w-full',
+                                ].join(' ')}
+                                loading="lazy"
+                              />
+                              <span className="pointer-events-none absolute bottom-3 right-3 rounded-full bg-surface-container-lowest/85 px-2.5 py-1 font-label-sm text-label-sm text-on-surface opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                                點擊放大
+                              </span>
+                            </button>
                           ))}
                         </div>
                       )}
@@ -802,5 +913,7 @@ export default function ChatPage({
         </div>
       )}
     </應用框架>
+    {圖片預覽浮層}
+    </>
   )
 }
