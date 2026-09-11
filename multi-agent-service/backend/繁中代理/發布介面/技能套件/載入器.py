@@ -19,7 +19,7 @@ import traceback
 from typing import Protocol
 import unicodedata
 
-from .安全複製 import 技能套件最大總位元組數, 限制
+from .安全複製 import 技能套件最大總位元組數, 技能套件資源限制
 from .發布器 import 已驗證技能套件清單, 驗證已發布技能套件清單
 from .清單 import 是合法技能套件定位參照, 是合法技能套件清單參照
 from ..執行期.執行器 import 技能套件快照, 技能套件檔案
@@ -29,8 +29,8 @@ _固定訊息 = "技能套件載入失敗。"
 _唯一來源 = "endpoint_version_snapshot"
 _識別碼格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _摘要格式 = re.compile(r"[0-9a-f]{64}\Z")
-_不可跟隨 = getattr(os, "O_NOFOLLOW", 0)
-_僅目錄 = getattr(os, "O_DIRECTORY", 0)
+_不跟隨的旗標 = getattr(os, "O_NOFOLLOW", 0)
+_僅目錄的旗標 = getattr(os, "O_DIRECTORY", 0)
 _控制流程 = (KeyboardInterrupt, SystemExit, GeneratorExit)
 
 
@@ -196,13 +196,13 @@ def _開啟發布根(根字串: str) -> int:
     副作用：逐層開啟並關閉目錄描述元，成功時保留最終描述元。
     """
     根路徑 = Path(根字串)
-    目前 = os.open(根路徑.anchor, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    目前 = os.open(根路徑.anchor, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標)
     try:
         for 部件 in 根路徑.parts[1:]:
             可見 = os.stat(部件, dir_fd=目前, follow_symlinks=False)
             if not stat.S_ISDIR(可見.st_mode):
                 raise OSError
-            下一個 = os.open(部件, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+            下一個 = os.open(部件, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目前)
             try:
                 已開啟 = os.fstat(下一個)
                 if (可見.st_dev, 可見.st_ino) != (已開啟.st_dev, 已開啟.st_ino):
@@ -234,7 +234,7 @@ def _開啟套件根(根描述元: int, bundle_id: str) -> int:
     可見 = os.stat(bundle_id, dir_fd=根描述元, follow_symlinks=False)
     if not stat.S_ISDIR(可見.st_mode) or stat.S_IMODE(可見.st_mode) != 0o555:
         raise OSError
-    描述元 = os.open(bundle_id, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根描述元)
+    描述元 = os.open(bundle_id, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=根描述元)
     try:
         釘選 = os.fstat(描述元)
         if (可見.st_dev, 可見.st_ino) != (釘選.st_dev, 釘選.st_ino):
@@ -263,7 +263,7 @@ def _開啟父目錄(
             可見 = os.stat(名稱, dir_fd=目前, follow_symlinks=False)
             if not stat.S_ISDIR(可見.st_mode) or stat.S_IMODE(可見.st_mode) != 0o555:
                 raise OSError
-            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目前)
             釘選 = os.fstat(子描述元)
             if (可見.st_dev, 可見.st_ino) != (釘選.st_dev, 釘選.st_ino):
                 os.close(子描述元)
@@ -298,7 +298,7 @@ def _讀取穩定檔案(
         or 可見.st_size > 上限 or (預期大小 is not None and 可見.st_size != 預期大小)
     ):
         raise OSError
-    描述元 = os.open(名稱, os.O_RDONLY | _不可跟隨, dir_fd=目錄描述元)
+    描述元 = os.open(名稱, os.O_RDONLY | _不跟隨的旗標, dir_fd=目錄描述元)
     try:
         讀取前 = os.fstat(描述元)
         if _身分(可見) != _身分(讀取前) or not stat.S_ISREG(讀取前.st_mode):
@@ -396,7 +396,7 @@ def _驗證完整樹(
             if stat.S_ISDIR(可見.st_mode):
                 if 相對路徑 not in 預期目錄 or stat.S_IMODE(可見.st_mode) != 0o555:
                     raise OSError
-                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目錄描述元)
                 try:
                     釘選 = os.fstat(子描述元)
                     身分 = (釘選.st_dev, 釘選.st_ino)
@@ -513,7 +513,7 @@ class 已發布技能套件載入器:
             for 項目 in 清單.copied_files:
                 檔案 = _讀取相對檔案(
                     套件描述元, 項目.path, 目錄身分,
-                    預期大小=項目.size_bytes, 上限=限制().最大檔案位元組數,
+                    預期大小=項目.size_bytes, 上限=技能套件資源限制().單一檔案最大位元組數,
                 )
                 if not hmac.compare_digest(hashlib.sha256(檔案.資料).hexdigest(), 項目.sha256):
                     raise ValueError
