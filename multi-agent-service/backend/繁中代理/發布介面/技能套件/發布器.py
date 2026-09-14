@@ -22,7 +22,7 @@ import tempfile
 import traceback
 from typing import Any, Callable, Mapping
 
-from .安全複製 import 掃描技能, 重驗檔案, 限制
+from .安全複製 import 掃描技能, 重驗檔案, 技能套件資源限制
 from .清單 import 技能掃描, 建立清單, 正規JSON, 計算套件雜湊
 
 
@@ -71,8 +71,8 @@ class 套件耐久性未知(套件發布錯誤):
 
 
 _識別碼格式 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
-_不可跟隨 = getattr(os, "O_NOFOLLOW", 0)
-_僅目錄 = getattr(os, "O_DIRECTORY", 0)
+_不跟隨的旗標 = getattr(os, "O_NOFOLLOW", 0)
+_僅目錄的旗標 = getattr(os, "O_DIRECTORY", 0)
 _清單鍵 = {
     "manifest_version", "bundle_id", "endpoint_id", "endpoint_version_id", "version_number",
     "created_at", "created_by_user_id", "source_skills", "copied_files", "copied_file_hashes",
@@ -181,7 +181,7 @@ def 驗證已發布技能套件清單(原始資料: bytes) -> 已驗證技能套
     原文 = 清單 = 檔案們 = 項目 = 結果 = None
     失敗 = False
     try:
-        if type(原始資料) is not bytes or not 原始資料 or len(原始資料) > 限制().最大總位元組數:
+        if type(原始資料) is not bytes or not 原始資料 or len(原始資料) > 技能套件資源限制().套件最大總位元組數:
             raise ValueError
         原文 = 原始資料.decode("utf-8", errors="strict")
         清單 = json.loads(
@@ -239,7 +239,7 @@ def _合法清單路徑(值: object) -> bool:
             return False
         路徑 = PurePosixPath(值)
         return (
-            len(值.encode("utf-8")) <= 限制().最大路徑位元組數
+            len(值.encode("utf-8")) <= 技能套件資源限制().相對路徑最大位元組數
             and not 路徑.is_absolute()
             and str(路徑) == 值
             and all(部件 not in {"", ".", ".."} for 部件 in 路徑.parts)
@@ -302,7 +302,7 @@ def _讀取有界檔案(目錄描述元: int, 名稱: str, 最大位元組數: i
     開啟前 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
     if not stat.S_ISREG(開啟前.st_mode) or 開啟前.st_size > 最大位元組數:
         raise OSError
-    描述元 = os.open(名稱, os.O_RDONLY | _不可跟隨, dir_fd=目錄描述元)
+    描述元 = os.open(名稱, os.O_RDONLY | _不跟隨的旗標, dir_fd=目錄描述元)
     try:
         區塊列: list[bytes] = []
         總數 = 0
@@ -330,7 +330,7 @@ def _同步目錄(路徑: Path) -> None:
     參數：``路徑`` 是待同步目錄。回傳：無。例外：開啟或同步錯誤原樣傳出。
     副作用：短暫開啟目錄描述元並呼叫 ``fsync``，最後一律關閉描述元。
     """
-    描述元 = os.open(路徑, os.O_RDONLY | _僅目錄)
+    描述元 = os.open(路徑, os.O_RDONLY | _僅目錄的旗標)
     try:
         os.fsync(描述元)
     finally:
@@ -356,7 +356,7 @@ def _封存不可變並同步(根目錄: Path) -> None:
         if not stat.S_ISREG(資訊.st_mode):
             raise OSError
         os.chmod(路徑, 0o444, follow_symlinks=False)
-        描述元 = os.open(路徑, os.O_RDONLY | _不可跟隨)
+        描述元 = os.open(路徑, os.O_RDONLY | _不跟隨的旗標)
         try:
             os.fsync(描述元)
         finally:
@@ -379,7 +379,7 @@ def _封存最終根並同步(最終目錄: Path, 預期身分: tuple[int, int])
     例外：種類或身分不符、chmod 與同步失敗時拋出 ``OSError``。
     副作用：以不跟隨描述元將成果根改為 0555 並 ``fsync``，最後一律關閉描述元。
     """
-    描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標)
     try:
         資訊 = os.fstat(描述元)
         if not stat.S_ISDIR(資訊.st_mode) or (資訊.st_dev, 資訊.st_ino) != 預期身分:
@@ -414,7 +414,7 @@ def _清除目錄內容(目錄描述元: int, 剩餘深度: int) -> None:
             if not stat.S_ISDIR(資訊.st_mode):
                 os.unlink(名稱, dir_fd=目錄描述元)
                 continue
-            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+            子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目錄描述元)
             try:
                 釘選 = os.fstat(子描述元)
                 if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
@@ -437,11 +437,11 @@ def _安全清除(路徑: Path | None) -> None:
     if 路徑 is None:
         return
     try:
-        描述元 = os.open(路徑, os.O_RDONLY | _僅目錄 | _不可跟隨)
+        描述元 = os.open(路徑, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標)
     except BaseException:
         return
     try:
-        _清除目錄內容(描述元, 限制().最大深度 + 1)
+        _清除目錄內容(描述元, 技能套件資源限制().最大目錄層數 + 1)
     except BaseException:
         pass
     finally:
@@ -484,7 +484,7 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
         if (
             type(名稱) is not str or _識別碼格式.fullmatch(名稱) is None
             or type(來源路徑) is not str or not os.path.isabs(來源路徑)
-            or not 來源路徑 or len(來源路徑.encode("utf-8")) > 限制().最大路徑位元組數
+            or not 來源路徑 or len(來源路徑.encode("utf-8")) > 技能套件資源限制().相對路徑最大位元組數
             or type(來源雜湊) is not str or re.fullmatch(r"[0-9a-f]{64}", 來源雜湊) is None
             or 名稱 in 來源索引
         ):
@@ -493,7 +493,7 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
     if [來源["name"] for 來源 in 來源列] != sorted(來源索引, key=lambda 值: 值.encode("utf-8")):
         raise ValueError
     項目列 = 清單.get("copied_files")
-    if type(項目列) is not list or not 1 <= len(項目列) <= 限制().最大檔案數:
+    if type(項目列) is not list or not 1 <= len(項目列) <= 技能套件資源限制().最大檔案數:
         raise ValueError
     索引: dict[str, dict[str, Any]] = {}
     總數 = 0
@@ -506,7 +506,7 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
         部件 = PurePosixPath(路徑).parts
         if not _合法清單路徑(路徑) or len(部件) < 2 or 部件[0] not in 來源索引:
             raise ValueError
-        if len(路徑.encode("utf-8")) > 限制().最大路徑位元組數 or not 0 <= 大小 <= 限制().最大檔案位元組數:
+        if len(路徑.encode("utf-8")) > 技能套件資源限制().相對路徑最大位元組數 or not 0 <= 大小 <= 技能套件資源限制().單一檔案最大位元組數:
             raise ValueError
         if re.fullmatch(r"[0-9a-f]{64}", 雜湊) is None or 路徑 in 索引:
             raise ValueError
@@ -525,7 +525,7 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
         if 技能主檔[2] != 來源["source_hash"]:
             raise ValueError
     排除列 = 清單["excluded_files"]
-    if type(排除列) is not list or len(排除列) > 限制().最大檔案數:
+    if type(排除列) is not list or len(排除列) > 技能套件資源限制().最大檔案數:
         raise ValueError
     排除路徑列: list[str] = []
     for 排除 in 排除列:
@@ -543,7 +543,7 @@ def _驗證清單結構(清單: Any) -> dict[str, dict[str, Any]]:
         raise ValueError
     if type(清單["warnings"]) is not list or 清單["warnings"]:
         raise ValueError
-    if type(清單["total_bytes"]) is not int or 總數 > 限制().最大總位元組數 or 清單["total_bytes"] != 總數:
+    if type(清單["total_bytes"]) is not int or 總數 > 技能套件資源限制().套件最大總位元組數 or 清單["total_bytes"] != 總數:
         raise ValueError
     if type(清單["copied_file_hashes"]) is not dict or 清單["copied_file_hashes"] != {路徑: 項目["sha256"] for 路徑, 項目 in 索引.items()}:
         raise ValueError
@@ -565,7 +565,7 @@ def _重驗最終內容(
     根開啟前 = 最終目錄.lstat()
     if not stat.S_ISDIR(根開啟前.st_mode) or stat.S_IMODE(根開啟前.st_mode) != 0o555:
         raise OSError
-    根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+    根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標)
     實際檔案: set[str] = set()
     實際目錄: set[str] = {""}
     預期目錄: set[str] = {""}
@@ -587,7 +587,7 @@ def _重驗最終內容(
             相對路徑 = 名稱 if not 前綴 else f"{前綴}/{名稱}"
             資訊 = os.stat(名稱, dir_fd=目錄描述元, follow_symlinks=False)
             if stat.S_ISDIR(資訊.st_mode):
-                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                子描述元 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目錄描述元)
                 try:
                     釘選 = os.fstat(子描述元)
                     if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
@@ -601,7 +601,7 @@ def _重驗最終內容(
                     if 前綴 or stat.S_IMODE(資訊.st_mode) != 0o444:
                         raise OSError
                     資料, _穩定資訊 = _讀取有界檔案(
-                        目錄描述元, 名稱, 限制().最大總位元組數
+                        目錄描述元, 名稱, 技能套件資源限制().套件最大總位元組數
                     )
                     if hashlib.sha256(資料).hexdigest() != 清單摘要:
                         raise OSError
@@ -659,7 +659,7 @@ class 技能套件發布器:
             掃描列.append(掃描技能(名稱, 技能表[名稱]))
         檔案總數 = sum(len(掃描.檔案) for 掃描 in 掃描列)
         位元組總數 = sum(檔案.位元組數 for 掃描 in 掃描列 for 檔案 in 掃描.檔案)
-        if 檔案總數 > 限制().最大檔案數 or 位元組總數 > 限制().最大總位元組數:
+        if 檔案總數 > 技能套件資源限制().最大檔案數 or 位元組總數 > 技能套件資源限制().套件最大總位元組數:
             raise 套件發布錯誤("技能來源超過限制")
         return tuple(掃描列)
 
@@ -762,9 +762,9 @@ class 技能套件發布器:
         例外：身分、內容、種類、模式、摘要或完整集合不同時拋出碰撞錯誤。副作用：只讀取成果。
         """
         try:
-            根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄 | _不可跟隨)
+            根描述元 = os.open(最終目錄, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標)
             try:
-                原始資料, 清單資訊 = _讀取有界檔案(根描述元, "manifest.json", 限制().最大總位元組數)
+                原始資料, 清單資訊 = _讀取有界檔案(根描述元, "manifest.json", 技能套件資源限制().套件最大總位元組數)
             finally:
                 os.close(根描述元)
             if stat.S_IMODE(清單資訊.st_mode) != 0o444:

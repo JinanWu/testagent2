@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Iterable
 
 from .環境設定 import 讀取核心BigQuery設定, 應跳過建表
@@ -536,17 +535,21 @@ def 取得技能庫() -> BigQuery技能庫:
     return _技能庫實例
 
 
-def 取得啟用中的技能庫() -> "BigQuery技能庫 | None":
-    """依 STORAGE_BACKEND 回傳雲端技能庫，或 None（sqlite 模式走本機）。
+def 取得啟用中的技能庫() -> Any | None:
+    """依 STORAGE_BACKEND 回傳對應雲端技能庫，sqlite 時回傳 None。
 
     集中「載入 .env + 判斷後端」的唯一邏輯，供各技能模組共用，避免各自重寫。
 
     參數：無。
-    返回值：BigQuery技能庫 實例（STORAGE_BACKEND=bigquery 時）；否則 None。
+    返回值：BigQuery 或 PostgreSQL 技能庫實例；sqlite 時為 None。
     """
-    from .環境設定 import 載入本機環境檔
+    from .環境設定 import 讀取交易儲存設定
 
-    載入本機環境檔()
-    if (os.getenv("STORAGE_BACKEND") or "sqlite").strip().lower() != "bigquery":
-        return None
-    return 取得技能庫()
+    設定 = 讀取交易儲存設定()
+    if 設定.後端 == "bigquery":
+        return 取得技能庫()
+    if 設定.後端 == "postgres":
+        from .PostgreSQL技能庫 import PostgreSQL技能庫
+
+        return PostgreSQL技能庫(設定)
+    return None

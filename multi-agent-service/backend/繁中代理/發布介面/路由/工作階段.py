@@ -49,7 +49,10 @@ def 建立工作階段路由器(服務: 工作階段查詢服務, 目前工作�
         except Web服務不可用:
             raise HTTPException(status_code=503, detail={"code": "sessions_unavailable"}) from None
 
-    @路由器.get("/{session_id}", response_model=工作階段詳情回應, responses={400: {}, 404: {}, 422: {}, 503: {}})
+    @路由器.get(
+        "/{session_id}", response_model=工作階段詳情回應, response_model_exclude_none=True,
+        responses={400: {}, 404: {}, 422: {}, 503: {}},
+    )
     def 讀取工作階段(
         工作階段識別碼: Annotated[str, Path(alias="session_id")],
         使用者: 網頁使用者 = Depends(目前工作階段相依),

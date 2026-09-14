@@ -161,8 +161,13 @@ def 寫入全部使用量(資料: dict[str, dict[str, Any]]) -> None:
         logger.debug("寫入 %s 失敗：%s", 路徑, 錯誤, exc_info=True)
 
 
-def 取得記錄(skill_id: str) -> dict[str, Any]:
+def 取得記錄(skill_id: str, user_id: str | None = None) -> dict[str, Any]:
     """回傳某技能的使用量記錄；不存在時回傳補齊預設值的新記錄。"""
+    技能庫 = _取得BigQuery技能庫()
+    if 技能庫 is not None:
+        if user_id is None:
+            return _空白記錄()
+        return _補齊使用量記錄(技能庫.讀取使用量列(skill_id, user_id=user_id))
     資料 = 讀取全部使用量()
     記錄 = 資料.get(skill_id)
     if not isinstance(記錄, dict):
@@ -191,7 +196,7 @@ def _補齊使用量記錄(記錄: dict[str, Any] | None) -> dict[str, Any]:
     return 記錄
 
 
-def _變更(skill_id: str, 變更函數: Callable[[dict[str, Any]], None]) -> None:
+def _變更(skill_id: str, 變更函數: Callable[[dict[str, Any]], None], user_id: str | None = None) -> None:
     """讀取使用量記錄、就地套用變更函數後寫回；best-effort，失敗只記 log。
 
     BigQuery 模式以單列 MERGE upsert（讀取使用量列 → 覆寫使用量列），不走整表
@@ -208,10 +213,12 @@ def _變更(skill_id: str, 變更函數: Callable[[dict[str, Any]], None]) -> No
         return
     技能庫 = _取得BigQuery技能庫()
     if 技能庫 is not None:
+        if user_id is None:
+            return
         try:
-            記錄 = _補齊使用量記錄(技能庫.讀取使用量列(skill_id))
+            記錄 = _補齊使用量記錄(技能庫.讀取使用量列(skill_id, user_id=user_id))
             變更函數(記錄)
-            技能庫.覆寫使用量列(skill_id, 記錄)
+            技能庫.覆寫使用量列(skill_id, 記錄, user_id=user_id)
         except Exception as 錯誤:
             logger.debug("技能使用量._變更(%s) BigQuery 失敗：%s", skill_id, 錯誤, exc_info=True)
         return
@@ -232,10 +239,10 @@ def 初始化記錄(skill_id: str, user_id: str | None = None) -> None:
         記錄.setdefault("created_at", 產生目前時間字串())
         if user_id is not None:
             記錄["user_id"] = str(user_id)
-    _變更(skill_id, _套用)
+    _變更(skill_id, _套用, user_id=user_id)
 
 
-def 記錄使用(skill_id: str, 次數: int = 1) -> None:
+def 記錄使用(skill_id: str, 次數: int = 1, user_id: str | None = None) -> None:
     """累加 use_count 並更新 last_used_at。
 
     依設計由 runtime 在 **session 結束時** 呼叫（把該 session 內用過的技能各累加
@@ -246,7 +253,7 @@ def 記錄使用(skill_id: str, 次數: int = 1) -> None:
     def _套用(記錄: dict[str, Any]) -> None:
         記錄["use_count"] = int(記錄.get("use_count") or 0) + 次數
         記錄["last_used_at"] = 產生目前時間字串()
-    _變更(skill_id, _套用)
+    _變更(skill_id, _套用, user_id=user_id)
 
 
 def 設定彙總(skill_id: str, use_count: int, last_used_at: str | None, user_id: str | None = None) -> None:
@@ -259,7 +266,7 @@ def 設定彙總(skill_id: str, use_count: int, last_used_at: str | None, user_i
         記錄["last_used_at"] = last_used_at
         if user_id is not None:
             記錄["user_id"] = str(user_id)
-    _變更(skill_id, _套用)
+    _變更(skill_id, _套用, user_id=user_id)
 
 
 def 補齊缺少的記錄() -> int:
@@ -305,29 +312,29 @@ def 補齊缺少的記錄() -> int:
         return 0
 
 
-def 設定pin(skill_id: str, pinned: bool) -> None:
+def 設定pin(skill_id: str, pinned: bool, user_id: str | None = None) -> None:
     """設定技能 pin 狀態；pinned 技能永不被 Curator 自動搬移或被刪除。"""
     def _套用(記錄: dict[str, Any]) -> None:
         記錄["pinned"] = bool(pinned)
-    _變更(skill_id, _套用)
+    _變更(skill_id, _套用, user_id=user_id)
 
 
-def 是否pin(skill_id: str) -> bool:
+def 是否pin(skill_id: str, user_id: str | None = None) -> bool:
     """回傳技能是否被 pin。"""
-    return bool(取得記錄(skill_id).get("pinned"))
+    return bool(取得記錄(skill_id, user_id=user_id).get("pinned"))
 
 
-def 設定狀態(skill_id: str, 狀態: str) -> None:
+def 設定狀態(skill_id: str, 狀態: str, user_id: str | None = None) -> None:
     """設定生命週期 state；無效值為 no-op。"""
     if 狀態 not in _有效狀態:
         logger.debug("設定狀態：無效狀態 %r（%s）", 狀態, skill_id)
         return
     def _套用(記錄: dict[str, Any]) -> None:
         記錄["state"] = 狀態
-    _變更(skill_id, _套用)
+    _變更(skill_id, _套用, user_id=user_id)
 
 
-def 遺忘(skill_id: str) -> None:
+def 遺忘(skill_id: str, user_id: str | None = None) -> None:
     """技能被刪除時呼叫，整筆移除其使用量記錄；best-effort，失敗只記 log。
 
     BigQuery 模式直接刪除 skill_usage 單列（刪除使用量列）。本機模式在
@@ -343,8 +350,10 @@ def 遺忘(skill_id: str) -> None:
         return
     技能庫 = _取得BigQuery技能庫()
     if 技能庫 is not None:
+        if user_id is None:
+            return
         try:
-            技能庫.刪除使用量列(skill_id)
+            技能庫.刪除使用量列(skill_id, user_id=user_id)
         except Exception as 錯誤:
             logger.debug("技能使用量.遺忘(%s) BigQuery 失敗：%s", skill_id, 錯誤, exc_info=True)
         return

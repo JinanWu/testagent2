@@ -6,7 +6,7 @@ export interface SessionSummary {
   updatedAt: number
   messageCount: number
 }
-export interface TranscriptMessage { role: 'user' | 'assistant'; content: string }
+export interface TranscriptMessage { role: 'user' | 'assistant'; content: string; images?: string[] }
 export interface SessionDetail {
   session: Omit<SessionSummary, 'messageCount'>
   messages: TranscriptMessage[]
@@ -32,6 +32,10 @@ export function buildSessionListRoute(limit = 20): ApiRoute {
 export function buildSessionDetailRoute(id: string): ApiRoute {
   return encodedRoute('/api/sessions/', id)
 }
+export function buildChatImageRoute(image: string): string {
+  if (!boundedString(image, 512) || !image.startsWith('gs://')) throw new ApiFormatError()
+  return `/api/uploads/image?image=${encodeURIComponent(image)}`
+}
 export async function listSessions(limit = 20, signal?: AbortSignal): Promise<SessionSummary[]> {
   const outer = exactObject(await apiRequest(buildSessionListRoute(limit), { signal, expectedStatus: 200 }), ['sessions'])
   if (!outer || !Array.isArray(outer.sessions) || outer.sessions.length > 50) throw new ApiFormatError()
@@ -45,12 +49,17 @@ export async function getSessionDetail(id: string, signal?: AbortSignal): Promis
     throw new ApiFormatError()
   }
   const messages = outer.messages.map((value): TranscriptMessage => {
-    const item = exactObject(value, ['role', 'content'])
+    const item = exactObject(value, ['role', 'content']) ?? exactObject(value, ['role', 'content', 'images'])
     if (!item || (item.role !== 'user' && item.role !== 'assistant') ||
         !text(item.content, 65_536) || byteLength(item.content) > 65_536) {
       throw new ApiFormatError()
     }
-    return { role: item.role, content: item.content }
+    const images = item.images
+    if (images !== undefined && (item.role !== 'user' || !Array.isArray(images) || images.length > 4 ||
+        images.some((image) => !boundedString(image, 512) || !image.startsWith('gs://')))) {
+      throw new ApiFormatError()
+    }
+    return { role: item.role, content: item.content, ...(images === undefined ? {} : { images: [...images] }) }
   })
   return { session: { id: session.id, title: session.title, updatedAt: session.updated_at }, messages }
 }

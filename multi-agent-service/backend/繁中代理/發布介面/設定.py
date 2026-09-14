@@ -20,6 +20,7 @@ from ..環境設定 import 交易儲存設定
     "/api/published-endpoints",
     "/api/admin",
     "/api/chat",
+    "/api/uploads",
     "/api/auth",
     "/api/sessions",
     "/api/skills",

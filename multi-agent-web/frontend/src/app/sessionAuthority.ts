@@ -1,4 +1,5 @@
 import { sendChat, type ChatReply } from '../api/chat'
+import { MAX_IMAGE_UPLOAD_BYTES, uploadImageBytes } from '../api/client'
 import {
   createCredential,
   createDraft,
@@ -23,7 +24,8 @@ export interface AuthorizedRequest<T> {
   readonly signal?: AbortSignal
 }
 
-type SendChatManifest = Readonly<{ kind: 'send-chat'; message: string; sessionId: string | null }>
+type SendChatManifest = Readonly<{ kind: 'send-chat'; message: string; sessionId: string | null; images: readonly string[] }>
+type UploadImageManifest = Readonly<{ kind: 'upload-image'; file: Blob }>
 type RedactionManifest = Readonly<{
   kind: 'redact-invocation'; endpointId: string; invocationId: string
   request: Readonly<RedactionRequest>; idempotencyKey: string
@@ -68,8 +70,8 @@ type CreateCredentialManifest = Readonly<{
 type RevokeCredentialManifest = Readonly<{
   kind: 'revoke-credential'; endpointId: string; credentialId: string
 }>
-type ProtectedManifest = SendChatManifest | RedactionManifest | CreateDraftManifest | PublishEndpointManifest |
-  CreateVersionManifest | CreateCredentialManifest | RevokeCredentialManifest
+type ProtectedManifest = SendChatManifest | UploadImageManifest | RedactionManifest | CreateDraftManifest |
+  PublishEndpointManifest | CreateVersionManifest | CreateCredentialManifest | RevokeCredentialManifest
 
 const manifests = new WeakMap<object, ProtectedManifest>()
 const consumed = new WeakSet<object>()
@@ -148,10 +150,21 @@ function exactVersionConfiguration(value: EndpointVersionConfiguration): Endpoin
   return detachedJson(value) as EndpointVersionConfiguration
 }
 
-export function createSendChatOperation(message: string, sessionId: string | null): ProtectedOperation<ChatReply> {
+export function createSendChatOperation(
+  message: string, sessionId: string | null, images: readonly string[] = [],
+): ProtectedOperation<ChatReply> {
   const trimmed = message.trim()
-  if (!boundedText(trimmed, 16_384) || (sessionId !== null && !boundedText(sessionId, 128))) throw abortError()
-  return token<ChatReply>({ kind: 'send-chat', message: trimmed, sessionId })
+  if (!boundedText(trimmed, 16_384) || (sessionId !== null && !boundedText(sessionId, 128)) ||
+      images.length > 4 || images.some((參照) => !boundedText(參照, 512))) throw abortError()
+  return token<ChatReply>({ kind: 'send-chat', message: trimmed, sessionId, images: Object.freeze([...images]) })
+}
+/*
+ * 上傳與送出一樣走 runAuthorized：那條路徑每次都先取一份新的 session 與 CSRF
+ * token，自己在外面 fetch 會拿到過期的單次 token。
+ */
+export function createUploadImageOperation(file: Blob): ProtectedOperation<string> {
+  if (!(file instanceof Blob) || file.size === 0 || file.size > MAX_IMAGE_UPLOAD_BYTES) throw abortError()
+  return token<string>({ kind: 'upload-image', file })
 }
 export function createRedactionOperation(
   endpointId: string, invocationId: string, request: Readonly<RedactionRequest>, idempotencyKey: string,
@@ -218,7 +231,9 @@ export async function dispatchProtectedOperation<T>(
   if (signal.aborted) throw abortError()
   switch (manifest.kind) {
     case 'send-chat':
-      return await sendChat(manifest.message, manifest.sessionId, csrfToken, signal) as T
+      return await sendChat(manifest.message, manifest.sessionId, csrfToken, signal, manifest.images) as T
+    case 'upload-image':
+      return await uploadImageBytes(manifest.file, csrfToken, signal) as T
     case 'redact-invocation':
       return await redactInvocation(
         manifest.endpointId, manifest.invocationId, manifest.request,

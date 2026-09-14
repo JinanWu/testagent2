@@ -19,7 +19,7 @@ class 假聊天服務:
         self.錯誤 = 錯誤
         self.呼叫 = []
 
-    def 聊天(self, 使用者識別碼, 訊息, 工作階段識別碼=None):
+    def 聊天(self, 使用者識別碼, 訊息, 工作階段識別碼=None, 圖片參照清單=None):
         self.呼叫.append((使用者識別碼, 訊息, 工作階段識別碼))
         if self.錯誤:
             raise self.錯誤
@@ -96,7 +96,7 @@ def test_同步聊天服務不阻塞ASGI事件迴圈():
             self.進入數 = 0
             self.兩者已進入 = Event()
 
-        def 聊天(self, 使用者識別碼, 訊息, 工作階段識別碼=None):
+        def 聊天(self, 使用者識別碼, 訊息, 工作階段識別碼=None, 圖片參照清單=None):
             with self.鎖:
                 self.進入數 += 1
                 if self.進入數 == 2:

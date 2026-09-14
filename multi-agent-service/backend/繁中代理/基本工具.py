@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from .工具 import 解析工具路徑, 確認路徑允許
+from .工作階段上下文 import 讀取目前工作階段識別碼
+from .沙箱執行 import 建立沙箱指令, 沙箱是否啟用
 
 
 def 寫入檔案內容(參數: dict[str, Any]) -> dict[str, Any]:
@@ -115,15 +117,25 @@ def 執行終端指令(參數: dict[str, Any]) -> dict[str, Any]:
     工作目錄 = str(解析工具路徑(參數.get("workdir") or ".", 參數.get("_runtime_workdir"), 預設="."))
     確認路徑允許(Path(工作目錄), 參數)
     逾時秒數 = int(參數.get("timeout", 60) or 60)
+
+    # TERMINAL_SANDBOX=on 時走 Cloud Run Sandboxes：指令看不到父容器的環境變數與
+    # secrets，對 host 檔案系統唯讀。沙箱不可用時直接往外拋，不退回主機裸跑——
+    # 靜默降級會讓呼叫端誤以為指令被隔離了。
+    if 沙箱是否啟用():
+        執行參數: dict[str, Any] = {"args": 建立沙箱指令(
+            指令, 工作目錄, 工作階段識別碼=讀取目前工作階段識別碼(),
+        )}
+    else:
+        執行參數 = {"args": 指令, "shell": True, "cwd": 工作目錄}
+
     try:
         完成程序 = subprocess.run(
-            指令,
-            shell=True,
-            cwd=工作目錄,
+            執行參數.pop("args"),
             text=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             timeout=逾時秒數,
+            **執行參數,
         )
     except subprocess.TimeoutExpired:
         raise 工具逾時(f"指令超過 {逾時秒數} 秒未結束") from None

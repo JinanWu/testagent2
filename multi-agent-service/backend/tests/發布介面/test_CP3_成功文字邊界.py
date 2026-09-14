@@ -49,7 +49,7 @@ def _客戶端(內容: str) -> TestClient:
     庫 = _工作階段庫(內容)
 
     def 工廠(**_條件):
-        return SimpleNamespace(執行使用者訊息=lambda *_參數: SimpleNamespace(
+        return SimpleNamespace(執行使用者訊息=lambda *_參數, 圖片參照清單=None: SimpleNamespace(
             最終回答=內容, 工作階段識別碼="root",
         ))
 

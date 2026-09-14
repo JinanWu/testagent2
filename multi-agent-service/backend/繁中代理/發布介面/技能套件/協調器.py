@@ -25,7 +25,7 @@ import traceback
 from typing import Callable, NoReturn
 import uuid
 
-from .安全複製 import 技能套件最大總位元組數, 限制
+from .安全複製 import 技能套件最大總位元組數, 技能套件資源限制
 from .發布器 import 套件發布收據, 已驗證技能套件清單, 驗證已發布技能套件清單, _讀取有界檔案
 from .儲存庫 import 套件收據儲存庫
 
@@ -81,7 +81,7 @@ class _協調預算:
         try:
             for 項目 in 迭代器:
                 self.已列舉項目數 += 1
-                if self.已列舉項目數 > 限制().最大檔案數:
+                if self.已列舉項目數 > 技能套件資源限制().最大檔案數:
                     raise OSError
                 名稱列.append(項目.name)
         finally:
@@ -144,8 +144,8 @@ class _已重驗套件:
 
 _識別碼 = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _控制例外 = (KeyboardInterrupt, SystemExit, GeneratorExit)
-_不可跟隨 = getattr(os, "O_NOFOLLOW", 0)
-_僅目錄 = getattr(os, "O_DIRECTORY", 0)
+_不跟隨的旗標 = getattr(os, "O_NOFOLLOW", 0)
+_僅目錄的旗標 = getattr(os, "O_DIRECTORY", 0)
 _固定錯誤 = "技能套件協調錯誤"
 
 
@@ -225,12 +225,12 @@ def _開安全絕對目錄(路徑: Path) -> int:
     副作用：逐層開啟並關閉描述元；close 結果不明的舊 fd 不會被猜測重試。
     """
     絕對 = Path(os.path.abspath(os.fspath(路徑)))
-    描述元 = os.open("/", os.O_RDONLY | _僅目錄)
+    描述元 = os.open("/", os.O_RDONLY | _僅目錄的旗標)
     try:
         for 部件 in 絕對.parts[1:]:
             if 部件 in {"", ".", ".."}:
                 raise OSError
-            下一個 = os.open(部件, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=描述元)
+            下一個 = os.open(部件, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=描述元)
             # open 成功後立即把唯一 owned slot 轉交 next；因此 close 舊 fd 前後的
             # 任意非同步控制都只會由外層關閉 next，絕不重關結果不明的 stale old。
             舊描述元, 描述元 = 描述元, 下一個
@@ -256,7 +256,7 @@ def _不可覆寫改名at(來源父: int, 來源: str, 目標父: int, 目標: s
         函式.restype = ctypes.c_int
         # Darwin 會拒絕移動模式 0555 且非空的目錄；以釘選 fd 暫時只放寬
         # 目錄 inode，rename 後立即恢復，內容檔仍維持 0444。
-        來源描述元 = os.open(來源, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=來源父)
+        來源描述元 = os.open(來源, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=來源父)
         try:
             if stat.S_IMODE(os.fstat(來源描述元).st_mode) != 0o555:
                 raise OSError
@@ -340,12 +340,12 @@ def _重驗套件(
     前資訊 = os.stat(名稱, dir_fd=父描述元, follow_symlinks=False)
     if not stat.S_ISDIR(前資訊.st_mode) or stat.S_IMODE(前資訊.st_mode) != 0o555:
         raise OSError
-    根 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=父描述元)
+    根 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=父描述元)
     try:
         根資訊 = os.fstat(根)
         if (前資訊.st_dev, 前資訊.st_ino) != (根資訊.st_dev, 根資訊.st_ino):
             raise OSError
-        原文, 清單資訊 = 預算.讀取(根, "manifest.json", 限制().最大總位元組數)
+        原文, 清單資訊 = 預算.讀取(根, "manifest.json", 技能套件資源限制().套件最大總位元組數)
         if 清單資訊.st_nlink != 1 or stat.S_IMODE(清單資訊.st_mode) != 0o444:
             raise OSError
         投影 = 驗證已發布技能套件清單(原文)
@@ -372,7 +372,7 @@ def _重驗套件(
                 if stat.S_ISDIR(資訊.st_mode) and 相對 in 預期目錄:
                     if stat.S_IMODE(資訊.st_mode) != 0o555:
                         raise OSError
-                    子 = os.open(子名, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目錄描述元)
+                    子 = os.open(子名, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目錄描述元)
                     try:
                         釘選 = os.fstat(子)
                         if (資訊.st_dev, 資訊.st_ino) != (釘選.st_dev, 釘選.st_ino):
@@ -457,7 +457,7 @@ def _安全刪樹(父: int, 名稱: str, 投影: tuple[_樹投影項目, ...]) -
     目錄描述元: dict[tuple[str, ...], int] = {}
     已關閉: set[tuple[str, ...]] = set()
     已開始刪除 = False
-    根 = os.open(名稱, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=父)
+    根 = os.open(名稱, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=父)
     目錄描述元[()] = 根
 
     def 驗證目錄(部件: tuple[str, ...]) -> None:
@@ -490,7 +490,7 @@ def _安全刪樹(父: int, 名稱: str, 投影: tuple[_樹投影項目, ...]) -
             if not _資訊符合投影(可見, 子投影):
                 raise OSError
             if 子投影.種類 == "目錄":
-                子描述元 = os.open(子名, os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=目前)
+                子描述元 = os.open(子名, os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=目前)
                 目錄描述元[子投影.相對部件] = 子描述元
                 if not _資訊符合投影(os.fstat(子描述元), 子投影):
                     raise OSError
@@ -604,7 +604,7 @@ class 技能套件協調器:
                     os.mkdir(".orphaned", 0o700, dir_fd=根)
                 except FileExistsError:
                     pass
-                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=根)
                 try:
                     if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
                         raise OSError
@@ -648,7 +648,7 @@ class 技能套件協調器:
             if any(_識別碼.fullmatch(名稱) is None for 名稱 in active名稱):
                 raise OSError
             if ".orphaned" in 根名稱:
-                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+                孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=根)
                 if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
                     raise OSError
                 孤兒名稱 = sorted(預算.列舉(孤兒根))
@@ -694,7 +694,7 @@ class 技能套件協調器:
                 os.mkdir(".orphaned", 0o700, dir_fd=根)
             except FileExistsError:
                 pass
-            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=根)
             try:
                 if stat.S_IMODE(os.fstat(孤兒根).st_mode) != 0o700:
                     raise OSError
@@ -719,7 +719,7 @@ class 技能套件協調器:
         名稱 = 套件.投影.bundle_id
         根 = _開安全絕對目錄(self.根目錄)
         try:
-            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄 | _不可跟隨, dir_fd=根)
+            孤兒根 = os.open(".orphaned", os.O_RDONLY | _僅目錄的旗標 | _不跟隨的旗標, dir_fd=根)
             try:
                 可見 = os.stat(名稱, dir_fd=孤兒根, follow_symlinks=False)
                 if (可見.st_dev, 可見.st_ino) != 套件.根身分:

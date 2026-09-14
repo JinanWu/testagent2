@@ -3,6 +3,7 @@ const API_ROUTES = {
   login: '/api/auth/login',
   logout: '/api/auth/logout',
   chat: '/api/chat',
+  uploadImage: '/api/uploads/image',
   sessions: '/api/sessions',
   skills: '/api/skills',
 } as const
@@ -405,4 +406,55 @@ export function encodedRoute(prefix: '/api/sessions/' | '/api/skills/', id: stri
   const encoded = encodeURIComponent(id)
   if (encoded.length > 384) throw new ApiFormatError()
   return `${prefix}${encoded}`
+}
+
+/*
+ * 圖片上傳送的是原始位元組，不是 JSON，所以不能走 apiRequest——那支固定把
+ * body 當字串、Content-Type 釘成 application/json。這裡重複的只有 credentials
+ * 與 CSRF 兩個必要行為，其餘一律不放寬。
+ */
+export const MAX_IMAGE_UPLOAD_BYTES = 20 * 1024 * 1024
+
+export async function uploadImageBytes(
+  file: Blob,
+  csrfToken: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (file.size === 0 || file.size > MAX_IMAGE_UPLOAD_BYTES || !boundedString(csrfToken, 512)) {
+    throw new ApiFormatError()
+  }
+  let response: Response
+  try {
+    throwIfAborted(signal)
+    response = await fetch(API_ROUTES.uploadImage, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { Accept: JSON_CONTENT_TYPE, 'Content-Type': 'application/octet-stream', 'X-CSRF-Token': csrfToken },
+      body: file,
+      ...(signal === undefined ? {} : { signal }),
+    })
+    throwIfAborted(signal)
+  } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) {
+      throw abortError()
+    }
+    throw new ApiResponseError(0)
+  }
+  if (response.status !== 200) {
+    throw new ApiResponseError(response.status)
+  }
+  const text = await readBoundedResponse(response, MAX_RESPONSE_BYTES, signal)
+  throwIfAborted(signal)
+  if (text.length === 0) throw new ApiFormatError()
+  let parsed: unknown
+  try {
+    parsed = parseSafeJson(text)
+  } catch {
+    throw new ApiFormatError()
+  }
+  const value = exactObject(parsed, ['image'])
+  if (!value || !boundedString(value.image, 512) || !value.image.startsWith('gs://')) {
+    throw new ApiFormatError()
+  }
+  return value.image
 }

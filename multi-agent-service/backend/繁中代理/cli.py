@@ -369,7 +369,7 @@ def 建立參數解析器() -> argparse.ArgumentParser:
     解析器.add_argument("--workdir", default=os.getcwd(), help="工作目錄")
     解析器.add_argument("--model", default=os.getenv("AIAGENT_MODEL", "gemini-2.5-flash-lite"), help="模型名稱")
     解析器.add_argument("--mode", default=os.getenv("AIAGENT_MODEL_MODE", "gemini"), choices=["fake", "gemini"], help="模型模式")
-    解析器.add_argument("--max-iters", type=int, default=8, help="最大 tool-loop 迭代次數")
+    解析器.add_argument("--max-iters", type=int, default=15, help="最大 tool-loop 迭代次數")
     解析器.add_argument("--user-id", default=os.getenv("TESTAGENT2_USER_ID"), help="dev/test fallback 使用者識別碼；正式使用建議改用 auth login")
     解析器.add_argument("--source", default=os.getenv("TESTAGENT2_SOURCE", "cli"), help="session 來源平台，預設 cli")
     解析器.add_argument("--model-config-json", default=None, help="JSON 格式模型設定，會寫入 sessions.model_config")

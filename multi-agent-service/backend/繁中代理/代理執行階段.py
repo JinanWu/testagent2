@@ -25,7 +25,7 @@ from .工具註冊 import 建立預設工具登錄器
 from .基本工具 import 取得技能根目錄清單
 from .技能索引器 import 建立技能摘要 as 建立技能索引摘要, 技能強制載入指引, 技能無相關項目指引
 from .提示詞組裝器 import 提示詞設定, 提示詞組裝器
-from .模型供應商 import 建立模型供應商, 模型供應商
+from .模型供應商 import 圖片參照欄位, 建立模型供應商, 模型供應商
 from .使用者 import 使用者上下文, 使用者庫, 取得預設記憶根目錄, 建立預設使用者上下文
 from .儲存 import 建立使用者庫
 from .輔助壓縮摘要 import 建立壓縮摘要函式, 是否啟用壓縮摘要, 解析壓縮模型設定, 解析摘要失敗是否中止
@@ -156,7 +156,9 @@ class 代理執行階段:
         平台名稱: str = "api_server",
         工具登錄器物件: 工具登錄器 | None = None,
         工作目錄: str = ".",
-        最大迭代次數: int = 8,
+        # 預設每個使用者 turn 最多跑 15 次 tool loop（包含模型呼叫 + 工具回合）。
+        # 目的：降低「模型一直回 tool_call」時過早觸發 fallback 的機率，但仍保有上限防護。
+        最大迭代次數: int = 15,
         上下文長度: int = 32768,
         模型模式: str = "gemini",
         啟用壓縮摘要: bool | None = None,
@@ -323,7 +325,7 @@ class 代理執行階段:
             壓縮供應商 = 建立模型供應商(解析模式, 解析模型)
         return 建立壓縮摘要函式(壓縮供應商)
 
-    def 執行使用者訊息(self, 使用者訊息: str, 工作階段識別碼: str | None = None, 額外系統訊息: str | None = None) -> 執行結果:
+    def 執行使用者訊息(self, 使用者訊息: str, 工作階段識別碼: str | None = None, 額外系統訊息: str | None = None, 圖片參照清單: list[str] | None = None) -> 執行結果:
         """執行單次使用者 turn 並完成模型/tool/compression loop。
 
         參數：
@@ -332,6 +334,8 @@ class 代理執行階段:
                 建立新 session。
             額外系統訊息: 可選的 context-tier system message，僅在首次建立
                 session system prompt 時納入。
+            圖片參照清單: 可選的已上傳圖片 gs:// 參照；歸屬須由呼叫端先驗證。
+                參照會掛在 user 訊息上隨對話保存，模型供應商據此交給 Vertex。
 
         返回值：
             執行結果：包含最終回答、目前 active session id、壓縮後或完整訊息清單、
@@ -358,7 +362,10 @@ class 代理執行階段:
             self.工作階段庫物件.更新系統提示詞(工作階段識別碼, 系統提示詞)
 
         訊息清單 = [訊息 for 訊息 in 歷史訊息 if 訊息.get("role") != "system"]
-        訊息清單.append({"role": "user", "content": 使用者訊息})
+        使用者訊息項目: dict[str, Any] = {"role": "user", "content": 使用者訊息}
+        if 圖片參照清單:
+            使用者訊息項目[圖片參照欄位] = list(圖片參照清單)
+        訊息清單.append(使用者訊息項目)
 
         self.工作階段庫物件.寫入訊息清單(工作階段識別碼, 訊息清單)
         工作階段識別碼, 訊息清單, 是否已壓縮 = self.嘗試壓縮並分裂工作階段(工作階段識別碼, 訊息清單, 系統提示詞, 工具結構清單)

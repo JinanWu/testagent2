@@ -23,8 +23,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .圖片存放 import 取得圖片MIME
+
 # Gemini 3 系列 function call 附帶的 thought signature 在 tool_calls dict 內的欄位名。
 思考簽章欄位 = "thought_signature"
+
+# 使用者訊息夾帶已上傳圖片 gs:// 參照的欄位名。
+圖片參照欄位 = "圖片參照清單"
 
 
 @dataclass
@@ -395,6 +400,7 @@ class GeminiADC供應商:
         try:
             內容清單 = []
             待沖函數回應 = []
+            圖片清單 = 圖片參照 = None
             for 訊息 in 訊息清單:
                 角色 = 訊息.get("role")
                 if 角色 == "tool":
@@ -413,8 +419,19 @@ class GeminiADC供應商:
                     待沖函數回應.clear()
                 if 角色 in ("system", "user"):
                     名稱 = f"[System]\n{訊息.get('content', '')}" if 角色 == "system" else str(訊息.get("content", ""))
-                    零件 = types.Part(text=名稱)
-                    內容清單.append(types.Content(role="user", parts=[零件]))
+                    零件清單 = [types.Part(text=名稱)]
+                    # 使用者訊息可夾帶已上傳圖片的 gs:// 參照。Vertex 直接讀取
+                    # Cloud Storage，圖片位元組不必經過本服務或對話歷史。
+                    圖片清單 = 訊息.get(圖片參照欄位) if 角色 == "user" else None
+                    if isinstance(圖片清單, list):
+                        for 圖片參照 in 圖片清單:
+                            if type(圖片參照) is not str or not 圖片參照.startswith("gs://"):
+                                continue
+                            零件清單.append(types.Part.from_uri(
+                                file_uri=圖片參照,
+                                mime_type=取得圖片MIME(圖片參照),
+                            ))
+                    內容清單.append(types.Content(role="user", parts=零件清單))
                 elif 角色 == "assistant":
                     工具呼叫們 = 訊息.get("tool_calls")
                     if 工具呼叫們:
@@ -444,6 +461,7 @@ class GeminiADC供應商:
         except BaseException:
             self = 訊息清單 = types = 內容清單 = 待沖函數回應 = 訊息 = 角色 = 名稱 = 工具結果 = None
             零件 = 零件清單 = 工具呼叫們 = 工具呼叫 = 函數 = 參數 = 函數回應 = 函數呼叫 = None
+            圖片清單 = 圖片參照 = None
             raise
 
     def 轉成Gemini工具(self, 工具清單: list[dict[str, Any]]) -> list[Any]:

@@ -1,12 +1,12 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode, type UIEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type DragEvent, type FormEvent, type ReactNode, type UIEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { AUTH_ERROR_MESSAGE } from '../api/auth'
-import { CHAT_ERROR_MESSAGE, CHAT_MESSAGE_MAX_BYTES } from '../api/chat'
-import { byteLength } from '../api/client'
-import { getSessionDetail, type TranscriptMessage } from '../api/sessions'
+import { CHAT_ERROR_MESSAGE, CHAT_IMAGE_MAX_COUNT, CHAT_MESSAGE_MAX_BYTES } from '../api/chat'
+import { MAX_IMAGE_UPLOAD_BYTES, byteLength } from '../api/client'
+import { buildChatImageRoute, getSessionDetail, type TranscriptMessage } from '../api/sessions'
 import { useSession } from '../app/SessionProvider'
-import { createSendChatOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
+import { createSendChatOperation, createUploadImageOperation, type ProtectedStateOwner } from '../app/sessionAuthority'
 import { 錯誤訊息 } from '../ui/元件'
 import 圖示 from '../ui/圖示'
 import 應用框架 from '../ui/應用框架'
@@ -21,6 +21,18 @@ const 輸入框展開高度 = 146
 
 const SESSION_ERROR_MESSAGE = '目前無法載入對話，請稍後再試。'
 const 內容過長訊息 = '內容太長，請縮短後再送出'
+const 圖片上傳失敗訊息 = '圖片上傳失敗，請再試一次'
+const 圖片過大訊息 = '圖片太大，請改用 20 MB 以內的檔案'
+const 圖片格式訊息 = '只支援 PNG、JPEG、WebP 圖片'
+const 圖片數量訊息 = `一則訊息最多 ${CHAT_IMAGE_MAX_COUNT} 張圖`
+const 可接受圖片類型 = 'image/png,image/jpeg,image/webp'
+
+/* 已上傳完成、等著隨下一則訊息送出的圖片。預覽網址是本機 object URL，送出後釋放。 */
+interface 待送圖片 {
+  參照: string
+  預覽網址: string
+  檔名: string
+}
 
 function 助理訊息表格({ children }: { children?: ReactNode }) {
   return (
@@ -115,6 +127,12 @@ export default function ChatPage({
   const epoch = useRef(0)
   const controllers = useRef(new Set<AbortController>())
   const [protectedOwner, setProtectedOwner] = useState<ProtectedStateOwner | null>(null)
+  const [待送圖片清單, set待送圖片清單] = useState<待送圖片[]>([])
+  const [圖片上傳中, set圖片上傳中] = useState(false)
+  const 選檔Ref = useRef<HTMLInputElement | null>(null)
+  const [正在拖放圖片, set正在拖放圖片] = useState(false)
+  const 拖放進入次數 = useRef(0)
+  const [預覽圖片, set預覽圖片] = useState<string | null>(null)
 
   const invalidate = useCallback(() => {
     epoch.current += 1
@@ -215,11 +233,100 @@ export default function ChatPage({
     void openSession(initialSessionId)
   }, [protectedOwner, initialSessionId])
 
+  /*
+   * 選檔後立刻上傳，而不是等按傳送才傳：使用者可以馬上看到縮圖確認選對了，
+   * 而且送出時只要帶一個短短的 gs:// 參照，不必在送出那一刻等一段大上傳。
+   */
+  async function 處理選擇圖片(檔案清單: FileList | null) {
+    if (檔案清單 === null || 檔案清單.length === 0 || protectedOwner === null) return
+    const 可加入數量 = CHAT_IMAGE_MAX_COUNT - 待送圖片清單.length
+    if (可加入數量 <= 0) {
+      setError(圖片數量訊息)
+      return
+    }
+    const 待處理 = Array.from(檔案清單).slice(0, 可加入數量)
+    set圖片上傳中(true)
+    setError(null)
+    const controller = new AbortController()
+    controllers.current.add(controller)
+    try {
+      for (const 檔案 of 待處理) {
+        if (!可接受圖片類型.split(',').includes(檔案.type)) {
+          setError(圖片格式訊息)
+          continue
+        }
+        if (檔案.size > MAX_IMAGE_UPLOAD_BYTES) {
+          setError(圖片過大訊息)
+          continue
+        }
+        const 參照 = await runAuthorized({
+          owner: protectedOwner,
+          operation: createUploadImageOperation(檔案),
+          signal: controller.signal,
+        })
+        if (controller.signal.aborted) return
+        set待送圖片清單((目前) => (
+          目前.length >= CHAT_IMAGE_MAX_COUNT
+            ? 目前
+            : [...目前, { 參照, 預覽網址: URL.createObjectURL(檔案), 檔名: 檔案.name }]
+        ))
+      }
+    } catch {
+      if (!controller.signal.aborted) setError(圖片上傳失敗訊息)
+    } finally {
+      controllers.current.delete(controller)
+      set圖片上傳中(false)
+      /* 清空 input，否則同一個檔案再選一次不會觸發 change */
+      if (選檔Ref.current !== null) 選檔Ref.current.value = ''
+    }
+  }
+
+  function 是圖片檔案拖曳(event: DragEvent<HTMLDivElement>) {
+    return Array.from(event.dataTransfer.types).includes('Files')
+  }
+
+  function 處理圖片拖入(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    if (圖片上傳中 || pending || detailPending || 待送圖片清單.length >= CHAT_IMAGE_MAX_COUNT) return
+    拖放進入次數.current += 1
+    set正在拖放圖片(true)
+  }
+
+  function 處理圖片拖曳中(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function 處理圖片拖離(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    拖放進入次數.current = Math.max(0, 拖放進入次數.current - 1)
+    if (拖放進入次數.current === 0) set正在拖放圖片(false)
+  }
+
+  function 處理圖片放下(event: DragEvent<HTMLDivElement>) {
+    if (!是圖片檔案拖曳(event)) return
+    event.preventDefault()
+    拖放進入次數.current = 0
+    set正在拖放圖片(false)
+    if (圖片上傳中 || pending || detailPending) return
+    void 處理選擇圖片(event.dataTransfer.files)
+  }
+
+  function 移除待送圖片(參照: string) {
+    set待送圖片清單((目前) => {
+      const 目標 = 目前.find((項目) => 項目.參照 === 參照)
+      if (目標 !== undefined) URL.revokeObjectURL(目標.預覽網址)
+      return 目前.filter((項目) => 項目.參照 !== 參照)
+    })
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = draftRef.current.trim()
     const requestEpoch = epoch.current
-    if (!text || protectedOwner === null || submitOwnerEpochRef.current !== null || pending || detailPendingRef.current) return
+    if (!text || protectedOwner === null || submitOwnerEpochRef.current !== null || pending || detailPendingRef.current || 圖片上傳中) return
     if (byteLength(text) > CHAT_MESSAGE_MAX_BYTES) {
       setError(內容過長訊息)
       return
@@ -233,7 +340,9 @@ export default function ChatPage({
      * 草稿也還留在輸入框裡，看起來像沒送出去。所以先上畫面、先清輸入框。
      */
     const eraseCountAtSubmit = eraseCountRef.current
-    const 樂觀訊息: TranscriptMessage = { role: 'user', content: text }
+    const 本次圖片 = 待送圖片清單
+    const 本次圖片參照 = 本次圖片.map((項目) => 項目.參照)
+    const 樂觀訊息: TranscriptMessage = { role: 'user', content: text, images: 本次圖片參照 }
     /*
      * 按下傳送是使用者主動要看新內容，就算他剛剛翻在歷史裡也要拉回底部，
      * 否則自己送出的訊息和「正在回覆」動畫都落在視窗外，看起來像沒送出去。
@@ -242,15 +351,17 @@ export default function ChatPage({
     setMessages((current) => [...current, 樂觀訊息])
     draftRef.current = ''
     setDraft('')
+    set待送圖片清單([])
     setPending(true)
     setError(null)
     try {
       const result = await runAuthorized({
         owner: protectedOwner,
-        operation: createSendChatOperation(text, sessionId),
+        operation: createSendChatOperation(text, sessionId, 本次圖片參照),
         signal: controller.signal,
       })
       if (epoch.current !== requestEpoch || controller.signal.aborted) return
+      本次圖片.forEach((項目) => URL.revokeObjectURL(項目.預覽網址))
       setSessionId(result.sessionId)
       setMessages((current) => [...current, result.reply])
       void refreshSessions(requestEpoch)
@@ -263,6 +374,10 @@ export default function ChatPage({
       if (eraseCountRef.current === eraseCountAtSubmit && draftRef.current === '') {
         draftRef.current = text
         setDraft(text)
+        /* 圖片跟著草稿一起還回去；參照仍有效，不必重新上傳 */
+        set待送圖片清單((目前) => (目前.length === 0 ? 本次圖片 : 目前))
+      } else {
+        本次圖片.forEach((項目) => URL.revokeObjectURL(項目.預覽網址))
       }
       if (epoch.current === requestEpoch && !controller.signal.aborted) {
         /* 樂觀訊息以參考位址抽掉，不會誤刪內容剛好相同的歷史訊息 */
@@ -407,6 +522,15 @@ export default function ChatPage({
   const 是空白對話 = messages.length === 0 && !pending && !detailPending
   const 輸入內容過長 = draft.trim().length > 0 && byteLength(draft.trim()) > CHAT_MESSAGE_MAX_BYTES
 
+  useEffect(() => {
+    if (預覽圖片 === null) return
+    const 處理按鍵 = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') set預覽圖片(null)
+    }
+    window.addEventListener('keydown', 處理按鍵)
+    return () => { window.removeEventListener('keydown', 處理按鍵) }
+  }, [預覽圖片])
+
   const 輸入區 = (
     <>
       {/* 送出失敗時草稿會保留，錯誤就放在輸入區上方，讓「看到錯誤」與「重送」在同一處 */}
@@ -420,7 +544,46 @@ export default function ChatPage({
         <label htmlFor="chat-message" className="sr-only">
           訊息
         </label>
-        <div className="rounded-2xl border border-outline-variant bg-surface-container-lowest p-sm shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors focus-within:border-primary/50">
+        <div
+          onDragEnter={處理圖片拖入}
+          onDragOver={處理圖片拖曳中}
+          onDragLeave={處理圖片拖離}
+          onDrop={處理圖片放下}
+          className={[
+            'relative rounded-2xl border bg-surface-container-lowest p-sm shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-colors focus-within:border-primary/50',
+            正在拖放圖片 ? 'border-primary border-dashed bg-primary-container/10 ring-2 ring-primary/15' : 'border-outline-variant',
+          ].join(' ')}
+        >
+          {正在拖放圖片 && (
+            <div
+              id="chat-image-drop-hint"
+              aria-live="polite"
+              className="pointer-events-none absolute inset-1 z-10 flex items-center justify-center rounded-xl bg-surface-container-lowest/90 text-center font-body-md text-body-md font-semibold text-primary backdrop-blur-sm"
+            >
+              放開即可附加圖片
+            </div>
+          )}
+          {待送圖片清單.length > 0 && (
+            <ul className="flex flex-wrap gap-sm px-sm pt-xs" aria-label="待送出的圖片">
+              {待送圖片清單.map((項目) => (
+                <li key={項目.參照} className="relative">
+                  <img
+                    src={項目.預覽網址}
+                    alt={項目.檔名}
+                    className="size-16 rounded-lg border border-outline-variant object-cover"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => 移除待送圖片(項目.參照)}
+                    aria-label={`移除圖片 ${項目.檔名}`}
+                    className="absolute -right-1.5 -top-1.5 size-5 rounded-full bg-surface-container-highest text-body-sm leading-none text-on-surface shadow hover:bg-error hover:text-on-error"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
           <textarea
             id="chat-message"
             name="message"
@@ -469,9 +632,27 @@ export default function ChatPage({
               子節點維持純字串：既有測試以 findByProps({ type: 'submit' }).props.children
               直接比對「傳送」／「傳送中…」。圖示因此改由偽元素繪製，不進入 DOM。
             */}
+            <div className="flex shrink-0 items-center gap-sm">
+            <input
+              ref={選檔Ref}
+              type="file"
+              accept={可接受圖片類型}
+              multiple
+              className="sr-only"
+              onChange={(event) => { void 處理選擇圖片(event.currentTarget.files) }}
+            />
+            <button
+              type="button"
+              onClick={() => 選檔Ref.current?.click()}
+              disabled={圖片上傳中 || pending || detailPending || 待送圖片清單.length >= CHAT_IMAGE_MAX_COUNT}
+              aria-label={圖片上傳中 ? '圖片上傳中' : '附加圖片'}
+              className="size-10 shrink-0 rounded-xl border border-outline-variant bg-transparent leading-none text-on-surface-variant transition-colors hover:bg-surface-container disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {圖片上傳中 ? '…' : '＋'}
+            </button>
             <button
               type="submit"
-              disabled={!draft.trim() || 輸入內容過長 || pending || detailPending}
+              disabled={!draft.trim() || 輸入內容過長 || pending || detailPending || 圖片上傳中}
               className={[
                 '導覽項目',
                 pending || detailPending ? '導覽項目-載入中' : '導覽項目-傳送',
@@ -488,13 +669,45 @@ export default function ChatPage({
             >
               {detailPending ? '載入中…' : pending ? '傳送中…' : '傳送'}
             </button>
+            </div>
           </div>
         </div>
       </form>
     </>
   )
 
+  const 圖片預覽浮層 = 預覽圖片 !== null ? (
+    <div
+      role="presentation"
+      onClick={() => set預覽圖片(null)}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-scrim/75 p-lg backdrop-blur-sm"
+    >
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-label="圖片完整預覽"
+        onClick={(event) => event.stopPropagation()}
+        className="relative flex max-h-[92vh] max-w-[min(92vw,72rem)] items-center justify-center rounded-3xl border border-outline-variant bg-surface-container-lowest p-sm shadow-[0_24px_80px_rgba(0,0,0,0.28)]"
+      >
+        <img
+          src={buildChatImageRoute(預覽圖片)}
+          alt="圖片完整預覽"
+          className="max-h-[calc(92vh-1rem)] max-w-[calc(92vw-1rem)] rounded-2xl object-contain"
+        />
+        <button
+          type="button"
+          onClick={() => set預覽圖片(null)}
+          aria-label="關閉圖片預覽"
+          className="absolute right-3 top-3 flex size-9 items-center justify-center rounded-full border border-outline-variant bg-surface-container-lowest/90 text-on-surface shadow-sm transition-colors hover:bg-surface-container-highest"
+        >
+          ×
+        </button>
+      </section>
+    </div>
+  ) : null
+
   return (
+    <>
     <應用框架
       目前分頁="對話"
       標題={頁面標題}
@@ -549,6 +762,7 @@ export default function ChatPage({
             <div className="mx-auto flex w-full max-w-[48rem] flex-col gap-lg">
               {messages.map((message, index) => {
                 const 是使用者 = message.role === 'user'
+                const 圖片數量 = message.images?.length ?? 0
                 return (
                   /* 使用者靠右、助理靠左，泡泡不撐滿寬度，對話才有來回的感覺 */
                   <div
@@ -576,13 +790,48 @@ export default function ChatPage({
                         是使用者 ? 'items-end' : 'items-start',
                       ].join(' ')}
                     >
+                      {是使用者 && 圖片數量 > 0 && message.images !== undefined && (
+                        <div
+                          className={[
+                            'grid w-full gap-sm',
+                            圖片數量 === 1 ? 'grid-cols-1' : 'grid-cols-2',
+                          ].join(' ')}
+                          aria-label="此訊息附加的圖片"
+                        >
+                          {message.images.map((image, imageIndex) => (
+                            <button
+                              key={image}
+                              type="button"
+                              onClick={() => set預覽圖片(image)}
+                              aria-label={`開啟附加圖片 ${imageIndex + 1} 的完整預覽`}
+                              className={[
+                                'group relative w-fit max-w-full overflow-hidden rounded-3xl border border-primary/15 bg-surface-container text-left shadow-[0_1px_2px_rgba(0,0,0,0.05)] transition-shadow hover:shadow-md focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
+                                圖片數量 === 1 ? 'justify-self-end' : 'w-full',
+                              ].join(' ')}
+                            >
+                              <img
+                                src={buildChatImageRoute(image)}
+                                alt={`附加圖片 ${imageIndex + 1}`}
+                                className={[
+                                  'h-auto max-h-[32rem] max-w-full object-contain',
+                                  圖片數量 === 1 ? 'w-auto' : 'w-full',
+                                ].join(' ')}
+                                loading="lazy"
+                              />
+                              <span className="pointer-events-none absolute bottom-3 right-3 rounded-full bg-surface-container-lowest/85 px-2.5 py-1 font-label-sm text-label-sm text-on-surface opacity-0 shadow-sm backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                                點擊放大
+                              </span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                       <div
                         className={[
                           'min-w-0 max-w-full rounded-2xl border bg-surface-container-lowest p-md',
                           是使用者
                             ? 'rounded-tr-lg border-primary/25'
                             : 'rounded-tl-lg border-outline-variant',
-                        ].join(' ')}
+                          ].join(' ')}
                       >
                         {是使用者 ? (
                           <p className="whitespace-pre-wrap break-words font-body-lg text-body-lg text-on-surface">
@@ -664,5 +913,7 @@ export default function ChatPage({
         </div>
       )}
     </應用框架>
+    {圖片預覽浮層}
+    </>
   )
 }

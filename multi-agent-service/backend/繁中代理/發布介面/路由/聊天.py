@@ -20,10 +20,21 @@ from ..嚴格JSON import 解析嚴格JSON
 from .回應模型 import 聊天成功回應
 
 
+# 單則訊息可夾帶的圖片張數上限。刻意保守：每張圖都會進 Vertex context，
+# 且會留在對話歷史裡於後續每一輪重送。
+每則訊息圖片上限 = 4
+
+
 class 聊天服務(Protocol):
     """聊天 route 所需的最小 transport-neutral 服務契約。"""
 
-    def 聊天(self, 使用者識別碼: str, 訊息: str, 工作階段識別碼: str | None = None) -> 聊天回應:
+    def 聊天(
+        self,
+        使用者識別碼: str,
+        訊息: str,
+        工作階段識別碼: str | None = None,
+        圖片參照清單: list[str] | None = None,
+    ) -> 聊天回應:
         """執行一則登入使用者訊息並回傳安全 DTO。"""
         ...
 
@@ -34,6 +45,7 @@ class 聊天請求(BaseModel):
     model_config = ConfigDict(extra="forbid")
     訊息: Annotated[StrictStr, Field(alias="message")]
     工作階段識別碼: Annotated[StrictStr | None, Field(alias="session_id")] = None
+    圖片參照清單: Annotated[list[StrictStr] | None, Field(alias="images")] = None
 
     @field_validator("訊息")
     @classmethod
@@ -43,6 +55,23 @@ class 聊天請求(BaseModel):
         if not 整理值 or len(整理值.encode("utf-8")) > 16_384:
             raise ValueError("訊息不符合契約")
         return 整理值
+
+    @field_validator("圖片參照清單")
+    @classmethod
+    def 驗證圖片參照清單(cls, 值: list[str] | None) -> list[str] | None:
+        """限制張數與單一參照長度；參照歸屬由服務層以登入身分再驗一次。
+
+        這裡只做形狀檢查——是否真的屬於這位使用者，route 層沒有身分以外的
+        資訊可判斷，交給 `Web代理服務` 用 `驗證圖片參照` 把關。
+        """
+        if 值 is None:
+            return None
+        if not 值 or len(值) > 每則訊息圖片上限:
+            raise ValueError("圖片清單不符合契約")
+        for 參照 in 值:
+            if not 1 <= len(參照) <= 512 or 參照.strip() != 參照:
+                raise ValueError("圖片清單不符合契約")
+        return 值
 
     @field_validator("工作階段識別碼")
     @classmethod
@@ -68,6 +97,7 @@ def 建立聊天路由器(服務: 聊天服務, 目前工作階段相依, csrf�
         try:
             回應 = await run_in_threadpool(
                 服務.聊天, 使用者.識別碼, 本文.訊息, 本文.工作階段識別碼,
+                本文.圖片參照清單,
             )
             return 序列化聊天回應(回應)
         except Web請求無效:
